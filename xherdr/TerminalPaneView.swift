@@ -91,6 +91,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.selectPane = selectPane
         view.isRichText = false
         view.isEditable = true
+        view.registerForDraggedTypes([.fileURL, .string])
         view.isSelectable = true
         view.selectedTextAttributes = [
             .backgroundColor: NSColor.selectedTextBackgroundColor,
@@ -1005,5 +1006,63 @@ final class HerdrTerminalTextView: NSTextView {
         if let value = NSPasteboard.general.string(forType: .string), !value.isEmpty {
             sendPaste?(value, paneID)
         }
+    }
+
+    // Dropped files paste their shell-escaped paths into the pane under the pointer,
+    // as Terminal and iTerm do; dropped text pastes as is.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedText(sender.draggingPasteboard) == nil ? [] : .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let text = droppedText(sender.draggingPasteboard) else { return false }
+        var target = paneID
+        if let surface {
+            let point = convert(sender.draggingLocation, from: nil)
+            let x = Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth))
+            let y = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
+            if let id = surface.paneIDs.first(where: { id in
+                guard let rect = surface.paneRects[id] else { return false }
+                return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+            }) {
+                target = id
+                if id != paneID { selectPane?(id) }
+            }
+        }
+        window?.makeFirstResponder(self)
+        sendPaste?(text, target)
+        return true
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {}
+
+    private func droppedText(_ pasteboard: NSPasteboard) -> String? {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                             options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty {
+            return urls.map { Self.shellEscaped($0.path) }.joined(separator: " ") + " "
+        }
+        if let value = pasteboard.string(forType: .string), !value.isEmpty { return value }
+        return nil
+    }
+
+    /// Backslash-escapes shell metacharacters, matching how Terminal inserts dropped paths.
+    static func shellEscaped(_ path: String) -> String {
+        let safe = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "/._-+,:@%"))
+        var result = ""
+        for scalar in path.unicodeScalars {
+            if !scalar.isASCII || safe.contains(scalar) {
+                result.unicodeScalars.append(scalar)
+            } else {
+                result += "\\" + String(scalar)
+            }
+        }
+        return result
     }
 }
