@@ -308,6 +308,8 @@ struct WorkspaceRepositoryView: View {
         commitFiles = nil
         commitFilesError = nil
         guard let location, let hash = selectedCommit?.id else { return }
+        let start = TerminalPipelineMetrics.now()
+        defer { TerminalPipelineMetrics.spanShown("commit-files", start: start, detail: location.isLocal ? "local" : "ssh") }
         let result = await Task.detached(priority: .userInitiated) {
             Result { try WorkspaceFiles.commitFiles(hash, at: location) }
         }.value
@@ -439,6 +441,7 @@ struct WorkspaceRepositoryView: View {
         guard let location else { listing = nil; error = nil; return }
         isLoading = true
         error = nil
+        let start = TerminalPipelineMetrics.now()
         Task {
             let result = await Task.detached { Result { try WorkspaceFiles.repository(at: location) } }.value
             guard self.location?.identity == location.identity else { return }
@@ -447,6 +450,7 @@ struct WorkspaceRepositoryView: View {
             case .failure(let failure): error = failure.localizedDescription
             }
             isLoading = false
+            TerminalPipelineMetrics.spanShown("repository", start: start, detail: location.isLocal ? "local" : "ssh")
         }
     }
 

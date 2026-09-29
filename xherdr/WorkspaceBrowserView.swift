@@ -518,6 +518,7 @@ struct WorkspaceBrowserView: View {
         guard let location else { listing = nil; return }
         isLoading = true
         error = nil
+        let start = TerminalPipelineMetrics.now()
         Task {
             let result = await Task.detached { Result { try WorkspaceFiles.listing(at: location) } }.value
             guard self.location?.identity == location.identity else { return }
@@ -527,6 +528,7 @@ struct WorkspaceBrowserView: View {
             }
             isLoading = false
             listingVersion += 1
+            TerminalPipelineMetrics.spanShown("file-list", start: start, detail: location.isLocal ? "local" : "ssh")
         }
     }
 }

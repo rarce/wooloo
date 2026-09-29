@@ -497,12 +497,15 @@ struct WorkspaceDiffView: View {
         }
         .task(id: LoadKey(text: text, source: source)) {
             let key = LoadKey(text: text, source: source)
+            let start = TerminalPipelineMetrics.now()
+            let detail = key.source.location.isLocal ? "local" : "ssh"
             // Show the patch first, then again with syntax colors once the whole files arrive.
             let plain = await Task.detached(priority: .userInitiated) { ParsedDiff(key.text) }.value
             guard !Task.isCancelled else { return }
             expanded = []
             parsed = plain
             parsedKey = key
+            TerminalPipelineMetrics.spanShown("diff-patch", start: start, detail: detail)
             guard !plain.files.isEmpty else { return }
             let full = await Task.detached(priority: .utility) { () -> ParsedDiff in
                 let source = key.source
@@ -512,6 +515,7 @@ struct WorkspaceDiffView: View {
             }.value
             guard !Task.isCancelled else { return }
             parsed = full
+            TerminalPipelineMetrics.spanShown("diff-highlighted", start: start, detail: detail)
         }
     }
 

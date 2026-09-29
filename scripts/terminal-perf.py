@@ -7,6 +7,8 @@
       Writes FILE to stdout at a steady pace, like a build log or an agent typing.
   terminal-perf.py bench RESULTS.jsonl [--baseline OLD.jsonl]
       Tabulates XHERDR-BENCH lines from TerminalPipelineBenchmarks.
+  terminal-perf.py files RESULTS.jsonl [--baseline OLD.jsonl]
+      Tabulates WorkspaceFilesBenchmarks results: time and processes per operation.
   terminal-perf.py e2e METRICS.jsonl PHASES.jsonl [--baseline OLD.json] [--json OUT.json]
       Summarizes a live run recorded with XHERDR_METRICS_FILE, one row per workload phase.
 """
@@ -138,6 +140,39 @@ def bench_report(path, baseline_path):
         rows.append(row)
     table(["scenario", "decode p50 µs", "p95", "layout p50 µs", "p95", "cold layout p50 µs", "p95", "draw p50 µs", "p95",
            "frame p50 µs", "p95", "burst fps"], rows)
+
+
+# Workspace ------------------------------------------------------------------------------
+
+def read_files(path):
+    config, results = {}, {}
+    for line in Path(path).read_text().splitlines():
+        if not line.startswith("{"):
+            continue
+        record = json.loads(line)
+        if "op" in record:
+            results[(record["target"], record["repo"], record["op"])] = record
+        else:
+            config.update(record.get("config", record))
+    return config, results
+
+
+def files_report(path, baseline_path):
+    config, results = read_files(path)
+    base = read_files(baseline_path)[1] if baseline_path else {}
+    print(f"Workspace benchmark {path}  config: {json.dumps(config)}")
+    if baseline_path:
+        print(f"Baseline {baseline_path}  (n× = speedup vs baseline)")
+    rows = []
+    for key in sorted(results, key=lambda k: (k[0], k[1] != "small", k[2])):
+        record, old = results[key], base.get(key, {})
+        labels = ", ".join(f"{k}×{v}" if v > 1 else k for k, v in record.get("by_label", {}).items())
+        rows.append([f"{key[0]} {key[1]}", key[2],
+                     fmt(record["p50_ms"]) + change(record["p50_ms"], old.get("p50_ms")),
+                     fmt(record["p95_ms"]),
+                     str(record["procs"]) + (f" (was {old['procs']})" if old and old.get("procs") != record["procs"] else ""),
+                     fmt(record.get("proc_ms")), f"{record.get('bytes', 0) / 1000:.0f} KB", labels])
+    table(["where", "operation", "p50 ms", "p95 ms", "procs", "proc ms", "output", "processes"], rows)
 
 
 # End-to-end ------------------------------------------------------------------------------
@@ -302,6 +337,9 @@ def main():
     bench = commands.add_parser("bench")
     bench.add_argument("results")
     bench.add_argument("--baseline")
+    files = commands.add_parser("files")
+    files.add_argument("results")
+    files.add_argument("--baseline")
     e2e = commands.add_parser("e2e")
     e2e.add_argument("metrics")
     e2e.add_argument("phases")
@@ -312,6 +350,8 @@ def main():
         write_workloads(args.directory)
     elif args.command == "play":
         play(args.file, args.lines_per_second, args.chars_per_second, args.seconds)
+    elif args.command == "files":
+        files_report(args.results, args.baseline)
     elif args.command == "bench":
         bench_report(args.results, args.baseline)
     else:

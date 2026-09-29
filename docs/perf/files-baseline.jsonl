@@ -1,0 +1,50 @@
+{"machine":"Mac16,5","commit":"3e10e4f"}
+{"config":{"repeat":5,"ssh_target":"xherdr-remote@orb"}}
+{"target":"local","repo":"small","op":"refresh","p50_ms":201.67,"p95_ms":204.99,"procs":13,"proc_ms":195.41,"bytes":7047,"by_label":{"git for-each-ref":2,"git log":2,"git ls-files":1,"git remote":1,"git rev-parse":3,"git status":2,"git worktree":2}}
+{"target":"local","repo":"small","op":"file-list","p50_ms":55.56,"p95_ms":56.49,"procs":3,"proc_ms":54.93,"bytes":951,"by_label":{"git ls-files":1,"git rev-parse":1,"git status":1}}
+{"target":"local","repo":"small","op":"git-bar","p50_ms":190.57,"p95_ms":193.30,"procs":6,"proc_ms":190.31,"bytes":3280,"by_label":{"git for-each-ref":1,"git log":1,"git remote":1,"git rev-parse":1,"git status":1,"git worktree":1}}
+{"target":"local","repo":"small","op":"repository","p50_ms":77.44,"p95_ms":85.58,"procs":4,"proc_ms":71.83,"bytes":2816,"by_label":{"git for-each-ref":1,"git log":1,"git rev-parse":1,"git worktree":1}}
+{"target":"local","repo":"small","op":"open-file","p50_ms":0.14,"p95_ms":0.14,"procs":0,"proc_ms":0.00,"bytes":0,"by_label":{}}
+{"target":"local","repo":"small","op":"open-change","p50_ms":65.62,"p95_ms":72.01,"procs":4,"proc_ms":71.98,"bytes":662,"by_label":{"git diff":3,"git rev-parse":1}}
+{"target":"local","repo":"small","op":"open-untracked","p50_ms":45.92,"p95_ms":51.19,"procs":3,"proc_ms":45.66,"bytes":101,"by_label":{"git diff":2,"git ls-files":1}}
+{"target":"local","repo":"small","op":"diff-sides","p50_ms":14.08,"p95_ms":14.75,"procs":1,"proc_ms":18.22,"bytes":454,"by_label":{"git cat-file":1}}
+{"target":"local","repo":"small","op":"commit-files","p50_ms":35.17,"p95_ms":38.44,"procs":2,"proc_ms":38.41,"bytes":42,"by_label":{"git diff-tree":2}}
+{"target":"local","repo":"small","op":"commit-diff","p50_ms":22.52,"p95_ms":26.95,"procs":1,"proc_ms":26.92,"bytes":0,"by_label":{"git diff-tree":1}}
+{"target":"local","repo":"small","op":"open-big-change","p50_ms":140.75,"p95_ms":142.40,"procs":2,"proc_ms":163.15,"bytes":345501,"by_label":{"git diff":2}}
+{"target":"local","repo":"small","op":"parse-big-diff","p50_ms":53.72,"p95_ms":54.26,"procs":0,"proc_ms":0.00,"bytes":0,"by_label":{}}
+{"target":"local","repo":"small","op":"parse-big-diff-highlighted","p50_ms":478.94,"p95_ms":482.00,"procs":0,"proc_ms":0.00,"bytes":0,"by_label":{}}
+{"target":"local","repo":"large","op":"refresh","p50_ms":630.82,"p95_ms":632.21,"procs":13,"proc_ms":614.97,"bytes":414639,"by_label":{"git for-each-ref":2,"git log":2,"git ls-files":1,"git remote":1,"git rev-parse":3,"git status":2,"git worktree":2}}
+{"target":"local","repo":"large","op":"file-list","p50_ms":301.97,"p95_ms":303.16,"procs":3,"proc_ms":315.41,"bytes":405141,"by_label":{"git ls-files":1,"git rev-parse":1,"git status":1}}
+{"target":"local","repo":"large","op":"git-bar","p50_ms":282.43,"p95_ms":306.35,"procs":6,"proc_ms":281.93,"bytes":4981,"by_label":{"git for-each-ref":1,"git log":1,"git remote":1,"git rev-parse":1,"git status":1,"git worktree":1}}
+{"target":"local","repo":"large","op":"repository","p50_ms":249.58,"p95_ms":279.22,"procs":4,"proc_ms":218.64,"bytes":4517,"by_label":{"git for-each-ref":1,"git log":1,"git rev-parse":1,"git worktree":1}}
+{"target":"local","repo":"large","op":"open-file","p50_ms":0.20,"p95_ms":0.23,"procs":0,"proc_ms":0.00,"bytes":0,"by_label":{}}
+{"target":"local","repo":"large","op":"open-change","p50_ms":166.18,"p95_ms":174.49,"procs":4,"proc_ms":166.10,"bytes":726,"by_label":{"git diff":3,"git rev-parse":1}}
+{"target":"local","repo":"large","op":"open-untracked","p50_ms":109.36,"p95_ms":123.08,"procs":3,"proc_ms":105.50,"bytes":101,"by_label":{"git diff":2,"git ls-files":1}}
+{"target":"local","repo":"large","op":"diff-sides","p50_ms":37.37,"p95_ms":39.14,"procs":1,"proc_ms":39.75,"bytes":551,"by_label":{"git cat-file":1}}
+{"target":"local","repo":"large","op":"commit-files","p50_ms":81.80,"p95_ms":85.83,"procs":2,"proc_ms":79.49,"bytes":42,"by_label":{"git diff-tree":2}}
+{"target":"local","repo":"large","op":"commit-diff","p50_ms":43.33,"p95_ms":100.95,"procs":1,"proc_ms":103.85,"bytes":0,"by_label":{"git diff-tree":1}}
+{"target":"local","repo":"large","op":"open-big-change","p50_ms":279.11,"p95_ms":286.00,"procs":2,"proc_ms":288.09,"bytes":345503,"by_label":{"git diff":2}}
+{"target":"local","repo":"large","op":"parse-big-diff","p50_ms":54.75,"p95_ms":54.83,"procs":0,"proc_ms":0.00,"bytes":0,"by_label":{}}
+{"target":"local","repo":"large","op":"parse-big-diff-highlighted","p50_ms":481.98,"p95_ms":482.99,"procs":0,"proc_ms":0.00,"bytes":0,"by_label":{}}
+{"target":"ssh","repo":"small","op":"refresh","p50_ms":1730.73,"p95_ms":1935.97,"procs":13,"proc_ms":1629.11,"bytes":7025,"by_label":{"git for-each-ref":2,"git log":2,"git ls-files":1,"git remote":1,"git rev-parse":3,"git status":2,"git worktree":2}}
+{"target":"ssh","repo":"small","op":"file-list","p50_ms":411.80,"p95_ms":417.75,"procs":3,"proc_ms":391.96,"bytes":951,"by_label":{"git ls-files":1,"git rev-parse":1,"git status":1}}
+{"target":"ssh","repo":"small","op":"git-bar","p50_ms":701.76,"p95_ms":721.28,"procs":6,"proc_ms":720.65,"bytes":3270,"by_label":{"git for-each-ref":1,"git log":1,"git remote":1,"git rev-parse":1,"git status":1,"git worktree":1}}
+{"target":"ssh","repo":"small","op":"repository","p50_ms":468.88,"p95_ms":476.04,"procs":4,"proc_ms":493.57,"bytes":2804,"by_label":{"git for-each-ref":1,"git log":1,"git rev-parse":1,"git worktree":1}}
+{"target":"ssh","repo":"small","op":"open-file","p50_ms":120.84,"p95_ms":120.89,"procs":1,"proc_ms":120.71,"bytes":490,"by_label":{"sh":1}}
+{"target":"ssh","repo":"small","op":"open-change","p50_ms":471.73,"p95_ms":473.20,"procs":4,"proc_ms":471.54,"bytes":662,"by_label":{"git diff":3,"git rev-parse":1}}
+{"target":"ssh","repo":"small","op":"open-untracked","p50_ms":492.80,"p95_ms":504.68,"procs":4,"proc_ms":469.43,"bytes":127,"by_label":{"git diff":2,"git ls-files":1,"sh":1}}
+{"target":"ssh","repo":"small","op":"diff-sides","p50_ms":240.25,"p95_ms":249.67,"procs":2,"proc_ms":235.69,"bytes":944,"by_label":{"git cat-file":1,"sh":1}}
+{"target":"ssh","repo":"small","op":"commit-files","p50_ms":242.73,"p95_ms":244.49,"procs":2,"proc_ms":244.36,"bytes":42,"by_label":{"git diff-tree":2}}
+{"target":"ssh","repo":"small","op":"commit-diff","p50_ms":122.71,"p95_ms":124.55,"procs":1,"proc_ms":117.70,"bytes":0,"by_label":{"git diff-tree":1}}
+{"target":"ssh","repo":"small","op":"open-big-change","p50_ms":244.62,"p95_ms":246.33,"procs":2,"proc_ms":244.47,"bytes":345501,"by_label":{"git diff":2}}
+{"target":"ssh","repo":"large","op":"refresh","p50_ms":1774.62,"p95_ms":1793.95,"procs":13,"proc_ms":1775.91,"bytes":414617,"by_label":{"git for-each-ref":2,"git log":2,"git ls-files":1,"git remote":1,"git rev-parse":3,"git status":2,"git worktree":2}}
+{"target":"ssh","repo":"large","op":"file-list","p50_ms":402.61,"p95_ms":405.57,"procs":3,"proc_ms":459.80,"bytes":405141,"by_label":{"git ls-files":1,"git rev-parse":1,"git status":1}}
+{"target":"ssh","repo":"large","op":"git-bar","p50_ms":770.71,"p95_ms":897.64,"procs":6,"proc_ms":751.86,"bytes":4971,"by_label":{"git for-each-ref":1,"git log":1,"git remote":1,"git rev-parse":1,"git status":1,"git worktree":1}}
+{"target":"ssh","repo":"large","op":"repository","p50_ms":618.55,"p95_ms":634.44,"procs":4,"proc_ms":614.61,"bytes":4505,"by_label":{"git for-each-ref":1,"git log":1,"git rev-parse":1,"git worktree":1}}
+{"target":"ssh","repo":"large","op":"open-file","p50_ms":217.41,"p95_ms":224.40,"procs":1,"proc_ms":248.16,"bytes":587,"by_label":{"sh":1}}
+{"target":"ssh","repo":"large","op":"open-change","p50_ms":1162.10,"p95_ms":1255.64,"procs":2,"proc_ms":435.29,"bytes":225,"by_label":{"git diff":2}}
+{"target":"ssh","repo":"large","op":"open-untracked","p50_ms":1032.96,"p95_ms":1050.82,"procs":4,"proc_ms":1032.62,"bytes":127,"by_label":{"git diff":2,"git ls-files":1,"sh":1}}
+{"target":"ssh","repo":"large","op":"diff-sides","p50_ms":469.37,"p95_ms":531.08,"procs":2,"proc_ms":462.69,"bytes":1138,"by_label":{"git cat-file":1,"sh":1}}
+{"target":"ssh","repo":"large","op":"commit-files","p50_ms":350.91,"p95_ms":530.28,"procs":2,"proc_ms":623.40,"bytes":42,"by_label":{"git diff-tree":2}}
+{"target":"ssh","repo":"large","op":"commit-diff","p50_ms":283.54,"p95_ms":352.51,"procs":1,"proc_ms":352.43,"bytes":0,"by_label":{"git diff-tree":1}}
+{"target":"ssh","repo":"large","op":"open-big-change","p50_ms":507.56,"p95_ms":541.77,"procs":2,"proc_ms":456.69,"bytes":345503,"by_label":{"git diff":2}}

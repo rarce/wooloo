@@ -93,3 +93,43 @@ Measured with the `keys` workload on a 120×48 grid:
 | max | 25.0 ms | 4.8 ms |
 
 Herdr echoes a key in about 0.3 ms. Before the fix, each keystroke wrote `nil` to `HerdrStore.inputError`, a `@Published` property. SwiftUI then updated the whole window, holding the main thread for about 8 ms before the echo frame could be shown. The store now publishes `inputError` only when it changes. What remains is about 0.7 ms to send the input and about 1.3 ms (p50) from the echo frame to the draw, which is mostly waiting for AppKit's next display pass.
+
+# Workspace measurements
+
+The file explorer, Git bar, repository panel, diffs and documents get their data from `WorkspaceFiles`. Every git, SSH or shell command goes through `WorkspaceFiles.run`, which reports it to `WorkspaceProcessLog`. With `XHERDR_METRICS_FILE` set, each command becomes a `proc` event, labeled with its command (for example `git status`) and whether it ran over SSH. User-visible operations become `span` events, from the moment they start until their result is on screen:
+
+- `file-list`
+- `git-bar`
+- `repository`
+- `commit-files`
+- `open-file`, `open-change` and `open-commit`
+- `diff-patch` and `diff-highlighted`
+
+## Benchmarks: `scripts/workspace-bench.sh`
+
+This script runs `xherdrTests/WorkspaceFilesBenchmarks` in a Release build. Every operation the UI performs is timed and its processes counted. The operations run against two disposable repositories:
+
+- `small`: 40 files, 30 commits.
+- `large`: 20,000 files, 400 commits, and a 5,000-line file with a third of its lines changed.
+
+Both repositories are built once and reused. They live under `/private/tmp/xherdr-bench` locally, and under `/tmp/xherdr-bench` on an SSH target. The SSH target is the first enabled Herdr machine that answers; set it with `XHERDR_BENCH_SSH_TARGET`, or set that variable to `none` to skip SSH. Results go to `build/perf/`, and the script compares them with `files-baseline.jsonl`.
+
+## Baseline (2026-09-29, Mac16,5; SSH to an OrbStack VM with a 40 ms handshake)
+
+| operation | processes | local small | local large | SSH small | SSH large |
+|---|---|---|---|---|---|
+| refresh (file list + Git bar + repository panel) | 13 | 202 ms | 631 ms | 1731 ms | 1775 ms |
+| file-list | 3 | — | 302 ms | 412 ms | 403 ms |
+| git-bar | 6 | — | 282 ms | 702 ms | 771 ms |
+| repository | 4 | 77 ms | 250 ms | 469 ms | 619 ms |
+| open-file | 0 local, 1 SSH | — | 0.2 ms | 121 ms | 217 ms |
+| open-change (staged and unstaged) | 4 | — | 166 ms | 472 ms | 1162 ms |
+| diff-sides | 1–2 | — | 37 ms | 240 ms | 469 ms |
+| parse-big-diff, plain / highlighted (CPU) | 0 | | 55 / 482 ms | | |
+
+What the numbers show:
+
+- **Every process costs.** Locally, git runs through `/usr/bin/env git`, which resolves to the `/usr/bin/git` shim. The shim takes about 30 ms per call, against 12 ms for the git it forwards to. Over SSH, each command opens a new connection with no multiplexing, and costs about 120 ms even on a 40 ms VM; a real remote adds its round trips on top.
+- **A refresh runs 13 processes, and 4 of them are duplicates.** The Git bar and the repository panel each load `repository()`, and `git rev-parse` runs three times. Over SSH, a refresh takes about 1.8 s, whatever the repository's size.
+- **Syntax colors for a large diff take about 0.5 s of CPU.** This work runs off the main thread, after the plain patch is already on screen.
+- Opening a local file is immediate. The editor itself (CodeEditSourceEditor) is not measured here.

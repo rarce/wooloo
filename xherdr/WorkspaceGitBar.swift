@@ -308,6 +308,8 @@ struct WorkspaceGitBar: View {
 
     private func load() async {
         let location = location
+        let start = TerminalPipelineMetrics.now()
+        defer { TerminalPipelineMetrics.spanShown("git-bar", start: start, detail: location.isLocal ? "local" : "ssh") }
         let result = await Task.detached(priority: .utility) {
             Result { (try WorkspaceFiles.branchStatus(at: location), try? WorkspaceFiles.repository(at: location)) }
         }.value

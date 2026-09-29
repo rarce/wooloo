@@ -609,11 +609,12 @@ enum WorkspaceFiles {
                             limit: Int, timeout: TimeInterval = 15) throws -> Data {
         // No terminal is attached, so credential prompts must fail instead of hanging.
         let command = ["GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + args
+        let label = "git " + (args.first ?? "")
         if let machine = location.machine {
             let remote = (["env"] + command).map(quote).joined(separator: " ")
-            return try ssh(machine, remote, input: input, limit: limit, timeout: timeout)
+            return try ssh(machine, remote, input: input, limit: limit, timeout: timeout, label: label)
         }
-        return try run("/usr/bin/env", command, input: input, limit: limit, timeout: timeout)
+        return try run("/usr/bin/env", command, input: input, limit: limit, timeout: timeout, label: label)
     }
 
     private static func localFiles(root: String) throws -> [String] {
@@ -697,7 +698,8 @@ enum WorkspaceFiles {
     }
 
     private static func ssh(_ machine: HerdrMachineProfile, _ command: String,
-                            input: Data? = nil, limit: Int, timeout: TimeInterval = 15) throws -> Data {
+                            input: Data? = nil, limit: Int, timeout: TimeInterval = 15,
+                            label: String = "sh") throws -> Data {
         let target: String
         var port: String?
         if machine.target.hasPrefix("ssh://"), let url = URLComponents(string: machine.target),
@@ -713,11 +715,21 @@ enum WorkspaceFiles {
         var args = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
         if let port { args += ["-p", port] }
         args += [target, command]
-        return try run("/usr/bin/ssh", args, input: input, limit: limit, timeout: timeout)
+        return try run("/usr/bin/ssh", args, input: input, limit: limit, timeout: timeout, label: label, remote: true)
     }
 
+    /// Runs a process and returns its output. `label` names it in the process log, for
+    /// example `git status`, and `remote` marks commands sent over SSH.
     private static func run(_ executable: String, _ arguments: [String],
-                            input: Data? = nil, limit: Int, timeout: TimeInterval = 15) throws -> Data {
+                            input: Data? = nil, limit: Int, timeout: TimeInterval = 15,
+                            label: String? = nil, remote: Bool = false) throws -> Data {
+        let start = TerminalPipelineMetrics.now()
+        var outputBytes = 0
+        var succeeded = false
+        defer {
+            WorkspaceProcessLog.record(label: label ?? (executable as NSString).lastPathComponent, remote: remote,
+                                       start: start, bytes: outputBytes, succeeded: succeeded)
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -747,6 +759,8 @@ enum WorkspaceFiles {
         }
         process.waitUntilExit()
         timer.cancel()
+        outputBytes = data.count
+        succeeded = process.terminationStatus == 0
         guard data.count <= limit else { throw WorkspaceFileError.message("Output is too large") }
         guard process.terminationStatus == 0 else {
             let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -763,4 +777,46 @@ private struct RemoteSnapshotResponse: Decodable {
 
 private struct RemoteSnapshotResult: Decodable {
     let snapshot: HerdrSnapshot
+}
+
+/// Every process `WorkspaceFiles` runs: git, SSH and shell commands behind the file explorer,
+/// Git panels, diffs and documents. Each one goes to the metrics file as a `proc` event, and
+/// benchmarks can collect them to count the processes an operation starts.
+enum WorkspaceProcessLog {
+    struct Record {
+        let label: String
+        let remote: Bool
+        let nanos: UInt64
+        let bytes: Int
+        let succeeded: Bool
+    }
+
+    private static let lock = NSLock()
+    private static var collected: [Record]?
+
+    static func record(label: String, remote: Bool, start: UInt64, bytes: Int, succeeded: Bool) {
+        let nanos = TerminalPipelineMetrics.now() - start
+        TerminalPipelineMetrics.shared?.process(label: label, remote: remote, start: start, nanos: nanos,
+                                                bytes: bytes, succeeded: succeeded)
+        lock.lock()
+        collected?.append(Record(label: label, remote: remote, nanos: nanos, bytes: bytes, succeeded: succeeded))
+        lock.unlock()
+    }
+
+    /// Runs `body` and returns the processes started meanwhile, from any thread.
+    static func collect<T>(_ body: () throws -> T) rethrows -> (result: T, processes: [Record]) {
+        lock.lock()
+        collected = []
+        lock.unlock()
+        defer {
+            lock.lock()
+            collected = nil
+            lock.unlock()
+        }
+        let result = try body()
+        lock.lock()
+        let processes = collected ?? []
+        lock.unlock()
+        return (result, processes)
+    }
 }

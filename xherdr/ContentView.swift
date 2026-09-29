@@ -773,7 +773,11 @@ struct ContentView: View {
         guard let document = documents.first(where: { $0.id == id }) else { return }
         let (kind, path, location) = (document.kind, document.path, document.location)
         let (commit, originalPath) = (document.commit, document.originalPath)
+        let start = TerminalPipelineMetrics.now()
         Task {
+            defer {
+                TerminalPipelineMetrics.spanShown("open-\(kind)", start: start, detail: location.isLocal ? "local" : "ssh")
+            }
             let result = await Task.detached(priority: .userInitiated) {
                 Result { () throws -> WorkspaceFileContents in
                     if kind == .commit, let commit {
