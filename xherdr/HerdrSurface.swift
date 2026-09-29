@@ -203,6 +203,62 @@ private enum SurfaceWriter {
     static func control(kind: String, data: String) -> Data {
         number(20) + string(kind) + string(data)
     }
+
+    static func paneInput(paneID: String, event: HerdrInputEvent) -> Data? {
+        var payload = number(13) + string(paneID) + number(1)
+        switch event {
+        case .text(let value):
+            payload += number(1) + string(value)
+        case .paste(let value):
+            payload += number(3) + string(value)
+        case .key(let name):
+            let parts = name.lowercased().split(separator: "+").map(String.init)
+            guard let key = parts.last else { return nil }
+            let code: UInt64
+            var character: String?
+            switch key {
+            case "backspace": code = 0
+            case "enter": code = 1
+            case "left": code = 2
+            case "right": code = 3
+            case "up": code = 4
+            case "down": code = 5
+            case "home": code = 6
+            case "end": code = 7
+            case "pageup": code = 8
+            case "pagedown": code = 9
+            case "tab": code = parts.contains("shift") ? 11 : 10
+            case "delete": code = 12
+            case "esc": code = 14
+            default:
+                guard key.unicodeScalars.count == 1 else { return nil }
+                code = 15
+                character = key
+            }
+            var modifiers: UInt8 = 0
+            if parts.contains("shift") { modifiers |= 1 }
+            if parts.contains("ctrl") { modifiers |= 2 }
+            if parts.contains("alt") { modifiers |= 4 }
+            payload += number(0) + number(code)
+            // Bincode 2 encodes Rust char as UTF-8 without a length prefix.
+            if let character { payload += Data(character.utf8) }
+            payload.append(modifiers)
+            payload += number(0) // Press
+            payload += number(1) // repeat_count
+            payload.append(0) // shifted_codepoint: None
+            payload.append(0) // generated_text: None
+            payload.append(1) // tracks_release
+            payload.append(0) // physical_key_id: None
+            payload.append(0) // windows_record: None
+        }
+        return payload
+    }
+}
+
+enum HerdrInputEvent {
+    case text(String)
+    case paste(String)
+    case key(String)
 }
 
 final class HerdrSurfaceStream {
@@ -226,7 +282,7 @@ final class HerdrSurfaceStream {
         payload += SurfaceWriter.number(UInt64(cols))
         payload += SurfaceWriter.number(UInt64(rows))
         payload.append(0) // pixel mouse
-        send(payload)
+        _ = send(payload)
     }
 
     func focus(tabID: String) {
@@ -249,30 +305,49 @@ final class HerdrSurfaceStream {
               let json = try? JSONSerialization.data(withJSONObject: [
                 "id": UUID().uuidString, "method": method, "params": params
               ]), let request = String(data: json, encoding: .utf8) else { return }
-        send(SurfaceWriter.number(15) + SurfaceWriter.string(boot) + SurfaceWriter.string(request))
+        _ = send(SurfaceWriter.number(15) + SurfaceWriter.string(boot) + SurfaceWriter.string(request))
     }
 
-    private func send(_ payload: Data) {
+    var isReady: Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard fd >= 0, !cancelled else { return }
+        return fd >= 0 && !cancelled && bootID != nil
+    }
+
+    func sendInput(_ event: HerdrInputEvent, to paneID: String) -> Bool {
+        guard isReady, let payload = SurfaceWriter.paneInput(paneID: paneID, event: event) else { return false }
+        return send(payload)
+    }
+
+    @discardableResult
+    private func send(_ payload: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard fd >= 0, !cancelled else { return false }
         var frame = Data()
         let length = UInt32(payload.count)
         for shift in stride(from: 0, to: 32, by: 8) { frame.append(UInt8((length >> shift) & 0xff)) }
         frame += payload
-        frame.withUnsafeBytes { bytes in
-            guard let base = bytes.baseAddress else { return }
+        let completed = frame.withUnsafeBytes { bytes -> Bool in
+            guard let base = bytes.baseAddress else { return false }
             var sent = 0
             while sent < bytes.count {
                 let count = Darwin.write(fd, base.advanced(by: sent), bytes.count - sent)
-                if count <= 0 { break }
+                if count < 0 && errno == EINTR { continue }
+                if count <= 0 { return false }
                 sent += count
             }
+            return true
         }
+        if !completed {
+            cancelled = true
+            _ = shutdown(fd, SHUT_RDWR)
+        }
+        return completed
     }
 
     func run(path: String, cols: Int, rows: Int, cellWidth: Int, cellHeight: Int,
-             onSurface: (HerdrSurface) -> Void) throws {
+             onReady: () -> Void, onSurface: (HerdrSurface) -> Void) throws {
         let connected = try HerdrSocket.open(path: path)
         lock.lock()
         fd = connected
@@ -299,7 +374,9 @@ final class HerdrSurfaceStream {
         ]
         let helloData = try JSONSerialization.data(withJSONObject: hello)
         guard let helloString = String(data: helloData, encoding: .utf8) else { throw SurfaceProtocolError.invalidFrame }
-        send(SurfaceWriter.control(kind: "endpoint.hello.v1", data: helloString))
+        guard send(SurfaceWriter.control(kind: "endpoint.hello.v1", data: helloString)) else {
+            throw SurfaceProtocolError.unexpectedEnd
+        }
         var currentSurface: HerdrSurface?
         var welcomed = false
         while !isCancelled {
@@ -314,32 +391,32 @@ final class HerdrSurfaceStream {
                     guard let json = data.data(using: .utf8),
                           let welcome = try JSONSerialization.jsonObject(with: json) as? [String: Any],
                           (welcome["generation"] as? Int) == 1,
-                          welcome["error"] is NSNull || welcome["error"] == nil else {
+                          (welcome["error"] is NSNull || welcome["error"] == nil),
+                          (welcome["snapshot_codec"] as? String) == "shell.snapshot.v1",
+                          (welcome["surface_codec"] as? String) == "shell.surface.v1",
+                          (welcome["input_codec"] as? String) == "shell.input.semantic.v1",
+                          (welcome["blob_codec"] as? String) == "shell.blob.v1" else {
                         throw SurfaceProtocolError.incompatible("Herdr rejected surface endpoint")
                     }
                     welcomed = true
-                } else if kind == "shell.snapshot.v1",
+                } else if welcomed, kind == "shell.snapshot.v1",
                           let json = data.data(using: .utf8),
                           let snapshot = try JSONSerialization.jsonObject(with: json) as? [String: Any],
                           let boot = snapshot["boot_id"] as? String {
                     lock.lock()
                     bootID = boot
                     lock.unlock()
+                    onReady()
                 }
             case 13 where welcomed:
                 let surface = try reader.surface()
                 currentSurface = surface
                 onSurface(surface)
             case 19 where welcomed:
-                if var surface = currentSurface {
-                    do {
-                        try reader.applyPatch(to: &surface)
-                        currentSurface = surface
-                        onSurface(surface)
-                    } catch {
-                        currentSurface = nil // wait for the next complete frame
-                    }
-                }
+                guard var surface = currentSurface else { throw SurfaceProtocolError.invalidFrame }
+                try reader.applyPatch(to: &surface)
+                currentSurface = surface
+                onSurface(surface)
             default: break
             }
         }

@@ -368,7 +368,7 @@ final class HerdrStore: ObservableObject {
     private var eventStream: HerdrEventStream?
     private var surfaceStream: HerdrSurfaceStream?
     private var generation = 0
-    private var pendingInput: [(paneID: String, text: String?, keys: [String])] = []
+    private var pendingInput: [(paneID: String, event: HerdrInputEvent)] = []
     private var inputTask: Task<Void, Never>?
     private var surfaceCols = 80
     private var surfaceRows = 24
@@ -470,25 +470,29 @@ final class HerdrStore: ObservableObject {
             }
         }
         let surfacePath = clientSocketPath
-        let cols = surfaceCols
-        let rows = surfaceRows
-        let width = cellWidth
-        let height = cellHeight
         surfaceTask = Task.detached(priority: .utility) { [weak self] in
             guard let store = self else { return }
             while !Task.isCancelled {
                 let stream = HerdrSurfaceStream()
-                let stillCurrent = await MainActor.run { () -> Bool in
-                    guard store.generation == currentGeneration else { return false }
+                let size = await MainActor.run { () -> (Int, Int, Int, Int)? in
+                    guard store.generation == currentGeneration else { return nil }
                     store.surfaceStream = stream
-                    return true
+                    store.surface = nil
+                    return (store.surfaceCols, store.surfaceRows, store.cellWidth, store.cellHeight)
                 }
-                if !stillCurrent || Task.isCancelled { stream.cancel(); break }
+                guard let size, !Task.isCancelled else { stream.cancel(); break }
                 do {
-                    try stream.run(path: surfacePath, cols: cols, rows: rows,
-                                   cellWidth: width, cellHeight: height) { newSurface in
+                    try stream.run(path: surfacePath, cols: size.0, rows: size.1,
+                                   cellWidth: size.2, cellHeight: size.3) {
                         Task { @MainActor in
-                            guard store.generation == currentGeneration else { return }
+                            guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
+                            if let workspaceID = store.selectedWorkspaceID { stream.focus(workspaceID: workspaceID) }
+                            if let tabID = store.selectedTabID { stream.focus(tabID: tabID) }
+                            if let paneID = store.selectedPaneID { stream.focus(paneID: paneID) }
+                        }
+                    } onSurface: { newSurface in
+                        Task { @MainActor in
+                            guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
                             store.surface = newSurface
                             store.surfaceError = nil
                         }
@@ -557,24 +561,47 @@ final class HerdrStore: ObservableObject {
 
     func sendText(_ text: String, to paneID: String) {
         guard !text.isEmpty else { return }
-        enqueueInput(paneID: paneID, text: text)
+        enqueueInput(paneID: paneID, event: .text(text))
+    }
+
+    func sendPaste(_ text: String, to paneID: String) {
+        guard !text.isEmpty else { return }
+        enqueueInput(paneID: paneID, event: .paste(text))
     }
 
     func sendKey(_ key: String, to paneID: String) {
-        enqueueInput(paneID: paneID, keys: [key])
+        enqueueInput(paneID: paneID, event: .key(key))
     }
 
-    private func enqueueInput(paneID: String, text: String? = nil, keys: [String] = []) {
+    private func enqueueInput(paneID: String, event: HerdrInputEvent) {
         guard isConnected else { return }
-        pendingInput.append((paneID, text, keys))
+        pendingInput.append((paneID, event))
         guard inputTask == nil else { return }
         let path = socketPath
         let currentGeneration = generation
         inputTask = Task {
             while !pendingInput.isEmpty && !Task.isCancelled {
                 let item = pendingInput.removeFirst()
+                if let stream = surfaceStream, stream.isReady {
+                    if stream.sendInput(item.event, to: item.paneID) {
+                        inputError = nil
+                    } else {
+                        inputError = "Herdr endpoint input failed; reconnecting"
+                    }
+                    continue
+                }
+                let text: String?
+                let keys: [String]
+                switch item.event {
+                case .text(let value), .paste(let value):
+                    text = value
+                    keys = []
+                case .key(let value):
+                    text = nil
+                    keys = [value]
+                }
                 let result = await Task.detached(priority: .userInitiated) {
-                    Result { try HerdrSocket.sendInput(path: path, paneID: item.paneID, text: item.text, keys: item.keys) }
+                    Result { try HerdrSocket.sendInput(path: path, paneID: item.paneID, text: text, keys: keys) }
                 }.value
                 guard generation == currentGeneration else { break }
                 if case .failure(let error) = result {

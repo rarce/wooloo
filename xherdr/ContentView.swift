@@ -215,6 +215,7 @@ struct ContentView: View {
                             surface: surface,
                             selectPane: { id in herdr.select(paneID: id) },
                             sendText: { text, id in herdr.sendText(text, to: id) },
+                            sendPaste: { text, id in herdr.sendPaste(text, to: id) },
                             sendKey: { key, id in herdr.sendKey(key, to: id) }
                         )
                         .onAppear { resizeSurface(to: geometry.size) }
@@ -274,6 +275,7 @@ struct ContentView: View {
                 text: herdr.paneText[pane.paneID] ?? "Reading pane…",
                 paneID: pane.paneID,
                 sendText: { text, id in herdr.sendText(text, to: id) },
+                sendPaste: { text, id in herdr.sendPaste(text, to: id) },
                 sendKey: { key, id in herdr.sendKey(key, to: id) }
             )
             .id(pane.paneID)

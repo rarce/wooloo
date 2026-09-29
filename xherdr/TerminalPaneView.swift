@@ -14,6 +14,7 @@ struct TerminalPaneView: NSViewRepresentable {
     var surface: HerdrSurface? = nil
     var selectPane: ((String) -> Void)? = nil
     let sendText: (String, String) -> Void
+    let sendPaste: (String, String) -> Void
     let sendKey: (String, String) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -28,6 +29,7 @@ struct TerminalPaneView: NSViewRepresentable {
         let view = HerdrTerminalTextView(frame: .zero)
         view.paneID = paneID
         view.sendText = sendText
+        view.sendPaste = sendPaste
         view.sendKey = sendKey
         view.selectPane = selectPane
         view.isRichText = false
@@ -51,6 +53,7 @@ struct TerminalPaneView: NSViewRepresentable {
         guard let view = scrollView.documentView as? HerdrTerminalTextView else { return }
         view.paneID = paneID
         view.sendText = sendText
+        view.sendPaste = sendPaste
         view.sendKey = sendKey
         view.selectPane = selectPane
         view.surface = surface
@@ -140,6 +143,7 @@ private final class HerdrTerminalTextView: NSTextView {
     var selectPane: ((String) -> Void)?
     var paneID = ""
     var sendText: ((String, String) -> Void)?
+    var sendPaste: ((String, String) -> Void)?
     var sendKey: ((String, String) -> Void)?
 
     override func mouseDown(with event: NSEvent) {
@@ -196,7 +200,7 @@ private final class HerdrTerminalTextView: NSTextView {
 
     override func paste(_ sender: Any?) {
         if let value = NSPasteboard.general.string(forType: .string), !value.isEmpty {
-            sendText?(value, paneID)
+            sendPaste?(value, paneID)
         }
     }
 }
