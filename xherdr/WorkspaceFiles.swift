@@ -1,0 +1,339 @@
+import Darwin
+import CryptoKit
+import Foundation
+
+struct HerdrMachineProfile: Decodable, Hashable, Identifiable {
+    let id: String
+    let label: String
+    let target: String
+    let session: String
+    let enabled: Bool
+}
+
+struct WorkspaceFileLocation: Hashable {
+    let machine: HerdrMachineProfile?
+    let session: String
+    let workspaceID: String
+    let workspaceLabel: String
+    let root: String
+
+    var identity: String { "\(machine?.id ?? "local")|\(session)|\(workspaceID)|\(root)" }
+    var machineLabel: String { machine?.label ?? "Local" }
+}
+
+struct WorkspaceFileChange: Identifiable {
+    let path: String
+    let indexStatus: Character
+    let worktreeStatus: Character
+    let originalPath: String?
+
+    var id: String { path }
+    var statusLabel: String {
+        if indexStatus == "?" { return "U" }
+        if indexStatus != " " && worktreeStatus != " " { return "M" }
+        if indexStatus != " " { return "S" }
+        return "M"
+    }
+}
+
+struct WorkspaceFileListing {
+    let files: [String]
+    let changes: [WorkspaceFileChange]
+    let hasGit: Bool
+}
+
+struct WorkspaceFileContents {
+    let text: String
+    let version: String
+}
+
+enum WorkspaceFileError: LocalizedError {
+    case message(String)
+
+    var errorDescription: String? {
+        if case .message(let value) = self { return value }
+        return nil
+    }
+}
+
+enum WorkspaceFiles {
+    static let maximumFileBytes = 1_000_000
+    static let maximumDiffBytes = 2_000_000
+    static let maximumEntries = 2_000
+
+    static func machines() throws -> [HerdrMachineProfile] {
+        let candidates = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/herdr").path,
+                          "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
+        guard let executable = candidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
+            throw WorkspaceFileError.message("Herdr executable was not found")
+        }
+        let data = try run(executable, ["machine", "list", "--json"], limit: 200_000)
+        return try JSONDecoder().decode([HerdrMachineProfile].self, from: data).filter(\.enabled)
+    }
+
+    static func remoteSnapshot(_ machine: HerdrMachineProfile) throws -> HerdrSnapshot {
+        let candidates = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/herdr").path,
+                          "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
+        guard let executable = candidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
+            throw WorkspaceFileError.message("Herdr executable was not found")
+        }
+        let data = try run(executable, ["--machine", machine.id, "api", "snapshot"], limit: 8_000_000)
+        return try JSONDecoder().decode(RemoteSnapshotResponse.self, from: data).result.snapshot
+    }
+
+    static func location(snapshot: HerdrSnapshot, workspaceID: String,
+                         session: String, machine: HerdrMachineProfile?) -> WorkspaceFileLocation? {
+        guard let workspace = snapshot.workspaces.first(where: { $0.workspaceID == workspaceID }) else { return nil }
+        let root = workspace.worktree?.checkoutPath
+            ?? snapshot.panes.first(where: { $0.workspaceID == workspaceID && $0.paneID == snapshot.focusedPaneID })?.cwd
+            ?? snapshot.panes.first(where: { $0.workspaceID == workspaceID })?.cwd
+        guard let root, root.hasPrefix("/") else { return nil }
+        return WorkspaceFileLocation(machine: machine, session: session,
+                                     workspaceID: workspaceID, workspaceLabel: workspace.label, root: root)
+    }
+
+    static func listing(at location: WorkspaceFileLocation) throws -> WorkspaceFileListing {
+        let hasGit = (try? git(location, ["rev-parse", "--is-inside-work-tree"], limit: 100)) != nil
+        let files: [String]
+        let changes: [WorkspaceFileChange]
+        if hasGit {
+            let fileData = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."], limit: 4_000_000)
+            files = Array(Set(nulStrings(fileData))).sorted().prefix(maximumEntries).map { $0 }
+            let status = try git(location, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
+            changes = parseStatus(status)
+        } else if location.machine == nil {
+            files = try localFiles(root: location.root)
+            changes = []
+        } else {
+            let script = "cd \(quote(location.root)) && find . -type f -not -path './.git/*' -print0"
+            files = nulStrings(try ssh(location.machine!, script, limit: 4_000_000))
+                .map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }
+                .sorted().prefix(maximumEntries).map { $0 }
+            changes = []
+        }
+        return WorkspaceFileListing(files: files, changes: changes, hasGit: hasGit)
+    }
+
+    static func read(_ path: String, at location: WorkspaceFileLocation) throws -> WorkspaceFileContents {
+        let data: Data
+        if let machine = location.machine {
+            let script = try remoteFilePrelude(path, at: location)
+                + "size=$(wc -c < \"$file\"); [ \"$size\" -le \(maximumFileBytes) ] || { echo 'File is too large' >&2; exit 75; }; cat \"$file\""
+            data = try ssh(machine, script, limit: maximumFileBytes)
+        } else {
+            let url = try localFileURL(path, root: location.root)
+            let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+            guard size <= maximumFileBytes else { throw WorkspaceFileError.message("File is too large") }
+            data = try Data(contentsOf: url)
+        }
+        guard data.count <= maximumFileBytes else { throw WorkspaceFileError.message("File is too large") }
+        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
+            throw WorkspaceFileError.message("Only UTF-8 text files can be edited")
+        }
+        return WorkspaceFileContents(text: text, version: gitBlobHash(data))
+    }
+
+    static func save(_ text: String, path: String, expectedVersion: String,
+                     at location: WorkspaceFileLocation) throws -> String {
+        let data = Data(text.utf8)
+        guard data.count <= maximumFileBytes else { throw WorkspaceFileError.message("File is too large") }
+        if let machine = location.machine {
+            guard expectedVersion.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil else {
+                throw WorkspaceFileError.message("Invalid file version")
+            }
+            let script = try remoteFilePrelude(path, at: location)
+                + "current=$(cd / && GIT_DEFAULT_HASH=sha1 git hash-object --no-filters \"$file\") || exit 76; "
+                + "[ \"$current\" = \(quote(expectedVersion)) ] || { echo 'File changed on disk; reload before saving' >&2; exit 77; }; "
+                + "temp=$(mktemp \"$file.xherdr.XXXXXXXX\") || exit 78; "
+                + "trap 'rm -f \"$temp\"' EXIT HUP INT TERM; "
+                + "cp -p \"$file\" \"$temp\" && cat > \"$temp\" && mv -f \"$temp\" \"$file\""
+            _ = try ssh(machine, script, input: data, limit: 1_000)
+        } else {
+            let url = try localFileURL(path, root: location.root)
+            let original = try Data(contentsOf: url)
+            guard gitBlobHash(original) == expectedVersion else {
+                throw WorkspaceFileError.message("File changed on disk; reload before saving")
+            }
+            let permissions = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue ?? 0o644
+            let temp = url.deletingLastPathComponent().appendingPathComponent(".xherdr-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: temp) }
+            try data.write(to: temp)
+            try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: temp.path)
+            guard rename(temp.path, url.path) == 0 else {
+                throw WorkspaceFileError.message("Could not replace file: \(String(cString: strerror(errno)))")
+            }
+        }
+        return gitBlobHash(data)
+    }
+
+    static func diff(_ path: String, at location: WorkspaceFileLocation) throws -> String {
+        try validateRelativePath(path)
+        let staged = try git(location, ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--", path], limit: maximumDiffBytes)
+        let unstaged = try git(location, ["diff", "--no-ext-diff", "--no-textconv", "--", path], limit: maximumDiffBytes)
+        let parts = [staged, unstaged].compactMap { String(data: $0, encoding: .utf8) }.filter { !$0.isEmpty }
+        if !parts.isEmpty { return parts.joined(separator: "\n") }
+        if (try? git(location, ["ls-files", "--error-unmatch", "--", path], limit: 1_000)) == nil,
+           let file = try? read(path, at: location) {
+            let lines = file.text.split(separator: "\n", omittingEmptySubsequences: false)
+            return "--- /dev/null\n+++ b/\(path)\n@@ -0,0 +1,\(lines.count) @@\n"
+                + lines.map { "+" + $0 }.joined(separator: "\n")
+        }
+        return "No text diff available. Open the file to view its contents."
+    }
+
+    private static func git(_ location: WorkspaceFileLocation, _ args: [String], limit: Int) throws -> Data {
+        if let machine = location.machine {
+            let command = (["git", "-C", location.root] + args).map(quote).joined(separator: " ")
+            return try ssh(machine, command, limit: limit)
+        }
+        return try run("/usr/bin/env", ["git", "-C", location.root] + args, limit: limit)
+    }
+
+    private static func localFiles(root: String) throws -> [String] {
+        let rootURL = URL(fileURLWithPath: root).resolvingSymlinksInPath()
+        guard let enumerator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isRegularFileKey],
+                                                               options: [.skipsPackageDescendants]) else { return [] }
+        var files: [String] = []
+        for case let url as URL in enumerator {
+            if url.lastPathComponent == ".git" { enumerator.skipDescendants(); continue }
+            if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                let resolved = url.resolvingSymlinksInPath().path
+                guard resolved.hasPrefix(rootURL.path + "/") else { continue }
+                let path = String(resolved.dropFirst(rootURL.path.count + 1))
+                files.append(path)
+                if files.count >= maximumEntries { break }
+            }
+        }
+        return files.sorted()
+    }
+
+    private static func localFileURL(_ path: String, root: String) throws -> URL {
+        try validateRelativePath(path)
+        let base = URL(fileURLWithPath: root).resolvingSymlinksInPath()
+        let url = base.appendingPathComponent(path).resolvingSymlinksInPath()
+        guard url.path.hasPrefix(base.path + "/"),
+              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            throw WorkspaceFileError.message("File is outside the selected Space or is not a regular file")
+        }
+        return url
+    }
+
+    private static func remoteFilePrelude(_ path: String, at location: WorkspaceFileLocation) throws -> String {
+        try validateRelativePath(path)
+        return "root=$(realpath \(quote(location.root))) || exit 70; "
+            + "file=$(realpath \(quote(location.root + "/" + path))) || exit 71; "
+            + "case \"$file\" in \"$root\"/*) ;; *) echo 'File is outside the selected Space' >&2; exit 72;; esac; "
+            + "[ -f \"$file\" ] || exit 73; "
+    }
+
+    private static func validateRelativePath(_ path: String) throws {
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !path.isEmpty, !path.hasPrefix("/"), !components.contains(".."), !components.contains("."),
+              !components.contains("") else {
+            throw WorkspaceFileError.message("Invalid path outside the selected Space")
+        }
+    }
+
+    private static func parseStatus(_ data: Data) -> [WorkspaceFileChange] {
+        let records = nulStrings(data)
+        var changes: [WorkspaceFileChange] = []
+        var index = 0
+        while index < records.count {
+            let record = records[index]
+            index += 1
+            guard record.count >= 4 else { continue }
+            let status = Array(record.prefix(2))
+            let path = String(record.dropFirst(3))
+            var original: String?
+            if status.contains("R") || status.contains("C") {
+                if index < records.count { original = records[index]; index += 1 }
+            }
+            changes.append(WorkspaceFileChange(path: path, indexStatus: status[0],
+                                               worktreeStatus: status[1], originalPath: original))
+            if changes.count >= maximumEntries { break }
+        }
+        return changes.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    private static func nulStrings(_ data: Data) -> [String] {
+        data.split(separator: 0).compactMap { String(data: Data($0), encoding: .utf8) }
+    }
+
+    private static func gitBlobHash(_ data: Data) -> String {
+        var blob = Data("blob \(data.count)\0".utf8)
+        blob.append(data)
+        return Insecure.SHA1.hash(data: blob).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func quote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func ssh(_ machine: HerdrMachineProfile, _ command: String,
+                            input: Data? = nil, limit: Int) throws -> Data {
+        let target: String
+        var port: String?
+        if machine.target.hasPrefix("ssh://"), let url = URLComponents(string: machine.target),
+           let host = url.host {
+            target = (url.user.map { "\($0)@" } ?? "") + host
+            port = url.port.map(String.init)
+        } else {
+            target = machine.target
+        }
+        guard !target.isEmpty, !target.hasPrefix("-") else {
+            throw WorkspaceFileError.message("Invalid SSH target")
+        }
+        var args = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+        if let port { args += ["-p", port] }
+        args += [target, command]
+        return try run("/usr/bin/ssh", args, input: input, limit: limit)
+    }
+
+    private static func run(_ executable: String, _ arguments: [String],
+                            input: Data? = nil, limit: Int) throws -> Data {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        let source = input.map { _ in Pipe() }
+        if let source { process.standardInput = source }
+        try process.run()
+        let timer = DispatchSource.makeTimerSource()
+        timer.schedule(deadline: .now() + 15)
+        timer.setEventHandler { if process.isRunning { process.terminate() } }
+        timer.resume()
+        var inputError: Error?
+        if let input, let source {
+            do { try source.fileHandleForWriting.write(contentsOf: input) }
+            catch { inputError = error }
+            try? source.fileHandleForWriting.close()
+        }
+        var data = Data()
+        while let chunk = try output.fileHandleForReading.read(upToCount: 65_536), !chunk.isEmpty {
+            data.append(chunk)
+            if data.count > limit {
+                if process.isRunning { process.terminate() }
+                break
+            }
+        }
+        process.waitUntilExit()
+        timer.cancel()
+        guard data.count <= limit else { throw WorkspaceFileError.message("Output is too large") }
+        guard process.terminationStatus == 0 else {
+            let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw WorkspaceFileError.message(message.isEmpty ? "Command failed" : message)
+        }
+        if let inputError { throw inputError }
+        return data
+    }
+}
+
+private struct RemoteSnapshotResponse: Decodable {
+    let result: RemoteSnapshotResult
+}
+
+private struct RemoteSnapshotResult: Decodable {
+    let snapshot: HerdrSnapshot
+}

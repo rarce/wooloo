@@ -15,6 +15,9 @@
 		A10000000000000000000020 /* HerdrConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* HerdrConfig.swift */; };
 		A10000000000000000000022 /* HerdrSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* HerdrSettingsView.swift */; };
 		A10000000000000000000024 /* HerdrShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000025 /* HerdrShortcuts.swift */; };
+		A10000000000000000000026 /* WorkspaceFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* WorkspaceFiles.swift */; };
+		A10000000000000000000028 /* WorkspaceBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000029 /* WorkspaceBrowserView.swift */; };
+		A10000000000000000000030 /* WorkspaceDocumentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000031 /* WorkspaceDocumentView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -26,6 +29,9 @@
 		A10000000000000000000021 /* HerdrConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConfig.swift; sourceTree = "<group>"; };
 		A10000000000000000000023 /* HerdrSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsView.swift; sourceTree = "<group>"; };
 		A10000000000000000000025 /* HerdrShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrShortcuts.swift; sourceTree = "<group>"; };
+		A10000000000000000000027 /* WorkspaceFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceFiles.swift; sourceTree = "<group>"; };
+		A10000000000000000000029 /* WorkspaceBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceBrowserView.swift; sourceTree = "<group>"; };
+		A10000000000000000000031 /* WorkspaceDocumentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDocumentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000005 /* xherdr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xherdr.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -49,6 +55,9 @@
 				A10000000000000000000021 /* HerdrConfig.swift */,
 				A10000000000000000000023 /* HerdrSettingsView.swift */,
 				A10000000000000000000025 /* HerdrShortcuts.swift */,
+				A10000000000000000000027 /* WorkspaceFiles.swift */,
+				A10000000000000000000029 /* WorkspaceBrowserView.swift */,
+				A10000000000000000000031 /* WorkspaceDocumentView.swift */,
 			);
 			path = xherdr;
 			sourceTree = "<group>";
@@ -137,6 +146,9 @@
 				A10000000000000000000020 /* HerdrConfig.swift in Sources */,
 				A10000000000000000000022 /* HerdrSettingsView.swift in Sources */,
 				A10000000000000000000024 /* HerdrShortcuts.swift in Sources */,
+				A10000000000000000000026 /* WorkspaceFiles.swift in Sources */,
+				A10000000000000000000028 /* WorkspaceBrowserView.swift in Sources */,
+				A10000000000000000000030 /* WorkspaceDocumentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

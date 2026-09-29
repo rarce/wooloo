@@ -24,14 +24,23 @@ struct HerdrWorkspace: Decodable, Identifiable {
     let label: String
     let agentStatus: String?
     let activeTabID: String?
+    let worktree: HerdrWorktree?
 
     var id: String { workspaceID }
 
     enum CodingKeys: String, CodingKey {
         case workspaceID = "workspace_id"
-        case label
+        case label, worktree
         case agentStatus = "agent_status"
         case activeTabID = "active_tab_id"
+    }
+}
+
+struct HerdrWorktree: Decodable {
+    let checkoutPath: String
+
+    enum CodingKeys: String, CodingKey {
+        case checkoutPath = "checkout_path"
     }
 }
 

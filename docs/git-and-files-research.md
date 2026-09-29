@@ -1,5 +1,11 @@
 # Git and file editing research
 
+## Implementation update
+
+The first version now includes a right Files / Changes sidebar, document and diff tabs beside terminal tabs, a native UTF-8 editor, and a colored unified-diff viewer. Local Spaces use filesystem and Git processes. Saved Herdr SSH profiles are discoverable in the sidebar; selecting one obtains its remote Herdr snapshot and runs bounded, non-interactive SSH commands against the same target for file and Git access. Files are keyed by machine, session, Space and root. There are no saved SSH profiles on this development machine, so the remote path is implemented but has not been tested against a live remote host.
+
+Library review: [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor) is an MIT SwiftUI editor package, but its README calls it a work in progress and its manifest brings several packages and language parser binaries. [CodeEditTextView](https://github.com/CodeEditApp/CodeEditTextView) is smaller and MIT, but lacks syntax highlighting and still has dependencies. [lite-edit](https://github.com/arietan/lite-edit) is a maintained MIT application built with AppKit `NSTextView`, not an embeddable library. The current UI uses SwiftUI's native `TextEditor` (backed by AppKit text editing) and a small read-only diff view; these meet the simple-editing scope without new dependencies.
+
 ## Current boundary
 
 xherdr connects one named **local** Herdr session through Unix sockets. It has no machine identity or remote workspace selector. Herdr's JSON `session.snapshot` supplies workspace, tab and pane IDs, plus `workspace.worktree.checkout_path` when a Space is a worktree and `pane.cwd` for ordinary panes. It does not expose Git file status, diffs, directory listings, file contents or file writes. `pane.read` returns terminal screen content, not a file. Herdr's `--machine` CLI forwards API commands over its saved SSH bridge, which likewise has no file API.

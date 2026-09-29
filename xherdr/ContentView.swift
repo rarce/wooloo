@@ -3,12 +3,17 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var herdr = HerdrStore()
     @State private var showsSidebar = true
+    @State private var showsFilesSidebar = true
     @State private var showsSessionPicker = false
     @State private var showsSettings = false
     @State private var settingsShowShortcuts = false
     @State private var shortcutMap = HerdrShortcutMap.load()
     @State private var shortcutPrefixActive = false
     @State private var requestedSessionName = "xherdr-ui-test"
+    @State private var documents: [WorkspaceDocument] = []
+    @State private var activeDocumentID: String?
+    @State private var pendingCloseDocumentID: String?
+    @State private var fileRefreshVersion = 0
 
     private let sidebarBackground = Color(red: 0.105, green: 0.115, blue: 0.13)
     private let barBackground = Color(red: 0.13, green: 0.14, blue: 0.155)
@@ -32,8 +37,18 @@ struct ContentView: View {
                 Divider()
             }
             mainArea
+            if showsFilesSidebar {
+                Divider()
+                WorkspaceBrowserView(localSnapshot: herdr.snapshot,
+                                     localWorkspaceID: herdr.selectedWorkspaceID,
+                                     localSession: herdr.sessionName,
+                                     refreshVersion: fileRefreshVersion,
+                                     onOpenFile: { location, path in openDocument(.file, path: path, at: location) },
+                                     onOpenDiff: { location, path in openDocument(.change, path: path, at: location) })
+                    .frame(width: 244)
+            }
         }
-        .frame(minWidth: 640, minHeight: 380)
+        .frame(minWidth: 850, minHeight: 380)
         .preferredColorScheme(.dark)
         .task { herdr.start() }
         .onDisappear { herdr.stop() }
@@ -50,6 +65,15 @@ struct ContentView: View {
             Button("OK", role: .cancel) { herdr.clearActionError() }
         } message: {
             Text(herdr.actionError ?? "")
+        }
+        .confirmationDialog("Discard unsaved changes?", isPresented: Binding(
+            get: { pendingCloseDocumentID != nil },
+            set: { if !$0 { pendingCloseDocumentID = nil } }
+        )) {
+            Button("Discard and close", role: .destructive) {
+                if let id = pendingCloseDocumentID { closeDocument(id, force: true) }
+                pendingCloseDocumentID = nil
+            }
         }
     }
 
@@ -74,7 +98,10 @@ struct ContentView: View {
                         HStack(spacing: 0) {
                             sectionTitle("SPACES")
                             Spacer()
-                            Button { herdr.createWorkspace() } label: {
+                            Button {
+                                activeDocumentID = nil
+                                herdr.createWorkspace()
+                            } label: {
                                 Image(systemName: "plus")
                                     .font(.system(size: 10, weight: .semibold))
                                     .frame(width: 23, height: 20)
@@ -86,6 +113,7 @@ struct ContentView: View {
                         ForEach(herdr.snapshot?.workspaces ?? []) { workspace in
                             Button {
                                 herdr.select(workspaceID: workspace.workspaceID)
+                                activeDocumentID = nil
                             } label: {
                                 HStack(spacing: 7) {
                                     Circle()
@@ -116,6 +144,7 @@ struct ContentView: View {
                             Button {
                                 if let pane = herdr.snapshot?.panes.first(where: { $0.paneID == agent.paneID }) {
                                     herdr.select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
+                                    activeDocumentID = nil
                                 }
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -216,6 +245,11 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(showsSidebar ? "Hide sidebar" : "Show sidebar")
+                Button { showsFilesSidebar.toggle() } label: {
+                    Image(systemName: "sidebar.right")
+                }
+                .buttonStyle(.borderless)
+                .help(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes")
                 Text(selectedWorkspace?.label ?? "Herdr")
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
@@ -226,13 +260,21 @@ struct ContentView: View {
                 }
                 Spacer()
                 Menu {
-                    Button("New Space", systemImage: "plus.square") { herdr.createWorkspace() }
+                    Button("New Space", systemImage: "plus.square") {
+                        activeDocumentID = nil
+                        herdr.createWorkspace()
+                    }
                         .disabled(!herdr.isConnected)
-                    Button("New Tab", systemImage: "plus") { herdr.createTab() }
+                    Button("New Tab", systemImage: "plus") {
+                        activeDocumentID = nil
+                        herdr.createTab()
+                    }
                         .disabled(!herdr.isConnected || herdr.selectedWorkspaceID == nil)
                     Divider()
                     Button(showsSidebar ? "Hide Sidebar" : "Show Sidebar",
                            systemImage: "sidebar.left") { showsSidebar.toggle() }
+                    Button(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes",
+                           systemImage: "sidebar.right") { showsFilesSidebar.toggle() }
                     Button("Keyboard Shortcuts…", systemImage: "keyboard") {
                         settingsShowShortcuts = true
                         showsSettings = true
@@ -268,12 +310,13 @@ struct ContentView: View {
             .background(barBackground)
             Divider()
 
-            if herdr.isConnected {
+            if herdr.isConnected || !documents.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 2) {
                         ForEach(selectedTabs) { tab in
                             Button {
                                 herdr.select(tabID: tab.tabID)
+                                activeDocumentID = nil
                             } label: {
                                 HStack(spacing: 5) {
                                     Image(systemName: "terminal")
@@ -284,13 +327,43 @@ struct ContentView: View {
                                 .padding(.horizontal, 10)
                                 .frame(height: 27)
                                 .background(
-                                    herdr.selectedTabID == tab.tabID ? Color.white.opacity(0.09) : Color.clear,
+                                    activeDocumentID == nil && herdr.selectedTabID == tab.tabID
+                                        ? Color.white.opacity(0.09) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 4)
                                 )
                             }
                             .buttonStyle(.plain)
                         }
-                        Button { herdr.createTab() } label: {
+                        if !documents.isEmpty { Divider().frame(height: 17).padding(.horizontal, 4) }
+                        ForEach(documents) { document in
+                            HStack(spacing: 0) {
+                                Button { activeDocumentID = document.id } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: document.kind.icon)
+                                            .foregroundStyle(.cyan)
+                                        Text(document.title).lineLimit(1)
+                                        if document.isDirty { Circle().fill(.orange).frame(width: 5, height: 5) }
+                                    }
+                                    .font(.system(size: 11))
+                                    .padding(.leading, 9)
+                                    .frame(height: 27)
+                                }
+                                .buttonStyle(.plain)
+                                Button { closeDocument(document.id) } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 8))
+                                        .frame(width: 22, height: 27)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .background(activeDocumentID == document.id ? Color.white.opacity(0.09) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 4))
+                            .help("\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.path)")
+                        }
+                        Button {
+                            activeDocumentID = nil
+                            herdr.createTab()
+                        } label: {
                             Image(systemName: "plus")
                                 .font(.system(size: 10, weight: .semibold))
                                 .frame(width: 26, height: 25)
@@ -305,7 +378,15 @@ struct ContentView: View {
                 .background(barBackground)
                 Divider()
 
-                if let surface = herdr.surface,
+                if let activeDocumentID,
+                   let index = documents.firstIndex(where: { $0.id == activeDocumentID }) {
+                    WorkspaceDocumentView(document: $documents[index]) {
+                        saveDocument(activeDocumentID)
+                    }
+                    .id(activeDocumentID)
+                } else if !herdr.isConnected {
+                    emptyState(herdr.errorMessage ?? "Connecting to test session…")
+                } else if let surface = herdr.surface,
                    !selectedPanes.isEmpty,
                    Set(surface.paneIDs) == Set(selectedPanes.map(\.paneID)) {
                     GeometryReader { geometry in
@@ -400,6 +481,72 @@ struct ContentView: View {
     private func connect() {
         herdr.connect(to: requestedSessionName)
         if herdr.sessionSelectionError == nil { showsSessionPicker = false }
+        activeDocumentID = nil
+    }
+
+    private func openDocument(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation) {
+        let document = WorkspaceDocument(location: location, path: path, kind: kind)
+        if documents.contains(where: { $0.id == document.id }) {
+            activeDocumentID = document.id
+            return
+        }
+        documents.append(document)
+        activeDocumentID = document.id
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { () throws -> WorkspaceFileContents in
+                    if kind == .change {
+                        return WorkspaceFileContents(text: try WorkspaceFiles.diff(path, at: location), version: "")
+                    }
+                    return try WorkspaceFiles.read(path, at: location)
+                }
+            }.value
+            guard let index = documents.firstIndex(where: { $0.id == document.id }) else { return }
+            documents[index].isLoading = false
+            switch result {
+            case .success(let content):
+                documents[index].text = content.text
+                documents[index].savedText = content.text
+                documents[index].version = content.version
+            case .failure(let failure):
+                documents[index].error = failure.localizedDescription
+            }
+        }
+    }
+
+    private func saveDocument(_ id: String) {
+        guard let index = documents.firstIndex(where: { $0.id == id }),
+              let version = documents[index].version,
+              documents[index].isDirty else { return }
+        let document = documents[index]
+        documents[index].isSaving = true
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try WorkspaceFiles.save(document.text, path: document.path,
+                                                 expectedVersion: version, at: document.location) }
+            }.value
+            guard let currentIndex = documents.firstIndex(where: { $0.id == id }) else { return }
+            documents[currentIndex].isSaving = false
+            switch result {
+            case .success(let nextVersion):
+                documents[currentIndex].version = nextVersion
+                documents[currentIndex].savedText = document.text
+                documents[currentIndex].error = nil
+                fileRefreshVersion += 1
+            case .failure(let failure):
+                documents[currentIndex].error = failure.localizedDescription
+            }
+        }
+    }
+
+    private func closeDocument(_ id: String, force: Bool = false) {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        if documents[index].isDirty && !force {
+            pendingCloseDocumentID = id
+            return
+        }
+        documents.remove(at: index)
+        if activeDocumentID == id { activeDocumentID = nil }
     }
 
     private func handleShortcut(_ action: String) {
@@ -410,14 +557,19 @@ struct ContentView: View {
         case "settings":
             settingsShowShortcuts = false
             showsSettings = true
-        case "new_workspace": herdr.createWorkspace()
-        case "new_tab": herdr.createTab()
+        case "new_workspace":
+            activeDocumentID = nil
+            herdr.createWorkspace()
+        case "new_tab":
+            activeDocumentID = nil
+            herdr.createTab()
         case "previous_tab", "next_tab":
             guard let index = selectedTabs.firstIndex(where: { $0.tabID == herdr.selectedTabID }),
                   !selectedTabs.isEmpty else { return }
             let delta = action == "next_tab" ? 1 : -1
             let next = (index + delta + selectedTabs.count) % selectedTabs.count
             herdr.select(tabID: selectedTabs[next].tabID)
+            activeDocumentID = nil
         case "toggle_sidebar": showsSidebar.toggle()
         case "focus_pane_left": herdr.focusPane("left")
         case "focus_pane_down": herdr.focusPane("down")
@@ -434,6 +586,7 @@ struct ContentView: View {
                let number = Int(action.dropFirst("switch_tab_".count)),
                selectedTabs.indices.contains(number - 1) {
                 herdr.select(tabID: selectedTabs[number - 1].tabID)
+                activeDocumentID = nil
             }
         }
     }
