@@ -5,6 +5,9 @@ struct ContentView: View {
     @State private var showsSidebar = true
     @State private var showsSessionPicker = false
     @State private var showsSettings = false
+    @State private var settingsShowShortcuts = false
+    @State private var shortcutMap = HerdrShortcutMap.load()
+    @State private var shortcutPrefixActive = false
     @State private var requestedSessionName = "xherdr-ui-test"
 
     private let sidebarBackground = Color(red: 0.105, green: 0.115, blue: 0.13)
@@ -35,7 +38,10 @@ struct ContentView: View {
         .task { herdr.start() }
         .onDisappear { herdr.stop() }
         .sheet(isPresented: $showsSettings) {
-            HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName)
+            HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
+                              showShortcuts: settingsShowShortcuts) {
+                shortcutMap = HerdrShortcutMap.load()
+            }
         }
         .alert("Herdr action failed", isPresented: Binding(
             get: { herdr.actionError != nil },
@@ -150,7 +156,10 @@ struct ContentView: View {
                     .frame(height: 29)
                 }
                 .buttonStyle(.plain)
-                Button { showsSettings = true } label: {
+                Button {
+                    settingsShowShortcuts = false
+                    showsSettings = true
+                } label: {
                     Image(systemName: "gearshape")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -193,6 +202,11 @@ struct ContentView: View {
                 Text(selectedWorkspace?.label ?? "Herdr")
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
+                if shortcutPrefixActive {
+                    Text("PREFIX")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.cyan)
+                }
                 Spacer()
                 Menu {
                     Button("New Space", systemImage: "plus.square") { herdr.createWorkspace() }
@@ -202,7 +216,14 @@ struct ContentView: View {
                     Divider()
                     Button(showsSidebar ? "Hide Sidebar" : "Show Sidebar",
                            systemImage: "sidebar.left") { showsSidebar.toggle() }
-                    Button("Herdr Settings…", systemImage: "gearshape") { showsSettings = true }
+                    Button("Keyboard Shortcuts…", systemImage: "keyboard") {
+                        settingsShowShortcuts = true
+                        showsSettings = true
+                    }
+                    Button("Herdr Settings…", systemImage: "gearshape") {
+                        settingsShowShortcuts = false
+                        showsSettings = true
+                    }
                     Button("Switch Session…", systemImage: "point.3.connected.trianglepath.dotted") {
                         showsSidebar = true
                         requestedSessionName = herdr.sessionName
@@ -275,6 +296,9 @@ struct ContentView: View {
                             text: "",
                             paneID: herdr.selectedPaneID ?? selectedPanes[0].paneID,
                             surface: surface,
+                            shortcutMap: shortcutMap,
+                            onShortcut: handleShortcut,
+                            onPrefixChanged: { shortcutPrefixActive = $0 },
                             selectPane: { id in herdr.select(paneID: id) },
                             sendText: { text, id in herdr.sendText(text, to: id) },
                             sendPaste: { text, id in herdr.sendPaste(text, to: id) },
@@ -338,6 +362,9 @@ struct ContentView: View {
             TerminalPaneView(
                 text: herdr.paneText[pane.paneID] ?? "Reading pane…",
                 paneID: pane.paneID,
+                shortcutMap: shortcutMap,
+                onShortcut: handleShortcut,
+                onPrefixChanged: { shortcutPrefixActive = $0 },
                 sendText: { text, id in herdr.sendText(text, to: id) },
                 sendPaste: { text, id in herdr.sendPaste(text, to: id) },
                 sendKey: { key, id in herdr.sendKey(key, to: id) },
@@ -356,6 +383,42 @@ struct ContentView: View {
     private func connect() {
         herdr.connect(to: requestedSessionName)
         if herdr.sessionSelectionError == nil { showsSessionPicker = false }
+    }
+
+    private func handleShortcut(_ action: String) {
+        switch action {
+        case "help":
+            settingsShowShortcuts = true
+            showsSettings = true
+        case "settings":
+            settingsShowShortcuts = false
+            showsSettings = true
+        case "new_workspace": herdr.createWorkspace()
+        case "new_tab": herdr.createTab()
+        case "previous_tab", "next_tab":
+            guard let index = selectedTabs.firstIndex(where: { $0.tabID == herdr.selectedTabID }),
+                  !selectedTabs.isEmpty else { return }
+            let delta = action == "next_tab" ? 1 : -1
+            let next = (index + delta + selectedTabs.count) % selectedTabs.count
+            herdr.select(tabID: selectedTabs[next].tabID)
+        case "toggle_sidebar": showsSidebar.toggle()
+        case "focus_pane_left": herdr.focusPane("left")
+        case "focus_pane_down": herdr.focusPane("down")
+        case "focus_pane_up": herdr.focusPane("up")
+        case "focus_pane_right": herdr.focusPane("right")
+        case "split_vertical": herdr.splitPane("right")
+        case "split_horizontal": herdr.splitPane("down")
+        case "zoom": herdr.zoomPane()
+        case "reload_config":
+            shortcutMap = HerdrShortcutMap.load()
+            herdr.reloadConfig()
+        default:
+            if action.hasPrefix("switch_tab_"),
+               let number = Int(action.dropFirst("switch_tab_".count)),
+               selectedTabs.indices.contains(number - 1) {
+                herdr.select(tabID: selectedTabs[number - 1].tabID)
+            }
+        }
     }
 
     private func resizeSurface(to size: CGSize) {

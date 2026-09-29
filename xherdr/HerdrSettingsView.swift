@@ -3,6 +3,7 @@ import SwiftUI
 struct HerdrSettingsView: View {
     let socketPath: String
     let sessionName: String
+    let onSaved: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var category: Category = .terminal
@@ -13,6 +14,7 @@ struct HerdrSettingsView: View {
 
     private enum Category: String, CaseIterable, Identifiable {
         case terminal = "Terminal"
+        case shortcuts = "Shortcuts"
         case worktrees = "Worktrees"
         case appearance = "Appearance"
         case server = "Server"
@@ -22,12 +24,21 @@ struct HerdrSettingsView: View {
         var icon: String {
             switch self {
             case .terminal: "terminal"
+            case .shortcuts: "keyboard"
             case .worktrees: "point.topleft.down.curvedto.point.bottomright.up"
             case .appearance: "paintpalette"
             case .server: "server.rack"
             case .advanced: "chevron.left.forwardslash.chevron.right"
             }
         }
+    }
+
+    init(socketPath: String, sessionName: String, showShortcuts: Bool = false,
+         onSaved: @escaping () -> Void = {}) {
+        self.socketPath = socketPath
+        self.sessionName = sessionName
+        self.onSaved = onSaved
+        _category = State(initialValue: showShortcuts ? .shortcuts : .terminal)
     }
 
     var body: some View {
@@ -142,6 +153,19 @@ struct HerdrSettingsView: View {
                 TextField("follow", text: string("terminal", "new_cwd", default: "follow"))
                     .textFieldStyle(.roundedBorder)
             }
+        case .shortcuts:
+            description("Press the prefix, release it, then press the action key. These bindings follow Herdr's [keys] format and apply in the xherdr terminal. Separate alternatives with commas.")
+            field("Prefix", hint: "Default: ctrl+b. One direct chord, such as ctrl+a.") {
+                TextField("ctrl+b", text: string("keys", "prefix", default: "ctrl+b"))
+                    .textFieldStyle(.roundedBorder)
+            }
+            ForEach(HerdrShortcutDefinition.supported) { definition in
+                field(definition.title, hint: "Default: \(definition.defaultBindings.joined(separator: ", "))") {
+                    TextField(definition.defaultBindings.joined(separator: ", "),
+                              text: shortcutBindings(definition))
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
         case .worktrees:
             description("Where Herdr creates Git worktree checkouts from the sidebar.")
             field("Worktree directory", hint: "A path such as ~/Projects/herdr-worktrees") {
@@ -240,6 +264,19 @@ struct HerdrSettingsView: View {
                 })
     }
 
+    private func shortcutBindings(_ definition: HerdrShortcutDefinition) -> Binding<String> {
+        Binding(get: {
+            document.bindings(definition.key, default: definition.defaultBindings).joined(separator: ", ")
+        }, set: { value in
+            let current = document.bindings(definition.key, default: definition.defaultBindings)
+                .joined(separator: ", ")
+            guard value != current else { return }
+            let values = value.split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            document.setBindings(values, key: definition.key)
+        })
+    }
+
     private func load() {
         do {
             original = try HerdrConfigFile.read(at: HerdrConfigFile.url)
@@ -271,6 +308,7 @@ struct HerdrSettingsView: View {
                     original = text
                     message = result
                     isSaving = false
+                    onSaved()
                 }
             } catch {
                 await MainActor.run {

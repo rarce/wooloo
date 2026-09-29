@@ -14,6 +14,7 @@
 		A10000000000000000000018 /* HerdrSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* HerdrSurface.swift */; };
 		A10000000000000000000020 /* HerdrConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* HerdrConfig.swift */; };
 		A10000000000000000000022 /* HerdrSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* HerdrSettingsView.swift */; };
+		A10000000000000000000024 /* HerdrShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000025 /* HerdrShortcuts.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +25,7 @@
 		A10000000000000000000019 /* HerdrSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSurface.swift; sourceTree = "<group>"; };
 		A10000000000000000000021 /* HerdrConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConfig.swift; sourceTree = "<group>"; };
 		A10000000000000000000023 /* HerdrSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsView.swift; sourceTree = "<group>"; };
+		A10000000000000000000025 /* HerdrShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrShortcuts.swift; sourceTree = "<group>"; };
 		A10000000000000000000005 /* xherdr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xherdr.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -46,6 +48,7 @@
 				A10000000000000000000019 /* HerdrSurface.swift */,
 				A10000000000000000000021 /* HerdrConfig.swift */,
 				A10000000000000000000023 /* HerdrSettingsView.swift */,
+				A10000000000000000000025 /* HerdrShortcuts.swift */,
 			);
 			path = xherdr;
 			sourceTree = "<group>";
@@ -133,6 +136,7 @@
 				A10000000000000000000018 /* HerdrSurface.swift in Sources */,
 				A10000000000000000000020 /* HerdrConfig.swift in Sources */,
 				A10000000000000000000022 /* HerdrSettingsView.swift in Sources */,
+				A10000000000000000000024 /* HerdrShortcuts.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

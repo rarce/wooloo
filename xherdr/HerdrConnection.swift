@@ -613,6 +613,78 @@ final class HerdrStore: ObservableObject {
         }
     }
 
+    func focusPane(_ direction: String) {
+        guard let paneID = selectedPaneID else { return }
+        performPaneAction(method: "pane.focus_direction", params: [
+            "pane_id": paneID, "direction": direction
+        ], followServerFocus: true)
+    }
+
+    func splitPane(_ direction: String) {
+        guard let paneID = selectedPaneID, let workspaceID = selectedWorkspaceID else { return }
+        performPaneAction(method: "pane.split", params: [
+            "workspace_id": workspaceID, "target_pane_id": paneID,
+            "direction": direction, "focus": true
+        ], followServerFocus: true)
+    }
+
+    func zoomPane() {
+        guard let paneID = selectedPaneID else { return }
+        performPaneAction(method: "pane.zoom", params: ["pane_id": paneID], followServerFocus: false)
+    }
+
+    func reloadConfig() {
+        guard isConnected else { return }
+        let path = socketPath
+        let currentGeneration = generation
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { () throws -> Void in
+                    let data = try HerdrSocket.request(path: path, method: "server.reload_config")
+                    guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let response = root["result"] as? [String: Any],
+                          let status = response["status"] as? String else {
+                        throw HerdrConfigError.validation("Unexpected response from Herdr reload")
+                    }
+                    if status != "applied" {
+                        let details = (response["diagnostics"] as? [String] ?? []).joined(separator: "\n")
+                        throw HerdrConfigError.validation("Herdr reload: \(status). \(details)")
+                    }
+                }
+            }.value
+            guard generation == currentGeneration else { return }
+            if case .failure(let error) = result { actionError = error.localizedDescription }
+            else { actionError = nil }
+        }
+    }
+
+    private func performPaneAction(method: String, params: [String: Any], followServerFocus: Bool) {
+        guard isConnected else { return }
+        let path = socketPath
+        let currentGeneration = generation
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { () throws -> HerdrSnapshot in
+                    _ = try HerdrSocket.request(path: path, method: method, params: params)
+                    return try HerdrSocket.snapshot(path: path)
+                }
+            }.value
+            guard generation == currentGeneration else { return }
+            switch result {
+            case .success(let fresh):
+                snapshot = fresh
+                if followServerFocus, let workspaceID = fresh.focusedWorkspaceID {
+                    select(workspaceID: workspaceID, tabID: fresh.focusedTabID,
+                           paneID: fresh.focusedPaneID)
+                } else {
+                    repairSelection()
+                }
+                actionError = nil
+            case .failure(let error): actionError = error.localizedDescription
+            }
+        }
+    }
+
     func select(tabID: String) {
         selectedTabID = tabID
         selectedPaneID = snapshot?.panes.first { $0.tabID == tabID }?.paneID

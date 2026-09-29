@@ -46,6 +46,12 @@ The settings screen was checked against the local config without saving to it. A
 
 New Space sends `workspace.create` with the selected workspace as its directory source and `focus = true`. New Tab sends `tab.create` for the selected workspace with `focus = true`. xherdr then refreshes `session.snapshot` and selects the returned IDs, while the event subscription keeps later changes in sync. Both actions live in Menu as well as in the Spaces and tab headers. The sidebar button and Menu item toggle xherdr's sidebar locally. The controls were exercised in `xherdr-ui-test`: one new tab and one new workspace appeared and became selected without touching the default session.
 
+## Keyboard shortcuts
+
+The focused terminal text view handles Herdr's prefix sequence and direct chords before forwarding input to the pane. The default prefix is `ctrl+b`; the next key selects an action and an unmatched key cancels the prefix. Supported actions cover help/settings, new space/tab, tab switching, sidebar visibility, pane focus and splits, zoom, and config reload. Pane commands call `pane.focus_direction`, `pane.split`, or `pane.zoom` on the selected named session and refresh the snapshot. Shortcut help opens the editable Shortcuts settings section.
+
+Bindings come from the same local `[keys]` table as the Herdr TUI, including multiline arrays of alternatives. The settings section writes the Herdr syntax and validates through `herdr config check` before saving. Custom bindings become active in xherdr after saving. The remaining Herdr TUI actions are preserved in config.toml but are not intercepted by xherdr. Shortcut handling currently applies while the terminal has keyboard focus; settings fields and other native controls keep their usual keyboard behavior.
+
 The surface decoder follows the frozen generation-1 field order in Herdr 0.9.1. It should be checked against a new release's frozen fixtures before changing the parser. Unsupported optional messages are ignored without dropping the JSON connection.
 
 ## Implementation order

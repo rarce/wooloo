@@ -20,6 +20,9 @@ struct TerminalPaneView: NSViewRepresentable {
     let text: String
     let paneID: String
     var surface: HerdrSurface? = nil
+    let shortcutMap: HerdrShortcutMap
+    let onShortcut: (String) -> Void
+    let onPrefixChanged: (Bool) -> Void
     var selectPane: ((String) -> Void)? = nil
     let sendText: (String, String) -> Void
     let sendPaste: (String, String) -> Void
@@ -38,6 +41,9 @@ struct TerminalPaneView: NSViewRepresentable {
 
         let view = HerdrTerminalTextView(frame: .zero)
         view.paneID = paneID
+        view.shortcutMap = shortcutMap
+        view.onShortcut = onShortcut
+        view.onPrefixChanged = onPrefixChanged
         view.sendText = sendText
         view.sendPaste = sendPaste
         view.sendKey = sendKey
@@ -68,6 +74,10 @@ struct TerminalPaneView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let view = scrollView.documentView as? HerdrTerminalTextView else { return }
         view.paneID = paneID
+        if view.shortcutMap.prefixLabel != shortcutMap.prefixLabel { view.clearShortcutPrefix() }
+        view.shortcutMap = shortcutMap
+        view.onShortcut = onShortcut
+        view.onPrefixChanged = onPrefixChanged
         view.sendText = sendText
         view.sendPaste = sendPaste
         view.sendKey = sendKey
@@ -175,6 +185,10 @@ private final class HerdrTerminalTextView: NSTextView {
     var surface: HerdrSurface?
     var selectPane: ((String) -> Void)?
     var paneID = ""
+    var shortcutMap = HerdrShortcutMap(document: HerdrConfigDocument(text: ""))
+    var onShortcut: ((String) -> Void)?
+    var onPrefixChanged: ((Bool) -> Void)?
+    private var shortcutPrefixPending = false
     var sendText: ((String, String) -> Void)?
     var sendPaste: ((String, String) -> Void)?
     var sendKey: ((String, String) -> Void)?
@@ -189,6 +203,26 @@ private final class HerdrTerminalTextView: NSTextView {
     private var renderedHeight = 0
     private var selectedSnapshot: String?
     private var selectionAtSnapshot: NSRange?
+
+    func clearShortcutPrefix() {
+        shortcutPrefixPending = false
+        onPrefixChanged?(false)
+    }
+
+    private func handleShortcut(_ event: NSEvent) -> Bool {
+        switch shortcutMap.match(event, prefixPending: shortcutPrefixPending) {
+        case .pass: return false
+        case .prefix:
+            shortcutPrefixPending = true
+            onPrefixChanged?(true)
+        case .action(let action):
+            clearShortcutPrefix()
+            onShortcut?(action)
+        case .consumed:
+            clearShortcutPrefix()
+        }
+        return true
+    }
     private var decodedGraphics: [Data: NSImage] = [:]
 
     func prepareGraphics(_ graphics: [HerdrGraphic]) {
@@ -544,6 +578,7 @@ private final class HerdrTerminalTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if handleShortcut(event) { return }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers.contains(.command) {
             super.keyDown(with: event) // Copy, select all, and other Mac commands.
@@ -573,6 +608,11 @@ private final class HerdrTerminalTextView: NSTextView {
             return
         }
         interpretKeyEvents([event])
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command), handleShortcut(event) { return true }
+        return super.performKeyEquivalent(with: event)
     }
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
