@@ -67,6 +67,14 @@ private struct XherdrCommands: Commands {
                 .keyboardShortcut("t", modifiers: .command)
         }
 
+        // Command-W closes the tab in the main panel rather than the window.
+        CommandGroup(replacing: .saveItem) {
+            item("Close Tab", "close_current_tab", enabled: context != nil)
+                .keyboardShortcut("w", modifiers: .command)
+            Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+        }
+
         CommandGroup(after: .textEditing) {
             Divider()
             item("Find in Project…", "project_search", enabled: context != nil)

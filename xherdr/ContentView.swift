@@ -1037,6 +1037,14 @@ struct ContentView: View {
             guard selectedTabs.count > 1,
                   let tab = selectedTabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
             closeTarget = .tab(tab.tabID, tab.label)
+        case "close_current_tab":
+            if activeDocumentID == WorkspaceSearchModel.tabID {
+                closeSearch()
+            } else if let activeDocumentID {
+                closeDocument(activeDocumentID)
+            } else {
+                handleShortcut("close_tab")
+            }
         case "close_pane":
             guard let paneID = herdr.selectedPaneID else { return }
             closeTarget = .pane(paneID)
