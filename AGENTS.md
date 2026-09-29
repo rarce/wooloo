@@ -6,7 +6,7 @@ The macOS app lives in `xherdr/`; `xherdr.xcodeproj` defines the `xherdr` scheme
 
 ## Build, Test, and Development Commands
 
-Run `xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build` to compile without signing. Open the project in Xcode and run the `xherdr` scheme on My Mac for interactive checks. For server testing, start `herdr --session xherdr-ui-test server`, then create a Space with `herdr --session xherdr-ui-test workspace create --cwd "$PWD" --label xherdr-test`. Stop that instance with `herdr --session xherdr-ui-test server stop`. Do not use the primary Herdr session for development checks.
+Run `xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build` to compile with an ad hoc signature and no developer account. Keep the signature: with `CODE_SIGNING_ALLOWED=NO` the app lacks its bundle identity and macOS refuses its notification permission. Open the project in Xcode and run the `xherdr` scheme on My Mac for interactive checks. For server testing, start `herdr --session xherdr-ui-test server`, then create a Space with `herdr --session xherdr-ui-test workspace create --cwd "$PWD" --label xherdr-test`. Stop that instance with `herdr --session xherdr-ui-test server stop`. Do not use the primary Herdr session for development checks.
 
 ## Coding Style & Naming Conventions
 
