@@ -1119,7 +1119,8 @@ final class HerdrTerminalTextView: NSTextView {
             115: "home", 119: "end", 116: "pageup", 121: "pagedown"
         ]
         if let key = special[event.keyCode] {
-            let prefix = modifiers.contains(.shift) && key == "tab" ? "shift+" : ""
+            // Shift reaches Herdr so programs can tell Shift-Enter from Enter, as Claude Code does.
+            let prefix = modifiers.contains(.shift) ? "shift+" : ""
             sendKey?(prefix + key, paneID)
             return
         }

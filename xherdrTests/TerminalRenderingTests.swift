@@ -46,6 +46,21 @@ final class TerminalRenderingTests: XCTestCase {
         XCTAssertFalse(copied.isEmpty)
     }
 
+    /// Programs such as Claude Code insert a newline on Shift-Enter and submit on Enter.
+    func testShiftEnterKeepsShift() throws {
+        let view = TerminalRenderHarness.makeView(width: 10, height: 2)
+        var sent: [String] = []
+        view.sendKey = { key, _ in sent.append(key) }
+        for flags: NSEvent.ModifierFlags in [[], .shift] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                                       timestamp: 0, windowNumber: 0, context: nil,
+                                                       characters: "\r", charactersIgnoringModifiers: "\r",
+                                                       isARepeat: false, keyCode: 36))
+            view.keyDown(with: event)
+        }
+        XCTAssertEqual(sent, ["enter", "shift+enter"])
+    }
+
     /// Pixel snapshots of each workload's final screen. A missing snapshot is recorded and the
     /// test skipped; set `XHERDR_RECORD_SNAPSHOTS=1` to record them all again. Snapshots depend
     /// on the installed terminal font, so record them on the machine that compares them.
