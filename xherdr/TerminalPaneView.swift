@@ -38,6 +38,10 @@ struct TerminalPaneView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
+        // Full screen reveals the title bar as an overlay; automatic insets would shift
+        // the grid away from the rows Herdr's mouse coordinates assume.
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsetsZero
 
         let view = HerdrTerminalTextView(frame: .zero)
         view.paneID = paneID
@@ -85,6 +89,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
         let splitsChanged = view.surface?.splits != surface?.splits
+        Self.configureScrolling(scrollView, view: view, live: surface != nil)
         view.surface = surface
         if let surface { view.prepareGraphics(surface.graphics) }
         if splitsChanged { scrollView.window?.invalidateCursorRects(for: view) }
@@ -108,6 +113,33 @@ struct TerminalPaneView: NSViewRepresentable {
         }
     }
 
+    /// A live surface is a fixed cols × rows grid sized to the view, so it never scrolls:
+    /// glyphs from fallback fonts that overflow a cell are clipped instead of adding
+    /// scrollers, which would shrink the grid and cascade into both scrollbars.
+    private static func configureScrolling(_ scrollView: NSScrollView, view: NSTextView, live: Bool) {
+        guard scrollView.hasVerticalScroller == live else { return }
+        scrollView.hasVerticalScroller = !live
+        scrollView.hasHorizontalScroller = !live
+        scrollView.verticalScrollElasticity = live ? .none : .automatic
+        scrollView.horizontalScrollElasticity = live ? .none : .automatic
+        view.isHorizontallyResizable = !live
+        view.autoresizingMask = live ? [.width] : []
+        if live {
+            view.setFrameSize(NSSize(width: scrollView.contentSize.width, height: view.frame.height))
+            scrollView.contentView.scroll(to: .zero)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+    }
+
+    /// Pins every row to the grid's cell height, even when a fallback font is taller.
+    private static let cellParagraphStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = cellHeight
+        style.maximumLineHeight = cellHeight
+        style.lineBreakMode = .byClipping
+        return style
+    }()
+
     private static func render(_ surface: HerdrSurface) -> RenderedTerminalSurface {
         let output = NSMutableAttributedString(string: "")
         var cellOffsets: [Int] = []
@@ -127,6 +159,7 @@ struct TerminalPaneView: NSViewRepresentable {
                     x >= $0.x && x < $0.x + $0.cols && y >= $0.y && y < $0.y + $0.rows
                 }
                 var attributes: [NSAttributedString.Key: Any] = [
+                    .paragraphStyle: cellParagraphStyle,
                     .font: cell.modifier & 1 != 0 ? boldFont : font,
                     .foregroundColor: isCursor ? background : foreground,
                     .backgroundColor: isCursor ? foreground : (imageBehind ? NSColor.clear : background)
@@ -135,7 +168,9 @@ struct TerminalPaneView: NSViewRepresentable {
                 output.append(NSAttributedString(string: cell.symbol.isEmpty ? " " : cell.symbol, attributes: attributes))
             }
             cellOffsets.append(output.length)
-            if y + 1 < surface.height { output.append(NSAttributedString(string: "\n", attributes: [.font: font])) }
+            if y + 1 < surface.height {
+                output.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: cellParagraphStyle]))
+            }
         }
         return RenderedTerminalSurface(text: output, cellOffsets: cellOffsets,
                                        width: surface.width, height: surface.height)
