@@ -483,10 +483,10 @@ struct ContentView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Herdr menu")
-                Text(herdr.surface == nil ? "TEXT" : "LIVE")
+                Text(herdr.surfaceLayout == nil ? "TEXT" : "LIVE")
                     .font(.system(size: typography.caption, design: .monospaced))
-                    .foregroundStyle(herdr.surface == nil ? Color.secondary : theme.accent)
-                    .help(herdr.surfaceError ?? (herdr.surface == nil ? "Text snapshot" : "Live Herdr surface"))
+                    .foregroundStyle(herdr.surfaceLayout == nil ? Color.secondary : theme.accent)
+                    .help(herdr.surfaceError ?? (herdr.surfaceLayout == nil ? "Text snapshot" : "Live Herdr surface"))
                 if !herdr.isConnected {
                     Text("Disconnected")
                         .font(.system(size: typography.secondary, design: .monospaced))
@@ -631,14 +631,14 @@ struct ContentView: View {
                     .id(activeDocumentID)
                 } else if !herdr.isConnected {
                     emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")
-                } else if let surface = herdr.surface,
+                } else if let surfaceLayout = herdr.surfaceLayout,
                    !selectedPanes.isEmpty,
-                   Set(surface.paneIDs) == Set(selectedPanes.map(\.paneID)) {
+                   Set(surfaceLayout.paneIDs) == Set(selectedPanes.map(\.paneID)) {
                     GeometryReader { geometry in
                         TerminalPaneView(
                             text: "",
                             paneID: herdr.selectedPaneID ?? selectedPanes[0].paneID,
-                            surface: surface,
+                            surfaceFeed: herdr.surfaceFeed,
                             shortcutMap: shortcutMap,
                             onShortcut: handleShortcut,
                             onPrefixChanged: { shortcutPrefixActive = $0 },

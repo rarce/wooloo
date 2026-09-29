@@ -2,7 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 
-struct HerdrCell: Equatable {
+struct HerdrCell: Hashable {
     let symbol: String
     let foreground: UInt32
     let background: UInt32
@@ -134,9 +134,16 @@ private struct SurfaceReader {
         return value
     }
 
+    /// Single ASCII characters, which most cells hold, without decoding each one again.
+    private static let asciiStrings = (0..<128).map { String(UnicodeScalar(UInt8($0))) }
+
     mutating func string() throws -> String {
         let length = try Int(number())
         guard length <= 8_000_000, position + length <= bytes.count else { throw SurfaceProtocolError.invalidFrame }
+        if length == 1, bytes[position] < 128 {
+            position += 1
+            return Self.asciiStrings[Int(bytes[position - 1])]
+        }
         defer { position += length }
         guard let value = String(bytes: bytes[position..<(position + length)], encoding: .utf8) else {
             throw SurfaceProtocolError.invalidFrame

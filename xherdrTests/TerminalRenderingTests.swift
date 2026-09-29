@@ -66,6 +66,47 @@ final class TerminalRenderingTests: XCTestCase {
         if !recorded.isEmpty { throw XCTSkip("Recorded snapshots: \(recorded.joined(separator: ", "))") }
     }
 
+    /// A view fed every frame of a workload, reusing rows between frames, ends up drawing
+    /// exactly what a view shown only the last frame draws.
+    func testIncrementalLayoutDrawsLikeFreshLayout() throws {
+        for workload in TerminalWorkload.all(width: 100, height: 30, frames: 12) {
+            var decoder = HerdrSurfaceDecoder()
+            let view = TerminalRenderHarness.makeView(width: workload.width, height: workload.height)
+            for frame in workload.frames {
+                TerminalRenderHarness.show(try XCTUnwrap(decoder.apply(frame: frame)), in: view)
+            }
+            let incremental = TerminalRenderHarness.makeBitmap(for: view)
+            TerminalRenderHarness.draw(view, into: incremental)
+            let fresh = TerminalRenderHarness.render(try XCTUnwrap(decoder.surface))
+            XCTAssertEqual(TerminalRenderHarness.pixels(of: incremental)?.bytes, TerminalRenderHarness.pixels(of: fresh)?.bytes,
+                           "\(workload.name): incremental layout drew a different screen")
+        }
+    }
+
+    /// Every row whose cells or cursor changed between two frames is redrawn.
+    func testChangedRowsCoverEveryChange() throws {
+        for workload in TerminalWorkload.all(width: 60, height: 20, frames: 24) {
+            var decoder = HerdrSurfaceDecoder()
+            var previous: (surface: HerdrSurface, grid: TerminalGrid)?
+            for (index, frame) in workload.frames.enumerated() {
+                let surface = try XCTUnwrap(decoder.apply(frame: frame))
+                let grid = TerminalPaneView.layoutGrid(surface, theme: TerminalRenderHarness.theme, previous: previous?.grid)
+                if let previous {
+                    let redrawn = Set(grid.changedRows(since: previous.grid).flatMap { $0 })
+                    for row in 0..<surface.height {
+                        let cells = { (s: HerdrSurface) in s.cells[(row * s.width)..<((row + 1) * s.width)] }
+                        let cursorRow = { (s: HerdrSurface) in s.cursor?.visible == true && s.cursor?.y == row ? s.cursor?.x : nil }
+                        let differs = cells(previous.surface) != cells(surface) || cursorRow(previous.surface) != cursorRow(surface)
+                        if differs && !redrawn.contains(row) {
+                            XCTFail("\(workload.name) frame \(index): row \(row) changed but is not redrawn")
+                        }
+                    }
+                }
+                previous = (surface, grid)
+            }
+        }
+    }
+
     private func assertGridMatches(_ surface: HerdrSurface, _ label: String) throws {
         let view = TerminalRenderHarness.makeView(width: surface.width, height: surface.height)
         TerminalRenderHarness.show(surface, in: view)
@@ -83,22 +124,22 @@ final class TerminalRenderingTests: XCTestCase {
             if failures <= 10 { XCTFail("\(label): \(message)") }
         }
         for y in 0..<surface.height {
-            let glyphColumns = Set(grid.rows[y].flatMap(\.columns))
-            let rowTop = CGFloat(y) * cellHeight
-            let underlined = grid.underlines.filter { $0.rect.midY > rowTop && $0.rect.midY < rowTop + cellHeight }
+            let row = grid.rows[y]
+            let glyphColumns = Set(row.runs.flatMap(\.columns))
+            let underlined = row.underlines
             for x in 0..<surface.width {
                 let cell = surface.cells[y * surface.width + x]
                 let expectedSymbol = cell.skip ? "" : (cell.symbol.isEmpty ? " " : cell.symbol)
-                if grid.symbols[y][x] != expectedSymbol {
-                    fail("cell \(x),\(y) holds \(grid.symbols[y][x].debugDescription), expected \(expectedSymbol.debugDescription)")
+                if row.symbols[x] != expectedSymbol {
+                    fail("cell \(x),\(y) holds \(row.symbols[x].debugDescription), expected \(expectedSymbol.debugDescription)")
                 }
                 let visible = !cell.skip && !expectedSymbol.trimmingCharacters(in: .whitespaces).isEmpty
                 if visible != glyphColumns.contains(x) {
                     fail("cell \(x),\(y) \(expectedSymbol.debugDescription) \(visible ? "has no glyph" : "has a stray glyph")")
                 }
-                let center = CGPoint(x: (CGFloat(x) + 0.5) * cellWidth, y: rowTop + cellHeight / 2)
+                let center = CGPoint(x: (CGFloat(x) + 0.5) * cellWidth, y: cellHeight / 2)
                 let isCursor = surface.cursor?.visible == true && surface.cursor?.x == x && surface.cursor?.y == y
-                let filled = grid.backgrounds.contains { $0.rect.contains(center) }
+                let filled = row.backgrounds.contains { $0.rect.contains(center) }
                 if filled != (cell.background != 0 || isCursor) {
                     fail("cell \(x),\(y) background \(filled ? "filled" : "missing") for color \(cell.background)")
                 }

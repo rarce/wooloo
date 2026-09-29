@@ -22,13 +22,10 @@ enum TerminalRenderHarness {
         return view
     }
 
-    /// Hands a surface to the view as `TerminalPaneView.updateNSView` does.
+    /// Hands a surface to the view as the live surface feed does.
     static func show(_ surface: HerdrSurface, in view: HerdrTerminalTextView) {
-        view.surface = surface
-        view.surfaceRevision = surface.revision
-        view.surfaceBootID = surface.bootID
-        view.prepareGraphics(surface.graphics)
-        view.applySurfaceGrid(TerminalPaneView.layoutGrid(surface, theme: theme))
+        view.theme = theme
+        view.show(surface)
     }
 
     static func makeBitmap(for view: NSView, scale: CGFloat = 2) -> NSBitmapImageRep {

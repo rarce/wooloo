@@ -3,9 +3,9 @@
 A Herdr surface travels this path before it is on screen:
 
 1. **Receive and decode** (stream thread, `HerdrSurfaceStream.run` → `HerdrSurfaceDecoder`): a socket frame becomes a complete `HerdrSurface` or patches the current one.
-2. **Deliver** (main thread, `HerdrStore.surface`): each surface is published and SwiftUI updates the views that observe the store.
-3. **Layout** (main thread, `TerminalPaneView.layoutGrid`): cells become fills, glyph runs and underlines.
-4. **Draw** (main thread, `HerdrTerminalTextView.draw`): Core Graphics draws the grid.
+2. **Deliver** (`HerdrSurfaceMailbox` → `HerdrSurfaceFeed`): the stream thread keeps only the newest surface and wakes the main thread once. The feed hands the surface straight to the terminal view. SwiftUI sees only `HerdrStore.surfaceLayout`, which changes when panes do.
+3. **Layout** (main thread, `TerminalPaneView.layoutGrid`): cells become fills, glyph runs and underlines, row by row. A row whose cells, cursor and images match a row of the previous grid reuses that row's layout, so scrolled output only lays out new lines.
+4. **Draw** (main thread, `HerdrTerminalTextView.draw`): Core Graphics draws only the rows that changed.
 
 Three tools measure it. All of them also check that no information is lost on the way.
 
@@ -19,7 +19,7 @@ Run them with `xcodebuild test` and the scheme `xherdr`, using the build flags f
 
 ## Stage benchmarks: `scripts/terminal-bench.sh`
 
-This script times decode, layout and draw per frame over the synthetic workloads (200×60, 240 frames) in a Release build. The `burst` stage pushes every frame through all three stages, as the main thread handles a burst today. Results go to `build/perf/`, and the script compares them with `bench-baseline.jsonl`. Pass `--save-baseline` to replace the baseline.
+This script times decode, layout and draw per frame over the synthetic workloads (200×60, 240 frames) in a Release build. The `burst` stage pushes every frame through all three stages, with no frames coalesced. `layout` reuses rows from the previous sampled state, as the view does, and `layout-cold` lays out every row. Results go to `build/perf/`, and the script compares them with `bench-baseline.jsonl`. Pass `--save-baseline` to replace the baseline.
 
 ## End to end: `scripts/terminal-e2e.sh`
 
@@ -42,25 +42,34 @@ It compares them with `e2e-baseline.json`. The script then replays the recorded 
 
 Signposts in the `dev.xherdr.terminal` subsystem (`decode`, `layout`, `draw`) show the same stages in Instruments, with or without the metrics file.
 
-## Baseline (2026-09-29, Mac16,5, FiraCodeNFM 12 pt)
+## Results
 
-Stage benchmarks, 200×60 grid, per frame:
+`bench-before.jsonl` and `e2e-before.json` hold the measurements taken before the optimizations below. `bench-baseline.jsonl` and `e2e-baseline.json` hold the current numbers, so the scripts flag regressions against them. To compare with the old numbers, run `scripts/terminal-perf.py e2e <run>/metrics.jsonl <run>/phases.jsonl --baseline docs/perf/e2e-before.json`.
 
-| scenario | decode p50 | layout p50 | draw p50 | burst fps |
+The optimizations, in order:
+
+1. Coalesced delivery through the mailbox and the feed, instead of one main-thread task and one SwiftUI update per frame.
+2. Row reuse across frames and redrawing only the rows that changed.
+3. Reuse by direct comparison with the previous grid's rows instead of hashing every row; one colour lookup per distinct colour; one attributed string per row.
+4. Single ASCII characters decoded from a table.
+
+Stage benchmarks, 200×60 grid, per frame, 2026-09-29, Mac16,5, FiraCodeNFM 12 pt:
+
+| scenario | decode p50 before → after | layout p50 before → after | cold layout p50 | burst fps before → after |
 |---|---|---|---|---|
-| ascii-scroll | 0.76 ms | 13.5 ms | 1.1 ms | 63 |
-| color-scroll | 0.75 ms | 15.5 ms | 2.4 ms | 52 |
-| unicode-scroll | 0.77 ms | 14.9 ms | 1.1 ms | 57 |
-| typing (1 cell) | 0.04 ms | 15.7 ms | 1.6 ms | 56 |
-| full-frames | 0.77 ms | 15.9 ms | 2.4 ms | 49 |
+| ascii-scroll | 0.76 → 0.18 ms | 13.5 → 0.42 ms | 2.7 ms | 63 → 638 |
+| color-scroll | 0.75 → 0.19 ms | 15.5 → 0.57 ms | 4.8 ms | 52 → 356 |
+| unicode-scroll | 0.77 → 0.21 ms | 14.9 → 0.48 ms | 4.1 ms | 57 → 646 |
+| typing (1 cell) | 0.04 → 0.04 ms | 15.7 → 0.26 ms | 4.2 ms | 56 → 554 |
+| full-frames | 0.77 → 0.16 ms | 15.9 → 0.33 ms | 4.7 ms | 49 → 354 |
 
 Live, 311×80 window:
 
-| workload | Herdr fps | drawn fps | revisions never drawn | layout p50 | arrival→draw p50 / p95 | main busy |
-|---|---|---|---|---|---|---|
-| ascii | 43.5 | 16.8 | 177 of 288 | 29.5 ms | 44 / 54 ms | 65% |
-| color | 43.5 | 14.9 | 189 of 288 | 31.7 ms | 48 / 56 ms | 65% |
-| unicode | 38.6 | 13.6 | 166 of 256 | 32.1 ms | 48 / 70 ms | 56% |
-| typing | 30.7 | 18.2 | 83 of 204 | 26.5 ms | 45 / 57 ms | 56% |
+| workload | drawn fps / Herdr fps, before → after | revisions never drawn, before → after | arrival→draw p50, before → after | arrival→draw max, before → after | main busy, before → after |
+|---|---|---|---|---|---|
+| ascii | 16.8 / 43.5 → 42.5 / 42.5 | 177 → 0 | 44 → 2.7 ms | 68 → 7 ms | 65% → 9% |
+| color | 14.9 / 43.5 → 42.8 / 42.8 | 189 → 0 | 48 → 3.5 ms | 57 → 15 ms | 65% → 13% |
+| unicode | 13.6 / 38.6 → 42.7 / 42.7 | 166 → 0 | 48 → 2.4 ms | 273 → 18 ms | 56% → 9% |
+| typing | 18.2 / 30.7 → 30.5 / 30.5 | 83 → 0 | 45 → 2.7 ms | 429 → 5 ms | 56% → 5% |
 
-Layout dominates. It rebuilds the whole grid for every revision, even a one-cell patch, and it runs once for every surface delivered.
+xherdr now draws every frame Herdr sends. The frame rate is limited by Herdr, not by the app. After a clear or a tab switch, a cold layout of the whole grid takes about 5 ms at 311×80, down from about 28 ms.

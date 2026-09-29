@@ -402,11 +402,64 @@ final class HerdrEventStream {
     }
 }
 
+struct HerdrSurfaceLayout: Equatable {
+    let bootID: String
+    let paneIDs: [String]
+}
+
+/// Hands the newest surface from the stream thread to the main thread.
+final class HerdrSurfaceMailbox {
+    private let lock = NSLock()
+    private var pending: HerdrSurface?
+
+    /// Keeps `surface` as the newest one; returns true when the main thread must be woken.
+    func put(_ surface: HerdrSurface) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let wake = pending == nil
+        pending = surface
+        return wake
+    }
+
+    func take() -> HerdrSurface? {
+        lock.lock()
+        defer { lock.unlock() }
+        let surface = pending
+        pending = nil
+        return surface
+    }
+}
+
+/// Delivers each live surface to the terminal view that observes it, outside SwiftUI.
+@MainActor
+final class HerdrSurfaceFeed {
+    private(set) var surface: HerdrSurface?
+    private weak var observer: AnyObject?
+    private var handler: ((HerdrSurface?) -> Void)?
+
+    /// Makes `owner` the only observer, for as long as it lives.
+    func observe(_ owner: AnyObject, _ handler: @escaping (HerdrSurface?) -> Void) {
+        observer = owner
+        self.handler = handler
+    }
+
+    func publish(_ surface: HerdrSurface?) {
+        self.surface = surface
+        if observer == nil { handler = nil }
+        handler?(surface)
+    }
+}
+
 @MainActor
 final class HerdrStore: ObservableObject {
     @Published private(set) var snapshot: HerdrSnapshot?
     @Published private(set) var paneText: [String: String] = [:]
-    @Published private(set) var surface: HerdrSurface?
+    /// The live surface goes straight to the terminal view: publishing every frame would make
+    /// SwiftUI update the whole window at Herdr's frame rate.
+    let surfaceFeed = HerdrSurfaceFeed()
+    /// What the window needs to know about the live surface; it changes only with its panes.
+    @Published private(set) var surfaceLayout: HerdrSurfaceLayout?
+    var surface: HerdrSurface? { surfaceFeed.surface }
     @Published private(set) var surfaceError: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var inputError: String?
@@ -482,7 +535,7 @@ final class HerdrStore: ObservableObject {
         UserDefaults.standard.set(trimmed, forKey: Self.lastSessionKey)
         snapshot = nil
         paneText = [:]
-        surface = nil
+        setSurface(nil)
         surfaceError = nil
         selectedWorkspaceID = nil
         selectedTabID = nil
@@ -557,10 +610,11 @@ final class HerdrStore: ObservableObject {
             guard let store = self else { return }
             while !Task.isCancelled {
                 let stream = HerdrSurfaceStream()
+                let mailbox = HerdrSurfaceMailbox()
                 let size = await MainActor.run { () -> (Int, Int, Int, Int)? in
                     guard store.generation == currentGeneration else { return nil }
                     store.surfaceStream = stream
-                    store.surface = nil
+                    store.setSurface(nil)
                     return (store.surfaceCols, store.surfaceRows, store.cellWidth, store.cellHeight)
                 }
                 guard let size, !Task.isCancelled else { stream.cancel(); break }
@@ -577,17 +631,23 @@ final class HerdrStore: ObservableObject {
                             if let paneID = store.selectedPaneID { stream.focus(paneID: paneID) }
                         }
                     } onSurface: { newSurface in
-                        Task { @MainActor in
-                            guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
-                            store.surface = newSurface
-                            store.surfaceError = nil
-                            TerminalPipelineMetrics.shared?.delivered(newSurface)
+                        // Surfaces that arrive while the main thread is busy replace each other,
+                        // so it only ever shows the newest one.
+                        guard mailbox.put(newSurface) else { return }
+                        DispatchQueue.main.async {
+                            MainActor.assumeIsolated {
+                                guard let latest = mailbox.take(), store.generation == currentGeneration,
+                                      store.surfaceStream === stream else { return }
+                                store.setSurface(latest)
+                                if store.surfaceError != nil { store.surfaceError = nil }
+                                TerminalPipelineMetrics.shared?.delivered(latest)
+                            }
                         }
                     }
                 } catch {
                     await MainActor.run {
                         guard store.generation == currentGeneration else { return }
-                        store.surface = nil
+                        store.setSurface(nil)
                         store.surfaceError = String(describing: error)
                     }
                 }
@@ -595,6 +655,12 @@ final class HerdrStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
+    }
+
+    private func setSurface(_ surface: HerdrSurface?) {
+        surfaceFeed.publish(surface)
+        let layout = surface.map { HerdrSurfaceLayout(bootID: $0.bootID, paneIDs: $0.paneIDs) }
+        if layout != surfaceLayout { surfaceLayout = layout }
     }
 
     func stop() {
@@ -609,7 +675,7 @@ final class HerdrStore: ObservableObject {
         surfaceStream = nil
         surfaceTask?.cancel()
         surfaceTask = nil
-        surface = nil
+        setSurface(nil)
         inputTask?.cancel()
         inputTask = nil
         pendingInput = []

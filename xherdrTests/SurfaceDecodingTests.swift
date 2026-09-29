@@ -116,3 +116,36 @@ final class SurfaceTraceReplayTests: XCTestCase {
         if let lastKey { XCTAssertTrue(drawn.contains(lastKey), "the last revision received, \(lastKey), was never drawn") }
     }
 }
+
+/// Surfaces that arrive while the main thread is busy collapse into the newest one, and the
+/// newest one always reaches the view.
+@MainActor
+final class SurfaceDeliveryTests: XCTestCase {
+    private func surface(_ revision: UInt64) -> HerdrSurface {
+        var model = SurfaceModel(width: 4, height: 2)
+        model.revision = revision
+        return model.surface
+    }
+
+    func testMailboxWakesOnceAndKeepsNewest() {
+        let mailbox = HerdrSurfaceMailbox()
+        XCTAssertTrue(mailbox.put(surface(1)), "the first surface wakes the main thread")
+        XCTAssertFalse(mailbox.put(surface(2)), "a pending wake-up already covers later surfaces")
+        XCTAssertFalse(mailbox.put(surface(3)))
+        XCTAssertEqual(mailbox.take()?.revision, 3)
+        XCTAssertNil(mailbox.take())
+        XCTAssertTrue(mailbox.put(surface(4)), "a surface after the take wakes the main thread again")
+    }
+
+    func testFeedDeliversToLiveObserverOnly() {
+        let feed = HerdrSurfaceFeed()
+        var received: [UInt64] = []
+        var owner: NSObject? = NSObject()
+        feed.observe(owner!) { received.append($0?.revision ?? 0) }
+        feed.publish(surface(1))
+        owner = nil
+        feed.publish(surface(2))
+        XCTAssertEqual(received, [1])
+        XCTAssertEqual(feed.surface?.revision, 2)
+    }
+}

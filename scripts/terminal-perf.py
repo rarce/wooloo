@@ -128,7 +128,7 @@ def bench_report(path, baseline_path):
     rows = []
     for scenario in scenarios:
         row = [scenario]
-        for stage in ("decode", "layout", "draw", "burst"):
+        for stage in ("decode", "layout", "layout-cold", "draw", "burst"):
             record = results.get((scenario, stage), {})
             old = base.get((scenario, stage), {})
             row.append(fmt(record.get("p50_us"), 1) + change(record.get("p50_us"), old.get("p50_us")))
@@ -136,7 +136,7 @@ def bench_report(path, baseline_path):
         burst = results.get((scenario, "burst"), {})
         row.append(fmt(burst.get("fps"), 0) + change(burst.get("fps"), base.get((scenario, "burst"), {}).get("fps"), False))
         rows.append(row)
-    table(["scenario", "decode p50 µs", "p95", "layout p50 µs", "p95", "draw p50 µs", "p95",
+    table(["scenario", "decode p50 µs", "p95", "layout p50 µs", "p95", "cold layout p50 µs", "p95", "draw p50 µs", "p95",
            "frame p50 µs", "p95", "burst fps"], rows)
 
 
