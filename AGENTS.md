@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-The macOS app lives in `xherdr/`; `xherdr.xcodeproj` defines the `xherdr` scheme and includes Swift files explicitly. `ContentView.swift` assembles the interface, `HerdrConnection.swift` and `HerdrSurface.swift` handle the server and terminal surface, and `WorkspaceFiles.swift` handles local and SSH file and Git operations. Keep related views beside these files. Update `project.pbxproj` when adding a Swift source file. `docs/` contains implementation research, `Vendor/` contains pinned CodeEdit packages and licenses, and `TODO.md` tracks deferred work. There is no app asset catalog or test target yet.
+The macOS app lives in `xherdr/`; `xherdr.xcodeproj` defines the `xherdr` scheme and includes Swift files explicitly. `ContentView.swift` assembles the interface, `HerdrConnection.swift` and `HerdrSurface.swift` handle the server and terminal surface, and `WorkspaceFiles.swift` handles local and SSH file and Git operations. Keep related views beside these files. Update `project.pbxproj` when adding a Swift source file. `Assets.xcassets` contains the app icon, `docs/` contains implementation research, `Vendor/` contains pinned CodeEdit packages and licenses, and `TODO.md` tracks deferred work. There is no test target yet.
 
 ## Build, Test, and Development Commands
 
