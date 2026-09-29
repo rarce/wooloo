@@ -573,6 +573,10 @@ final class HerdrStore: ObservableObject {
         enqueueInput(paneID: paneID, event: .key(key))
     }
 
+    func sendMouse(_ mouse: HerdrMouseEvent, to paneID: String) {
+        enqueueInput(paneID: paneID, event: .mouse(mouse))
+    }
+
     private func enqueueInput(paneID: String, event: HerdrInputEvent) {
         guard isConnected else { return }
         pendingInput.append((paneID, event))
@@ -599,6 +603,8 @@ final class HerdrStore: ObservableObject {
                 case .key(let value):
                     text = nil
                     keys = [value]
+                case .mouse:
+                    continue // JSON pane.send_input has no mouse event field.
                 }
                 let result = await Task.detached(priority: .userInitiated) {
                     Result { try HerdrSocket.sendInput(path: path, paneID: item.paneID, text: text, keys: keys) }

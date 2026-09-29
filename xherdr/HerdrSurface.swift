@@ -26,7 +26,9 @@ struct HerdrSurface: Equatable {
     var cells: [HerdrCell]
     var cursor: HerdrCursor?
     let paneIDs: [String]
-    let paneRects: [String: HerdrRect]
+    var paneRects: [String: HerdrRect]
+    var paneInnerRects: [String: HerdrRect]
+    var mouseReportingPaneIDs: Set<String>
 }
 
 private enum SurfaceProtocolError: Error {
@@ -111,19 +113,22 @@ private struct SurfaceReader {
         return HerdrCursor(x: x, y: y, visible: visible, shape: shape)
     }
 
-    mutating func pane() throws -> (String, HerdrRect) {
+    mutating func pane() throws -> (String, HerdrRect, HerdrRect, Bool) {
         let paneID = try string()
         _ = try number() // content revision
         let paneRect = try rect()
-        _ = try rect()
+        let innerRect = try rect()
         _ = try optional { reader in try reader.rect() }
         _ = try optional { reader in
             for _ in 0..<3 { _ = try reader.number() }
         }
-        for _ in 0..<4 { _ = try byte() }
+        _ = try byte() // focused
+        let mouseReporting = try byte() != 0
+        _ = try byte() // sgr pixel mouse
+        _ = try byte() // alternate screen
         _ = try number()
         _ = try number()
-        return (paneID, paneRect)
+        return (paneID, paneRect, innerRect, mouseReporting)
     }
 
     mutating func surface() throws -> HerdrSurface {
@@ -143,16 +148,21 @@ private struct SurfaceReader {
         for _ in 0..<(try count()) { _ = try byte() } // legacy graphics bytes
         var paneIDs: [String] = []
         var paneRects: [String: HerdrRect] = [:]
+        var paneInnerRects: [String: HerdrRect] = [:]
+        var mouseReportingPaneIDs: Set<String> = []
         for _ in 0..<(try count()) {
-            let (id, rect) = try pane()
+            let (id, rect, innerRect, mouseReporting) = try pane()
             paneIDs.append(id)
             paneRects[id] = rect
+            paneInnerRects[id] = innerRect
+            if mouseReporting { mouseReportingPaneIDs.insert(id) }
         }
         // Split handles, popups, and graphics follow. The screen cells and pane
         // metadata above are complete independently of those optional layers.
         return HerdrSurface(bootID: bootID, projectionRevision: projectionRevision,
                             revision: revision, width: width, height: height,
-                            cells: cells, cursor: cursor, paneIDs: paneIDs, paneRects: paneRects)
+                            cells: cells, cursor: cursor, paneIDs: paneIDs, paneRects: paneRects,
+                            paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs)
     }
 
     mutating func applyPatch(to surface: inout HerdrSurface) throws {
@@ -173,7 +183,17 @@ private struct SurfaceReader {
                 surface.cells[y * surface.width + x + offset] = try cell()
             }
         }
-        for _ in 0..<(try count()) { _ = try pane() }
+        for _ in 0..<(try count()) {
+            let (id, rect, innerRect, mouseReporting) = try pane()
+            guard surface.paneRects[id] != nil else { throw SurfaceProtocolError.invalidFrame }
+            surface.paneRects[id] = rect
+            surface.paneInnerRects[id] = innerRect
+            if mouseReporting {
+                surface.mouseReportingPaneIDs.insert(id)
+            } else {
+                surface.mouseReportingPaneIDs.remove(id)
+            }
+        }
         surface.cursor = try optional { reader in try reader.cursor() }
         surface.revision = revision
     }
@@ -211,6 +231,22 @@ private enum SurfaceWriter {
             payload += number(1) + string(value)
         case .paste(let value):
             payload += number(3) + string(value)
+        case .mouse(let mouse):
+            payload += number(2)
+            switch mouse.kind {
+            case .down(let button): payload += number(0) + number(button)
+            case .up(let button): payload += number(1) + number(button)
+            case .drag(let button): payload += number(2) + number(button)
+            case .scrollUp: payload += number(4)
+            case .scrollDown: payload += number(5)
+            case .scrollLeft: payload += number(6)
+            case .scrollRight: payload += number(7)
+            }
+            payload += number(0) // ClientMousePosition::Cell
+            payload += number(UInt64(mouse.column)) + number(UInt64(mouse.row))
+            payload.append(0) // geometry: None
+            payload.append(mouse.modifiers)
+            payload += number(UInt64(mouse.lines))
         case .key(let name):
             let parts = name.lowercased().split(separator: "+").map(String.init)
             guard let key = parts.last else { return nil }
@@ -259,6 +295,25 @@ enum HerdrInputEvent {
     case text(String)
     case paste(String)
     case key(String)
+    case mouse(HerdrMouseEvent)
+}
+
+struct HerdrMouseEvent {
+    enum Kind {
+        case down(UInt64)
+        case up(UInt64)
+        case drag(UInt64)
+        case scrollUp
+        case scrollDown
+        case scrollLeft
+        case scrollRight
+    }
+
+    let kind: Kind
+    let column: UInt16
+    let row: UInt16
+    let modifiers: UInt8
+    let lines: UInt16
 }
 
 final class HerdrSurfaceStream {

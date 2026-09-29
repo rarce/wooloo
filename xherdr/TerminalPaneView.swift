@@ -16,6 +16,7 @@ struct TerminalPaneView: NSViewRepresentable {
     let sendText: (String, String) -> Void
     let sendPaste: (String, String) -> Void
     let sendKey: (String, String) -> Void
+    let sendMouse: (HerdrMouseEvent, String) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -31,6 +32,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.sendText = sendText
         view.sendPaste = sendPaste
         view.sendKey = sendKey
+        view.sendMouse = sendMouse
         view.selectPane = selectPane
         view.isRichText = false
         view.isEditable = true
@@ -55,6 +57,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.sendText = sendText
         view.sendPaste = sendPaste
         view.sendKey = sendKey
+        view.sendMouse = sendMouse
         view.selectPane = selectPane
         view.surface = surface
         if let surface {
@@ -145,20 +148,140 @@ private final class HerdrTerminalTextView: NSTextView {
     var sendText: ((String, String) -> Void)?
     var sendPaste: ((String, String) -> Void)?
     var sendKey: ((String, String) -> Void)?
+    var sendMouse: ((HerdrMouseEvent, String) -> Void)?
+    private var heldMouse: (paneID: String, button: UInt64)?
+    private var scrollRemainder: CGFloat = 0
 
     override func mouseDown(with event: NSEvent) {
         if let surface {
-            let point = convert(event.locationInWindow, from: nil)
-            let x = Int((point.x - textContainerInset.width) / TerminalPaneView.cellWidth)
-            let y = Int((point.y - textContainerInset.height) / TerminalPaneView.cellHeight)
-            if let id = surface.paneIDs.first(where: { id in
-                guard let rect = surface.paneRects[id] else { return false }
-                return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
-            }) {
+            if let (id, _, _) = mouseHit(event, in: surface) {
                 selectPane?(id)
             }
         }
+        if !event.modifierFlags.contains(.shift),
+           forwardMouse(.down(0), event: event, hold: true) { return }
         super.mouseDown(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if releaseMouse(button: 0, event: event) { return }
+        super.mouseUp(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        if dragMouse(button: 0, event: event) { return }
+        super.mouseDragged(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        if forwardMouse(.down(1), event: event, hold: true) { return }
+        super.rightMouseDown(with: event)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        if releaseMouse(button: 1, event: event) { return }
+        super.rightMouseUp(with: event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        if dragMouse(button: 1, event: event) { return }
+        super.rightMouseDragged(with: event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        if event.buttonNumber == 2, forwardMouse(.down(2), event: event, hold: true) { return }
+        super.otherMouseDown(with: event)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        if event.buttonNumber == 2, releaseMouse(button: 2, event: event) { return }
+        super.otherMouseUp(with: event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        if event.buttonNumber == 2, dragMouse(button: 2, event: event) { return }
+        super.otherMouseDragged(with: event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let surface, let (id, column, row) = mouseHit(event, in: surface),
+              surface.mouseReportingPaneIDs.contains(id) else {
+            scrollRemainder = 0
+            super.scrollWheel(with: event)
+            return
+        }
+        let vertical = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
+        let delta = vertical ? event.scrollingDeltaY : event.scrollingDeltaX
+        let lines: UInt16
+        if event.hasPreciseScrollingDeltas {
+            scrollRemainder += delta
+            let count = Int(abs(scrollRemainder) / TerminalPaneView.cellHeight)
+            guard count > 0 else { return }
+            lines = UInt16(min(count, 20))
+            scrollRemainder -= CGFloat(lines) * TerminalPaneView.cellHeight * (scrollRemainder > 0 ? 1 : -1)
+        } else {
+            lines = UInt16(max(1, min(Int(abs(delta).rounded()), 20)))
+        }
+        let kind: HerdrMouseEvent.Kind = vertical
+            ? (delta > 0 ? .scrollUp : .scrollDown)
+            : (delta > 0 ? .scrollLeft : .scrollRight)
+        sendMouse?(HerdrMouseEvent(kind: kind, column: column, row: row,
+                                   modifiers: mouseModifiers(event), lines: lines), id)
+    }
+
+    private func mouseHit(_ event: NSEvent, in surface: HerdrSurface) -> (String, UInt16, UInt16)? {
+        let point = convert(event.locationInWindow, from: nil)
+        let x = Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth))
+        let y = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
+        guard let id = surface.paneIDs.first(where: { id in
+            guard let rect = surface.paneRects[id] else { return false }
+            return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+        }), let inner = surface.paneInnerRects[id], inner.width > 0, inner.height > 0 else { return nil }
+        let column = UInt16(clamping: max(0, min(x - inner.x, inner.width - 1)))
+        let row = UInt16(clamping: max(0, min(y - inner.y, inner.height - 1)))
+        return (id, column, row)
+    }
+
+    private func mouseModifiers(_ event: NSEvent) -> UInt8 {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        var value: UInt8 = 0
+        if flags.contains(.shift) { value |= 1 }
+        if flags.contains(.control) { value |= 2 }
+        if flags.contains(.option) { value |= 4 }
+        return value
+    }
+
+    private func forwardMouse(_ kind: HerdrMouseEvent.Kind, event: NSEvent, hold: Bool) -> Bool {
+        guard let surface, let (id, column, row) = mouseHit(event, in: surface),
+              surface.mouseReportingPaneIDs.contains(id) else { return false }
+        window?.makeFirstResponder(self)
+        if hold, case .down(let button) = kind { heldMouse = (id, button) }
+        sendMouse?(HerdrMouseEvent(kind: kind, column: column, row: row,
+                                   modifiers: mouseModifiers(event), lines: 1), id)
+        return true
+    }
+
+    private func dragMouse(button: UInt64, event: NSEvent) -> Bool {
+        guard let heldMouse, heldMouse.button == button else { return false }
+        return forwardHeldMouse(.drag(button), event: event, to: heldMouse.paneID)
+    }
+
+    private func releaseMouse(button: UInt64, event: NSEvent) -> Bool {
+        guard let heldMouse, heldMouse.button == button else { return false }
+        self.heldMouse = nil
+        return forwardHeldMouse(.up(button), event: event, to: heldMouse.paneID)
+    }
+
+    private func forwardHeldMouse(_ kind: HerdrMouseEvent.Kind, event: NSEvent, to id: String) -> Bool {
+        guard let surface, let inner = surface.paneInnerRects[id], inner.width > 0, inner.height > 0 else { return true }
+        let point = convert(event.locationInWindow, from: nil)
+        let x = Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth))
+        let y = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
+        sendMouse?(HerdrMouseEvent(kind: kind,
+                                   column: UInt16(clamping: max(0, min(x - inner.x, inner.width - 1))),
+                                   row: UInt16(clamping: max(0, min(y - inner.y, inner.height - 1))),
+                                   modifiers: mouseModifiers(event), lines: 1), id)
+        return true
     }
 
     override func keyDown(with event: NSEvent) {
