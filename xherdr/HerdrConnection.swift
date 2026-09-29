@@ -577,6 +577,13 @@ final class HerdrStore: ObservableObject {
         enqueueInput(paneID: paneID, event: .mouse(mouse))
     }
 
+    func setSplitRatio(path: [Bool], ratio: Double) {
+        guard let tabID = selectedTabID, ratio.isFinite else { return }
+        if surfaceStream?.setSplitRatio(tabID: tabID, path: path, ratio: ratio) != true {
+            surfaceError = "Herdr split resize is unavailable"
+        }
+    }
+
     private func enqueueInput(paneID: String, event: HerdrInputEvent) {
         guard isConnected else { return }
         pendingInput.append((paneID, event))

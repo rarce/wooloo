@@ -17,6 +17,19 @@ struct HerdrCursor: Equatable {
     let shape: UInt8
 }
 
+struct HerdrSplit: Equatable {
+    enum Direction: Equatable {
+        case horizontal
+        case vertical
+    }
+
+    let direction: Direction
+    let pos: Int
+    let area: HerdrRect
+    let hitRect: HerdrRect
+    let path: [Bool]
+}
+
 struct HerdrSurface: Equatable {
     let bootID: String
     let projectionRevision: UInt64
@@ -29,6 +42,7 @@ struct HerdrSurface: Equatable {
     var paneRects: [String: HerdrRect]
     var paneInnerRects: [String: HerdrRect]
     var mouseReportingPaneIDs: Set<String>
+    let splits: [HerdrSplit]
 }
 
 private enum SurfaceProtocolError: Error {
@@ -131,6 +145,27 @@ private struct SurfaceReader {
         return (paneID, paneRect, innerRect, mouseReporting)
     }
 
+    mutating func split() throws -> HerdrSplit {
+        let direction: HerdrSplit.Direction
+        switch try number() {
+        case 0: direction = .horizontal
+        case 1: direction = .vertical
+        default: throw SurfaceProtocolError.invalidFrame
+        }
+        let pos = try Int(number())
+        let area = try rect()
+        let hitRect = try rect()
+        var path: [Bool] = []
+        for _ in 0..<(try count()) {
+            switch try byte() {
+            case 0: path.append(false)
+            case 1: path.append(true)
+            default: throw SurfaceProtocolError.invalidFrame
+            }
+        }
+        return HerdrSplit(direction: direction, pos: pos, area: area, hitRect: hitRect, path: path)
+    }
+
     mutating func surface() throws -> HerdrSurface {
         let bootID = try string()
         let projectionRevision = try number()
@@ -157,12 +192,14 @@ private struct SurfaceReader {
             paneInnerRects[id] = innerRect
             if mouseReporting { mouseReportingPaneIDs.insert(id) }
         }
-        // Split handles, popups, and graphics follow. The screen cells and pane
-        // metadata above are complete independently of those optional layers.
+        var splits: [HerdrSplit] = []
+        for _ in 0..<(try count()) { splits.append(try split()) }
+        // Popups and graphics follow the split handles and are decoded separately.
         return HerdrSurface(bootID: bootID, projectionRevision: projectionRevision,
                             revision: revision, width: width, height: height,
                             cells: cells, cursor: cursor, paneIDs: paneIDs, paneRects: paneRects,
-                            paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs)
+                            paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs,
+                            splits: splits)
     }
 
     mutating func applyPatch(to surface: inout HerdrSurface) throws {
@@ -352,15 +389,23 @@ final class HerdrSurfaceStream {
         request(method: "workspace.focus", params: ["workspace_id": workspaceID])
     }
 
-    private func request(method: String, params: [String: Any]) {
+    @discardableResult
+    func setSplitRatio(tabID: String, path: [Bool], ratio: Double) -> Bool {
+        request(method: "layout.set_split_ratio", params: [
+            "tab_id": tabID, "path": path, "ratio": ratio
+        ])
+    }
+
+    @discardableResult
+    private func request(method: String, params: [String: Any]) -> Bool {
         lock.lock()
         let boot = bootID
         lock.unlock()
         guard let boot,
               let json = try? JSONSerialization.data(withJSONObject: [
                 "id": UUID().uuidString, "method": method, "params": params
-              ]), let request = String(data: json, encoding: .utf8) else { return }
-        _ = send(SurfaceWriter.number(15) + SurfaceWriter.string(boot) + SurfaceWriter.string(request))
+              ]), let request = String(data: json, encoding: .utf8) else { return false }
+        return send(SurfaceWriter.number(15) + SurfaceWriter.string(boot) + SurfaceWriter.string(request))
     }
 
     var isReady: Bool {

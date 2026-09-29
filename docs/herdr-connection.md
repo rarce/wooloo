@@ -26,7 +26,9 @@ This was validated against `xherdr-ui-test` by creating a workspace, tabs, and a
 
 An AppKit text view captures keyboard input and paste without editing the displayed screen. A serialized queue sends `TextCommit`, `Paste`, and semantic `Key` events to the selected pane through the client endpoint. When that endpoint is unavailable, the queue uses JSON `pane.send_input`. The shell was checked with typed commands, Enter, Backspace, paste, and Ctrl+C in `xherdr-ui-test`. The live endpoint was also checked with colored shell output, a split tab with input directed to its right pane, and a full-screen Codex pane.
 
-The pane surface supplies its inner rectangle and `mouse_reporting` flag. When mouse reporting is active, clicks, releases, drags, and wheel events go to that pane as cell-relative semantic mouse events; Shift-click keeps native text selection available. The input remains local to `herdr-client.sock` and is skipped while the endpoint is unavailable because JSON `pane.send_input` has no mouse field. A test program in `xherdr-ui-test` enabled DEC mouse mode and received SGR press, release, and wheel sequences. Image placements, split-handle dragging, and popup layers remain to implement. See [Protocol stability](https://herdr.dev/docs/socket-api/#protocol-stability) and [Reading panes](https://herdr.dev/docs/socket-api/#reading-panes).
+The pane surface supplies its inner rectangle and `mouse_reporting` flag. When mouse reporting is active, clicks, releases, drags, and wheel events go to that pane as cell-relative semantic mouse events; Shift-click keeps native text selection available. The input remains local to `herdr-client.sock` and is skipped while the endpoint is unavailable because JSON `pane.send_input` has no mouse field. A test program in `xherdr-ui-test` enabled DEC mouse mode and received SGR press, release, and wheel sequences.
+
+The surface also supplies split handle areas, hit rectangles, and paths. Dragging a handle sends `layout.set_split_ratio` over the endpoint, capped at about 30 updates per second with a final update on release. The server owns the layout; xherdr redraws from the next surface. In `xherdr-ui-test`, dragging both split orientations changed the ratios reported by `session.snapshot`. Image placements and popup layers remain to implement. See [Protocol stability](https://herdr.dev/docs/socket-api/#protocol-stability) and [Reading panes](https://herdr.dev/docs/socket-api/#reading-panes).
 
 The suitability and integration boundary for [SwiftTerm](swiftterm-evaluation.md) are documented separately.
 
@@ -34,8 +36,8 @@ The surface decoder follows the frozen generation-1 field order in Herdr 0.9.1. 
 
 ## Implementation order
 
-1. Add mouse reporting, native image placements, and split-handle dragging.
-2. Add hyperlink actions and terminal selection behavior.
+1. Add terminal selection and copy behavior that survives surface updates, plus hyperlink actions.
+2. Render native image placements and popup layers.
 3. Add optional remote sessions after local behavior is stable.
 
 Validate against a running Herdr server with `herdr status`, `herdr api schema --json`, and `herdr api snapshot`. These commands should be used as local diagnostics; no server state needs to be changed for the initial connection.

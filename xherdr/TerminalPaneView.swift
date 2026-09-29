@@ -17,6 +17,7 @@ struct TerminalPaneView: NSViewRepresentable {
     let sendPaste: (String, String) -> Void
     let sendKey: (String, String) -> Void
     let sendMouse: (HerdrMouseEvent, String) -> Void
+    let setSplitRatio: ([Bool], Double) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -33,6 +34,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.sendPaste = sendPaste
         view.sendKey = sendKey
         view.sendMouse = sendMouse
+        view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
         view.isRichText = false
         view.isEditable = true
@@ -58,8 +60,11 @@ struct TerminalPaneView: NSViewRepresentable {
         view.sendPaste = sendPaste
         view.sendKey = sendKey
         view.sendMouse = sendMouse
+        view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
+        let splitsChanged = view.surface?.splits != surface?.splits
         view.surface = surface
+        if splitsChanged { scrollView.window?.invalidateCursorRects(for: view) }
         if let surface {
             guard view.surfaceRevision != surface.revision || view.surfaceBootID != surface.bootID else { return }
             view.surfaceRevision = surface.revision
@@ -149,11 +154,35 @@ private final class HerdrTerminalTextView: NSTextView {
     var sendPaste: ((String, String) -> Void)?
     var sendKey: ((String, String) -> Void)?
     var sendMouse: ((HerdrMouseEvent, String) -> Void)?
+    var setSplitRatio: (([Bool], Double) -> Void)?
     private var heldMouse: (paneID: String, button: UInt64)?
     private var scrollRemainder: CGFloat = 0
+    private var splitDrag: (split: HerdrSplit, grabOffset: Int, bootID: String,
+                            lastSentAt: Double, lastRatio: Double?)?
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let surface else { return }
+        for split in surface.splits {
+            let rect = split.hitRect
+            guard rect.width > 0, rect.height > 0 else { continue }
+            addCursorRect(NSRect(x: textContainerInset.width + CGFloat(rect.x) * TerminalPaneView.cellWidth,
+                                 y: textContainerInset.height + CGFloat(rect.y) * TerminalPaneView.cellHeight,
+                                 width: CGFloat(rect.width) * TerminalPaneView.cellWidth,
+                                 height: CGFloat(rect.height) * TerminalPaneView.cellHeight),
+                          cursor: split.direction == .horizontal ? .resizeLeftRight : .resizeUpDown)
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
         if let surface {
+            if let split = splitHit(event, in: surface) {
+                let (x, y) = surfacePoint(event)
+                let pointer = split.direction == .horizontal ? x : y
+                splitDrag = (split, split.pos - pointer, surface.bootID, 0, nil)
+                window?.makeFirstResponder(self)
+                return
+            }
             if let (id, _, _) = mouseHit(event, in: surface) {
                 selectPane?(id)
             }
@@ -164,13 +193,62 @@ private final class HerdrTerminalTextView: NSTextView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if splitDrag != nil {
+            updateSplitDrag(with: event, finished: true)
+            splitDrag = nil
+            return
+        }
         if releaseMouse(button: 0, event: event) { return }
         super.mouseUp(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if splitDrag != nil {
+            updateSplitDrag(with: event, finished: false)
+            return
+        }
         if dragMouse(button: 0, event: event) { return }
         super.mouseDragged(with: event)
+    }
+
+    private func surfacePoint(_ event: NSEvent) -> (Int, Int) {
+        let point = convert(event.locationInWindow, from: nil)
+        return (Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth)),
+                Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight)))
+    }
+
+    private func splitHit(_ event: NSEvent, in surface: HerdrSurface) -> HerdrSplit? {
+        let (x, y) = surfacePoint(event)
+        return surface.splits.first { split in
+            let rect = split.hitRect
+            return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+        }
+    }
+
+    private func updateSplitDrag(with event: NSEvent, finished: Bool) {
+        guard var drag = splitDrag, let surface,
+              surface.bootID == drag.bootID,
+              surface.splits.contains(where: {
+                  $0.path == drag.split.path && $0.direction == drag.split.direction && $0.area == drag.split.area
+              }) else {
+            splitDrag = nil
+            return
+        }
+        let (x, y) = surfacePoint(event)
+        let split = drag.split
+        let pointer = split.direction == .horizontal ? x : y
+        let origin = split.direction == .horizontal ? split.area.x : split.area.y
+        let length = max(1, split.direction == .horizontal ? split.area.width : split.area.height)
+        let ratio = min(0.9, max(0.1, Double(pointer + drag.grabOffset - origin) / Double(length)))
+        let now = ProcessInfo.processInfo.systemUptime
+        if finished || now - drag.lastSentAt >= 0.033 {
+            if drag.lastRatio != ratio {
+                setSplitRatio?(split.path, ratio)
+                drag.lastRatio = ratio
+            }
+            drag.lastSentAt = now
+        }
+        splitDrag = drag
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -230,9 +308,7 @@ private final class HerdrTerminalTextView: NSTextView {
     }
 
     private func mouseHit(_ event: NSEvent, in surface: HerdrSurface) -> (String, UInt16, UInt16)? {
-        let point = convert(event.locationInWindow, from: nil)
-        let x = Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth))
-        let y = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
+        let (x, y) = surfacePoint(event)
         guard let id = surface.paneIDs.first(where: { id in
             guard let rect = surface.paneRects[id] else { return false }
             return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height

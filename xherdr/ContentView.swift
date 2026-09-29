@@ -217,7 +217,8 @@ struct ContentView: View {
                             sendText: { text, id in herdr.sendText(text, to: id) },
                             sendPaste: { text, id in herdr.sendPaste(text, to: id) },
                             sendKey: { key, id in herdr.sendKey(key, to: id) },
-                            sendMouse: { mouse, id in herdr.sendMouse(mouse, to: id) }
+                            sendMouse: { mouse, id in herdr.sendMouse(mouse, to: id) },
+                            setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) }
                         )
                         .onAppear { resizeSurface(to: geometry.size) }
                         .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }
@@ -278,7 +279,8 @@ struct ContentView: View {
                 sendText: { text, id in herdr.sendText(text, to: id) },
                 sendPaste: { text, id in herdr.sendPaste(text, to: id) },
                 sendKey: { key, id in herdr.sendKey(key, to: id) },
-                sendMouse: { mouse, id in herdr.sendMouse(mouse, to: id) }
+                sendMouse: { mouse, id in herdr.sendMouse(mouse, to: id) },
+                setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) }
             )
             .id(pane.paneID)
         }
