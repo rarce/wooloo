@@ -70,6 +70,17 @@ struct WorkspaceFileListing {
 struct WorkspaceFileContents {
     let text: String
     let version: String
+    /// Patches of a changed file by scope, for `.change` documents.
+    var patches: [WorkspaceDiffScope: String] = [:]
+}
+
+/// Which changes a file's diff shows. `.staged` and `.unstaged` exist only when a file has both.
+enum WorkspaceDiffScope: String, CaseIterable, Identifiable {
+    case all = "All"
+    case staged = "Staged"
+    case unstaged = "Unstaged"
+
+    var id: Self { self }
 }
 
 struct WorkspaceCommit: Identifiable {
@@ -320,19 +331,55 @@ enum WorkspaceFiles {
         return gitBlobHash(data)
     }
 
-    static func diff(_ path: String, at location: WorkspaceFileLocation) throws -> String {
+    /// A changed file's patches. `.all` compares HEAD with the working tree; `.staged` and
+    /// `.unstaged` are added when the file has both kinds of changes.
+    static func diff(_ path: String, at location: WorkspaceFileLocation) throws -> [WorkspaceDiffScope: String] {
         try validateRelativePath(path)
-        let staged = try git(location, ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--", path], limit: maximumDiffBytes)
-        let unstaged = try git(location, ["diff", "--no-ext-diff", "--no-textconv", "--", path], limit: maximumDiffBytes)
-        let parts = [staged, unstaged].compactMap { String(data: $0, encoding: .utf8) }.filter { !$0.isEmpty }
-        if !parts.isEmpty { return parts.joined(separator: "\n") }
+        let options = ["--no-ext-diff", "--no-textconv", "--"]
+        func patch(_ args: [String]) throws -> String {
+            String(data: try git(location, ["diff"] + args + options + [path], limit: maximumDiffBytes), encoding: .utf8) ?? ""
+        }
+        let staged = try patch(["--cached"])
+        let unstaged = try patch([])
+        if !staged.isEmpty && !unstaged.isEmpty {
+            let hasHead = (try? git(location, ["rev-parse", "--verify", "--quiet", "HEAD"], limit: 1_000)) != nil
+            let base = hasHead ? "HEAD" : String(decoding: try git(location, ["hash-object", "-t", "tree", "/dev/null"], limit: 1_000),
+                                                 as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            return [.all: try patch([base]), .staged: staged, .unstaged: unstaged]
+        }
+        if !staged.isEmpty || !unstaged.isEmpty { return [.all: staged + unstaged] }
         if (try? git(location, ["ls-files", "--error-unmatch", "--", path], limit: 1_000)) == nil,
            let file = try? read(path, at: location) {
             let lines = file.text.split(separator: "\n", omittingEmptySubsequences: false)
-            return "--- /dev/null\n+++ b/\(path)\n@@ -0,0 +1,\(lines.count) @@\n"
-                + lines.map { "+" + $0 }.joined(separator: "\n")
+            return [.all: "--- /dev/null\n+++ b/\(path)\n@@ -0,0 +1,\(lines.count) @@\n"
+                + lines.map { "+" + $0 }.joined(separator: "\n")]
         }
-        return "No text diff available. Open the file to view its contents."
+        return [.all: "No text diff available. Open the file to view its contents."]
+    }
+
+    /// The whole file before and after a patch, for syntax highlighting and expanding unchanged lines.
+    /// A side is nil when it doesn't exist, isn't UTF-8 text, or is too large.
+    static func diffSides(_ path: String, originalPath: String?, commit: String?, scope: WorkspaceDiffScope,
+                          at location: WorkspaceFileLocation) -> (old: String?, new: String?) {
+        guard (try? validateRelativePath(path)) != nil,
+              originalPath.map({ (try? validateRelativePath($0)) != nil }) ?? true else { return (nil, nil) }
+        if let commit {
+            guard (try? validateCommit(commit)) != nil else { return (nil, nil) }
+            // Commit paths are relative to the repository root, like `diff-tree` output.
+            return (blob("\(commit)^:\(originalPath ?? path)", at: location), blob("\(commit):\(path)", at: location))
+        }
+        let worktree = { (try? read(path, at: location))?.text }
+        switch scope {
+        case .all: return (blob("HEAD:./\(path)", at: location), worktree())
+        case .staged: return (blob("HEAD:./\(path)", at: location), blob(":./\(path)", at: location))
+        case .unstaged: return (blob(":./\(path)", at: location), worktree())
+        }
+    }
+
+    private static func blob(_ revision: String, at location: WorkspaceFileLocation) -> String? {
+        guard let data = try? git(location, ["cat-file", "blob", revision], limit: maximumFileBytes),
+              !data.contains(0) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {

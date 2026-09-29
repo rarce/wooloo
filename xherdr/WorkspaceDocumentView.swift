@@ -44,9 +44,18 @@ struct WorkspaceDocument: Identifiable {
     }
     /// Markdown files open as a rendered preview; a reveal (e.g. a search match) shows the source.
     var markdownMode: MarkdownDisplayMode = .preview
+    /// A `.change` document's patches; more than one when the file has staged and unstaged changes.
+    var diffPatches: [WorkspaceDiffScope: String] = [:]
+    var diffScope: WorkspaceDiffScope = .all
 
     var id: String { "\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)" }
     var isDirty: Bool { kind == .file && text != savedText }
+    /// The patch a diff document shows.
+    var patch: String { diffPatches[diffScope] ?? text }
+    var diffSource: DiffSource {
+        DiffSource(location: location, path: path, originalPath: originalPath, commit: commit,
+                   scope: kind == .change ? diffScope : .all)
+    }
     var title: String {
         let name = (path as NSString).lastPathComponent
         return commit.map { "\(name) @ \($0.prefix(7))" } ?? name
@@ -61,6 +70,7 @@ struct WorkspaceDocumentView: View {
     var onOpenFile: (String) -> Void = { _ in }
     @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
     @State private var revealCoordinator = EditorRevealCoordinator()
+    @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
 
     private var language: CodeLanguage {
         CodeLanguage.detectLanguageFrom(
@@ -99,6 +109,28 @@ struct WorkspaceDocumentView: View {
                     .labelsHidden()
                     .frame(width: 210)
                     .help("Show the Markdown source, the rendered preview, or both")
+                }
+                if document.diffPatches.count > 1 {
+                    Picker("Changes", selection: $document.diffScope) {
+                        ForEach(WorkspaceDiffScope.allCases) { scope in
+                            Text(scope.rawValue).tag(scope)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 210)
+                    .help("Show all changes since the last commit, only staged changes, or only unstaged changes")
+                }
+                if document.kind != .file {
+                    Picker("View", selection: $diffMode) {
+                        ForEach(DiffDisplayMode.allCases) { mode in
+                            Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 160)
+                    .help("Show changes in one column or old and new side by side")
                 }
                 if document.kind == .file {
                     Button("Save") { onSave() }
@@ -139,24 +171,7 @@ struct WorkspaceDocumentView: View {
                     }
                 }
             } else {
-                GeometryReader { viewport in
-                    ScrollView([.vertical, .horizontal]) {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(document.text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
-                                Text(String(line).isEmpty ? " " : String(line))
-                                    .font(.system(size: typography.code, design: .monospaced))
-                                    .foregroundStyle(diffColor(String(line)))
-                                    .fixedSize(horizontal: true, vertical: false)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 1)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(diffBackground(String(line)))
-                            }
-                        }
-                        .frame(minWidth: viewport.size.width, alignment: .leading)
-                        .textSelection(.enabled)
-                    }
-                }
+                WorkspaceDiffView(text: document.patch, source: document.diffSource, mode: diffMode)
             }
             Divider()
             HStack {
@@ -208,21 +223,6 @@ struct WorkspaceDocumentView: View {
         cursorPositions = [CursorPosition(range: selection)]
         document.reveal = nil
         DispatchQueue.main.async { revealCoordinator.scrollSelectionToVisible() }
-    }
-
-    private func diffColor(_ line: String) -> Color {
-        if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") { return theme.accent }
-        if line.hasPrefix("@@") { return theme.diffHunk }
-        if line.hasPrefix("+") { return theme.diffAdded }
-        if line.hasPrefix("-") { return theme.diffRemoved }
-        return .primary
-    }
-
-    private func diffBackground(_ line: String) -> Color {
-        if line.hasPrefix("+") && !line.hasPrefix("+++") { return theme.diffAdded.opacity(0.1) }
-        if line.hasPrefix("-") && !line.hasPrefix("---") { return theme.diffRemoved.opacity(0.1) }
-        if line.hasPrefix("@@") { return theme.diffHunk.opacity(0.1) }
-        return .clear
     }
 }
 

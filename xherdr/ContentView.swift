@@ -781,7 +781,8 @@ struct ContentView: View {
                             commit, path: path, originalPath: originalPath, at: location), version: "")
                     }
                     if kind == .change {
-                        return WorkspaceFileContents(text: try WorkspaceFiles.diff(path, at: location), version: "")
+                        let patches = try WorkspaceFiles.diff(path, at: location)
+                        return WorkspaceFileContents(text: patches[.all] ?? "", version: "", patches: patches)
                     }
                     return try WorkspaceFiles.read(path, at: location)
                 }
@@ -793,6 +794,8 @@ struct ContentView: View {
                 documents[index].text = content.text
                 documents[index].savedText = content.text
                 documents[index].version = content.version
+                documents[index].diffPatches = content.patches
+                if content.patches[documents[index].diffScope] == nil { documents[index].diffScope = .all }
             case .failure(let failure):
                 documents[index].error = failure.localizedDescription
             }
