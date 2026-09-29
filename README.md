@@ -16,4 +16,12 @@ The direction is simple:
 
 ## Status
 
-xherdr is at the beginning of development. This repository does not yet contain an app or installation instructions. The interface and feature set will take shape as the project is built.
+xherdr is at the beginning of development. The SwiftUI app has a left sidebar for spaces and agents, workspace tabs, and terminal pane layouts. It starts with the dedicated Herdr test session `xherdr-ui-test`, subscribes to server events, reads visible pane text, and can send a line of input to a pane. The toolbar accepts another named session; `default` is excluded by this build. The interface follows Herdr's [workspace, tab, pane, and agent model](https://herdr.dev/docs/concepts/) and the layout shown on [herdr.dev](https://herdr.dev/).
+
+Pane output currently uses `pane.read`, so full terminal colors, cursor behavior, graphics, and key-by-key interaction still require Herdr's terminal surface protocol.
+
+The proposed server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md).
+
+## Run locally
+
+Start an isolated test server with `herdr --session xherdr-ui-test server`. In another terminal, create a test workspace with `herdr --session xherdr-ui-test workspace create --cwd "$PWD" --label xherdr-test`. Then open `xherdr.xcodeproj` in Xcode, select the `xherdr` scheme and **My Mac**, and run the app. The project targets macOS 14 or later. Stop only the test server with `herdr --session xherdr-ui-test server stop` when finished.
