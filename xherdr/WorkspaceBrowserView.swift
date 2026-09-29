@@ -16,6 +16,9 @@ struct WorkspaceBrowserView: View {
     @State private var error: String?
     @State private var isLoading = false
     @State private var showsChanges = false
+    @State private var expandedDirectories: Set<String> = []
+    @State private var collapsedRoots: Set<String> = []
+    @State private var selectedItem: String?
 
     private var machine: HerdrMachineProfile? {
         machines.first { $0.id == selectedMachineID }
@@ -89,12 +92,6 @@ struct WorkspaceBrowserView: View {
                 .menuStyle(.borderlessButton)
                 .padding(.horizontal, 9)
                 .frame(height: 26)
-            } else {
-                Text(location?.workspaceLabel ?? "Select a Space")
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                    .padding(.horizontal, 11)
-                    .frame(height: 26, alignment: .leading)
             }
 
             HStack(spacing: 2) {
@@ -113,51 +110,30 @@ struct WorkspaceBrowserView: View {
                     .padding(11)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if let listing, let location {
+                let paths = showsChanges ? listing.changes.map(\.path) : listing.files
+                let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
+                                               uniquingKeysWith: { first, _ in first })
+                let rows = WorkspaceTreeNode.visibleRows(
+                    paths: paths,
+                    expanded: expandedDirectories,
+                    identity: treeIdentity(location)
+                )
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        if showsChanges {
-                            if !listing.hasGit {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        treeRoot(location)
+                        if !collapsedRoots.contains(treeIdentity(location)) {
+                            if showsChanges && !listing.hasGit {
                                 hint("No Git repository in this Space")
-                            } else if listing.changes.isEmpty {
-                                hint("No changes")
+                            } else if paths.isEmpty {
+                                hint(showsChanges ? "No changes" : "No files")
                             }
-                            ForEach(listing.changes) { change in
-                                Button { onOpenDiff(location, change.path) } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "arrow.left.arrow.right")
-                                            .foregroundStyle(.cyan)
-                                        Text(change.path).lineLimit(1).truncationMode(.middle)
-                                        Spacer(minLength: 0)
-                                        Text(change.statusLabel)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .font(.system(size: 10))
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 25)
-                                }
-                                .buttonStyle(.plain)
-                                .help(change.path)
-                            }
-                        } else {
-                            if listing.files.isEmpty { hint("No files") }
-                            ForEach(listing.files, id: \.self) { path in
-                                Button { onOpenFile(location, path) } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "doc.text")
-                                            .foregroundStyle(.secondary)
-                                        Text(path).lineLimit(1).truncationMode(.middle)
-                                        Spacer(minLength: 0)
-                                    }
-                                    .font(.system(size: 10))
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 25)
-                                }
-                                .buttonStyle(.plain)
-                                .help(path)
+                            ForEach(rows) { row in
+                                treeRow(row, location: location,
+                                        change: changesByPath[row.node.path])
                             }
                         }
                     }
-                    .padding(.vertical, 5)
+                    .padding(.vertical, 3)
                 }
                 .id(showsChanges ? "changes|\(location.identity)" : "files|\(location.identity)")
             } else {
@@ -187,6 +163,102 @@ struct WorkspaceBrowserView: View {
             .font(.system(size: 11))
             .foregroundStyle(.tertiary)
             .padding(10)
+    }
+
+    private func treeIdentity(_ location: WorkspaceFileLocation) -> String {
+        "\(location.identity)|\(showsChanges ? "changes" : "files")"
+    }
+
+    private func treeRoot(_ location: WorkspaceFileLocation) -> some View {
+        let identity = treeIdentity(location)
+        let isExpanded = !collapsedRoots.contains(identity)
+        return Button {
+            if isExpanded { collapsedRoots.insert(identity) }
+            else { collapsedRoots.remove(identity) }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: isExpanded ? "folder.fill" : "folder")
+                    .frame(width: 17)
+                    .foregroundStyle(.secondary)
+                Text((location.root as NSString).lastPathComponent)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11))
+            .padding(.leading, 11)
+            .padding(.trailing, 8)
+            .frame(height: 24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(location.root)
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+    }
+
+    private func treeRow(_ row: WorkspaceTreeRow, location: WorkspaceFileLocation,
+                         change: WorkspaceFileChange?) -> some View {
+        let node = row.node
+        let identity = treeIdentity(location) + "|" + node.path
+        let isExpanded = expandedDirectories.contains(identity)
+        let isSelected = selectedItem == identity
+        return Button {
+            if node.isDirectory {
+                if isExpanded { expandedDirectories.remove(identity) }
+                else { expandedDirectories.insert(identity) }
+            } else {
+                selectedItem = identity
+                if showsChanges { onOpenDiff(location, node.path) }
+                else { onOpenFile(location, node.path) }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: node.isDirectory
+                      ? (isExpanded ? "folder.fill" : "folder")
+                      : (showsChanges ? "arrow.left.arrow.right" : fileIcon(node.path)))
+                    .font(.system(size: 11))
+                    .frame(width: 17)
+                    .foregroundStyle(node.isDirectory ? Color.secondary : (showsChanges ? .cyan : .secondary))
+                Text(node.displayName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                if showsChanges, let change {
+                    Text(change.statusLabel)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.system(size: 11))
+            .padding(.leading, CGFloat(row.depth) * 19 + 11)
+            .padding(.trailing, 8)
+            .frame(height: 23)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Color.white.opacity(0.12) : .clear)
+            .contentShape(Rectangle())
+            .overlay(alignment: .leading) {
+                ForEach(0..<row.depth, id: \.self) { level in
+                    Rectangle()
+                        .fill(Color.white.opacity(0.10))
+                        .frame(width: 1)
+                        .padding(.leading, CGFloat(level) * 19 + 29)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .help(node.path)
+        .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
+    }
+
+    private func fileIcon(_ path: String) -> String {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "swift": return "swift"
+        case "md", "markdown": return "doc.richtext"
+        case "png", "jpg", "jpeg", "gif", "webp": return "photo"
+        default: return "doc.text"
+        }
     }
 
     private func selectMachine(_ id: String) {
@@ -241,5 +313,80 @@ struct WorkspaceBrowserView: View {
             }
             isLoading = false
         }
+    }
+}
+
+private struct WorkspaceTreeNode {
+    let displayName: String
+    let path: String
+    let isDirectory: Bool
+    let children: [WorkspaceTreeNode]
+
+    static func visibleRows(paths: [String], expanded: Set<String>, identity: String) -> [WorkspaceTreeRow] {
+        let root = WorkspaceTreeBuilderNode(name: "", path: "")
+        for path in paths {
+            let components = path.split(separator: "/").map(String.init)
+            guard !path.hasPrefix("/"), !components.isEmpty,
+                  !components.contains("."), !components.contains("..") else { continue }
+            var current = root
+            for component in components {
+                if let existing = current.children[component] {
+                    current = existing
+                } else {
+                    let childPath = current.path.isEmpty ? component : current.path + "/" + component
+                    let child = WorkspaceTreeBuilderNode(name: component, path: childPath)
+                    current.children[component] = child
+                    current = child
+                }
+            }
+        }
+
+        var rows: [WorkspaceTreeRow] = []
+        func append(_ nodes: [WorkspaceTreeNode], depth: Int) {
+            for node in nodes {
+                rows.append(WorkspaceTreeRow(node: node, depth: depth))
+                if node.isDirectory && expanded.contains(identity + "|" + node.path) {
+                    append(node.children, depth: depth + 1)
+                }
+            }
+        }
+        append(root.children.values.map(compact).sorted(by: ordered), depth: 1)
+        return rows
+    }
+
+    private static func compact(_ source: WorkspaceTreeBuilderNode) -> WorkspaceTreeNode {
+        var node = source
+        var names = [node.name]
+        while node.children.count == 1,
+              let child = node.children.values.first,
+              !child.children.isEmpty {
+            node = child
+            names.append(node.name)
+        }
+        let children = node.children.values.map(compact).sorted(by: ordered)
+        return WorkspaceTreeNode(displayName: names.joined(separator: " / "), path: node.path,
+                                 isDirectory: !children.isEmpty, children: children)
+    }
+
+    private static func ordered(_ lhs: WorkspaceTreeNode, _ rhs: WorkspaceTreeNode) -> Bool {
+        if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+        return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+    }
+}
+
+private struct WorkspaceTreeRow: Identifiable {
+    let node: WorkspaceTreeNode
+    let depth: Int
+    var id: String { node.path }
+}
+
+private final class WorkspaceTreeBuilderNode {
+    let name: String
+    let path: String
+    var children: [String: WorkspaceTreeBuilderNode] = [:]
+
+    init(name: String, path: String) {
+        self.name = name
+        self.path = path
     }
 }
