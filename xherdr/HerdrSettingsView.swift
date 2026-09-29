@@ -266,7 +266,7 @@ struct HerdrSettingsView: View {
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Update package-lock.json").font(.system(size: typography.body))
-                    Text("a2679a6 · Roberto Arce · 3 days ago")
+                    Text("a2679a6 · Jane Doe · 3 days ago")
                         .font(.system(size: typography.caption))
                         .foregroundStyle(.secondary)
                     Text("+  let total = items.count")
