@@ -28,7 +28,7 @@ The Agents section now shows each agent's space and tab above its name and statu
 
 The terminal accepts Herdr's prefix shortcuts (default `ctrl+b`, then an action key) and direct bindings for common tab, space, pane, sidebar, settings, and reload actions. Menu → Keyboard Shortcuts opens the Shortcuts section in settings, where bindings can be edited as Herdr `[keys]` values. Alternatives are separated with commas. The same file configures Herdr; xherdr applies supported shortcuts in its terminal after saving. Other Herdr actions remain available through Advanced TOML and the Herdr TUI.
 
-The server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md). The [SwiftTerm evaluation](docs/swiftterm-evaluation.md) explains when a full terminal view would be useful.
+The server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md). The [Git and file editing research](docs/git-and-files-research.md) maps the local and SSH implementation. The [SwiftTerm evaluation](docs/swiftterm-evaluation.md) explains when a full terminal view would be useful.
 
 ## Run locally
 
