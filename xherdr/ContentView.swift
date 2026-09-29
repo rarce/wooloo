@@ -141,7 +141,8 @@ struct ContentView: View {
                                          search.options.include = path.isEmpty ? "" : path + "/**"
                                          search.showsFilters = !path.isEmpty
                                          openSearch(replace: false)
-                                     })
+                                     },
+                                     onOpenWorktree: openWorktree)
                     .frame(width: filesSidebarWidth)
             }
         }
@@ -862,6 +863,19 @@ struct ContentView: View {
             .disabled(documents.count < 2)
         Button("Close All") {
             for other in documents { closeDocument(other.id) }
+        }
+    }
+
+    /// Focuses the Space already open on a worktree, or opens a new one there.
+    private func openWorktree(path: String, label: String) {
+        activeDocumentID = nil
+        let snapshot = herdr.snapshot
+        let existing = snapshot?.workspaces.first { $0.worktree?.checkoutPath == path }?.workspaceID
+            ?? snapshot?.panes.first { $0.cwd == path }?.workspaceID
+        if let existing {
+            herdr.select(workspaceID: existing)
+        } else {
+            herdr.createWorkspace(cwd: path, label: label)
         }
     }
 

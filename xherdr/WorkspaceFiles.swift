@@ -97,6 +97,60 @@ struct WorkspaceWorktree: Identifiable {
     var id: String { path }
 }
 
+struct WorkspaceBranchStatus {
+    /// Nil when HEAD is detached.
+    let branch: String?
+    let shortHead: String
+    let upstream: String?
+    let ahead: Int
+    let behind: Int
+    let remotes: [String]
+}
+
+enum WorkspaceGitSync {
+    case fetch, pull, pullRebase, push, forcePush
+    case publish(remote: String, branch: String)
+
+    var title: String {
+        switch self {
+        case .fetch: return "Fetch"
+        case .pull: return "Pull"
+        case .pullRebase: return "Pull (Rebase)"
+        case .push: return "Push"
+        case .forcePush: return "Force Push"
+        case .publish: return "Publish"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .fetch: return "arrow.triangle.2.circlepath"
+        case .pull, .pullRebase: return "arrow.down"
+        case .push, .forcePush: return "arrow.up"
+        case .publish: return "icloud.and.arrow.up"
+        }
+    }
+}
+
+enum WorkspaceCommitMode {
+    /// Only what is already staged.
+    case staged
+    /// Every change to tracked files, like `git commit -a`.
+    case tracked
+    /// Tracked changes plus untracked files.
+    case all
+    case amend
+
+    var title: String {
+        switch self {
+        case .staged: return "Commit"
+        case .tracked: return "Commit Tracked"
+        case .all: return "Commit All"
+        case .amend: return "Amend"
+        }
+    }
+}
+
 struct WorkspaceRepositoryListing {
     let commits: [WorkspaceCommit]
     let branches: [WorkspaceBranch]
@@ -326,6 +380,69 @@ enum WorkspaceFiles {
         _ = try git(location, ["restore", "--staged", "--", path], limit: 20_000)
     }
 
+    static func branchStatus(at location: WorkspaceFileLocation) throws -> WorkspaceBranchStatus {
+        let data = try git(location, ["status", "--porcelain=v2", "--branch", "--untracked-files=no"], limit: 4_000_000)
+        var oid = ""
+        var branch: String?
+        var upstream: String?
+        var ahead = 0
+        var behind = 0
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") where line.hasPrefix("# branch.") {
+            let parts = line.split(separator: " ").map(String.init)
+            guard parts.count >= 3 else { continue }
+            switch parts[1] {
+            case "branch.oid": oid = parts[2]
+            case "branch.head": branch = parts[2] == "(detached)" ? nil : parts[2]
+            case "branch.upstream": upstream = parts[2]
+            case "branch.ab" where parts.count >= 4:
+                ahead = Int(parts[2].dropFirst()) ?? 0
+                behind = Int(parts[3].dropFirst()) ?? 0
+            default: break
+            }
+        }
+        let remoteData = (try? git(location, ["remote"], limit: 20_000)) ?? Data()
+        let remotes = String(decoding: remoteData, as: UTF8.self).split(separator: "\n").map(String.init)
+        return WorkspaceBranchStatus(branch: branch, shortHead: String(oid.prefix(7)), upstream: upstream,
+                                     ahead: ahead, behind: behind, remotes: remotes)
+    }
+
+    static func sync(_ action: WorkspaceGitSync, at location: WorkspaceFileLocation) throws {
+        let args: [String]
+        switch action {
+        case .fetch: args = ["fetch", "--prune"]
+        case .pull: args = ["pull"]
+        case .pullRebase: args = ["pull", "--rebase"]
+        case .push: args = ["push"]
+        case .forcePush: args = ["push", "--force-with-lease"]
+        case .publish(let remote, let branch):
+            guard !remote.hasPrefix("-"), !branch.hasPrefix("-") else {
+                throw WorkspaceFileError.message("Invalid remote or branch name")
+            }
+            args = ["push", "--set-upstream", remote, branch]
+        }
+        _ = try git(location, args, limit: 200_000, timeout: 120)
+    }
+
+    static func commit(message: String, mode: WorkspaceCommitMode, at location: WorkspaceFileLocation) throws {
+        let message = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty || mode == .amend else {
+            throw WorkspaceFileError.message("Enter a commit message")
+        }
+        var args = ["commit"]
+        switch mode {
+        case .staged: break
+        case .tracked: args.append("--all")
+        case .all: _ = try git(location, ["add", "--all", "--", "."], limit: 20_000)
+        case .amend: args.append("--amend")
+        }
+        // Commit hooks can be slow, so allow longer than a plain Git read.
+        if message.isEmpty {
+            _ = try git(location, args + ["--no-edit"], limit: 200_000, timeout: 120)
+        } else {
+            _ = try git(location, args + ["--file", "-"], input: Data(message.utf8), limit: 200_000, timeout: 120)
+        }
+    }
+
     static func switchBranch(_ branch: WorkspaceBranch, at location: WorkspaceFileLocation) throws {
         guard !branch.isRemote, !branch.isCurrent, !branch.name.hasPrefix("-") else {
             throw WorkspaceFileError.message("Choose another local branch")
@@ -341,12 +458,15 @@ enum WorkspaceFiles {
         return try run("/bin/sh", ["-c", rooted], limit: limit)
     }
 
-    private static func git(_ location: WorkspaceFileLocation, _ args: [String], limit: Int) throws -> Data {
+    private static func git(_ location: WorkspaceFileLocation, _ args: [String], input: Data? = nil,
+                            limit: Int, timeout: TimeInterval = 15) throws -> Data {
+        // No terminal is attached, so credential prompts must fail instead of hanging.
+        let command = ["GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + args
         if let machine = location.machine {
-            let command = (["git", "-C", location.root] + args).map(quote).joined(separator: " ")
-            return try ssh(machine, command, limit: limit)
+            let remote = (["env"] + command).map(quote).joined(separator: " ")
+            return try ssh(machine, remote, input: input, limit: limit, timeout: timeout)
         }
-        return try run("/usr/bin/env", ["git", "-C", location.root] + args, limit: limit)
+        return try run("/usr/bin/env", command, input: input, limit: limit, timeout: timeout)
     }
 
     private static func localFiles(root: String) throws -> [String] {
@@ -430,7 +550,7 @@ enum WorkspaceFiles {
     }
 
     private static func ssh(_ machine: HerdrMachineProfile, _ command: String,
-                            input: Data? = nil, limit: Int) throws -> Data {
+                            input: Data? = nil, limit: Int, timeout: TimeInterval = 15) throws -> Data {
         let target: String
         var port: String?
         if machine.target.hasPrefix("ssh://"), let url = URLComponents(string: machine.target),
@@ -446,11 +566,11 @@ enum WorkspaceFiles {
         var args = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
         if let port { args += ["-p", port] }
         args += [target, command]
-        return try run("/usr/bin/ssh", args, input: input, limit: limit)
+        return try run("/usr/bin/ssh", args, input: input, limit: limit, timeout: timeout)
     }
 
     private static func run(_ executable: String, _ arguments: [String],
-                            input: Data? = nil, limit: Int) throws -> Data {
+                            input: Data? = nil, limit: Int, timeout: TimeInterval = 15) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -461,7 +581,7 @@ enum WorkspaceFiles {
         if let source { process.standardInput = source }
         try process.run()
         let timer = DispatchSource.makeTimerSource()
-        timer.schedule(deadline: .now() + 15)
+        timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler { if process.isRunning { process.terminate() } }
         timer.resume()
         var inputError: Error?

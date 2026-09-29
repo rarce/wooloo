@@ -23,6 +23,7 @@
 		A10000000000000000000048 /* ThemeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000049 /* ThemeSettingsView.swift */; };
 		A10000000000000000000046 /* XherdrTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000047 /* XherdrTheme.swift */; };
 		A10000000000000000000044 /* WorkspaceSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000045 /* WorkspaceSearchView.swift */; };
+		A10000000000000000000052 /* WorkspaceGitBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000053 /* WorkspaceGitBar.swift */; };
 		A10000000000000000000042 /* WorkspaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000043 /* WorkspaceSearch.swift */; };
 		A10000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000041 /* Assets.xcassets */; };
 		A10000000000000000000032 /* CodeEditSourceEditor in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000034 /* CodeEditSourceEditor */; };
@@ -48,6 +49,7 @@
 		A10000000000000000000049 /* ThemeSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeSettingsView.swift; sourceTree = "<group>"; };
 		A10000000000000000000047 /* XherdrTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XherdrTheme.swift; sourceTree = "<group>"; };
 		A10000000000000000000045 /* WorkspaceSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearchView.swift; sourceTree = "<group>"; };
+		A10000000000000000000053 /* WorkspaceGitBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitBar.swift; sourceTree = "<group>"; };
 		A10000000000000000000043 /* WorkspaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearch.swift; sourceTree = "<group>"; };
 		A10000000000000000000041 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000000000000000000005 /* xherdr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xherdr.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -81,6 +83,7 @@
 				A10000000000000000000049 /* ThemeSettingsView.swift */,
 				A10000000000000000000047 /* XherdrTheme.swift */,
 				A10000000000000000000045 /* WorkspaceSearchView.swift */,
+				A10000000000000000000053 /* WorkspaceGitBar.swift */,
 				A10000000000000000000043 /* WorkspaceSearch.swift */,
 				A10000000000000000000041 /* Assets.xcassets */,
 			);
@@ -191,6 +194,7 @@
 				A10000000000000000000048 /* ThemeSettingsView.swift in Sources */,
 				A10000000000000000000046 /* XherdrTheme.swift in Sources */,
 				A10000000000000000000044 /* WorkspaceSearchView.swift in Sources */,
+				A10000000000000000000052 /* WorkspaceGitBar.swift in Sources */,
 				A10000000000000000000042 /* WorkspaceSearch.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

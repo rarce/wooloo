@@ -12,6 +12,7 @@ struct WorkspaceBrowserView: View {
     let onNewSpace: (String, String) -> Void
     let onLocationChange: (WorkspaceFileLocation?) -> Void
     let onFindInFolder: (WorkspaceFileLocation, String) -> Void
+    let onOpenWorktree: (String, String) -> Void
 
     @State private var machines: [HerdrMachineProfile] = []
     @State private var selectedMachineID = "local"
@@ -27,6 +28,10 @@ struct WorkspaceBrowserView: View {
     @State private var collapsedRoots: Set<String> = []
     @State private var selectedItem: String?
     @State private var operationError: String?
+    /// Bumped on every listing load so the Git bar refreshes with the explorer.
+    @State private var listingVersion = 0
+    /// Bumped by Git bar operations so the repository panel refreshes too.
+    @State private var gitVersion = 0
 
     private var isFilteredFiles: Bool { !showsChanges && modifiedOnly }
 
@@ -56,7 +61,7 @@ struct WorkspaceBrowserView: View {
         VSplitView {
             explorer
                 .frame(minHeight: 190)
-            WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion,
+            WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion + gitVersion,
                                     onChange: loadListing,
                                     onNewSpace: location?.isLocal == true ? onNewSpace : nil)
                 .frame(minHeight: 160)
@@ -202,6 +207,18 @@ struct WorkspaceBrowserView: View {
             } else {
                 hint("Select a Space to browse")
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+
+            if let location, listing?.hasGit == true {
+                Divider()
+                WorkspaceGitBar(location: location, reloadToken: listingVersion,
+                                changes: showsChanges ? listing?.changes ?? [] : nil,
+                                onChange: {
+                                    gitVersion += 1
+                                    loadListing()
+                                },
+                                onOpenWorktree: location.isLocal ? onOpenWorktree : nil,
+                                onError: { operationError = $0 })
             }
         }
         .background(theme.sidebarBackground)
@@ -506,6 +523,7 @@ struct WorkspaceBrowserView: View {
             case .failure(let failure): error = failure.localizedDescription
             }
             isLoading = false
+            listingVersion += 1
         }
     }
 }
