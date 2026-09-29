@@ -18,6 +18,8 @@
 		A10000000000000000000026 /* WorkspaceFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* WorkspaceFiles.swift */; };
 		A10000000000000000000028 /* WorkspaceBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000029 /* WorkspaceBrowserView.swift */; };
 		A10000000000000000000030 /* WorkspaceDocumentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000031 /* WorkspaceDocumentView.swift */; };
+		A10000000000000000000032 /* CodeEditSourceEditor in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000034 /* CodeEditSourceEditor */; };
+		A10000000000000000000035 /* CodeEditLanguages in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000037 /* CodeEditLanguages */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -86,6 +88,10 @@
 			dependencies = (
 			);
 			name = xherdr;
+			packageProductDependencies = (
+				A10000000000000000000034 /* CodeEditSourceEditor */,
+				A10000000000000000000037 /* CodeEditLanguages */,
+			);
 			productName = xherdr;
 			productReference = A10000000000000000000005 /* xherdr.app */;
 			productType = "com.apple.product-type.application";
@@ -114,6 +120,10 @@
 				Base,
 			);
 			mainGroup = A10000000000000000000006;
+			packageReferences = (
+				A10000000000000000000033 /* XCLocalSwiftPackageReference "CodeEditSourceEditor" */,
+				A10000000000000000000036 /* XCRemoteSwiftPackageReference "CodeEditLanguages" */,
+			);
 			productRefGroup = A10000000000000000000008 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -159,6 +169,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000032 /* CodeEditSourceEditor in Frameworks */,
+				A10000000000000000000035 /* CodeEditLanguages in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -238,6 +250,37 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A10000000000000000000033 /* XCLocalSwiftPackageReference "CodeEditSourceEditor" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/CodeEditSourceEditor;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A10000000000000000000036 /* XCRemoteSwiftPackageReference "CodeEditLanguages" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/CodeEditApp/CodeEditLanguages.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.1.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A10000000000000000000034 /* CodeEditSourceEditor */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000033 /* XCLocalSwiftPackageReference "CodeEditSourceEditor" */;
+			productName = CodeEditSourceEditor;
+		};
+		A10000000000000000000037 /* CodeEditLanguages */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000036 /* XCRemoteSwiftPackageReference "CodeEditLanguages" */;
+			productName = CodeEditLanguages;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A1000000000000000000000E /* Project object */;
 }

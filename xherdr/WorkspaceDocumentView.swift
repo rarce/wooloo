@@ -1,4 +1,6 @@
 import SwiftUI
+import CodeEditSourceEditor
+import CodeEditLanguages
 
 enum WorkspaceDocumentKind: String {
     case file
@@ -26,6 +28,36 @@ struct WorkspaceDocument: Identifiable {
 struct WorkspaceDocumentView: View {
     @Binding var document: WorkspaceDocument
     let onSave: () -> Void
+    @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
+
+    private var language: CodeLanguage {
+        CodeLanguage.detectLanguageFrom(
+            url: URL(fileURLWithPath: document.path),
+            prefixBuffer: String(document.text.prefix(512)),
+            suffixBuffer: String(document.text.suffix(512))
+        )
+    }
+
+    private var editorTheme: EditorTheme {
+        EditorTheme(
+            text: NSColor(srgbRed: 0.87, green: 0.89, blue: 0.92, alpha: 1),
+            insertionPoint: .white,
+            invisibles: NSColor(white: 0.35, alpha: 1),
+            background: NSColor(srgbRed: 0.075, green: 0.082, blue: 0.091, alpha: 1),
+            lineHighlight: NSColor(white: 1, alpha: 0.045),
+            selection: NSColor(srgbRed: 0.20, green: 0.38, blue: 0.52, alpha: 1),
+            keywords: NSColor(srgbRed: 0.86, green: 0.56, blue: 0.72, alpha: 1),
+            commands: NSColor(srgbRed: 0.58, green: 0.82, blue: 0.75, alpha: 1),
+            types: NSColor(srgbRed: 0.51, green: 0.78, blue: 0.94, alpha: 1),
+            attributes: NSColor(srgbRed: 0.86, green: 0.70, blue: 0.50, alpha: 1),
+            variables: NSColor(srgbRed: 0.72, green: 0.79, blue: 0.91, alpha: 1),
+            values: NSColor(srgbRed: 0.72, green: 0.61, blue: 0.91, alpha: 1),
+            numbers: NSColor(srgbRed: 0.90, green: 0.78, blue: 0.52, alpha: 1),
+            strings: NSColor(srgbRed: 0.79, green: 0.83, blue: 0.58, alpha: 1),
+            characters: NSColor(srgbRed: 0.90, green: 0.78, blue: 0.52, alpha: 1),
+            comments: NSColor(srgbRed: 0.53, green: 0.61, blue: 0.64, alpha: 1)
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,10 +99,16 @@ struct WorkspaceDocumentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                     }
-                    TextEditor(text: $document.text)
-                        .font(.system(size: 12, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(7)
+                    CodeEditSourceEditor(
+                        $document.text,
+                        language: language,
+                        theme: editorTheme,
+                        font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+                        tabWidth: 4,
+                        lineHeight: 1.15,
+                        wrapLines: false,
+                        cursorPositions: $cursorPositions
+                    )
                 }
             } else {
                 ScrollView([.vertical, .horizontal]) {
@@ -93,6 +131,9 @@ struct WorkspaceDocumentView: View {
             HStack {
                 Text(document.kind == .file ? (document.isDirty ? "Unsaved changes" : "UTF-8 text") : "Git diff")
                 Spacer()
+                if document.kind == .file, let cursor = cursorPositions.first {
+                    Text("Ln \(cursor.line), Col \(cursor.column)")
+                }
                 if document.isSaving { ProgressView().controlSize(.small) }
             }
             .font(.system(size: 10))
