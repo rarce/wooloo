@@ -861,13 +861,23 @@ enum WorkspaceFiles {
         if !environment.isEmpty {
             process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
         }
+        // Stderr stays apart from the output: SSH writes warnings there even when a command
+        // succeeds, and they must not end up in a file's contents or a listing.
         let output = Pipe()
+        let errors = Pipe()
         process.standardOutput = output
-        process.standardError = output
+        process.standardError = errors
         let source = input.map { _ in Pipe() }
         // Without input, a command must not read the app's own stdin; SSH would forward it.
         process.standardInput = source ?? FileHandle.nullDevice
         try process.run()
+        // Drained on its own thread, so a command that writes a lot to stderr cannot stall on a full pipe.
+        var errorData = Data()
+        let errorsRead = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            errorData = errors.fileHandleForReading.readDataToEndOfFile()
+            errorsRead.signal()
+        }
         let timer = DispatchSource.makeTimerSource()
         timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler { if process.isRunning { process.terminate() } }
@@ -888,12 +898,15 @@ enum WorkspaceFiles {
         }
         process.waitUntilExit()
         timer.cancel()
+        errorsRead.wait()
         outputBytes = data.count
         succeeded = process.terminationStatus == 0
         guard data.count <= limit else { throw WorkspaceFileError.message("Output is too large") }
         guard process.terminationStatus == 0 else {
-            let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            throw WorkspaceFileError.message(message.isEmpty ? "Command failed" : message)
+            let message = [errorData, data].lazy
+                .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            throw WorkspaceFileError.message(message ?? "Command failed")
         }
         if let inputError { throw inputError }
         return data
