@@ -27,6 +27,7 @@ struct ContentView: View {
     @State private var closeTarget: HerdrCloseTarget?
 
     @StateObject private var themes = ThemeStore()
+    @StateObject private var notifier = HerdrNotifier()
     private var theme: XherdrTheme { themes.theme }
     private var sidebarBackground: Color { theme.sidebarBackground }
     private var barBackground: Color { theme.barBackground }
@@ -62,11 +63,26 @@ struct ContentView: View {
             perform: handleShortcut
         ))
         .onDisappear { herdr.stop() }
+        .overlay { HerdrToastStack(notifier: notifier) }
+        .onAppear {
+            notifier.onOpenPane = { focusPane($0) }
+            notifier.reloadSettings()
+        }
+        .onReceive(herdr.$snapshot) { snapshot in
+            notifier.process(snapshot, selectedPaneID: herdr.selectedPaneID)
+        }
+        .onChange(of: herdr.selectedPaneID) { _, paneID in notifier.acknowledge(paneID: paneID) }
+        .onChange(of: herdr.sessionName) { _, _ in notifier.reset() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            notifier.acknowledge(paneID: herdr.selectedPaneID)
+        }
         .sheet(isPresented: $showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               showShortcuts: settingsShowShortcuts) {
                 shortcutMap = HerdrShortcutMap.load()
                 themes.reload()
+                notifier.reloadSettings()
+                notifier.refreshDockBadge()
             }
             .environment(\.xherdrTheme, theme)
         }
@@ -241,6 +257,9 @@ struct ContentView: View {
                                     Text(workspace.label)
                                         .lineLimit(1)
                                     Spacer(minLength: 0)
+                                    let marks = notifier.attentionCount(inWorkspace: workspace.workspaceID,
+                                                                        snapshot: herdr.snapshot)
+                                    HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                                 }
                                 .font(.system(size: 12, weight: .medium))
                                 .sidebarRow(selected: workspace.workspaceID == herdr.selectedWorkspaceID)
@@ -295,10 +314,21 @@ struct ContentView: View {
                                     }
                                     .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
-                                    Text(agent.displayName)
-                                        .font(.system(size: 11, weight: .medium))
-                                        .lineLimit(1)
-                                        .padding(.leading, 13)
+                                    HStack(spacing: 5) {
+                                        Text(agent.displayName)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .lineLimit(1)
+                                        if let alert = notifier.attention[agent.paneID] {
+                                            Label(alert.label, systemImage: alert.icon)
+                                                .font(.system(size: 9, weight: .semibold))
+                                                .foregroundStyle(alert == .request ? theme.warning : theme.success)
+                                                .padding(.horizontal, 5)
+                                                .frame(height: 15)
+                                                .background((alert == .request ? theme.warning : theme.success).opacity(0.16),
+                                                            in: Capsule())
+                                        }
+                                    }
+                                    .padding(.leading, 13)
                                     if let detail = agent.detail {
                                         Text(detail)
                                             .font(.system(size: 10))
@@ -478,6 +508,8 @@ struct ContentView: View {
                                     Image(systemName: "terminal")
                                         .font(.system(size: 10))
                                     Text(tab.label).lineLimit(1)
+                                    let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot)
+                                    HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                                 }
                                 .font(.system(size: 11))
                                 .padding(.horizontal, 10)
@@ -892,9 +924,14 @@ struct ContentView: View {
     }
 
     private func focusAgent(_ agent: HerdrAgent) {
-        guard let pane = herdr.snapshot?.panes.first(where: { $0.paneID == agent.paneID }) else { return }
+        focusPane(agent.paneID)
+    }
+
+    private func focusPane(_ paneID: String) {
+        guard let pane = herdr.snapshot?.panes.first(where: { $0.paneID == paneID }) else { return }
         herdr.select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
         activeDocumentID = nil
+        notifier.acknowledge(paneID: paneID)
     }
 
     private func commitRename() {

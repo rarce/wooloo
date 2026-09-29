@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct HerdrSettingsView: View {
@@ -12,11 +13,15 @@ struct HerdrSettingsView: View {
     @State private var original = ""
     @State private var message: String?
     @State private var isSaving = false
+    @State private var previewSound: NSSound?
+    @AppStorage(HerdrNotifier.dockBadgeKey) private var showsDockBadge = true
+    @AppStorage(HerdrNotifier.bounceDockKey) private var bouncesDock = true
 
     private enum Category: String, CaseIterable, Identifiable {
         case terminal = "Terminal"
         case shortcuts = "Shortcuts"
         case worktrees = "Worktrees"
+        case notifications = "Notifications"
         case appearance = "Appearance"
         case server = "Server"
         case advanced = "Advanced TOML"
@@ -27,6 +32,7 @@ struct HerdrSettingsView: View {
             case .terminal: "terminal"
             case .shortcuts: "keyboard"
             case .worktrees: "point.topleft.down.curvedto.point.bottomright.up"
+            case .notifications: "bell.badge"
             case .appearance: "paintpalette"
             case .server: "server.rack"
             case .advanced: "chevron.left.forwardslash.chevron.right"
@@ -173,6 +179,69 @@ struct HerdrSettingsView: View {
                 TextField("~/.herdr/worktrees", text: string("worktrees", "directory", default: "~/.herdr/worktrees"))
                     .textFieldStyle(.roundedBorder)
             }
+        case .notifications:
+            description("Herdr alerts when an agent finishes (done) or needs input (request). Sounds play for agents outside the pane you are viewing, or when xherdr is in the background.")
+            Toggle("Play sounds", isOn: bool("ui.sound", "enabled", default: true))
+            field("Sound file", hint: "Optional mp3 for all alerts. Relative paths resolve from config.toml's folder. Blank uses the system sound.") {
+                soundField("path", placeholder: "sounds/notification.mp3", kind: nil)
+            }
+            field("Done sound", hint: "Overrides only finished alerts") {
+                soundField("done_path", placeholder: "sounds/done.mp3", kind: .done)
+            }
+            field("Request sound", hint: "Overrides only needs-input alerts") {
+                soundField("request_path", placeholder: "sounds/request.mp3", kind: .request)
+            }
+            field("Per-agent sounds", hint: "Default follows Play sounds; droid is muted by default.") {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12, alignment: .leading)],
+                          alignment: .leading, spacing: 6) {
+                    ForEach(HerdrNotificationSettings.knownAgents, id: \.self) { agent in
+                        HStack(spacing: 6) {
+                            Text(agent).font(.system(size: 11, design: .monospaced))
+                                .frame(width: 70, alignment: .leading)
+                            Picker("", selection: agentSound(agent)) {
+                                Text("Default").tag("default")
+                                Text("On").tag("on")
+                                Text("Off").tag("off")
+                            }
+                            .labelsHidden()
+                            .frame(width: 90)
+                        }
+                    }
+                }
+            }
+            Divider()
+            field("Pop-up notifications", hint: "Herdr's [ui.toast] delivery. xherdr has no outer terminal, so Terminal uses system notifications.") {
+                Picker("", selection: string("ui.toast", "delivery", default: "off")) {
+                    Text("Off").tag("off")
+                    Text("In xherdr").tag("herdr")
+                    Text("Terminal").tag("terminal")
+                    Text("System").tag("system")
+                }
+                .labelsHidden()
+                .frame(width: 220)
+            }
+            field("Delay", hint: "Seconds to wait before showing a pop-up; alerts you handle meanwhile are skipped") {
+                TextField("1", value: integer("ui.toast", "delay_seconds", default: 1), format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 100)
+            }
+            field("In-app position", hint: "Corner for In xherdr pop-ups") {
+                Picker("", selection: string("ui.toast.herdr", "position", default: "bottom-right")) {
+                    Text("Top left").tag("top-left")
+                    Text("Top right").tag("top-right")
+                    Text("Bottom left").tag("bottom-left")
+                    Text("Bottom right").tag("bottom-right")
+                }
+                .labelsHidden()
+                .frame(width: 220)
+            }
+            Divider()
+            field("xherdr", hint: "Stored by xherdr, not in config.toml. Unread marks stay on agents, Spaces, and tabs until you open the pane.") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Show unread count on the Dock icon", isOn: $showsDockBadge)
+                    Toggle("Bounce the Dock icon when an agent needs input", isOn: $bouncesDock)
+                }
+            }
         case .appearance:
             ThemeSettingsView(name: string("theme", "name", default: XherdrTheme.fallbackID),
                               autoSwitch: bool("theme", "auto_switch", default: false),
@@ -262,6 +331,40 @@ struct HerdrSettingsView: View {
                 set: {
                     guard $0 != document.integer(section: section, key: key, default: fallback) else { return }
                     document.setInteger($0, section: section, key: key)
+                })
+    }
+
+    private func soundField(_ key: String, placeholder: String, kind: HerdrAlertKind?) -> some View {
+        HStack(spacing: 6) {
+            TextField(placeholder, text: optionalString("ui.sound", key))
+                .textFieldStyle(.roundedBorder)
+            Button {
+                playPreview(key: key, kind: kind ?? .done)
+            } label: {
+                Image(systemName: "play.fill")
+            }
+            .help("Preview")
+        }
+    }
+
+    private func playPreview(key: String, kind: HerdrAlertKind) {
+        var settings = HerdrNotificationSettings()
+        settings.soundPath = document.string(section: "ui.sound", key: "path", default: "")
+        settings.donePath = key == "path" ? nil : document.string(section: "ui.sound", key: "done_path", default: "")
+        settings.requestPath = key == "path" ? nil : document.string(section: "ui.sound", key: "request_path", default: "")
+        previewSound?.stop()
+        previewSound = settings.soundURL(for: kind).flatMap { NSSound(contentsOf: $0, byReference: true) }
+            ?? NSSound(named: kind == .done ? "Glass" : "Ping")
+        previewSound?.play()
+    }
+
+    /// "Default" removes the override so Herdr's own default applies.
+    private func agentSound(_ agent: String) -> Binding<String> {
+        Binding(get: { document.string(section: "ui.sound.agents", key: agent, default: "default") },
+                set: {
+                    guard $0 != document.string(section: "ui.sound.agents", key: agent, default: "default") else { return }
+                    if $0 == "default" { document.remove(section: "ui.sound.agents", key: agent) }
+                    else { document.setString($0, section: "ui.sound.agents", key: agent) }
                 })
     }
 
