@@ -27,7 +27,11 @@ struct WorkspaceDocument: Identifiable {
     var isLoading = true
     var isSaving = false
     var error: String?
-    var reveal: WorkspaceDocumentReveal?
+    var reveal: WorkspaceDocumentReveal? {
+        didSet { if reveal != nil, markdownMode == .preview { markdownMode = .source } }
+    }
+    /// Markdown files open as a rendered preview; a reveal (e.g. a search match) shows the source.
+    var markdownMode: MarkdownDisplayMode = .preview
 
     var id: String { "\(location.identity)|\(kind.rawValue)|\(path)" }
     var isDirty: Bool { kind == .file && text != savedText }
@@ -38,6 +42,7 @@ struct WorkspaceDocumentView: View {
     @Environment(\.xherdrTheme) private var theme
     @Binding var document: WorkspaceDocument
     let onSave: () -> Void
+    var onOpenFile: (String) -> Void = { _ in }
     @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
     @State private var revealCoordinator = EditorRevealCoordinator()
 
@@ -63,6 +68,17 @@ struct WorkspaceDocumentView: View {
                 Text("\(document.location.machineLabel) · \(document.location.workspaceLabel)")
                     .lineLimit(1)
                     .foregroundStyle(.secondary)
+                if document.kind == .file && MarkdownDisplayMode.supports(document.path) {
+                    Picker("View", selection: $document.markdownMode) {
+                        ForEach(MarkdownDisplayMode.allCases) { mode in
+                            Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 210)
+                    .help("Show the Markdown source, the rendered preview, or both")
+                }
                 if document.kind == .file {
                     Button("Save") { onSave() }
                         .keyboardShortcut("s", modifiers: .command)
@@ -91,19 +107,15 @@ struct WorkspaceDocumentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                     }
-                    CodeEditSourceEditor(
-                        $document.text,
-                        language: language,
-                        theme: editorTheme,
-                        font: .monospacedSystemFont(ofSize: 12, weight: .regular),
-                        tabWidth: 4,
-                        lineHeight: 1.15,
-                        wrapLines: false,
-                        cursorPositions: $cursorPositions,
-                        coordinators: [revealCoordinator]
-                    )
-                    .onAppear { applyReveal() }
-                    .onChange(of: document.reveal) { _, _ in applyReveal() }
+                    if MarkdownDisplayMode.supports(document.path) {
+                        switch document.markdownMode {
+                        case .source: editor
+                        case .preview: preview
+                        case .split: HSplitView { editor; preview }
+                        }
+                    } else {
+                        editor
+                    }
                 }
             } else {
                 GeometryReader { viewport in
@@ -140,6 +152,29 @@ struct WorkspaceDocumentView: View {
             .frame(height: 23)
         }
         .background(theme.contentBackground)
+    }
+
+    private var editor: some View {
+        CodeEditSourceEditor(
+            $document.text,
+            language: language,
+            theme: editorTheme,
+            font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+            tabWidth: 4,
+            lineHeight: 1.15,
+            wrapLines: false,
+            cursorPositions: $cursorPositions,
+            coordinators: [revealCoordinator]
+        )
+        .onAppear { applyReveal() }
+        .onChange(of: document.reveal) { _, _ in applyReveal() }
+        .frame(minWidth: 200)
+    }
+
+    private var preview: some View {
+        MarkdownPreviewView(text: document.text, path: document.path, location: document.location,
+                            onOpenFile: onOpenFile)
+            .frame(minWidth: 200)
     }
 
     /// Selects the requested line or match and scrolls it into view.

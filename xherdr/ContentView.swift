@@ -555,9 +555,11 @@ struct ContentView: View {
                     }
                 } else if let activeDocumentID,
                    let index = documents.firstIndex(where: { $0.id == activeDocumentID }) {
-                    WorkspaceDocumentView(document: $documents[index]) {
+                    WorkspaceDocumentView(document: $documents[index], onSave: {
                         saveDocument(activeDocumentID)
-                    }
+                    }, onOpenFile: { [location = documents[index].location] path in
+                        openDocument(.file, path: path, at: location)
+                    })
                     .id(activeDocumentID)
                 } else if !herdr.isConnected {
                     emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")

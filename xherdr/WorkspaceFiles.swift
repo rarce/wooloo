@@ -172,22 +172,28 @@ enum WorkspaceFiles {
     }
 
     static func read(_ path: String, at location: WorkspaceFileLocation) throws -> WorkspaceFileContents {
-        let data: Data
-        if let machine = location.machine {
-            let script = try remoteFilePrelude(path, at: location)
-                + "size=$(wc -c < \"$file\"); [ \"$size\" -le \(maximumFileBytes) ] || { echo 'File is too large' >&2; exit 75; }; cat \"$file\""
-            data = try ssh(machine, script, limit: maximumFileBytes)
-        } else {
-            let url = try localFileURL(path, root: location.root)
-            let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-            guard size <= maximumFileBytes else { throw WorkspaceFileError.message("File is too large") }
-            data = try Data(contentsOf: url)
-        }
-        guard data.count <= maximumFileBytes else { throw WorkspaceFileError.message("File is too large") }
+        let data = try readData(path, at: location, limit: maximumFileBytes)
         guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
             throw WorkspaceFileError.message("Only UTF-8 text files can be edited")
         }
         return WorkspaceFileContents(text: text, version: gitBlobHash(data))
+    }
+
+    /// Raw bytes of a file in the Space, e.g. an image referenced by a Markdown preview.
+    static func readData(_ path: String, at location: WorkspaceFileLocation, limit: Int) throws -> Data {
+        let data: Data
+        if let machine = location.machine {
+            let script = try remoteFilePrelude(path, at: location)
+                + "size=$(wc -c < \"$file\"); [ \"$size\" -le \(limit) ] || { echo 'File is too large' >&2; exit 75; }; cat \"$file\""
+            data = try ssh(machine, script, limit: limit)
+        } else {
+            let url = try localFileURL(path, root: location.root)
+            let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+            guard size <= limit else { throw WorkspaceFileError.message("File is too large") }
+            data = try Data(contentsOf: url)
+        }
+        guard data.count <= limit else { throw WorkspaceFileError.message("File is too large") }
+        return data
     }
 
     static func save(_ text: String, path: String, expectedVersion: String,
