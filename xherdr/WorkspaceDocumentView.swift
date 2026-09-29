@@ -1,6 +1,7 @@
 import SwiftUI
 import CodeEditSourceEditor
 import CodeEditLanguages
+import MarkdownView
 
 enum WorkspaceDocumentKind: String {
     case file
@@ -70,6 +71,10 @@ struct WorkspaceDocumentView: View {
     var onOpenFile: (String) -> Void = { _ in }
     @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
     @State private var revealCoordinator = EditorRevealCoordinator()
+    @StateObject private var find = DocumentFindModel()
+    @State private var previewFocus: MarkdownFindFocus?
+    /// Set by Replace so the next match is selected once the edited text comes back.
+    @State private var revealsAfterEdit = false
     @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
 
     private var language: CodeLanguage {
@@ -81,6 +86,11 @@ struct WorkspaceDocumentView: View {
     }
 
     private var editorTheme: EditorTheme { theme.editorTheme }
+
+    /// A Markdown preview searches its rendered text; the source and split views search the source.
+    private var findTarget: DocumentFindModel.Target {
+        MarkdownDisplayMode.supports(document.path) && document.markdownMode == .preview ? .preview : .source
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -142,6 +152,11 @@ struct WorkspaceDocumentView: View {
             .padding(.horizontal, 12)
             .frame(height: 33)
             Divider()
+            if document.kind == .file && find.isVisible {
+                DocumentFindBar(model: find, allowsReplace: findTarget == .source,
+                                onReplace: replaceCurrentMatch, onReplaceAll: replaceAllMatches)
+                Divider()
+            }
 
             if document.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -189,6 +204,40 @@ struct WorkspaceDocumentView: View {
             .frame(height: 23)
         }
         .background(theme.contentBackground)
+        .background {
+            if document.kind == .file { findShortcuts }
+        }
+        .onChange(of: find.isVisible) { _, _ in updateFind(anchor: cursorPositions.first?.range.location) }
+        .onChange(of: find.options) { _, _ in
+            updateFind(anchor: cursorPositions.first?.range.location)
+            if find.current != nil { find.reveal() }
+        }
+        .onChange(of: document.markdownMode) { _, _ in updateFind(anchor: 0) }
+        .onChange(of: document.text) { _, _ in
+            updateFind(anchor: nil)
+            if revealsAfterEdit {
+                revealsAfterEdit = false
+                find.reveal()
+            }
+        }
+        .onChange(of: find.current) { _, _ in syncEditorMatches() }
+        .onChange(of: find.revealRequest) { _, _ in revealFindMatch() }
+    }
+
+    /// ⌘F, ⌥⌘F, ⌘G and ⇧⌘G, handled here so they reach the document rather than the terminal.
+    private var findShortcuts: some View {
+        Group {
+            Button("Find") { openFind(replace: false) }
+                .keyboardShortcut("f", modifiers: .command)
+            Button("Find and Replace") { openFind(replace: true) }
+                .keyboardShortcut("f", modifiers: [.command, .option])
+            Button("Find Next") { find.isVisible ? find.move(1) : openFind(replace: false) }
+                .keyboardShortcut("g", modifiers: .command)
+            Button("Find Previous") { find.isVisible ? find.move(-1) : openFind(replace: false) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+        }
+        .opacity(0)
+        .allowsHitTesting(false)
     }
 
     private var editor: some View {
@@ -210,8 +259,70 @@ struct WorkspaceDocumentView: View {
 
     private var preview: some View {
         MarkdownPreviewView(text: document.text, path: document.path, location: document.location,
-                            onOpenFile: onOpenFile)
+                            onOpenFile: onOpenFile, highlight: previewHighlight, focus: previewFocus)
             .frame(minWidth: 200)
+    }
+
+    // MARK: Find
+
+    private var previewHighlight: MarkdownSearchHighlight? {
+        guard find.isVisible, findTarget == .preview, !find.previewMatches.isEmpty else { return nil }
+        var matches: [String: [MarkdownSearchHighlight.Match]] = [:]
+        for (index, match) in find.previewMatches.enumerated() {
+            matches[match.key, default: []].append(.init(range: match.range, index: index))
+        }
+        return MarkdownSearchHighlight(matches: matches, current: find.current,
+                                       color: theme.matchHighlight, currentColor: theme.activeMatchHighlight)
+    }
+
+    private func openFind(replace: Bool) {
+        var selected: String?
+        if findTarget == .source, let range = cursorPositions.first?.range, range.length > 0,
+           NSMaxRange(range) <= (document.text as NSString).length {
+            selected = (document.text as NSString).substring(with: range)
+        }
+        find.open(replace: replace, query: selected)
+        updateFind(anchor: cursorPositions.first?.range.location)
+    }
+
+    private func updateFind(anchor: Int?) {
+        find.update(text: document.text, target: findTarget, anchor: anchor)
+        syncEditorMatches()
+    }
+
+    private func syncEditorMatches() {
+        let ranges = find.isVisible && findTarget == .source ? find.sourceMatches.map(\.range) : []
+        revealCoordinator.setFindMatches(ranges, current: find.current,
+                                         color: NSColor(theme.matchHighlight),
+                                         currentColor: NSColor(theme.activeMatchHighlight))
+    }
+
+    /// Selects the current match in the editor, or scrolls the preview to its block.
+    private func revealFindMatch() {
+        guard let current = find.current else { return }
+        switch find.target {
+        case .source:
+            guard current < find.sourceMatches.count else { return }
+            cursorPositions = [CursorPosition(range: find.sourceMatches[current].range)]
+            DispatchQueue.main.async { revealCoordinator.scrollSelectionToVisible() }
+        case .preview:
+            guard current < find.previewMatches.count else { return }
+            previewFocus = MarkdownFindFocus(block: find.previewMatches[current].block, match: current)
+        }
+    }
+
+    private func replaceCurrentMatch() {
+        guard find.target == .source, let current = find.current, current < find.sourceMatches.count else { return }
+        let match = find.sourceMatches[current]
+        // The edit updates the text binding, which recomputes matches keeping the index: the next match.
+        revealsAfterEdit = true
+        revealCoordinator.replace([(match.range, find.replacementText(for: match, in: document.text))])
+    }
+
+    private func replaceAllMatches() {
+        guard find.target == .source, !find.sourceMatches.isEmpty else { return }
+        let text = document.text
+        revealCoordinator.replace(find.sourceMatches.map { ($0.range, find.replacementText(for: $0, in: text)) })
     }
 
     /// Selects the requested line or match and scrolls it into view.
@@ -226,13 +337,106 @@ struct WorkspaceDocumentView: View {
     }
 }
 
-/// Keeps the editor controller so a reveal can scroll the new selection into view.
+/// Keeps the editor controller so a reveal can scroll the new selection into view, find matches
+/// can be highlighted, and replacements go through the editor's undo stack.
 final class EditorRevealCoordinator: TextViewCoordinator {
     private weak var controller: TextViewController?
+    private var findRanges: [NSRange] = []
+    private var currentFind: Int?
+    private var findColor = NSColor.systemYellow
+    private var currentFindColor = NSColor.systemOrange
+    private var findLayers: [CALayer] = []
+    private var scrollObserver: NSObjectProtocol?
 
-    func prepareCoordinator(controller: TextViewController) { self.controller = controller }
+    func prepareCoordinator(controller: TextViewController) {
+        self.controller = controller
+        drawFindMatches()
+    }
 
     func scrollSelectionToVisible() { controller?.textView.scrollSelectionToVisible() }
 
-    func destroy() { controller = nil }
+    func textViewDidChangeText(controller: TextViewController) {
+        // Ranges are stale until the find bar recomputes them from the new text.
+        removeFindLayers()
+    }
+
+    func destroy() {
+        removeFindLayers()
+        if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
+        scrollObserver = nil
+        controller = nil
+    }
+
+    func setFindMatches(_ ranges: [NSRange], current: Int?, color: NSColor, currentColor: NSColor) {
+        findRanges = ranges
+        currentFind = current
+        findColor = color
+        currentFindColor = currentColor
+        drawFindMatches()
+    }
+
+    /// Replaces ranges from last to first as one undoable edit.
+    func replace(_ replacements: [(range: NSRange, text: String)]) {
+        guard let textView = controller?.textView, textView.isEditable else { return }
+        let undo = textView._undoManager
+        undo?.beginGrouping()
+        for replacement in replacements.sorted(by: { $0.range.location > $1.range.location }) {
+            textView.replaceCharacters(in: replacement.range, with: replacement.text)
+        }
+        undo?.endGrouping()
+    }
+
+    private func removeFindLayers() {
+        findLayers.forEach { $0.removeFromSuperlayer() }
+        findLayers = []
+    }
+
+    /// Draws a highlight under each visible match, redrawn as the editor scrolls.
+    private func drawFindMatches() {
+        removeFindLayers()
+        guard let textView = controller?.textView else { return }
+        if scrollObserver == nil, let clipView = textView.enclosingScrollView?.contentView {
+            clipView.postsBoundsChangedNotifications = true
+            scrollObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main
+            ) { [weak self] _ in self?.drawFindMatches() }
+        }
+        guard !findRanges.isEmpty, let visible = textView.visibleTextRange else { return }
+        let text = textView.textStorage.string as NSString
+        let first = findRanges.partitioningIndex { NSMaxRange($0) >= visible.location }
+        for index in findRanges.indices[first...] {
+            let range = findRanges[index]
+            guard range.location <= NSMaxRange(visible), NSMaxRange(range) <= text.length else { break }
+            let color = index == currentFind ? currentFindColor : findColor
+            // One rectangle per line, so matches spanning newlines are covered too.
+            var start = range.location
+            while start < NSMaxRange(range) {
+                let newline = text.range(of: "\n", range: NSRange(location: start, length: NSMaxRange(range) - start))
+                let end = newline.location == NSNotFound ? NSMaxRange(range) : newline.location
+                if end > start, let lower = textView.layoutManager.rectForOffset(start),
+                   let upper = textView.layoutManager.rectForOffset(end) {
+                    let width = upper.minY == lower.minY ? upper.minX - lower.minX : lower.width
+                    let layer = CALayer()
+                    layer.frame = CGRect(x: lower.minX, y: lower.minY, width: max(width, 2), height: lower.height)
+                    layer.cornerRadius = 2
+                    layer.backgroundColor = color.cgColor
+                    textView.layer?.insertSublayer(layer, at: 1)
+                    findLayers.append(layer)
+                }
+                start = end + 1
+            }
+        }
+    }
+}
+
+private extension Array {
+    /// The first index whose element satisfies `predicate`, for a predicate that is false then true.
+    func partitioningIndex(where predicate: (Element) -> Bool) -> Int {
+        var low = 0, high = count
+        while low < high {
+            let middle = (low + high) / 2
+            if predicate(self[middle]) { high = middle } else { low = middle + 1 }
+        }
+        return low
+    }
 }

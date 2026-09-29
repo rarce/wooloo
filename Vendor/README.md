@@ -19,6 +19,7 @@ Their source files are unchanged. The local `Package.swift` files keep the runti
 `MarkdownView/Sources/MarkdownView/Documentation.docc` is omitted. Source changes, marked "xherdr patch":
 
 - MarkdownView: `markdownBlockSpacing(_:)` sets the spacing between top-level blocks, which upstream fixes at 8 pt.
+- MarkdownView: `markdownSearchHighlight(_:)` colors find matches in `Text` and `InlineCode` nodes (`Modifiers/SearchHighlightModifier.swift`), and each top-level block carries a `MarkdownBlockAnchor` id so find can scroll to it. Because of the anchors, adjacent paragraphs are separate views spaced by the block spacing instead of one text joined with blank lines.
 - BeautifulMermaid: the AppKit paths in `ImageRenderer.swift` flip the bitmap context before drawing; upstream renders diagrams upside down on macOS.
 
 The local `Package.swift` files drop test targets, examples, and MarkdownView's default `LaTeX` trait, so SwiftMath and its ~7 MB of math fonts are not linked and `ENABLE_MATH_RENDERING` stays undefined.

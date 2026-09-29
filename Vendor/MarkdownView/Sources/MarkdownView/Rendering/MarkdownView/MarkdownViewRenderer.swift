@@ -43,8 +43,12 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
 
     func visitDocument(_ document: Markdown.Document) -> MarkdownNodeView {
         var renderer = self
-        let nodeViews = document.children.map {
-            renderer.visit($0)
+        // xherdr patch: anchor each top-level block so find can scroll to it.
+        let nodeViews = document.children.map { child in
+            let nodeView = renderer.visit(child)
+            return MarkdownNodeView {
+                nodeView.id(MarkdownBlockAnchor(index: child.indexInParent))
+            }
         }
         return MarkdownNodeView(nodeViews, layoutPolicy: .linebreak, spacing: configuration.blockSpacing)
     }
@@ -79,7 +83,10 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
                 .makeBody(mathContext: mathContext)
         }
 
-        return MarkdownNodeView(text.plainText)
+        // xherdr patch: highlight find matches.
+        var attributedString = AttributedString(text.plainText)
+        configuration.searchHighlight?.apply(to: text.plainText, of: text, in: &attributedString)
+        return MarkdownNodeView(attributedString)
     }
     
     func visitBlockDirective(_ blockDirective: BlockDirective) -> MarkdownNodeView {
@@ -130,6 +137,8 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
         var attributedString = AttributedString(stringLiteral: inlineCode.code)
         attributedString.foregroundColor = tintColor
         attributedString.backgroundColor = tintColor.opacity(0.1)
+        // xherdr patch: highlight find matches.
+        configuration.searchHighlight?.apply(to: inlineCode.code, of: inlineCode, in: &attributedString)
         return MarkdownNodeView(attributedString)
     }
     

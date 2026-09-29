@@ -29,10 +29,24 @@ struct MarkdownPreviewView: View {
     let path: String
     let location: WorkspaceFileLocation
     let onOpenFile: (String) -> Void
+    var highlight: MarkdownSearchHighlight?
+    var focus: MarkdownFindFocus?
 
     @Environment(\.xherdrTheme) private var theme
 
     var body: some View {
+        ScrollViewReader { proxy in
+            content
+                .onChange(of: focus) { _, focus in
+                    guard let focus else { return }
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        proxy.scrollTo(MarkdownBlockAnchor(index: focus.block), anchor: .center)
+                    }
+                }
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             MarkdownView(MarkdownSpaceLinks.rewritingImages(in: text, documentPath: path))
                 .markdownCodeBlockStyle(XherdrCodeBlockStyle(theme: theme))
@@ -40,6 +54,7 @@ struct MarkdownPreviewView: View {
                                                 urlScheme: MarkdownSpaceLinks.scheme))
                 // Block spacing plus heading padding approximates GitHub's 16pt block margins.
                 .markdownBlockSpacing(14)
+                .markdownSearchHighlight(highlight)
                 .padding(.top, 12, for: .h1, .h2, .h3)
                 .padding(.top, 6, for: .h4, .h5, .h6)
                 .environment(\.openURL, OpenURLAction { open($0) })
