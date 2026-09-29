@@ -52,11 +52,11 @@ struct WorkspaceRepositoryView: View {
                 }
             }
             Divider()
-            HStack(spacing: 2) {
+            HStack(spacing: 0) {
                 tab("History", icon: "clock.arrow.circlepath", index: 0)
                 tab("Branches", icon: "point.3.connected.trianglepath.dotted", index: 1)
             }
-            .padding(4)
+            .padding(.horizontal, 3)
             Divider()
 
             if isLoading {
@@ -113,6 +113,9 @@ struct WorkspaceRepositoryView: View {
                 .frame(height: 25)
                 .background(selectedTab == index ? Color.primary.opacity(0.1) : .clear,
                             in: RoundedRectangle(cornerRadius: 4))
+                // Keep the spacing inside the hit area so the whole strip is clickable.
+                .padding(.horizontal, 1)
+                .padding(.vertical, 4)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

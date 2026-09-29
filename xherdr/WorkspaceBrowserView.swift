@@ -150,11 +150,11 @@ struct WorkspaceBrowserView: View {
                 .frame(height: 26)
             }
 
-            HStack(spacing: 2) {
+            HStack(spacing: 0) {
                 segment("Files", icon: "doc.text", selected: !showsChanges) { showsChanges = false }
                 segment("Changes", icon: "arrow.left.arrow.right", selected: showsChanges) { showsChanges = true }
             }
-            .padding(4)
+            .padding(.horizontal, 3)
             Divider()
 
             if isLoading {
@@ -215,6 +215,10 @@ struct WorkspaceBrowserView: View {
                 .frame(height: 25)
                 .background(selected ? Color.primary.opacity(0.1) : .clear,
                             in: RoundedRectangle(cornerRadius: 4))
+                // Keep the spacing inside the hit area so the whole strip is clickable.
+                .padding(.horizontal, 1)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

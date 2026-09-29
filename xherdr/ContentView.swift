@@ -239,7 +239,6 @@ struct ContentView: View {
                                 }
                                 .font(.system(size: 12, weight: .medium))
                                 .sidebarRow(selected: workspace.workspaceID == herdr.selectedWorkspaceID)
-                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .contextMenu { spaceActions(workspace) }
@@ -1032,6 +1031,8 @@ private extension View {
                 selected ? Color.primary.opacity(0.08) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 4)
             )
+            // Plain buttons only hit-test drawn pixels; make the whole row clickable.
+            .contentShape(Rectangle())
     }
 }
 
