@@ -247,7 +247,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 13) {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 0) {
-                            sectionTitle("SPACES")
+                            sectionTitle("SPACES", icon: "square.stack")
                             Spacer()
                             Button {
                                 activeDocumentID = nil
@@ -287,7 +287,7 @@ struct ContentView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 0) {
-                            sectionTitle("AGENTS")
+                            sectionTitle("AGENTS", icon: "sparkles")
                             Spacer()
                             Button {
                                 agentsInSelectedSpaceOnly.toggle()
@@ -1127,13 +1127,18 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func sectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: typography.caption, weight: .semibold))
-            .foregroundStyle(.tertiary)
-            .tracking(0.7)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
+    /// Matches the EXPLORER and REPOSITORY headers of the files sidebar.
+    private func sectionTitle(_ title: String, icon: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: typography.secondary, weight: .semibold))
+                .tracking(0.7)
+            Image(systemName: icon)
+                .font(.system(size: typography.secondary))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
     }
 
     private func statusColor(_ status: String?) -> Color {

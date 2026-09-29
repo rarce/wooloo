@@ -5,6 +5,7 @@ struct WorkspaceRepositoryView: View {
     @Environment(\.xherdrTheme) private var theme
     let location: WorkspaceFileLocation?
     let refreshVersion: Int
+    @Binding var isCollapsed: Bool
     let onChange: () -> Void
     let onNewSpace: ((String, String) -> Void)?
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
@@ -29,11 +30,23 @@ struct WorkspaceRepositoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("REPOSITORY")
-                    .font(.system(size: typography.secondary, weight: .semibold))
-                    .tracking(0.7)
+                Button { isCollapsed.toggle() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                            .font(.system(size: typography.tiny, weight: .semibold))
+                            .frame(width: 9)
+                        Text("REPOSITORY")
+                            .font(.system(size: typography.secondary, weight: .semibold))
+                            .tracking(0.7)
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: typography.secondary))
+                        Spacer(minLength: 0)
+                    }
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "Show repository" : "Hide repository")
                 Button { reload() } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: typography.secondary))
                 }
@@ -57,37 +70,40 @@ struct WorkspaceRepositoryView: View {
                     }
                 }
             }
-            Divider()
-            HStack(spacing: 0) {
-                tab("History", icon: "clock.arrow.circlepath", index: 0)
-                tab("Branches", icon: "point.3.connected.trianglepath.dotted", index: 1)
-            }
-            .padding(.horizontal, 3)
-            Divider()
-
-            if isLoading {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error {
-                hint(error).foregroundStyle(theme.warning)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else if let listing {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        if selectedTab == 0 {
-                            if let selectedCommit { commitDetail(selectedCommit) } else { history(listing) }
-                        }
-                        else { branches(listing) }
-                    }
-                    .padding(.vertical, 4)
+            if !isCollapsed {
+                Divider()
+                HStack(spacing: 0) {
+                    tab("History", icon: "clock.arrow.circlepath", index: 0)
+                    tab("Branches", icon: "point.3.connected.trianglepath.dotted", index: 1)
                 }
-                .id("\(selectedTab)|\(selectedCommit?.id ?? "")")
-            } else {
-                hint("Select a Space to browse its repository")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.horizontal, 3)
+                Divider()
+
+                if isLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let error {
+                    hint(error).foregroundStyle(theme.warning)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else if let listing {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            if selectedTab == 0 {
+                                if let selectedCommit { commitDetail(selectedCommit) } else { history(listing) }
+                            }
+                            else { branches(listing) }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .id("\(selectedTab)|\(selectedCommit?.id ?? "")")
+                } else {
+                    hint("Select a Space to browse its repository")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
             }
         }
         .background(theme.sidebarBackground)
-        .task(id: identity) { load() }
+        // A collapsed repository loads when it is opened again.
+        .task(id: "\(identity)|\(isCollapsed)") { if !isCollapsed { load() } }
         .task(id: "\(location?.identity ?? "")|\(selectedCommit?.id ?? "")") { await loadCommitFiles() }
         .onChange(of: location?.identity) { _, _ in selectedCommit = nil }
         .sheet(item: $addRequest) { request in

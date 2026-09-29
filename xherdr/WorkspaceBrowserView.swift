@@ -33,6 +33,7 @@ struct WorkspaceBrowserView: View {
     @State private var listingVersion = 0
     /// Bumped by Git bar operations so the repository panel refreshes too.
     @State private var gitVersion = 0
+    @AppStorage("RepositoryCollapsed") private var repositoryCollapsed = false
 
     private var isFilteredFiles: Bool { !showsChanges && modifiedOnly }
 
@@ -55,14 +56,22 @@ struct WorkspaceBrowserView: View {
     }
 
     var body: some View {
-        VSplitView {
-            explorer
-                .frame(minHeight: 190)
-            WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion + gitVersion,
-                                    onChange: loadListing,
-                                    onNewSpace: location?.isLocal == true ? onNewSpace : nil,
-                                    onOpenCommitFile: onOpenCommitFile)
-                .frame(minHeight: 160)
+        Group {
+            // A collapsed repository keeps only its header, so the explorer takes the rest without a divider to drag.
+            if repositoryCollapsed {
+                VStack(spacing: 0) {
+                    explorer.frame(maxHeight: .infinity)
+                    Divider()
+                    repository
+                }
+            } else {
+                VSplitView {
+                    explorer
+                        .frame(minHeight: 190)
+                    repository
+                        .frame(minHeight: 160)
+                }
+            }
         }
         .background(theme.sidebarBackground)
         .task(id: machine) { machineChanged() }
@@ -75,6 +84,14 @@ struct WorkspaceBrowserView: View {
         } message: {
             Text(operationError ?? "")
         }
+    }
+
+    private var repository: some View {
+        WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion + gitVersion,
+                                isCollapsed: $repositoryCollapsed,
+                                onChange: loadListing,
+                                onNewSpace: location?.isLocal == true ? onNewSpace : nil,
+                                onOpenCommitFile: onOpenCommitFile)
     }
 
     private var explorer: some View {
