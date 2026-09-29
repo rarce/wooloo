@@ -28,6 +28,7 @@ This script starts a dedicated `xherdr-perf` Herdr session and opens a Release b
 - `ascii`, `color` and `unicode`: 250 lines/s for 5 s
 - `typing`: 40 characters/s
 - `burst`: `cat` of 60,000 lines
+- `keys`: 100 letters typed into `cat`, one every 100 ms. The keys go through xherdr's own `keyDown`, sent by the typing probe (`XHERDR_TYPING_PROBE`, triggered with `notifyutil -p dev.xherdr.typing-probe`), so no accessibility access is needed.
 
 For each workload, the script reports:
 
@@ -37,6 +38,13 @@ For each workload, the script reports:
 - layout and draw time
 - latency from arrival to draw
 - main-thread busy share
+- for `keys`, keystroke-to-screen latency, split into:
+  - `queue`: from the event's timestamp until `keyDown` runs
+  - `send`: from `keyDown` until the input is written to the socket
+  - `herdr`: from the write until the echo frame is received (the first frame whose cursor moved)
+  - `render`: from receiving that frame until it is drawn
+
+The window's content size is fixed with `XHERDR_E2E_WINDOW` (default 1600x1000), so runs compare the same grid whatever size your own xherdr window was saved at. The live results below before this option used a 311×80 window. `e2e-baseline.json` now uses the fixed size, a 120×48 grid on the machine below.
 
 It compares them with `e2e-baseline.json`. The script then replays the recorded trace through the reference decoder. Every revision the app drew must match what Herdr sent, and the last frame received must have been drawn. The xherdr window must stay visible during the run.
 
@@ -73,3 +81,15 @@ Live, 311×80 window:
 | typing | 18.2 / 30.7 → 30.5 / 30.5 | 83 → 0 | 45 → 2.7 ms | 429 → 5 ms | 56% → 5% |
 
 xherdr now draws every frame Herdr sends. The frame rate is limited by Herdr, not by the app. After a clear or a tab switch, a cold layout of the whole grid takes about 5 ms at 311×80, down from about 28 ms.
+
+### Keystroke to screen
+
+Measured with the `keys` workload on a 120×48 grid:
+
+| | before | after |
+|---|---|---|
+| p50 | 16.8 ms | 2.5 ms |
+| p95 | 22.0 ms | 4.4 ms |
+| max | 25.0 ms | 4.8 ms |
+
+Herdr echoes a key in about 0.3 ms. Before the fix, each keystroke wrote `nil` to `HerdrStore.inputError`, a `@Published` property. SwiftUI then updated the whole window, holding the main thread for about 8 ms before the echo frame could be shown. The store now publishes `inputError` only when it changes. What remains is about 0.7 ms to send the input and about 1.3 ms (p50) from the echo frame to the draw, which is mostly waiting for AppKit's next display pass.

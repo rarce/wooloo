@@ -10,9 +10,12 @@
 #   scripts/terminal-e2e.sh [--save-baseline] [workload...]
 #
 # Workloads: ascii, color and unicode stream 250 log lines per second for 5 s; typing echoes
-# 40 characters per second for 5 s; burst cats 60,000 lines at once. All run by default.
+# 40 characters per second for 5 s; burst cats 60,000 lines at once; keys types 100 letters
+# into `cat` through xherdr's own key handling and reports keystroke-to-screen latency. All
+# run by default.
 #
-# The xherdr window opens and must stay visible while it runs. XHERDR_E2E_SESSION changes the
+# The xherdr window opens and must stay visible while it runs. XHERDR_E2E_WINDOW sets its
+# content size (default 1600x1000). XHERDR_E2E_SESSION changes the
 # session (default xherdr-perf); the primary session is refused.
 set -euo pipefail
 
@@ -23,7 +26,7 @@ baseline=$root/docs/perf/e2e-baseline.json
 herdr=(herdr --session $session)
 save_baseline=0
 if [[ ${1:-} == --save-baseline ]]; then save_baseline=1; shift; fi
-workloads=(ascii color unicode typing burst)
+workloads=(ascii color unicode typing burst keys)
 (( $# )) && workloads=($@)
 [[ $session == default ]] && { echo "Refusing to use the primary Herdr session" >&2; exit 1; }
 
@@ -75,7 +78,8 @@ pane=$($herdr workspace create --cwd $run --label xherdr-perf --focus |
     python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])')
 echo "Session $session, pane $pane"
 
-XHERDR_METRICS_FILE=$metrics XHERDR_SURFACE_TRACE=$trace $app -HerdrLastSession $session -ApplePersistenceIgnoreState YES \
+XHERDR_METRICS_FILE=$metrics XHERDR_SURFACE_TRACE=$trace XHERDR_TYPING_PROBE=1 \
+    XHERDR_WINDOW_SIZE=${XHERDR_E2E_WINDOW:-1600x1000} $app -HerdrLastSession $session -ApplePersistenceIgnoreState YES \
     > $run/app.log 2>&1 &
 app_pid=$!
 
@@ -87,6 +91,17 @@ grep -q '"e":"draw"' $metrics 2>/dev/null || { echo "xherdr never drew a live su
 python3 -c 'import time; time.sleep(1.5)'
 
 for workload in $workloads; do
+    if [[ $workload == keys ]]; then
+        echo "Running keys"
+        $herdr pane run $pane "clear; cat" > /dev/null
+        python3 -c 'import time; time.sleep(1)'
+        start=$(now_ms)
+        notifyutil -p dev.xherdr.typing-probe
+        python3 -c 'import time; time.sleep(11.5)' # 100 keys, one every 100 ms
+        echo "{\"name\":\"keys\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
+        $herdr pane send-keys $pane ctrl+c > /dev/null
+        continue
+    fi
     play="python3 $root/scripts/terminal-perf.py play"
     case $workload in
         ascii|color|unicode) command="$play $run/$workload.txt --lines-per-second 250 --seconds 5" ;;

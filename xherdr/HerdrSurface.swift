@@ -615,7 +615,9 @@ final class HerdrSurfaceStream {
 
     func sendInput(_ event: HerdrInputEvent, to paneID: String) -> Bool {
         guard isReady, let payload = SurfaceWriter.paneInput(paneID: paneID, event: event) else { return false }
-        return send(payload)
+        let sent = send(payload)
+        if sent { TerminalPipelineMetrics.shared?.inputSent(bytes: payload.count) }
+        return sent
     }
 
     @discardableResult

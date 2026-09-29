@@ -8,6 +8,7 @@ struct XherdrApp: App {
     init() {
         // Opens the metrics file at launch, so a run that never shows a surface still records its start.
         _ = TerminalPipelineMetrics.shared
+        TerminalTypingProbe.start()
     }
 
     var body: some Scene {

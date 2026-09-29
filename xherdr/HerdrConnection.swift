@@ -918,7 +918,8 @@ final class HerdrStore: ObservableObject {
                 let item = pendingInput.removeFirst()
                 if let stream = surfaceStream, stream.isReady {
                     if stream.sendInput(item.event, to: item.paneID) {
-                        inputError = nil
+                        // Publishing, even an unchanged nil, would update the whole window on every key.
+                        if inputError != nil { inputError = nil }
                     } else {
                         inputError = "Herdr endpoint input failed; reconnecting"
                     }
@@ -942,7 +943,7 @@ final class HerdrStore: ObservableObject {
                 guard generation == currentGeneration else { break }
                 if case .failure(let error) = result {
                     inputError = error.localizedDescription
-                } else {
+                } else if inputError != nil {
                     inputError = nil
                 }
             }

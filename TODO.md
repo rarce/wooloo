@@ -12,7 +12,9 @@
 
 Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.sh`; see `docs/perf/README.md`. xherdr now draws every frame Herdr sends (about 43 fps). Arrival to draw takes about 3 ms at p50 and 15–18 ms at worst.
 
-- [ ] Measure keystroke-to-screen latency. `terminal-e2e.sh` times only frame arrival to draw; add a workload that timestamps input sent through `HerdrSurfaceStream.sendInput` and the first drawn revision that shows it.
+- [x] Measure keystroke-to-screen latency: the `keys` workload in `terminal-e2e.sh`. Fixing a per-key SwiftUI update brought it from 16.8 to 2.5 ms at p50.
+- [ ] Cut the ~1.3 ms (p50, 3 ms p95) between receiving an echo frame and drawing it. Try `displayIfNeeded()` right after a surface that answers recent input, and check that it does not add work under streaming output.
+- [ ] Find what else publishes on the main thread per event. Mouse drags, scrolling and selection still go through `HerdrStore` and may update SwiftUI the way `inputError` did. Measure them with the `update` events, which have `rev: null`.
 - [ ] Measure when a frame reaches the screen, not only when `draw` returns; the compositor adds up to one display refresh.
 - [ ] Add end-to-end workloads for tab switches, resizes, split panes, graphics and a selection drag during output. None of them is covered yet.
 - [ ] Cut the cold layout, about 5 ms at 311×80, which runs after a clear, resize or tab switch. Try caching glyphs per character and font for plain rows, keeping Core Text for rows that need shaping. Fira Code ligatures must still render, and the snapshots will show it if they do not.

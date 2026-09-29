@@ -198,10 +198,50 @@ def e2e_summary(metrics_path, phases_path):
             "e2e_p95_ms": percentile(e2e, 0.95),
             "e2e_max_ms": max(e2e) if e2e else None,
             "main_busy_pct": round(100 * busy / (seconds * 1e9), 1),
+            "keystrokes": keystrokes(events, lo, hi),
             "last_frame_drawn": bool(last) and (last["boot"], last["proj"], last["rev"]) in
                                 {(e["boot"], e["proj"], e["rev"]) for e in events if e["e"] == "draw"},
         })
     return summaries
+
+
+def keystrokes(events, lo, hi):
+    """Matches each key event in [lo, hi] with its input write, the first frame received after
+    it that moved the cursor (the echo) and the first draw of that frame."""
+    key = lambda e: (e["boot"], e["proj"], e["rev"])
+    keys = [e for e in events if e["e"] == "key" and lo <= e["t"] <= hi]
+    sents = [e for e in events if e["e"] == "sent"]
+    recvs = [e for e in events if e["e"] == "recv"]
+    draws = [e for e in events if e["e"] == "draw"]
+    samples = []
+    for index, press in enumerate(keys):
+        sent = next((e for e in sents if e["t"] >= press["t"]), None)
+        if not sent:
+            continue
+        limit = keys[index + 1]["t"] if index + 1 < len(keys) else float("inf")
+        echo = next((e for e in recvs if sent["t"] < e["t"] < limit
+                     and (e.get("cx"), e.get("cy")) != (press.get("cx"), press.get("cy"))), None)
+        if not echo:
+            continue
+        drawn = next((e for e in draws if key(e) == key(echo) and e["t"] >= echo["t"]), None)
+        if not drawn:
+            continue
+        samples.append({
+            "queue": (press["t"] - press["t_event"]) / 1e6,
+            "send": (sent["t"] - press["t"]) / 1e6,
+            "herdr": (echo["t"] - sent["t"]) / 1e6,
+            "render": (drawn["t"] - echo["t"]) / 1e6,
+            "total": (drawn["t"] - press["t_event"]) / 1e6,
+        })
+    if not samples:
+        return None
+    result = {"keys": len(keys), "matched": len(samples)}
+    for part in ("queue", "send", "herdr", "render", "total"):
+        values = [sample[part] for sample in samples]
+        result[f"key_{part}_p50_ms"] = percentile(values, 0.5)
+        result[f"key_{part}_p95_ms"] = percentile(values, 0.95)
+    result["key_total_max_ms"] = max(sample["total"] for sample in samples)
+    return result
 
 
 def e2e_report(metrics_path, phases_path, baseline_path, json_path):
@@ -224,6 +264,24 @@ def e2e_report(metrics_path, phases_path, baseline_path, json_path):
             row.append(fmt(value) + (change(value, old.get(key), lower) if lower is not None else ""))
         rows.append(row)
     table(["phase"] + [label for _, label, _ in columns], rows)
+    typed = [s for s in summaries if s.get("keystrokes")]
+    if typed:
+        print()
+        print("Keystroke to screen, ms: queue = event to keyDown, send = keyDown to socket write,")
+        print("herdr = write to echo frame received, render = received to drawn, total = event to drawn")
+        rows = []
+        for summary in typed:
+            keys = summary["keystrokes"]
+            old = (base.get(summary["phase"]) or {}).get("keystrokes") or {}
+            row = [f"{summary['phase']} ({keys['matched']}/{keys['keys']} keys)"]
+            for part in ("queue", "send", "herdr", "render", "total"):
+                for p in ("p50", "p95"):
+                    name = f"key_{part}_{p}_ms"
+                    row.append(fmt(keys[name]) + (change(keys[name], old.get(name)) if part == "total" else ""))
+            row.append(fmt(keys["key_total_max_ms"]) + change(keys["key_total_max_ms"], old.get("key_total_max_ms")))
+            rows.append(row)
+        table(["phase", "queue p50", "p95", "send p50", "p95", "herdr p50", "p95", "render p50", "p95",
+               "total p50", "p95", "max"], rows)
     for summary in summaries:
         if not summary["last_frame_drawn"]:
             print(f"WARNING: {summary['phase']}: the last frame received was never drawn")

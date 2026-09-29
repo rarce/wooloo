@@ -1,16 +1,19 @@
 import AppKit
 import Foundation
+import notify
 import os
 
 /// Opt-in measurements of the live terminal pipeline, from a surface frame's arrival on the
 /// endpoint socket to the draw that shows it. Set `XHERDR_METRICS_FILE` to a path to record
-/// one JSON line per event; `scripts/terminal-metrics-summary.py` turns them into a report.
+/// one JSON line per event; `scripts/terminal-perf.py e2e` turns them into a report.
 /// Signposts under the `dev.xherdr.terminal` subsystem show the same stages in Instruments
 /// whether or not the file is enabled.
 ///
 /// Events: `recv` (frame decoded on the stream thread), `deliver` (surface published on the
 /// main thread), `update` (SwiftUI view update, with the grid layout when a revision changed)
-/// and `draw` (grid drawn). Times are nanoseconds since the first event's `start` line.
+/// and `draw` (grid drawn). Keystrokes add `key` (the event's own time, so waiting in the main
+/// thread's queue counts, and when the view handled it) and `sent` (input written to the
+/// socket). Times are nanoseconds since the first event's `start` line.
 final class TerminalPipelineMetrics {
     static let shared: TerminalPipelineMetrics? = {
         guard let path = ProcessInfo.processInfo.environment["XHERDR_METRICS_FILE"], !path.isEmpty else { return nil }
@@ -23,7 +26,9 @@ final class TerminalPipelineMetrics {
 
     private enum Event {
         case received(boot: String, projection: UInt64, revision: UInt64, size: (Int, Int), isPatch: Bool,
-                      bytes: Int, at: UInt64, decode: UInt64)
+                      bytes: Int, at: UInt64, decode: UInt64, cursor: HerdrCursor?)
+        case key(eventAt: UInt64, at: UInt64, cursor: HerdrCursor?)
+        case sent(at: UInt64, bytes: Int)
         case delivered(boot: String, projection: UInt64, revision: UInt64, at: UInt64)
         case updated(revision: UInt64?, at: UInt64, duration: UInt64, layout: UInt64?)
         case drawn(boot: String, projection: UInt64, revision: UInt64, at: UInt64, duration: UInt64, surface: HerdrSurface?)
@@ -58,7 +63,17 @@ final class TerminalPipelineMetrics {
     func received(_ surface: HerdrSurface, isPatch: Bool, bytes: Int, at: UInt64, decodeNanos: UInt64) {
         append(.received(boot: surface.bootID, projection: surface.projectionRevision, revision: surface.revision,
                          size: (surface.width, surface.height), isPatch: isPatch,
-                         bytes: bytes, at: at, decode: decodeNanos))
+                         bytes: bytes, at: at, decode: decodeNanos, cursor: surface.cursor))
+    }
+
+    /// A key event reached the terminal view while `cursor` was showing.
+    func keyPressed(_ event: NSEvent, cursor: HerdrCursor?) {
+        let eventAt = UInt64(max(0, event.timestamp) * 1_000_000_000)
+        append(.key(eventAt: eventAt, at: Self.now(), cursor: cursor))
+    }
+
+    func inputSent(bytes: Int) {
+        append(.sent(at: Self.now(), bytes: bytes))
     }
 
     func delivered(_ surface: HerdrSurface) {
@@ -105,12 +120,19 @@ final class TerminalPipelineMetrics {
 
     private func line(for event: Event) -> String {
         func time(_ value: UInt64) -> UInt64 { value >= origin ? value - origin : 0 }
+        func position(_ cursor: HerdrCursor?) -> String {
+            cursor.map { #","cx":\#($0.x),"cy":\#($0.y)"# } ?? ""
+        }
         func quoted(_ value: String) -> String {
             "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
         switch event {
-        case let .received(boot, projection, revision, size, isPatch, bytes, at, decode):
-            return #"{"e":"recv","boot":\#(quoted(boot)),"proj":\#(projection),"rev":\#(revision),"cols":\#(size.0),"rows":\#(size.1),"patch":\#(isPatch),"bytes":\#(bytes),"t":\#(time(at)),"decode":\#(decode)}"#
+        case let .received(boot, projection, revision, size, isPatch, bytes, at, decode, cursor):
+            return #"{"e":"recv","boot":\#(quoted(boot)),"proj":\#(projection),"rev":\#(revision),"cols":\#(size.0),"rows":\#(size.1),"patch":\#(isPatch),"bytes":\#(bytes),"t":\#(time(at)),"decode":\#(decode)\#(position(cursor))}"#
+        case let .key(eventAt, at, cursor):
+            return #"{"e":"key","t_event":\#(time(eventAt)),"t":\#(time(at))\#(position(cursor))}"#
+        case let .sent(at, bytes):
+            return #"{"e":"sent","t":\#(time(at)),"bytes":\#(bytes)}"#
         case let .delivered(boot, projection, revision, at):
             return #"{"e":"deliver","boot":\#(quoted(boot)),"proj":\#(projection),"rev":\#(revision),"t":\#(time(at))}"#
         case let .updated(revision, at, duration, layout):
@@ -210,5 +232,78 @@ extension HerdrSurface {
             mix(UInt64(bitPattern: Int64(graphic.z)))
         }
         return hash
+    }
+}
+
+/// Types into the live terminal view on request, through the same `keyDown` path as the
+/// keyboard, so `scripts/terminal-e2e.sh` can measure keystroke-to-screen latency without
+/// accessibility access. Enabled with the metrics file and `XHERDR_TYPING_PROBE=1`; each
+/// `notifyutil -p dev.xherdr.typing-probe` types `XHERDR_TYPING_PROBE_KEYS` letters (100),
+/// one every `XHERDR_TYPING_PROBE_INTERVAL_MS` (100). `XHERDR_WINDOW_SIZE` (for example
+/// `1400x900`) fixes the window's content size, with or without the probe.
+@MainActor
+enum TerminalTypingProbe {
+    /// The terminal view showing the live surface.
+    static weak var target: HerdrTerminalTextView?
+    private static var token: Int32 = 0
+
+    static func start() {
+        let environment = ProcessInfo.processInfo.environment
+        if let size = environment["XHERDR_WINDOW_SIZE"] { resizeWindow(to: size, attempts: 50) }
+        guard TerminalPipelineMetrics.shared != nil, environment["XHERDR_TYPING_PROBE"] == "1", token == 0 else { return }
+
+        let keys = Int(environment["XHERDR_TYPING_PROBE_KEYS"] ?? "") ?? 100
+        let interval = Double(environment["XHERDR_TYPING_PROBE_INTERVAL_MS"] ?? "") ?? 100
+        notify_register_dispatch("dev.xherdr.typing-probe", &token, .main) { _ in
+            MainActor.assumeIsolated { type(keys, every: interval / 1000) }
+        }
+    }
+
+    private static var timer: DispatchSourceTimer?
+
+    /// Gives the first window a fixed content size such as `1400x900`, so runs compare the
+    /// same grid whatever size the developer's own xherdr window was saved at.
+    private static func resizeWindow(to size: String, attempts: Int) {
+        let parts = size.split(separator: "x").compactMap { Double($0) }
+        guard parts.count == 2, attempts > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            MainActor.assumeIsolated {
+                guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }) else {
+                    resizeWindow(to: size, attempts: attempts - 1)
+                    return
+                }
+                window.setContentSize(NSSize(width: parts[0], height: parts[1]))
+                window.setFrameOrigin(NSPoint(x: 40, y: 40))
+            }
+        }
+    }
+
+    private static func type(_ count: Int, every interval: TimeInterval) {
+        let letters = Array("abcdefghijklmnopqrstuvwxyz")
+        var typed = 0
+        // A strict timer on its own queue keeps keys apart; the event then waits for the main
+        // thread like a hardware event.
+        let source = DispatchSource.makeTimerSource(flags: .strict, queue: DispatchQueue.global(qos: .userInteractive))
+        source.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(1))
+        source.setEventHandler {
+            let character = String(letters[typed % letters.count])
+            let timestamp = ProcessInfo.processInfo.systemUptime
+            typed += 1
+            if typed >= count { source.cancel() }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let view = target,
+                          let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                                       timestamp: timestamp,
+                                                       windowNumber: view.window?.windowNumber ?? 0, context: nil,
+                                                       characters: character, charactersIgnoringModifiers: character,
+                                                       isARepeat: false, keyCode: 0) else { return }
+                    view.keyDown(with: event)
+                }
+            }
+        }
+        timer?.cancel()
+        timer = source
+        source.resume()
     }
 }

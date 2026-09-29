@@ -649,6 +649,7 @@ final class HerdrTerminalTextView: NSTextView {
     /// Shows a live surface, laying the grid out again only when its content changed.
     func show(_ surface: HerdrSurface?) {
         guard let surface else { return }
+        TerminalTypingProbe.target = self
         let start = TerminalPipelineMetrics.now()
         let splitsChanged = self.surface?.splits != surface.splits
         self.surface = surface
@@ -1098,6 +1099,7 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        TerminalPipelineMetrics.shared?.keyPressed(event, cursor: surface?.cursor)
         if handleShortcut(event) { return }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers.contains(.command) {
