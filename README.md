@@ -16,9 +16,9 @@ The direction is simple:
 
 ## Status
 
-xherdr is at the beginning of development. The compact SwiftUI app has a left sidebar for spaces and agents, workspace tabs, and terminal pane layouts. It starts with the dedicated Herdr test session `xherdr-ui-test`, subscribes to server events, and reads visible pane text. Click a pane and type directly: text, Enter, Backspace, arrows, Tab, Escape, control and option chords, and paste are forwarded to Herdr in order. The session picker lives at the bottom of the sidebar; `default` is excluded by this build. The interface follows Herdr's [workspace, tab, pane, and agent model](https://herdr.dev/docs/concepts/) and the layout shown on [herdr.dev](https://herdr.dev/).
+xherdr is at the beginning of development. The compact SwiftUI app has a left sidebar for spaces and agents, workspace tabs, and terminal pane layouts. It starts with the dedicated Herdr test session `xherdr-ui-test` and subscribes to server events. Its terminal uses Herdr's generation-1 client endpoint to display live cells, colors, cursor, split panes, and alternate-screen applications. Click a pane and type directly: text, Enter, Backspace, arrows, Tab, Escape, control and option chords, and paste are forwarded to Herdr in order. The session picker lives at the bottom of the sidebar; `default` is excluded by this build. The interface follows Herdr's [workspace, tab, pane, and agent model](https://herdr.dev/docs/concepts/) and the layout shown on [herdr.dev](https://herdr.dev/).
 
-Pane output currently uses `pane.read`, so terminal colors, cursor placement, graphics, resize reporting, and alternate-screen rendering still require Herdr's terminal surface protocol. Input is interactive through `pane.send_input`.
+The JSON `pane.read` view remains a fallback while the endpoint is unavailable. Native image placement, mouse reporting inside terminal programs, and draggable split handles are still pending.
 
 The server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md). The [SwiftTerm evaluation](docs/swiftterm-evaluation.md) explains when a full terminal view would be useful.
 

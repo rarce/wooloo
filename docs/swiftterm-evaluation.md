@@ -4,13 +4,13 @@
 
 Do not use `LocalProcessTerminalView`: Herdr already owns each pane's process and PTY. Starting a local process in xherdr would create a second terminal rather than attach to the existing one.
 
-The current `pane.read` response is a complete visible screen snapshot, including an optional ANSI-styled text representation. It is not an incremental PTY byte stream. Clearing and re-feeding a SwiftTerm view on every read would duplicate terminal state, reset selection and scrollback, and make resize behavior ambiguous. Herdr's documented client endpoint negotiates a *screen codec*, so the future stream may also contain rendered screen state rather than raw VT output. If so, a small screen renderer is a better fit than SwiftTerm. This is an inference from the published protocol description; the exact endpoint payload still needs inspection.
+The `pane.read` response is a complete visible screen snapshot, not an incremental PTY byte stream. Herdr 0.9.1's generation-1 client endpoint sends rendered `FrameData` cells and incremental `PaneSurfacePatch` changes, with colors and cursor state. xherdr now renders those cells directly in an AppKit view. Feeding this data to SwiftTerm would require inventing VT output and a second terminal state, so it would add complexity without improving fidelity.
 
-If a supported Herdr transport provides raw VT bytes, SwiftTerm can be integrated with a narrow adapter:
+If a future supported Herdr transport provides raw VT bytes, SwiftTerm can be integrated with a narrow adapter:
 
 1. Wrap `TerminalView` in `NSViewRepresentable`, one view per Herdr pane.
 2. Feed incremental screen/output bytes into that view on its expected queue.
 3. Forward `TerminalViewDelegate.send` and `sizeChanged` through the Herdr client transport.
 4. Let Herdr remain the owner of process, pane layout, and session lifecycle.
 
-Herdr's [protocol stability documentation](https://herdr.dev/docs/socket-api/#protocol-stability) distinguishes its client-rendered endpoint from the numbered internal terminal attach protocol. Inspect the endpoint payload before adding SwiftTerm as a package dependency. This keeps the current app small and avoids building a second terminal model around `pane.read`.
+Herdr's [protocol stability documentation](https://herdr.dev/docs/socket-api/#protocol-stability) distinguishes its client-rendered endpoint from the numbered internal terminal attach protocol. The current endpoint supports a small native cell renderer and does not need a SwiftTerm package dependency.

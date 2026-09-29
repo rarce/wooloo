@@ -112,7 +112,7 @@ struct HerdrLayoutPane: Decodable {
     }
 }
 
-struct HerdrRect: Decodable {
+struct HerdrRect: Decodable, Equatable {
     let x: Int
     let y: Int
     let width: Int
@@ -153,6 +153,10 @@ enum HerdrSocket {
     static func open(path: String) throws -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw HerdrSocketError.message(String(cString: strerror(errno))) }
+        var noSignal: Int32 = 1
+        withUnsafePointer(to: &noSignal) { pointer in
+            _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, pointer, socklen_t(MemoryLayout<Int32>.size))
+        }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -348,6 +352,8 @@ final class HerdrEventStream {
 final class HerdrStore: ObservableObject {
     @Published private(set) var snapshot: HerdrSnapshot?
     @Published private(set) var paneText: [String: String] = [:]
+    @Published private(set) var surface: HerdrSurface?
+    @Published private(set) var surfaceError: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var inputError: String?
     @Published private(set) var sessionSelectionError: String?
@@ -358,10 +364,16 @@ final class HerdrStore: ObservableObject {
     @Published private(set) var sessionName = "xherdr-ui-test"
     private var eventTask: Task<Void, Never>?
     private var paneTask: Task<Void, Never>?
+    private var surfaceTask: Task<Void, Never>?
     private var eventStream: HerdrEventStream?
+    private var surfaceStream: HerdrSurfaceStream?
     private var generation = 0
     private var pendingInput: [(paneID: String, text: String?, keys: [String])] = []
     private var inputTask: Task<Void, Never>?
+    private var surfaceCols = 80
+    private var surfaceRows = 24
+    private var cellWidth = 8
+    private var cellHeight = 16
 
     var socketPath: String {
         FileManager.default.homeDirectoryForCurrentUser
@@ -369,6 +381,11 @@ final class HerdrStore: ObservableObject {
     }
 
     var isConnected: Bool { snapshot != nil && errorMessage == nil }
+
+    var clientSocketPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/herdr/sessions/\(sessionName)/herdr-client.sock").path
+    }
 
     func connect(to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -383,6 +400,8 @@ final class HerdrStore: ObservableObject {
         sessionName = trimmed
         snapshot = nil
         paneText = [:]
+        surface = nil
+        surfaceError = nil
         selectedWorkspaceID = nil
         selectedTabID = nil
         selectedPaneID = nil
@@ -434,6 +453,10 @@ final class HerdrStore: ObservableObject {
             while !Task.isCancelled {
                 if let snapshot, isConnected {
                     let paneIDs = snapshot.panes.filter { $0.tabID == selectedTabID }.map(\.paneID)
+                    if surface != nil && Set(paneIDs) == Set(surface?.paneIDs ?? []) {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        continue
+                    }
                     for paneID in paneIDs {
                         let paneResult = await Task.detached(priority: .utility) {
                             Result { try HerdrSocket.paneText(path: path, paneID: paneID) }
@@ -443,6 +466,41 @@ final class HerdrStore: ObservableObject {
                         }
                     }
                 }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+        let surfacePath = clientSocketPath
+        let cols = surfaceCols
+        let rows = surfaceRows
+        let width = cellWidth
+        let height = cellHeight
+        surfaceTask = Task.detached(priority: .utility) { [weak self] in
+            guard let store = self else { return }
+            while !Task.isCancelled {
+                let stream = HerdrSurfaceStream()
+                let stillCurrent = await MainActor.run { () -> Bool in
+                    guard store.generation == currentGeneration else { return false }
+                    store.surfaceStream = stream
+                    return true
+                }
+                if !stillCurrent || Task.isCancelled { stream.cancel(); break }
+                do {
+                    try stream.run(path: surfacePath, cols: cols, rows: rows,
+                                   cellWidth: width, cellHeight: height) { newSurface in
+                        Task { @MainActor in
+                            guard store.generation == currentGeneration else { return }
+                            store.surface = newSurface
+                            store.surfaceError = nil
+                        }
+                    }
+                } catch {
+                    await MainActor.run {
+                        guard store.generation == currentGeneration else { return }
+                        store.surface = nil
+                        store.surfaceError = String(describing: error)
+                    }
+                }
+                if Task.isCancelled { break }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
@@ -456,6 +514,11 @@ final class HerdrStore: ObservableObject {
         eventTask = nil
         paneTask?.cancel()
         paneTask = nil
+        surfaceStream?.cancel()
+        surfaceStream = nil
+        surfaceTask?.cancel()
+        surfaceTask = nil
+        surface = nil
         inputTask?.cancel()
         inputTask = nil
         pendingInput = []
@@ -466,11 +529,30 @@ final class HerdrStore: ObservableObject {
         let tabs = snapshot?.tabs.filter { $0.workspaceID == workspaceID } ?? []
         selectedTabID = tabID ?? tabs.first?.tabID
         selectedPaneID = paneID ?? snapshot?.panes.first { $0.tabID == selectedTabID }?.paneID
+        surfaceStream?.focus(workspaceID: workspaceID)
+        if let selectedTabID { surfaceStream?.focus(tabID: selectedTabID) }
     }
 
     func select(tabID: String) {
         selectedTabID = tabID
         selectedPaneID = snapshot?.panes.first { $0.tabID == tabID }?.paneID
+        surfaceStream?.focus(tabID: tabID)
+    }
+
+    func select(paneID: String) {
+        guard snapshot?.panes.contains(where: { $0.paneID == paneID && $0.tabID == selectedTabID }) == true else { return }
+        selectedPaneID = paneID
+        surfaceStream?.focus(paneID: paneID)
+    }
+
+    func resizeSurface(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) {
+        guard cols > 0, rows > 0, cols <= 1000, rows <= 1000 else { return }
+        guard (cols, rows, cellWidth, cellHeight) != (surfaceCols, surfaceRows, self.cellWidth, self.cellHeight) else { return }
+        surfaceCols = cols
+        surfaceRows = rows
+        self.cellWidth = cellWidth
+        self.cellHeight = cellHeight
+        surfaceStream?.resize(cols: cols, rows: rows, cellWidth: cellWidth, cellHeight: cellHeight)
     }
 
     func sendText(_ text: String, to paneID: String) {

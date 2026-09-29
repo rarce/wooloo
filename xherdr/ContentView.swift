@@ -161,6 +161,10 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Spacer()
+                Text(herdr.surface == nil ? "TEXT" : "LIVE")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(herdr.surface == nil ? Color.secondary : Color.cyan)
+                    .help(herdr.surfaceError ?? (herdr.surface == nil ? "Text snapshot" : "Live Herdr surface"))
                 if !herdr.isConnected {
                     Text("Disconnected")
                         .font(.system(size: 10, design: .monospaced))
@@ -201,7 +205,22 @@ struct ContentView: View {
                 .background(barBackground)
                 Divider()
 
-                if let layout = herdr.snapshot?.layouts.first(where: { $0.tabID == herdr.selectedTabID }),
+                if let surface = herdr.surface,
+                   !selectedPanes.isEmpty,
+                   Set(surface.paneIDs) == Set(selectedPanes.map(\.paneID)) {
+                    GeometryReader { geometry in
+                        TerminalPaneView(
+                            text: "",
+                            paneID: herdr.selectedPaneID ?? selectedPanes[0].paneID,
+                            surface: surface,
+                            selectPane: { id in herdr.select(paneID: id) },
+                            sendText: { text, id in herdr.sendText(text, to: id) },
+                            sendKey: { key, id in herdr.sendKey(key, to: id) }
+                        )
+                        .onAppear { resizeSurface(to: geometry.size) }
+                        .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }
+                    }
+                } else if let layout = herdr.snapshot?.layouts.first(where: { $0.tabID == herdr.selectedTabID }),
                    !layout.panes.isEmpty {
                     GeometryReader { geometry in
                         ForEach(layout.panes, id: \.paneID) { item in
@@ -269,6 +288,14 @@ struct ContentView: View {
     private func connect() {
         herdr.connect(to: requestedSessionName)
         if herdr.sessionSelectionError == nil { showsSessionPicker = false }
+    }
+
+    private func resizeSurface(to size: CGSize) {
+        let cols = max(1, Int((size.width - 20) / TerminalPaneView.cellWidth))
+        let rows = max(1, Int((size.height - 18) / TerminalPaneView.cellHeight))
+        herdr.resizeSurface(cols: cols, rows: rows,
+                            cellWidth: Int(TerminalPaneView.cellWidth.rounded()),
+                            cellHeight: Int(TerminalPaneView.cellHeight.rounded()))
     }
 
     private func emptyState(_ message: String) -> some View {
