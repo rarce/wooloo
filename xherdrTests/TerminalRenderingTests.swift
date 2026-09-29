@@ -98,6 +98,30 @@ final class TerminalRenderingTests: XCTestCase {
         if !recorded.isEmpty { throw XCTSkip("Recorded snapshots: \(recorded.joined(separator: ", "))") }
     }
 
+    /// Dim, reversed, hidden and crossed-out cells are drawn as iTerm2 draws them, so Claude
+    /// Code's faint suggestions stand apart from typed text.
+    func testCellModifiersChangeColors() throws {
+        var model = SurfaceModel(width: 5, height: 1)
+        model.cursor = nil
+        for (x, modifier) in [UInt16(0), 2, 64, 128, 256].enumerated() {
+            model.cells[x] = HerdrCell(symbol: "x", foreground: 0, background: 0, modifier: modifier, skip: false)
+        }
+        let row = TerminalPaneView.layoutGrid(model.surface, theme: TerminalRenderHarness.theme, previous: nil).rows[0]
+        func color(_ x: Int) -> NSColor? {
+            row.runs.first { $0.columns.contains(x) }.flatMap { NSColor(cgColor: $0.color)?.usingColorSpace(.sRGB) }
+        }
+        let theme = TerminalRenderHarness.theme
+        let foreground = try XCTUnwrap(theme.terminalForeground.usingColorSpace(.sRGB))
+        let background = try XCTUnwrap(theme.terminalBackground.usingColorSpace(.sRGB))
+        XCTAssertEqual(color(0), foreground)
+        XCTAssertEqual(try XCTUnwrap(color(1)).redComponent,
+                       (foreground.redComponent + background.redComponent) / 2, accuracy: 0.01)
+        XCTAssertEqual(color(2), background)
+        XCTAssertTrue(row.backgrounds.contains { $0.rect.contains(CGPoint(x: 2.5 * TerminalPaneView.cellWidth, y: 1)) })
+        XCTAssertEqual(color(3), background)
+        XCTAssertEqual(row.underlines.count, 1)
+    }
+
     /// A view fed every frame of a workload, reusing rows between frames, ends up drawing
     /// exactly what a view shown only the last frame draws.
     func testIncrementalLayoutDrawsLikeFreshLayout() throws {
@@ -172,7 +196,7 @@ final class TerminalRenderingTests: XCTestCase {
                 let center = CGPoint(x: (CGFloat(x) + 0.5) * cellWidth, y: cellHeight / 2)
                 let isCursor = surface.cursor?.visible == true && surface.cursor?.x == x && surface.cursor?.y == y
                 let filled = row.backgrounds.contains { $0.rect.contains(center) }
-                if filled != (cell.background != 0 || isCursor) {
+                if filled != (cell.background != 0 || cell.modifier & 64 != 0 || isCursor) {
                     fail("cell \(x),\(y) background \(filled ? "filled" : "missing") for color \(cell.background)")
                 }
                 if cell.modifier & 8 != 0, !cell.skip,
@@ -182,7 +206,9 @@ final class TerminalRenderingTests: XCTestCase {
             }
             let underlinedCells = (0..<surface.width).filter {
                 let cell = surface.cells[y * surface.width + $0]
-                return cell.modifier & 8 != 0 || (cell.skip && $0 > 0 && surface.cells[y * surface.width + $0 - 1].modifier & 8 != 0)
+                // Underlines (8) and strikethroughs (256) are both line fills.
+                return cell.modifier & 264 != 0
+                    || (cell.skip && $0 > 0 && surface.cells[y * surface.width + $0 - 1].modifier & 264 != 0)
             }
             for line in underlined {
                 let first = Int((line.rect.minX / cellWidth).rounded())

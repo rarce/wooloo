@@ -81,6 +81,8 @@ struct TerminalPaneView: NSViewRepresentable {
     static let cellWidth = ("M" as NSString).size(withAttributes: [.font: terminalFont]).width
     static let cellHeight = NSLayoutManager().defaultLineHeight(for: terminalFont)
     static let boldFont = NSFontManager.shared.convert(terminalFont, toHaveTrait: .boldFontMask)
+    static let italicFont = NSFontManager.shared.convert(terminalFont, toHaveTrait: .italicFontMask)
+    static let boldItalicFont = NSFontManager.shared.convert(boldFont, toHaveTrait: .italicFontMask)
     /// Distance from a row's top to its baseline, matching where TextKit placed the text.
     static let baseline = cellHeight - ceil(-terminalFont.descender)
 
@@ -262,7 +264,7 @@ struct TerminalPaneView: NSViewRepresentable {
         var underlines: [TerminalGrid.Fill] = []
         var text = ""
         text.reserveCapacity(width)
-        var boldRanges: [NSRange] = []
+        var fontRanges: [(range: NSRange, font: NSFont)] = []
         var rowSymbols: [String] = []
         rowSymbols.reserveCapacity(width)
         var foregrounds: [CGColor] = []
@@ -284,12 +286,21 @@ struct TerminalPaneView: NSViewRepresentable {
         for x in 0..<width {
             let cell = cells[cells.startIndex + x]
             let isCursor = key.cursorColumn == x
-            let foreground = palette.foreground(cell.foreground)
-            let background = palette.background(cell.background)
+            // Herdr sends Ratatui modifiers: bold 1, dim 2, italic 4, underlined 8, reversed 64,
+            // hidden 128, crossed out 256.
+            let modifier = cell.modifier
+            let reversed = modifier & 64 != 0
+            var foreground = palette.foreground(reversed ? cell.background : cell.foreground, reversed: reversed)
+            let background = palette.background(reversed ? cell.foreground : cell.background, reversed: reversed)
+            if modifier & 128 != 0 {
+                foreground = background
+            } else if modifier & 2 != 0 {
+                foreground = palette.dimmed(foreground, on: background)
+            }
             let imageBehind = !key.imageColumns.isEmpty && key.imageColumns.contains { $0.contains(x) }
             // Default backgrounds come from the scroll view; the cursor is drawn inverted.
             let cellFill: CGColor? = isCursor ? foreground
-                : (cell.background == 0 || imageBehind ? nil : background)
+                : ((cell.background == 0 && !reversed) || imageBehind ? nil : background)
             if fill?.color !== cellFill {
                 closeFill(at: x)
                 if let cellFill { fill = (x, cellFill) }
@@ -303,26 +314,34 @@ struct TerminalPaneView: NSViewRepresentable {
             let symbol = cell.symbol.isEmpty ? " " : cell.symbol
             rowSymbols.append(symbol)
             let length = symbol.utf16.count
-            if cell.modifier & 1 != 0 {
-                if let last = boldRanges.last, NSMaxRange(last) == columnAt.count {
-                    boldRanges[boldRanges.count - 1].length += length
+            let styledFont: NSFont? = switch modifier & 5 {
+            case 1: boldFont
+            case 4: italicFont
+            case 5: boldItalicFont
+            default: nil
+            }
+            if let styledFont {
+                if let last = fontRanges.last, last.font === styledFont,
+                   NSMaxRange(last.range) == columnAt.count {
+                    fontRanges[fontRanges.count - 1].range.length += length
                 } else {
-                    boldRanges.append(NSRange(location: columnAt.count, length: length))
+                    fontRanges.append((NSRange(location: columnAt.count, length: length), styledFont))
                 }
             }
             text += symbol
             columnAt.append(contentsOf: repeatElement(x, count: length))
-            if cell.modifier & 8 != 0 {
+            // Underlines and strikethroughs share the row's line fills.
+            for (flag, lineY) in [(UInt16(8), baseline + underlineY), (256, cellHeight / 2)] where modifier & flag != 0 {
                 let span = x + 1 < width && cells[cells.startIndex + x + 1].skip ? 2 : 1
                 underlines.append(TerminalGrid.Fill(
-                    rect: CGRect(x: CGFloat(x) * cellWidth, y: baseline + underlineY - underlineHeight / 2,
+                    rect: CGRect(x: CGFloat(x) * cellWidth, y: lineY - underlineHeight / 2,
                                  width: CGFloat(span) * cellWidth, height: underlineHeight),
                     color: textColor))
             }
         }
         closeFill(at: width)
         let line = NSMutableAttributedString(string: text, attributes: [.font: regularFont])
-        for range in boldRanges { line.addAttribute(.font, value: boldFont, range: range) }
+        for (range, font) in fontRanges { line.addAttribute(.font, value: font, range: range) }
 
         var runs: [TerminalGrid.GlyphRun] = []
         let ctLine = CTLineCreateWithAttributedString(line)
@@ -376,20 +395,43 @@ struct TerminalPaneView: NSViewRepresentable {
         let theme: XherdrTheme
         private var foregrounds: [UInt32: CGColor] = [:]
         private var backgrounds: [UInt32: CGColor] = [:]
+        private var dims: [ObjectIdentifier: [ObjectIdentifier: CGColor]] = [:]
 
         init(theme: XherdrTheme) { self.theme = theme }
 
-        mutating func foreground(_ value: UInt32) -> CGColor {
-            if let color = foregrounds[value] { return color }
-            let color = TerminalPaneView.color(value, default: theme.terminalForeground, ansi: theme.ansi).cgColor
-            foregrounds[value] = color
-            return color
+        /// A cell's text color; `reversed` means `value` is a background whose default is the
+        /// theme background.
+        mutating func foreground(_ value: UInt32, reversed: Bool = false) -> CGColor {
+            reversed ? background(value) : resolve(value, cache: &foregrounds, default: theme.terminalForeground)
         }
 
-        mutating func background(_ value: UInt32) -> CGColor {
-            if let color = backgrounds[value] { return color }
-            let color = TerminalPaneView.color(value, default: theme.terminalBackground, ansi: theme.ansi).cgColor
-            backgrounds[value] = color
+        /// A cell's fill color; `reversed` means `value` is a foreground whose default is the
+        /// theme foreground.
+        mutating func background(_ value: UInt32, reversed: Bool = false) -> CGColor {
+            reversed ? foreground(value) : resolve(value, cache: &backgrounds, default: theme.terminalBackground)
+        }
+
+        /// Faint text: the text color mixed halfway toward the cell's background, as iTerm2 draws it.
+        mutating func dimmed(_ color: CGColor, on background: CGColor) -> CGColor {
+            if let cached = dims[ObjectIdentifier(color)]?[ObjectIdentifier(background)] { return cached }
+            let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+            let mixed: CGColor
+            if let text = color.converted(to: sRGB, intent: .defaultIntent, options: nil)?.components,
+               let fill = background.converted(to: sRGB, intent: .defaultIntent, options: nil)?.components,
+               text.count == 4, fill.count == 4 {
+                mixed = CGColor(srgbRed: (text[0] + fill[0]) / 2, green: (text[1] + fill[1]) / 2,
+                                blue: (text[2] + fill[2]) / 2, alpha: text[3])
+            } else {
+                mixed = color.copy(alpha: 0.5) ?? color
+            }
+            dims[ObjectIdentifier(color), default: [:]][ObjectIdentifier(background)] = mixed
+            return mixed
+        }
+
+        private func resolve(_ value: UInt32, cache: inout [UInt32: CGColor], default fallback: NSColor) -> CGColor {
+            if let color = cache[value] { return color }
+            let color = TerminalPaneView.color(value, default: fallback, ansi: theme.ansi).cgColor
+            cache[value] = color
             return color
         }
     }
