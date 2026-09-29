@@ -22,6 +22,8 @@ The JSON `pane.read` view remains a fallback while the endpoint is unavailable. 
 
 The gear button in the sidebar opens Herdr settings. Guided sections cover terminal defaults, worktrees, appearance, and headless server size; the Advanced TOML section edits the complete local `config.toml`. Saving checks the file with `herdr config check`, refuses to overwrite external changes, then calls `server.reload_config` on the selected named session. The config file is shared by local Herdr sessions; xherdr's own native colors do not yet follow Herdr's terminal theme.
 
+The compact controls mirror Herdr's everyday actions: the plus beside Spaces creates a new workspace, the plus in the tab row creates a tab, Menu collects the same actions and settings, and the sidebar button hides or restores the sidebar. Creation runs through Herdr's socket API in the selected named session.
+
 The server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md). The [SwiftTerm evaluation](docs/swiftterm-evaluation.md) explains when a full terminal view would be useful.
 
 ## Run locally

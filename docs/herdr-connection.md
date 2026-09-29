@@ -42,6 +42,10 @@ The sidebar gear opens a compact settings sheet for common Herdr options and the
 
 The settings screen was checked against the local config without saving to it. A separate temporary TOML fixture verified comment preservation, nested tables, validation errors, and external-change rejection. A reload request to `xherdr-ui-test` returned `applied` with no diagnostics. Herdr's presentation theme applies to its terminal client; xherdr keeps its own native colors for now.
 
+## Workspace controls
+
+New Space sends `workspace.create` with the selected workspace as its directory source and `focus = true`. New Tab sends `tab.create` for the selected workspace with `focus = true`. xherdr then refreshes `session.snapshot` and selects the returned IDs, while the event subscription keeps later changes in sync. Both actions live in Menu as well as in the Spaces and tab headers. The sidebar button and Menu item toggle xherdr's sidebar locally. The controls were exercised in `xherdr-ui-test`: one new tab and one new workspace appeared and became selected without touching the default session.
+
 The surface decoder follows the frozen generation-1 field order in Herdr 0.9.1. It should be checked against a new release's frozen fixtures before changing the parser. Unsupported optional messages are ignored without dropping the JSON connection.
 
 ## Implementation order

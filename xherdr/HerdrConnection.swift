@@ -251,6 +251,32 @@ enum HerdrSocket {
         if !keys.isEmpty { params["keys"] = keys }
         _ = try request(path: path, method: "pane.send_input", params: params)
     }
+
+    static func createWorkspace(path: String, sourceWorkspaceID: String?) throws -> String {
+        var params: [String: Any] = ["focus": true]
+        if let sourceWorkspaceID { params["source_workspace_id"] = sourceWorkspaceID }
+        let data = try request(path: path, method: "workspace.create", params: params)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let workspace = result["workspace"] as? [String: Any],
+              let id = workspace["workspace_id"] as? String else {
+            throw HerdrSocketError.message("Herdr did not return the new space")
+        }
+        return id
+    }
+
+    static func createTab(path: String, workspaceID: String) throws -> String {
+        let data = try request(path: path, method: "tab.create", params: [
+            "workspace_id": workspaceID, "focus": true
+        ])
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let tab = result["tab"] as? [String: Any],
+              let id = tab["tab_id"] as? String else {
+            throw HerdrSocketError.message("Herdr did not return the new tab")
+        }
+        return id
+    }
 }
 
 final class HerdrEventStream {
@@ -356,6 +382,7 @@ final class HerdrStore: ObservableObject {
     @Published private(set) var surfaceError: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var inputError: String?
+    @Published private(set) var actionError: String?
     @Published private(set) var sessionSelectionError: String?
     @Published var selectedWorkspaceID: String?
     @Published var selectedTabID: String?
@@ -407,6 +434,7 @@ final class HerdrStore: ObservableObject {
         selectedPaneID = nil
         errorMessage = nil
         inputError = nil
+        actionError = nil
         pendingInput = []
         start()
     }
@@ -535,6 +563,54 @@ final class HerdrStore: ObservableObject {
         selectedPaneID = paneID ?? snapshot?.panes.first { $0.tabID == selectedTabID }?.paneID
         surfaceStream?.focus(workspaceID: workspaceID)
         if let selectedTabID { surfaceStream?.focus(tabID: selectedTabID) }
+        if let selectedPaneID { surfaceStream?.focus(paneID: selectedPaneID) }
+    }
+
+    func clearActionError() { actionError = nil }
+
+    func createWorkspace() {
+        guard isConnected else { return }
+        let path = socketPath
+        let source = selectedWorkspaceID
+        let currentGeneration = generation
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { () throws -> (String, HerdrSnapshot) in
+                    let id = try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source)
+                    return (id, try HerdrSocket.snapshot(path: path))
+                }
+            }.value
+            guard generation == currentGeneration else { return }
+            switch result {
+            case .success(let (id, fresh)):
+                snapshot = fresh
+                select(workspaceID: id)
+                actionError = nil
+            case .failure(let error): actionError = error.localizedDescription
+            }
+        }
+    }
+
+    func createTab() {
+        guard isConnected, let workspaceID = selectedWorkspaceID else { return }
+        let path = socketPath
+        let currentGeneration = generation
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { () throws -> (String, HerdrSnapshot) in
+                    let id = try HerdrSocket.createTab(path: path, workspaceID: workspaceID)
+                    return (id, try HerdrSocket.snapshot(path: path))
+                }
+            }.value
+            guard generation == currentGeneration else { return }
+            switch result {
+            case .success(let (id, fresh)):
+                snapshot = fresh
+                select(workspaceID: workspaceID, tabID: id)
+                actionError = nil
+            case .failure(let error): actionError = error.localizedDescription
+            }
+        }
     }
 
     func select(tabID: String) {

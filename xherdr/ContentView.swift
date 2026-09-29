@@ -37,6 +37,14 @@ struct ContentView: View {
         .sheet(isPresented: $showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName)
         }
+        .alert("Herdr action failed", isPresented: Binding(
+            get: { herdr.actionError != nil },
+            set: { if !$0 { herdr.clearActionError() } }
+        )) {
+            Button("OK", role: .cancel) { herdr.clearActionError() }
+        } message: {
+            Text(herdr.actionError ?? "")
+        }
     }
 
     private var sidebar: some View {
@@ -57,7 +65,18 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 13) {
                     VStack(alignment: .leading, spacing: 3) {
-                        sectionTitle("SPACES")
+                        HStack(spacing: 0) {
+                            sectionTitle("SPACES")
+                            Spacer()
+                            Button { herdr.createWorkspace() } label: {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .frame(width: 23, height: 20)
+                            }
+                            .buttonStyle(.plain)
+                            .help("New Space")
+                            .disabled(!herdr.isConnected)
+                        }
                         ForEach(herdr.snapshot?.workspaces ?? []) { workspace in
                             Button {
                                 herdr.select(workspaceID: workspace.workspaceID)
@@ -175,6 +194,27 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Spacer()
+                Menu {
+                    Button("New Space", systemImage: "plus.square") { herdr.createWorkspace() }
+                        .disabled(!herdr.isConnected)
+                    Button("New Tab", systemImage: "plus") { herdr.createTab() }
+                        .disabled(!herdr.isConnected || herdr.selectedWorkspaceID == nil)
+                    Divider()
+                    Button(showsSidebar ? "Hide Sidebar" : "Show Sidebar",
+                           systemImage: "sidebar.left") { showsSidebar.toggle() }
+                    Button("Herdr Settings…", systemImage: "gearshape") { showsSettings = true }
+                    Button("Switch Session…", systemImage: "point.3.connected.trianglepath.dotted") {
+                        showsSidebar = true
+                        requestedSessionName = herdr.sessionName
+                        showsSessionPicker = true
+                    }
+                } label: {
+                    Label("Menu", systemImage: "ellipsis.circle")
+                        .font(.system(size: 10))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Herdr menu")
                 Text(herdr.surface == nil ? "TEXT" : "LIVE")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(herdr.surface == nil ? Color.secondary : Color.cyan)
@@ -212,6 +252,14 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        Button { herdr.createTab() } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .semibold))
+                                .frame(width: 26, height: 25)
+                        }
+                        .buttonStyle(.plain)
+                        .help("New Tab")
+                        .disabled(herdr.selectedWorkspaceID == nil)
                     }
                     .padding(.horizontal, 7)
                 }
