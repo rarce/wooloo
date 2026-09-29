@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct WorkspaceBrowserView: View {
+    @Environment(\.xherdrTheme) private var theme
     let localSnapshot: HerdrSnapshot?
     let localWorkspaceID: String?
     let localSession: String
@@ -60,7 +61,7 @@ struct WorkspaceBrowserView: View {
                                     onNewSpace: location?.isLocal == true ? onNewSpace : nil)
                 .frame(minHeight: 160)
         }
-        .background(Color(red: 0.105, green: 0.115, blue: 0.13))
+        .background(theme.sidebarBackground)
         .task { loadMachines() }
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { onLocationChange(location) }
@@ -99,7 +100,7 @@ struct WorkspaceBrowserView: View {
                             if modifiedOnly { Text("Modified") }
                         }
                         .font(.system(size: 10, weight: modifiedOnly ? .semibold : .regular))
-                        .foregroundStyle(modifiedOnly ? Color.cyan : Color.secondary)
+                        .foregroundStyle(modifiedOnly ? theme.accent : Color.secondary)
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
@@ -161,7 +162,7 @@ struct WorkspaceBrowserView: View {
             } else if let error {
                 Text(error)
                     .font(.system(size: 11))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.warning)
                     .padding(11)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if let listing, let location {
@@ -203,7 +204,7 @@ struct WorkspaceBrowserView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .background(Color(red: 0.105, green: 0.115, blue: 0.13))
+        .background(theme.sidebarBackground)
     }
 
     private func segment(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -212,7 +213,7 @@ struct WorkspaceBrowserView: View {
                 .font(.system(size: 10, weight: selected ? .semibold : .regular))
                 .frame(maxWidth: .infinity)
                 .frame(height: 25)
-                .background(selected ? Color.white.opacity(0.1) : .clear,
+                .background(selected ? Color.primary.opacity(0.1) : .clear,
                             in: RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
@@ -296,7 +297,7 @@ struct WorkspaceBrowserView: View {
                       : (showsChanges ? "arrow.left.arrow.right" : fileIcon(node.path)))
                     .font(.system(size: 11))
                     .frame(width: 17)
-                    .foregroundStyle(node.isDirectory ? Color.secondary : (showsChanges ? .cyan : .secondary))
+                    .foregroundStyle(node.isDirectory ? Color.secondary : (showsChanges ? theme.accent : .secondary))
                 Text(node.displayName)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -319,12 +320,12 @@ struct WorkspaceBrowserView: View {
             .padding(.trailing, 8)
             .frame(height: 23)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.white.opacity(0.12) : .clear)
+            .background(isSelected ? Color.primary.opacity(0.12) : .clear)
             .contentShape(Rectangle())
             .overlay(alignment: .leading) {
                 ForEach(0..<row.depth, id: \.self) { level in
                     Rectangle()
-                        .fill(Color.white.opacity(0.10))
+                        .fill(Color.primary.opacity(0.10))
                         .frame(width: 1)
                         .padding(.leading, CGFloat(level) * 19 + 29)
                         .allowsHitTesting(false)
@@ -424,14 +425,7 @@ struct WorkspaceBrowserView: View {
     }
 
     private func statusColor(_ kind: WorkspaceFileChange.Kind) -> Color {
-        switch kind {
-        case .modified: return Color(red: 0.89, green: 0.75, blue: 0.55)
-        case .untracked: return Color(white: 0.6)
-        case .added: return Color(red: 0.51, green: 0.72, blue: 0.55)
-        case .deleted: return Color(red: 0.78, green: 0.31, blue: 0.22)
-        case .renamed: return Color(red: 0.45, green: 0.66, blue: 0.87)
-        case .conflicted: return Color(red: 0.89, green: 0.40, blue: 0.42)
-        }
+        theme.vcs(kind)
     }
 
     /// Strongest change kind under each directory, keyed by directory path.

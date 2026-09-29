@@ -35,6 +35,7 @@ struct WorkspaceDocument: Identifiable {
 }
 
 struct WorkspaceDocumentView: View {
+    @Environment(\.xherdrTheme) private var theme
     @Binding var document: WorkspaceDocument
     let onSave: () -> Void
     @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
@@ -48,32 +49,13 @@ struct WorkspaceDocumentView: View {
         )
     }
 
-    private var editorTheme: EditorTheme {
-        EditorTheme(
-            text: NSColor(srgbRed: 0.87, green: 0.89, blue: 0.92, alpha: 1),
-            insertionPoint: .white,
-            invisibles: NSColor(white: 0.35, alpha: 1),
-            background: NSColor(srgbRed: 0.075, green: 0.082, blue: 0.091, alpha: 1),
-            lineHighlight: NSColor(white: 1, alpha: 0.045),
-            selection: NSColor(srgbRed: 0.20, green: 0.38, blue: 0.52, alpha: 1),
-            keywords: NSColor(srgbRed: 0.86, green: 0.56, blue: 0.72, alpha: 1),
-            commands: NSColor(srgbRed: 0.58, green: 0.82, blue: 0.75, alpha: 1),
-            types: NSColor(srgbRed: 0.51, green: 0.78, blue: 0.94, alpha: 1),
-            attributes: NSColor(srgbRed: 0.86, green: 0.70, blue: 0.50, alpha: 1),
-            variables: NSColor(srgbRed: 0.72, green: 0.79, blue: 0.91, alpha: 1),
-            values: NSColor(srgbRed: 0.72, green: 0.61, blue: 0.91, alpha: 1),
-            numbers: NSColor(srgbRed: 0.90, green: 0.78, blue: 0.52, alpha: 1),
-            strings: NSColor(srgbRed: 0.79, green: 0.83, blue: 0.58, alpha: 1),
-            characters: NSColor(srgbRed: 0.90, green: 0.78, blue: 0.52, alpha: 1),
-            comments: NSColor(srgbRed: 0.53, green: 0.61, blue: 0.64, alpha: 1)
-        )
-    }
+    private var editorTheme: EditorTheme { theme.editorTheme }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
                 Image(systemName: document.kind.icon)
-                    .foregroundStyle(.cyan)
+                    .foregroundStyle(theme.accent)
                 Text(document.path)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -97,7 +79,7 @@ struct WorkspaceDocumentView: View {
             } else if let error = document.error, document.version == nil {
                 Text(error)
                     .font(.system(size: 12))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.warning)
                     .padding(16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if document.kind == .file {
@@ -105,7 +87,7 @@ struct WorkspaceDocumentView: View {
                     if let error = document.error {
                         Text(error)
                             .font(.system(size: 11))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(theme.warning)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                     }
@@ -157,7 +139,7 @@ struct WorkspaceDocumentView: View {
             .padding(.horizontal, 11)
             .frame(height: 23)
         }
-        .background(Color(red: 0.075, green: 0.082, blue: 0.091))
+        .background(theme.contentBackground)
     }
 
     /// Selects the requested line or match and scrolls it into view.
@@ -172,17 +154,17 @@ struct WorkspaceDocumentView: View {
     }
 
     private func diffColor(_ line: String) -> Color {
-        if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") { return .cyan }
-        if line.hasPrefix("@@") { return .blue }
-        if line.hasPrefix("+") { return .green }
-        if line.hasPrefix("-") { return .red }
+        if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") { return theme.accent }
+        if line.hasPrefix("@@") { return theme.diffHunk }
+        if line.hasPrefix("+") { return theme.diffAdded }
+        if line.hasPrefix("-") { return theme.diffRemoved }
         return .primary
     }
 
     private func diffBackground(_ line: String) -> Color {
-        if line.hasPrefix("+") && !line.hasPrefix("+++") { return .green.opacity(0.08) }
-        if line.hasPrefix("-") && !line.hasPrefix("---") { return .red.opacity(0.08) }
-        if line.hasPrefix("@@") { return .blue.opacity(0.08) }
+        if line.hasPrefix("+") && !line.hasPrefix("+++") { return theme.diffAdded.opacity(0.1) }
+        if line.hasPrefix("-") && !line.hasPrefix("---") { return theme.diffRemoved.opacity(0.1) }
+        if line.hasPrefix("@@") { return theme.diffHunk.opacity(0.1) }
         return .clear
     }
 }

@@ -138,6 +138,7 @@ final class WorkspaceSearchModel: ObservableObject {
 }
 
 struct WorkspaceSearchView: View {
+    @Environment(\.xherdrTheme) private var theme
     @ObservedObject var model: WorkspaceSearchModel
     let onOpen: (WorkspaceFileLocation, String, Int, NSRange?) -> Void
 
@@ -154,7 +155,7 @@ struct WorkspaceSearchView: View {
             Divider()
             results
         }
-        .background(Color(red: 0.075, green: 0.082, blue: 0.091))
+        .background(theme.contentBackground)
         .background {
             Button("Open Match") { openActive() }
                 .keyboardShortcut(.return, modifiers: .option)
@@ -178,7 +179,7 @@ struct WorkspaceSearchView: View {
         HStack(spacing: 10) {
             Image(systemName: model.showsReplace ? "text.magnifyingglass" : "magnifyingglass")
                 .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.cyan)
+                .foregroundStyle(theme.accent)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 1) {
                 Text(model.showsReplace ? "Project Search & Replace" : "Project Search")
@@ -268,7 +269,7 @@ struct WorkspaceSearchView: View {
                 }
             }
             if let error = model.error {
-                Text(error).font(.system(size: 11)).foregroundStyle(.red)
+                Text(error).font(.system(size: 11)).foregroundStyle(theme.error)
             } else if let status = model.status {
                 Text(status).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
             }
@@ -283,10 +284,10 @@ struct WorkspaceSearchView: View {
             .font(.system(size: 12, design: .monospaced))
             .padding(.horizontal, 8)
             .frame(height: 26)
-            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5)
-                .stroke(focus == .query && model.error != nil ? Color.red.opacity(0.7)
-                        : (focusedField == focus ? Color.cyan.opacity(0.5) : Color.clear)))
+                .stroke(focus == .query && model.error != nil ? theme.error.opacity(0.7)
+                        : (focusedField == focus ? theme.accent.opacity(0.5) : Color.clear)))
             .focused($focusedField, equals: focus)
     }
 
@@ -296,8 +297,8 @@ struct WorkspaceSearchView: View {
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .underline(underline)
                 .frame(width: 26, height: 22)
-                .background(isOn.wrappedValue ? Color.cyan.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 4))
-                .foregroundStyle(isOn.wrappedValue ? Color.cyan : Color.secondary)
+                .background(isOn.wrappedValue ? theme.accent.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 4))
+                .foregroundStyle(isOn.wrappedValue ? theme.accent : Color.secondary)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -310,8 +311,8 @@ struct WorkspaceSearchView: View {
             Image(systemName: symbol)
                 .font(.system(size: 11))
                 .frame(width: 24, height: 22)
-                .background(active ? Color.cyan.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 4))
-                .foregroundStyle(active ? Color.cyan : Color.secondary)
+                .background(active ? theme.accent.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 4))
+                .foregroundStyle(active ? theme.accent : Color.secondary)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -325,9 +326,9 @@ struct WorkspaceSearchView: View {
                 .font(.system(size: 10, weight: active ? .semibold : .regular))
                 .padding(.horizontal, 7)
                 .frame(height: 22)
-                .background(active ? Color.cyan.opacity(0.25) : Color.white.opacity(0.06),
+                .background(active ? theme.accent.opacity(0.25) : Color.primary.opacity(0.06),
                             in: RoundedRectangle(cornerRadius: 4))
-                .foregroundStyle(active ? Color.cyan : Color.secondary)
+                .foregroundStyle(active ? theme.accent : Color.secondary)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -341,11 +342,11 @@ struct WorkspaceSearchView: View {
             if model.isSearching { ProgressView().controlSize(.mini) }
             if model.result?.truncated == true {
                 Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.warning)
                     .help("Search limits reached. Try narrowing your search.")
             }
             Text(total == 0 ? "0/0" : "\(model.activeMatch + 1)/\(total)\(suffix)")
-                .foregroundStyle(total == 0 && !model.options.isEmpty && !model.isSearching ? Color.red : Color.secondary)
+                .foregroundStyle(total == 0 && !model.options.isEmpty && !model.isSearching ? theme.error : Color.secondary)
         }
         .font(.system(size: 11, design: .monospaced))
         .frame(minWidth: 64, alignment: .trailing)
@@ -443,7 +444,7 @@ struct WorkspaceSearchView: View {
             .font(.system(size: 11))
             .padding(.horizontal, 12)
             .frame(height: 26)
-            .background(Color.white.opacity(0.04))
+            .background(Color.primary.opacity(0.04))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -467,7 +468,7 @@ struct WorkspaceSearchView: View {
         .font(.system(size: 11.5, design: .monospaced))
         .padding(.trailing, 12)
         .frame(height: 19)
-        .background(isActiveLine ? Color.cyan.opacity(0.10) : .clear)
+        .background(isActiveLine ? theme.accent.opacity(0.10) : .clear)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { open(line, file: file, occurrence: activeOccurrence ?? 0) }
         .onTapGesture {
@@ -503,8 +504,8 @@ struct WorkspaceSearchView: View {
         for (index, match) in line.matches.enumerated() where match.location >= visible.location {
             output += AttributedString(text.substring(with: NSRange(location: cursor, length: match.location - cursor)))
             var piece = AttributedString(text.substring(with: match))
-            piece.backgroundColor = index == activeOccurrence ? Color.orange.opacity(0.75) : Color.yellow.opacity(0.28)
-            if index == activeOccurrence { piece.foregroundColor = .black }
+            piece.backgroundColor = index == activeOccurrence ? theme.warning.opacity(0.75) : theme.matchHighlight
+            if index == activeOccurrence { piece.foregroundColor = theme.contentBackground }
             output += piece
             cursor = NSMaxRange(match)
         }

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct WorkspaceRepositoryView: View {
+    @Environment(\.xherdrTheme) private var theme
     let location: WorkspaceFileLocation?
     let refreshVersion: Int
     let onChange: () -> Void
@@ -61,7 +62,7 @@ struct WorkspaceRepositoryView: View {
             if isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error {
-                hint(error).foregroundStyle(.orange)
+                hint(error).foregroundStyle(theme.warning)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if let listing {
                 ScrollView {
@@ -77,7 +78,7 @@ struct WorkspaceRepositoryView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .background(Color(red: 0.105, green: 0.115, blue: 0.13))
+        .background(theme.sidebarBackground)
         .task(id: identity) { load() }
         .sheet(item: $addRequest) { request in
             AddWorktreeSheet(request: request) { branch, path, newBranch in
@@ -110,7 +111,7 @@ struct WorkspaceRepositoryView: View {
                 .font(.system(size: 10, weight: selectedTab == index ? .semibold : .regular))
                 .frame(maxWidth: .infinity)
                 .frame(height: 25)
-                .background(selectedTab == index ? Color.white.opacity(0.1) : .clear,
+                .background(selectedTab == index ? Color.primary.opacity(0.1) : .clear,
                             in: RoundedRectangle(cornerRadius: 4))
                 .contentShape(Rectangle())
         }
@@ -140,7 +141,7 @@ struct WorkspaceRepositoryView: View {
                         .font(.system(size: 11))
                         .lineLimit(2)
                     HStack(spacing: 5) {
-                        Text(commit.shortHash).foregroundStyle(.cyan)
+                        Text(commit.shortHash).foregroundStyle(theme.accent)
                         Text("·")
                         Text(commit.author).lineLimit(1)
                         Spacer(minLength: 0)
@@ -244,7 +245,7 @@ struct WorkspaceRepositoryView: View {
         HStack(spacing: 6) {
             Image(systemName: branch.isCurrent ? "checkmark.circle.fill" : "arrow.triangle.branch")
                 .font(.system(size: 10))
-                .foregroundStyle(branch.isCurrent ? Color.cyan : Color.secondary)
+                .foregroundStyle(branch.isCurrent ? theme.accent : Color.secondary)
                 .frame(width: 15)
             Text(branch.name).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 0)

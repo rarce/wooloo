@@ -33,7 +33,7 @@ struct TerminalPaneView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = NSColor(red: 0.075, green: 0.082, blue: 0.091, alpha: 1)
+        scrollView.backgroundColor = context.environment.xherdrTheme.terminalBackground
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
@@ -62,7 +62,7 @@ struct TerminalPaneView: NSViewRepresentable {
             .foregroundColor: NSColor.selectedTextColor
         ]
         view.drawsBackground = false
-        view.textColor = NSColor(red: 0.88, green: 0.91, blue: 0.93, alpha: 1)
+        view.textColor = context.environment.xherdrTheme.terminalForeground
         view.font = Self.terminalFont
         view.textContainerInset = NSSize(width: 10, height: 9)
         view.isAutomaticQuoteSubstitutionEnabled = false
@@ -91,6 +91,15 @@ struct TerminalPaneView: NSViewRepresentable {
         view.sendMouse = sendMouse
         view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
+        let theme = context.environment.xherdrTheme
+        if view.themeID != theme.id {
+            view.themeID = theme.id
+            scrollView.backgroundColor = theme.terminalBackground
+            view.textColor = theme.terminalForeground
+            view.insertionPointColor = XherdrTheme.nsColor(theme.cursor)
+            view.selectedTextAttributes = [.backgroundColor: XherdrTheme.nsColor(theme.selectionBackground)]
+            view.surfaceRevision = nil
+        }
         let splitsChanged = view.surface?.splits != surface?.splits
         Self.configureScrolling(scrollView, view: view, live: surface != nil)
         view.surface = surface
@@ -103,7 +112,7 @@ struct TerminalPaneView: NSViewRepresentable {
             }
             view.surfaceRevision = surface.revision
             view.surfaceBootID = surface.bootID
-            view.applySurfaceText(Self.render(surface))
+            view.applySurfaceText(Self.render(surface, theme: theme))
             return
         }
         view.surfaceRevision = nil
@@ -155,7 +164,9 @@ struct TerminalPaneView: NSViewRepresentable {
         return width
     }
 
-    private static func render(_ surface: HerdrSurface) -> RenderedTerminalSurface {
+    private static func render(_ surface: HerdrSurface, theme: XherdrTheme) -> RenderedTerminalSurface {
+        let defaultForeground = theme.terminalForeground
+        let defaultBackground = theme.terminalBackground
         let output = NSMutableAttributedString(string: "")
         var cellOffsets: [Int] = []
         cellOffsets.reserveCapacity(surface.height * (surface.width + 1))
@@ -168,8 +179,8 @@ struct TerminalPaneView: NSViewRepresentable {
                 let cell = surface.cells[y * surface.width + x]
                 if cell.skip { continue }
                 let isCursor = surface.cursor?.visible == true && surface.cursor?.x == x && surface.cursor?.y == y
-                let foreground = color(cell.foreground, default: NSColor(red: 0.88, green: 0.91, blue: 0.93, alpha: 1))
-                let background = color(cell.background, default: NSColor(red: 0.075, green: 0.082, blue: 0.091, alpha: 1))
+                let foreground = color(cell.foreground, default: defaultForeground, ansi: theme.ansi)
+                let background = color(cell.background, default: defaultBackground, ansi: theme.ansi)
                 let imageBehind = behindImages.contains {
                     x >= $0.x && x < $0.x + $0.cols && y >= $0.y && y < $0.y + $0.rows
                 }
@@ -198,26 +209,23 @@ struct TerminalPaneView: NSViewRepresentable {
                                        width: surface.width, height: surface.height)
     }
 
-    private static func color(_ value: UInt32, default fallback: NSColor) -> NSColor {
+    /// Resolves a Herdr cell color: kind 0 is the default (0) or ANSI 1–16, kind 1 the 256-color
+    /// palette, kind 2 RGB. ANSI colors come from the theme; Herdr's own chrome arrives as RGB.
+    private static func color(_ value: UInt32, default fallback: NSColor, ansi: [UInt32]) -> NSColor {
         let kind = value >> 24
         if kind == 2 {
             return NSColor(calibratedRed: CGFloat((value >> 16) & 255) / 255,
                            green: CGFloat((value >> 8) & 255) / 255,
                            blue: CGFloat(value & 255) / 255, alpha: 1)
         }
-        let palette: [UInt32] = [
-            0x000000, 0x000000, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8,
-            0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666, 0xf14c4c, 0x23d18b,
-            0xf5f543, 0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff
-        ]
         if kind == 0 {
             let index = Int(value & 255)
             if index == 0 { return fallback }
-            if index < palette.count { return rgb(palette[index]) }
+            if index <= ansi.count { return rgb(ansi[index - 1]) }
         }
         if kind == 1 {
             let index = Int(value & 255)
-            if index < 16 { return rgb(palette[index + 1]) }
+            if index < ansi.count { return rgb(ansi[index]) }
             if index < 232 {
                 let n = index - 16
                 let levels: [UInt32] = [0, 95, 135, 175, 215, 255]
@@ -238,6 +246,7 @@ struct TerminalPaneView: NSViewRepresentable {
 
 private final class HerdrTerminalTextView: NSTextView {
     var surfaceRevision: UInt64?
+    var themeID: String?
     var surfaceBootID: String?
     var surface: HerdrSurface?
     var selectPane: ((String) -> Void)?

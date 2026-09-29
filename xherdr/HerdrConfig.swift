@@ -159,6 +159,16 @@ struct HerdrConfigDocument {
         }
     }
 
+    /// Removes `key` from `section`, including a multi-line array value.
+    mutating func remove(section: String, key: String) {
+        var lines = text.components(separatedBy: "\n")
+        guard let range = sectionRange(section, in: lines),
+              let index = range.first(where: { assignment(lines[$0], key: key) }) else { return }
+        let end = arrayEnd(startingAt: index, in: lines) ?? index
+        lines.removeSubrange(index...end)
+        text = lines.joined(separator: "\n")
+    }
+
     private mutating func set(_ value: String, section: String, key: String) {
         var lines = text.components(separatedBy: "\n")
         if let range = sectionRange(section, in: lines) {

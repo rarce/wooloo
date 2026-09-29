@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct HerdrSettingsView: View {
+    @Environment(\.xherdrTheme) private var theme
     let socketPath: String
     let sessionName: String
     let onSaved: () -> Void
@@ -59,7 +60,7 @@ struct HerdrSettingsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 10)
                             .frame(height: 30)
-                            .background(category == item ? Color.white.opacity(0.09) : .clear,
+                            .background(category == item ? Color.primary.opacity(0.09) : .clear,
                                         in: RoundedRectangle(cornerRadius: 5))
                     }
                     .buttonStyle(.plain)
@@ -68,7 +69,7 @@ struct HerdrSettingsView: View {
             }
             .padding(12)
             .frame(width: 170)
-            .background(Color(red: 0.105, green: 0.115, blue: 0.13))
+            .background(theme.sidebarBackground)
 
             Divider()
 
@@ -108,7 +109,7 @@ struct HerdrSettingsView: View {
                     if let message {
                         Text(message)
                             .font(.system(size: 11))
-                            .foregroundStyle(message.hasPrefix("Saved") ? .green : .orange)
+                            .foregroundStyle(message.hasPrefix("Saved") ? theme.success : theme.warning)
                             .lineLimit(2)
                     } else {
                         Text(document.text == original ? "No changes" : "Unsaved changes")
@@ -127,7 +128,7 @@ struct HerdrSettingsView: View {
             }
         }
         .frame(width: 800, height: 540)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(theme.colorScheme)
         .onAppear(perform: load)
     }
 
@@ -173,20 +174,10 @@ struct HerdrSettingsView: View {
                     .textFieldStyle(.roundedBorder)
             }
         case .appearance:
-            description("Herdr's own terminal theme. xherdr currently uses its native macOS colors.")
-            field("Theme", hint: "Built-in Herdr theme name") {
-                TextField("catppuccin", text: string("theme", "name", default: "catppuccin"))
-                    .textFieldStyle(.roundedBorder)
-            }
-            Toggle("Follow host light/dark appearance", isOn: bool("theme", "auto_switch", default: false))
-            field("Light theme", hint: "Optional theme when auto switching") {
-                TextField("Built-in matching theme", text: string("theme", "light_name", default: ""))
-                    .textFieldStyle(.roundedBorder)
-            }
-            field("Dark theme", hint: "Optional theme when auto switching") {
-                TextField("Built-in matching theme", text: string("theme", "dark_name", default: ""))
-                    .textFieldStyle(.roundedBorder)
-            }
+            ThemeSettingsView(name: string("theme", "name", default: XherdrTheme.fallbackID),
+                              autoSwitch: bool("theme", "auto_switch", default: false),
+                              lightName: optionalString("theme", "light_name"),
+                              darkName: optionalString("theme", "dark_name"))
         case .server:
             description("Headless size applies when no client is attached. These values must be positive.")
             field("Headless columns", hint: "Default: 120") {
@@ -245,6 +236,16 @@ struct HerdrSettingsView: View {
                 set: {
                     guard $0 != document.string(section: section, key: key, default: fallback) else { return }
                     document.setString($0, section: section, key: key)
+                })
+    }
+
+    /// Empty removes the key, so Herdr falls back to its own default instead of an unknown value.
+    private func optionalString(_ section: String, _ key: String) -> Binding<String> {
+        Binding(get: { document.string(section: section, key: key, default: "") },
+                set: {
+                    guard $0 != document.string(section: section, key: key, default: "") else { return }
+                    if $0.isEmpty { document.remove(section: section, key: key) }
+                    else { document.setString($0, section: section, key: key) }
                 })
     }
 

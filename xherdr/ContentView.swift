@@ -25,8 +25,10 @@ struct ContentView: View {
     @State private var renameText = ""
     @State private var closeTarget: HerdrCloseTarget?
 
-    private let sidebarBackground = Color(red: 0.105, green: 0.115, blue: 0.13)
-    private let barBackground = Color(red: 0.13, green: 0.14, blue: 0.155)
+    @StateObject private var themes = ThemeStore()
+    private var theme: XherdrTheme { themes.theme }
+    private var sidebarBackground: Color { theme.sidebarBackground }
+    private var barBackground: Color { theme.barBackground }
 
     private var selectedWorkspace: HerdrWorkspace? {
         herdr.snapshot?.workspaces.first { $0.workspaceID == herdr.selectedWorkspaceID }
@@ -45,7 +47,9 @@ struct ContentView: View {
             content(totalWidth: geometry.size.width)
         }
         .frame(minWidth: 850, minHeight: 380)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(theme.colorScheme)
+        .environment(\.xherdrTheme, theme)
+        .tint(theme.accent)
         .task { herdr.start() }
         .focusedSceneValue(\.xherdrCommands, XherdrCommandContext(
             isConnected: herdr.isConnected,
@@ -61,7 +65,9 @@ struct ContentView: View {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               showShortcuts: settingsShowShortcuts) {
                 shortcutMap = HerdrShortcutMap.load()
+                themes.reload()
             }
+            .environment(\.xherdrTheme, theme)
         }
         .alert("Herdr action failed", isPresented: Binding(
             get: { herdr.actionError != nil },
@@ -171,6 +177,7 @@ struct ContentView: View {
         }
         Button("Reload Herdr Config", systemImage: "arrow.triangle.2.circlepath") {
             shortcutMap = HerdrShortcutMap.load()
+            themes.reload()
             herdr.reloadConfig()
         }
             .disabled(!herdr.isConnected)
@@ -185,12 +192,12 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
                 Image(systemName: "square.stack.3d.up")
-                    .foregroundStyle(.cyan)
+                    .foregroundStyle(theme.accent)
                 Text("herdr")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 Spacer()
                 Circle()
-                    .fill(herdr.isConnected ? Color.green : Color.orange)
+                    .fill(herdr.isConnected ? theme.success : theme.warning)
                     .frame(width: 6, height: 6)
             }
             .padding(.horizontal, 12)
@@ -346,7 +353,7 @@ struct ContentView: View {
                             } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: name == herdr.sessionName ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(name == herdr.sessionName ? Color.cyan : Color.secondary)
+                                        .foregroundStyle(name == herdr.sessionName ? theme.accent : Color.secondary)
                                     Text(name).font(.system(size: 12, design: .monospaced))
                                     if name == HerdrStore.defaultSessionName {
                                         Text("primary").font(.caption).foregroundStyle(.secondary)
@@ -366,7 +373,7 @@ struct ContentView: View {
                         Button("Connect", action: connect)
                     }
                     if let error = herdr.sessionSelectionError {
-                        Text(error).font(.caption).foregroundStyle(.orange)
+                        Text(error).font(.caption).foregroundStyle(theme.warning)
                     }
                 }
                 .padding(14)
@@ -398,7 +405,7 @@ struct ContentView: View {
                 if shortcutPrefixActive {
                     Text("PREFIX")
                         .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(theme.accent)
                 }
                 Spacer()
                 Menu {
@@ -412,12 +419,12 @@ struct ContentView: View {
                 .help("Herdr menu")
                 Text(herdr.surface == nil ? "TEXT" : "LIVE")
                     .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(herdr.surface == nil ? Color.secondary : Color.cyan)
+                    .foregroundStyle(herdr.surface == nil ? Color.secondary : theme.accent)
                     .help(herdr.surfaceError ?? (herdr.surface == nil ? "Text snapshot" : "Live Herdr surface"))
                 if !herdr.isConnected {
                     Text("Disconnected")
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(theme.warning)
                 }
             }
             .padding(.horizontal, 11)
@@ -450,7 +457,7 @@ struct ContentView: View {
                                 .frame(height: 27)
                                 .background(
                                     activeDocumentID == nil && herdr.selectedTabID == tab.tabID
-                                        ? Color.white.opacity(0.09) : Color.clear,
+                                        ? Color.primary.opacity(0.09) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 4)
                                 )
                                 .contentShape(Rectangle())
@@ -477,7 +484,7 @@ struct ContentView: View {
                             HStack(spacing: 0) {
                                 Button { openSearch(replace: false) } label: {
                                     HStack(spacing: 5) {
-                                        Image(systemName: "magnifyingglass").foregroundStyle(.cyan)
+                                        Image(systemName: "magnifyingglass").foregroundStyle(theme.accent)
                                         Text(search.title).lineLimit(1).frame(maxWidth: 160)
                                     }
                                     .font(.system(size: 11))
@@ -493,7 +500,7 @@ struct ContentView: View {
                                 }
                                 .buttonStyle(.plain)
                             }
-                            .background(activeDocumentID == WorkspaceSearchModel.tabID ? Color.white.opacity(0.09) : .clear,
+                            .background(activeDocumentID == WorkspaceSearchModel.tabID ? Color.primary.opacity(0.09) : .clear,
                                         in: RoundedRectangle(cornerRadius: 4))
                             .help("Project Search")
                         }
@@ -502,9 +509,9 @@ struct ContentView: View {
                                 Button { activeDocumentID = document.id } label: {
                                     HStack(spacing: 5) {
                                         Image(systemName: document.kind.icon)
-                                            .foregroundStyle(.cyan)
+                                            .foregroundStyle(theme.accent)
                                         Text(document.title).lineLimit(1)
-                                        if document.isDirty { Circle().fill(.orange).frame(width: 5, height: 5) }
+                                        if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
                                     }
                                     .font(.system(size: 11))
                                     .padding(.leading, 9)
@@ -518,7 +525,7 @@ struct ContentView: View {
                                 }
                                 .buttonStyle(.plain)
                             }
-                            .background(activeDocumentID == document.id ? Color.white.opacity(0.09) : .clear,
+                            .background(activeDocumentID == document.id ? Color.primary.opacity(0.09) : .clear,
                                         in: RoundedRectangle(cornerRadius: 4))
                             .help("\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.path)")
                             .contextMenu { documentActions(document) }
@@ -610,7 +617,7 @@ struct ContentView: View {
                 Spacer(minLength: 5)
                 if let error = herdr.inputError {
                     Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(theme.warning)
                         .help(error)
                 }
                 Text(pane.cwd ?? "")
@@ -662,10 +669,10 @@ struct ContentView: View {
             )
             .id(pane.paneID)
         }
-        .background(Color(red: 0.075, green: 0.082, blue: 0.091))
+        .background(theme.contentBackground)
         .overlay {
             Rectangle()
-                .stroke(pane.paneID == herdr.selectedPaneID ? Color.cyan.opacity(0.45) : Color.clear, lineWidth: 1)
+                .stroke(pane.paneID == herdr.selectedPaneID ? theme.accent.opacity(0.45) : Color.clear, lineWidth: 1)
         }
     }
 
@@ -893,6 +900,7 @@ struct ContentView: View {
         case "zoom": herdr.zoomPane()
         case "reload_config":
             shortcutMap = HerdrShortcutMap.load()
+            themes.reload()
             herdr.reloadConfig()
         case "toggle_files_sidebar": showsFilesSidebar.toggle()
         case "refresh_files": fileRefreshVersion += 1
@@ -967,13 +975,7 @@ struct ContentView: View {
     }
 
     private func statusColor(_ status: String?) -> Color {
-        switch status {
-        case "working": return .orange
-        case "blocked": return .pink
-        case "done": return .cyan
-        case "idle": return .green
-        default: return .gray
-        }
+        theme.agentStatus(status)
     }
 
     private func agentLocation(_ agent: HerdrAgent) -> String {
@@ -996,7 +998,7 @@ private extension View {
             .frame(height: height)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                selected ? Color.white.opacity(0.08) : Color.clear,
+                selected ? Color.primary.opacity(0.08) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 4)
             )
     }
