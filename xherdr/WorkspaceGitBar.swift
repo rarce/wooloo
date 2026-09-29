@@ -226,10 +226,22 @@ struct WorkspaceGitBar: View {
         return .fetch
     }
 
+    /// The action's icon already shows the direction, so the title carries only the commit count.
     private func primaryTitle(_ action: WorkspaceGitSync, _ status: WorkspaceBranchStatus) -> String {
         switch action {
-        case .pull: return status.ahead > 0 ? "Pull ↓\(status.behind) ↑\(status.ahead)" : "Pull ↓\(status.behind)"
-        case .push: return "Push ↑\(status.ahead)"
+        case .pull: return "Pull \(status.behind)"
+        case .push: return "Push \(status.ahead)"
+        default: return action.title
+        }
+    }
+
+    private func primaryHelp(_ action: WorkspaceGitSync, _ status: WorkspaceBranchStatus) -> String {
+        let commits: (Int) -> String = { $0 == 1 ? "1 commit" : "\($0) commits" }
+        switch action {
+        case .pull:
+            let pull = "Pull \(commits(status.behind))"
+            return status.ahead > 0 ? pull + "; \(commits(status.ahead)) to push afterwards" : pull
+        case .push: return "Push \(commits(status.ahead))"
         default: return action.title
         }
     }
@@ -240,7 +252,7 @@ struct WorkspaceGitBar: View {
         let tracks = status.upstream != nil
         return splitButton(title: running ?? primaryTitle(action, status), icon: action.icon,
                            enabled: hasRemote,
-                           help: hasRemote ? action.title : "This repository has no remotes",
+                           help: hasRemote ? primaryHelp(action, status) : "This repository has no remotes",
                            action: { perform(action) }) {
             Button(WorkspaceGitSync.fetch.title, systemImage: WorkspaceGitSync.fetch.icon) { perform(.fetch) }
             Divider()
@@ -270,13 +282,13 @@ struct WorkspaceGitBar: View {
                     if running != nil {
                         ProgressView().controlSize(.mini)
                     } else if let icon {
-                        Image(systemName: icon).font(.system(size: typography.secondary))
+                        Image(systemName: icon).font(.system(size: typography.caption, weight: .semibold))
                     }
                     Text(title).lineLimit(1)
                 }
-                .font(.system(size: typography.body))
-                .padding(.horizontal, 7)
-                .frame(height: typography.metric(21))
+                .font(.system(size: typography.secondary))
+                .padding(.horizontal, 6)
+                .frame(height: typography.metric(19))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -285,7 +297,7 @@ struct WorkspaceGitBar: View {
 
             Rectangle()
                 .fill(Color.primary.opacity(0.14))
-                .frame(width: 1, height: typography.metric(21))
+                .frame(width: 1, height: typography.metric(19))
 
             Menu(content: menu) {
                 Image(systemName: "chevron.down")
@@ -294,7 +306,7 @@ struct WorkspaceGitBar: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .frame(width: 22, height: typography.metric(21))
+            .frame(width: 20, height: typography.metric(19))
             .contentShape(Rectangle())
             .help("More actions")
         }

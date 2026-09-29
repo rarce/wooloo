@@ -33,6 +33,10 @@ struct WorkspaceFileChange: Identifiable {
     let originalPath: String?
 
     var id: String { path }
+    var stageState: StageState {
+        guard indexStatus != " " && indexStatus != "?" else { return .none }
+        return worktreeStatus == " " ? .all : .partial
+    }
     var kind: Kind {
         let statuses = [indexStatus, worktreeStatus]
         if indexStatus == "?" { return .untracked }
@@ -44,6 +48,13 @@ struct WorkspaceFileChange: Identifiable {
         return .modified
     }
     var statusLabel: String { kind.label }
+
+    enum StageState {
+        case none, partial, all
+
+        /// Combines the states of the files under a folder.
+        func merged(with other: StageState) -> StageState { self == other ? self : .partial }
+    }
 
     enum Kind: Int {
         case untracked, renamed, modified, added, deleted, conflicted
@@ -553,16 +564,22 @@ enum WorkspaceFiles {
         _ = try git(location, ["worktree", "remove", "--", path], limit: 20_000)
     }
 
+    /// Stages a file or folder; an empty path stages everything under the Space root.
     static func stage(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
-        try validateRelativePath(path)
-        _ = try git(location, ["add", "--", path], limit: 20_000)
+        _ = try git(location, ["add", "--", try pathspec(path)], limit: 20_000)
     }
 
+    /// Unstages a file or folder; an empty path unstages everything under the Space root.
     static func unstage(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
+        _ = try git(location, ["restore", "--staged", "--", try pathspec(path)], limit: 20_000)
+    }
+
+    private static func pathspec(_ path: String) throws -> String {
+        if path.isEmpty { return "." }
         try validateRelativePath(path)
-        _ = try git(location, ["restore", "--staged", "--", path], limit: 20_000)
+        return path
     }
 
     static func branchStatus(at location: WorkspaceFileLocation) throws -> WorkspaceBranchStatus {

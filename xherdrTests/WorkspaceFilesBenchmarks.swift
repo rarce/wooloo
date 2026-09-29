@@ -244,4 +244,16 @@ final class WorkspaceListingTests: XCTestCase {
         XCTAssertEqual(split.tracked, ["both.swift", "xherdr/App.swift"])
         XCTAssertEqual(split.untracked, [".build/a", "notes.txt"])
     }
+
+    func testStageStateFollowsIndexAndWorktree() {
+        func change(_ index: Character, _ worktree: Character) -> WorkspaceFileChange {
+            WorkspaceFileChange(path: "a", indexStatus: index, worktreeStatus: worktree, originalPath: nil)
+        }
+        XCTAssertEqual(change("M", " ").stageState, .all)
+        XCTAssertEqual(change("M", "M").stageState, .partial)
+        XCTAssertEqual(change(" ", "M").stageState, .none)
+        XCTAssertEqual(change("?", "?").stageState, .none)
+        XCTAssertEqual(WorkspaceFileChange.StageState.all.merged(with: .none), .partial)
+        XCTAssertEqual(WorkspaceFileChange.StageState.all.merged(with: .all), .all)
+    }
 }

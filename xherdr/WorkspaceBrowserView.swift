@@ -89,7 +89,7 @@ struct WorkspaceBrowserView: View {
     private var repository: some View {
         WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion + gitVersion,
                                 isCollapsed: $repositoryCollapsed,
-                                onChange: loadListing,
+                                onChange: { loadListing() },
                                 onNewSpace: location?.isLocal == true ? onNewSpace : nil,
                                 onOpenCommitFile: onOpenCommitFile)
     }
@@ -165,6 +165,7 @@ struct WorkspaceBrowserView: View {
                 let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
                                                uniquingKeysWith: { first, _ in first })
                 let directoryKinds = directoryKinds(listing.changes)
+                let stageStates = showsChanges ? stageStates(listing.changes) : [:]
                 let rows = WorkspaceTreeNode.visibleRows(
                     paths: paths,
                     expanded: expandedDirectories,
@@ -172,7 +173,7 @@ struct WorkspaceBrowserView: View {
                 )
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        treeRoot(location)
+                        treeRoot(location, stageState: listing.hasGit ? stageStates[""] : nil)
                         if !collapsedRoots.contains(treeIdentity(location)) {
                             if (showsChanges || isFilteredFiles) && !listing.hasGit {
                                 hint("No Git repository in this Space")
@@ -186,6 +187,7 @@ struct WorkspaceBrowserView: View {
                                 treeRow(row, location: location,
                                         change: changesByPath[row.node.path],
                                         directoryKind: directoryKinds[row.node.path],
+                                        stageState: listing.hasGit ? stageStates[row.node.path] : nil,
                                         hasGit: listing.hasGit)
                             }
                         }
@@ -204,7 +206,7 @@ struct WorkspaceBrowserView: View {
                                 changes: showsChanges ? listing?.changes ?? [] : nil,
                                 onChange: {
                                     gitVersion += 1
-                                    loadListing()
+                                    loadListing(quietly: true)
                                 },
                                 onOpenWorktree: location.isLocal ? onOpenWorktree : nil,
                                 onError: { operationError = $0 })
@@ -241,7 +243,8 @@ struct WorkspaceBrowserView: View {
         "\(location.identity)|\(showsChanges ? "changes" : "files")"
     }
 
-    private func treeRoot(_ location: WorkspaceFileLocation) -> some View {
+    private func treeRoot(_ location: WorkspaceFileLocation,
+                          stageState: WorkspaceFileChange.StageState?) -> some View {
         let identity = treeIdentity(location)
         let isExpanded = !collapsedRoots.contains(identity)
         return Button {
@@ -259,12 +262,15 @@ struct WorkspaceBrowserView: View {
             }
             .font(.system(size: typography.body))
             .padding(.leading, 11)
-            .padding(.trailing, 8)
+            .padding(.trailing, stageState == nil ? 8 : 30)
             .frame(height: typography.metric(24))
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            if let stageState { stageToggle(stageState, path: "", location: location) }
+        }
         .help(location.root)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         .contextMenu {
@@ -286,7 +292,8 @@ struct WorkspaceBrowserView: View {
 
     private func treeRow(_ row: WorkspaceTreeRow, location: WorkspaceFileLocation,
                          change: WorkspaceFileChange?,
-                         directoryKind: WorkspaceFileChange.Kind?, hasGit: Bool) -> some View {
+                         directoryKind: WorkspaceFileChange.Kind?,
+                         stageState: WorkspaceFileChange.StageState?, hasGit: Bool) -> some View {
         let node = row.node
         let kind = node.isDirectory ? directoryKind : change?.kind
         let identity = treeIdentity(location) + "|" + node.path
@@ -327,7 +334,7 @@ struct WorkspaceBrowserView: View {
             }
             .font(.system(size: typography.body))
             .padding(.leading, CGFloat(row.depth) * 19 + 11)
-            .padding(.trailing, 8)
+            .padding(.trailing, stageState == nil ? 8 : 30)
             .frame(height: typography.metric(23))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected ? Color.primary.opacity(0.12) : .clear)
@@ -343,6 +350,9 @@ struct WorkspaceBrowserView: View {
             }
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            if let stageState { stageToggle(stageState, path: node.path, location: location) }
+        }
         .help(node.path)
         .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
         .contextMenu {
@@ -413,11 +423,50 @@ struct WorkspaceBrowserView: View {
         expandedDirectories = expandedDirectories.filter { !$0.hasPrefix(prefix) }
     }
 
+    /// A checkbox that stages the file or everything under the folder, or unstages it when all of it is staged.
+    private func stageToggle(_ state: WorkspaceFileChange.StageState, path: String,
+                             location: WorkspaceFileLocation) -> some View {
+        let name = path.isEmpty ? "all changes" : (path as NSString).lastPathComponent
+        return Button {
+            runGit(location) {
+                if state == .all { try WorkspaceFiles.unstage(path, at: location) }
+                else { try WorkspaceFiles.stage(path, at: location) }
+            }
+        } label: {
+            Image(systemName: state == .all ? "checkmark.square.fill"
+                  : (state == .partial ? "minus.square.fill" : "square"))
+                .font(.system(size: typography.body))
+                .foregroundStyle(state == .none ? Color.secondary : theme.accent)
+                .frame(width: 22, height: typography.metric(23))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 6)
+        .help(state == .all ? "Unstage \(name)" : "Stage \(name)")
+    }
+
+    /// Stage state of every changed file, of each folder above one, and of the root under "".
+    private func stageStates(_ changes: [WorkspaceFileChange]) -> [String: WorkspaceFileChange.StageState] {
+        var states: [String: WorkspaceFileChange.StageState] = [:]
+        for change in changes {
+            let state = change.stageState
+            states[change.path] = state
+            var directory = (change.path as NSString).deletingLastPathComponent
+            while true {
+                states[directory] = states[directory].map { $0.merged(with: state) } ?? state
+                if directory.isEmpty { break }
+                directory = (directory as NSString).deletingLastPathComponent
+            }
+        }
+        return states
+    }
+
     private func runGit(_ location: WorkspaceFileLocation, _ operation: @escaping () throws -> Void) {
         Task {
             let result = await Task.detached(priority: .userInitiated) { Result { try operation() } }.value
             if case .failure(let failure) = result { operationError = failure.localizedDescription }
-            if self.location?.identity == location.identity { loadListing() }
+            // Reload in place, so staging does not blank the tree behind a spinner.
+            if self.location?.identity == location.identity { loadListing(quietly: true) }
         }
     }
 
@@ -487,9 +536,9 @@ struct WorkspaceBrowserView: View {
         }
     }
 
-    private func loadListing() {
+    private func loadListing(quietly: Bool = false) {
         guard let location else { listing = nil; return }
-        isLoading = true
+        isLoading = !quietly
         error = nil
         let start = TerminalPipelineMetrics.now()
         Task {
