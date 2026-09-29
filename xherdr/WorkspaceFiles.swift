@@ -430,16 +430,29 @@ enum WorkspaceFiles {
     private static func loadRepository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
         let rootData = try git(location, ["rev-parse", "--show-toplevel"], limit: 4_000)
         let root = String(decoding: rootData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let logData = (try? git(location, ["log", "-n", "50", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ct%x1e"], limit: 200_000)) ?? Data()
-        let commits = String(decoding: logData, as: UTF8.self).split(separator: "\u{1e}").compactMap { record -> WorkspaceCommit? in
+        let logData = (try? git(location, ["log", "-n", "50", "--format=\(logFormat)"], limit: 200_000)) ?? Data()
+        let refData = try git(location, ["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"], limit: 200_000)
+        let worktreeData = try git(location, ["worktree", "list", "--porcelain", "-z"], limit: 200_000)
+        return WorkspaceRepositoryListing(commits: parseLog(logData), branches: parseBranches(refData),
+                                          worktrees: parseWorktrees(worktreeData), root: root)
+    }
+
+    /// Fields of `git log` records: hash, short hash, subject, author and commit time.
+    static let logFormat = "%H%x1f%h%x1f%s%x1f%an%x1f%ct%x1e"
+
+    static func parseLog(_ data: Data) -> [WorkspaceCommit] {
+        String(decoding: data, as: UTF8.self).split(separator: "\u{1e}").compactMap { record -> WorkspaceCommit? in
             let fields = record.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\u{1f}", omittingEmptySubsequences: false).map(String.init)
             guard fields.count == 5, let timestamp = TimeInterval(fields[4]) else { return nil }
             return WorkspaceCommit(id: fields[0], shortHash: fields[1], subject: fields[2], author: fields[3],
                                    date: Date(timeIntervalSince1970: timestamp))
         }
-        let refData = try git(location, ["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"], limit: 200_000)
-        let refs = String(decoding: refData, as: UTF8.self).split(separator: "\n")
-        let branches = refs.compactMap { line -> WorkspaceBranch? in
+    }
+
+    /// Parses `for-each-ref` records of refname, HEAD marker and upstream, separated by NUL.
+    static func parseBranches(_ data: Data) -> [WorkspaceBranch] {
+        let refs = String(decoding: data, as: UTF8.self).split(separator: "\n")
+        return refs.compactMap { line -> WorkspaceBranch? in
             let fields = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
             guard fields.count >= 3 else { return nil }
             let ref = fields[0]
@@ -450,14 +463,16 @@ enum WorkspaceFiles {
             return WorkspaceBranch(id: ref, name: name, isRemote: remote,
                                    isCurrent: fields[1] == "*", upstream: fields[2])
         }
-        let worktreeData = try git(location, ["worktree", "list", "--porcelain", "-z"], limit: 200_000)
+    }
+
+    static func parseWorktrees(_ data: Data) -> [WorkspaceWorktree] {
         var worktrees: [WorkspaceWorktree] = []
         var path: String?
         var branch: String?
         var bare = false
         var locked = false
         var prunable = false
-        let worktreeFields = worktreeData.split(separator: 0, omittingEmptySubsequences: false)
+        let worktreeFields = data.split(separator: 0, omittingEmptySubsequences: false)
             .compactMap { String(data: Data($0), encoding: .utf8) }
         for field in worktreeFields {
             if field.isEmpty {
@@ -469,7 +484,7 @@ enum WorkspaceFiles {
             else if field.hasPrefix("locked") { locked = true }
             else if field.hasPrefix("prunable") { prunable = true }
         }
-        return WorkspaceRepositoryListing(commits: commits, branches: branches, worktrees: worktrees, root: root)
+        return worktrees
     }
 
     /// Files touched by a commit, compared with its first parent (or the empty tree for a root commit).
@@ -478,7 +493,11 @@ enum WorkspaceFiles {
         let base = ["diff-tree", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "-M", "-z"]
         let statusData = try git(location, base + ["--name-status", hash, "--"], limit: 4_000_000)
         let numstatData = try git(location, base + ["--numstat", hash, "--"], limit: 4_000_000)
+        return parseCommitFiles(nameStatus: statusData, numstat: numstatData)
+    }
 
+    /// Joins `diff-tree -z --name-status` and `--numstat` output into one entry per file.
+    static func parseCommitFiles(nameStatus statusData: Data, numstat numstatData: Data) -> [WorkspaceCommitFile] {
         var files: [WorkspaceCommitFile] = []
         var fields = nulStrings(statusData)[...]
         while let code = fields.popFirst(), let letter = code.first {
@@ -528,7 +547,7 @@ enum WorkspaceFiles {
         return text.isEmpty ? "No textual changes" : text
     }
 
-    private static func validateCommit(_ hash: String) throws {
+    static func validateCommit(_ hash: String) throws {
         guard (4...64).contains(hash.count), hash.allSatisfy(\.isHexDigit) else {
             throw WorkspaceFileError.message("Invalid commit")
         }
@@ -584,6 +603,13 @@ enum WorkspaceFiles {
 
     static func branchStatus(at location: WorkspaceFileLocation) throws -> WorkspaceBranchStatus {
         let data = try git(location, ["status", "--porcelain=v2", "--branch", "--untracked-files=no"], limit: 4_000_000)
+        let remoteData = (try? git(location, ["remote"], limit: 20_000)) ?? Data()
+        let remotes = String(decoding: remoteData, as: UTF8.self).split(separator: "\n").map(String.init)
+        return parseBranchStatus(data, remotes: remotes)
+    }
+
+    /// Reads the `# branch.*` headers of `git status --porcelain=v2 --branch`.
+    static func parseBranchStatus(_ data: Data, remotes: [String]) -> WorkspaceBranchStatus {
         var oid = ""
         var branch: String?
         var upstream: String?
@@ -602,8 +628,6 @@ enum WorkspaceFiles {
             default: break
             }
         }
-        let remoteData = (try? git(location, ["remote"], limit: 20_000)) ?? Data()
-        let remotes = String(decoding: remoteData, as: UTF8.self).split(separator: "\n").map(String.init)
         return WorkspaceBranchStatus(branch: branch, shortHead: String(oid.prefix(7)), upstream: upstream,
                                      ahead: ahead, behind: behind, remotes: remotes)
     }
@@ -734,7 +758,7 @@ enum WorkspaceFiles {
         }
     }
 
-    private static func parseStatus(_ data: Data) -> [WorkspaceFileChange] {
+    static func parseStatus(_ data: Data) -> [WorkspaceFileChange] {
         let records = nulStrings(data)
         var changes: [WorkspaceFileChange] = []
         var index = 0
@@ -759,7 +783,7 @@ enum WorkspaceFiles {
         data.split(separator: 0).compactMap { String(data: Data($0), encoding: .utf8) }
     }
 
-    private static func gitBlobHash(_ data: Data) -> String {
+    static func gitBlobHash(_ data: Data) -> String {
         var blob = Data("blob \(data.count)\0".utf8)
         blob.append(data)
         return Insecure.SHA1.hash(data: blob).map { String(format: "%02x", $0) }.joined()
