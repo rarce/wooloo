@@ -560,15 +560,20 @@ enum WorkspaceFiles {
             throw WorkspaceFileError.message("Enter an absolute worktree path")
         }
         var args = ["worktree", "add"]
+        // Git checks out a branch only when given its short name; a full ref detaches HEAD.
+        let start: String
         if let newBranch, !newBranch.isEmpty {
             guard !newBranch.hasPrefix("-"), !newBranch.contains("\0") else {
                 throw WorkspaceFileError.message("Invalid branch name")
             }
             args += ["-b", newBranch]
+            start = branch.id
         } else if branch.isRemote {
             throw WorkspaceFileError.message("Enter a local branch name for a remote branch")
+        } else {
+            start = branch.name
         }
-        args += ["--", path, branch.id]
+        args += ["--", path, start]
         _ = try git(location, args, limit: 20_000)
     }
 
