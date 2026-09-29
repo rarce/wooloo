@@ -315,6 +315,10 @@ struct ContentView: View {
                                     herdr.zoomPane()
                                 }
                                 Divider()
+                                Button("Rename Agent…", systemImage: "pencil") {
+                                    renameText = agent.displayName
+                                    renameTarget = .agent(agent.paneID)
+                                }
                                 Button("Copy Agent Name", systemImage: "doc.on.doc") {
                                     AppActions.copy(agent.displayName)
                                 }
@@ -871,10 +875,16 @@ struct ContentView: View {
     private func commitRename() {
         let label = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         defer { renameTarget = nil }
-        guard !label.isEmpty, let renameTarget else { return }
+        guard let renameTarget else { return }
+        if case .agent(let id) = renameTarget {
+            herdr.renameAgent(id, to: label.isEmpty ? nil : label)
+            return
+        }
+        guard !label.isEmpty else { return }
         switch renameTarget {
         case .workspace(let id): herdr.renameWorkspace(id, to: label)
         case .tab(let id): herdr.renameTab(id, to: label)
+        case .agent: break
         }
     }
 
@@ -1028,11 +1038,13 @@ private extension View {
 private enum HerdrRenameTarget {
     case workspace(String)
     case tab(String)
+    case agent(String)
 
     var title: String {
         switch self {
         case .workspace: return "Rename Space"
         case .tab: return "Rename Tab"
+        case .agent: return "Rename Agent"
         }
     }
 }

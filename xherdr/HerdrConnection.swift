@@ -709,6 +709,12 @@ final class HerdrStore: ObservableObject {
                       followServerFocus: false)
     }
 
+    /// Renames the agent in a pane; a nil name restores the detected agent name.
+    func renameAgent(_ paneID: String, to name: String?) {
+        performAction(method: "agent.rename", params: ["target": paneID, "name": name ?? NSNull()],
+                      followServerFocus: false)
+    }
+
     func renameTab(_ tabID: String, to label: String) {
         performAction(method: "tab.rename", params: ["tab_id": tabID, "label": label],
                       followServerFocus: false)
