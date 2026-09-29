@@ -63,6 +63,15 @@ struct ContentView: View {
         .frame(minWidth: 850, minHeight: 380)
         .preferredColorScheme(.dark)
         .task { herdr.start() }
+        .focusedSceneValue(\.xherdrCommands, XherdrCommandContext(
+            isConnected: herdr.isConnected,
+            hasSpace: selectedWorkspace != nil,
+            tabCount: selectedTabs.count,
+            hasPane: herdr.selectedPaneID != nil,
+            showsSidebar: showsSidebar,
+            showsFilesSidebar: showsFilesSidebar,
+            perform: handleShortcut
+        ))
         .onDisappear { herdr.stop() }
         .sheet(isPresented: $showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
@@ -768,6 +777,30 @@ struct ContentView: View {
         case "reload_config":
             shortcutMap = HerdrShortcutMap.load()
             herdr.reloadConfig()
+        case "toggle_files_sidebar": showsFilesSidebar.toggle()
+        case "refresh_files": fileRefreshVersion += 1
+        case "switch_session":
+            showsSidebar = true
+            requestedSessionName = herdr.sessionName
+            showsSessionPicker = true
+        case "rename_workspace":
+            guard let selectedWorkspace else { return }
+            renameText = selectedWorkspace.label
+            renameTarget = .workspace(selectedWorkspace.workspaceID)
+        case "close_workspace":
+            guard let selectedWorkspace else { return }
+            closeTarget = .workspace(selectedWorkspace.workspaceID, selectedWorkspace.label)
+        case "rename_tab":
+            guard let tab = selectedTabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
+            renameText = tab.label
+            renameTarget = .tab(tab.tabID)
+        case "close_tab":
+            guard selectedTabs.count > 1,
+                  let tab = selectedTabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
+            closeTarget = .tab(tab.tabID, tab.label)
+        case "close_pane":
+            guard let paneID = herdr.selectedPaneID else { return }
+            closeTarget = .pane(paneID)
         default:
             if action.hasPrefix("switch_tab_"),
                let number = Int(action.dropFirst("switch_tab_".count)),
