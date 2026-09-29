@@ -414,7 +414,16 @@ final class HerdrStore: ObservableObject {
     @Published private(set) var sessionSelectionError: String?
     @Published var selectedWorkspaceID: String?
     @Published var selectedTabID: String?
-    @Published var selectedPaneID: String?
+    @Published var selectedPaneID: String? {
+        didSet {
+            guard let selectedTabID, let selectedPaneID,
+                  snapshot?.panes.contains(where: { $0.paneID == selectedPaneID && $0.tabID == selectedTabID }) == true
+            else { return }
+            lastPaneByTab[selectedTabID] = selectedPaneID
+        }
+    }
+    /// The pane last used in each tab, so returning to a tab types into the same pane.
+    private var lastPaneByTab: [String: String] = [:]
 
     static let defaultSessionName = "default"
     private static let lastSessionKey = "HerdrLastSession"
@@ -605,8 +614,9 @@ final class HerdrStore: ObservableObject {
     func select(workspaceID: String, tabID: String? = nil, paneID: String? = nil) {
         selectedWorkspaceID = workspaceID
         let tabs = snapshot?.tabs.filter { $0.workspaceID == workspaceID } ?? []
-        selectedTabID = tabID ?? tabs.first?.tabID
-        selectedPaneID = paneID ?? snapshot?.panes.first { $0.tabID == selectedTabID }?.paneID
+        let activeTabID = snapshot?.workspaces.first { $0.workspaceID == workspaceID }?.activeTabID
+        selectedTabID = tabID ?? tabs.first { $0.tabID == activeTabID }?.tabID ?? tabs.first?.tabID
+        selectedPaneID = paneID ?? preferredPane(in: selectedTabID)
         surfaceStream?.focus(workspaceID: workspaceID)
         if let selectedTabID { surfaceStream?.focus(tabID: selectedTabID) }
         if let selectedPaneID { surfaceStream?.focus(paneID: selectedPaneID) }
@@ -758,8 +768,21 @@ final class HerdrStore: ObservableObject {
 
     func select(tabID: String) {
         selectedTabID = tabID
-        selectedPaneID = snapshot?.panes.first { $0.tabID == tabID }?.paneID
+        selectedPaneID = preferredPane(in: tabID)
         surfaceStream?.focus(tabID: tabID)
+        if let selectedPaneID { surfaceStream?.focus(paneID: selectedPaneID) }
+    }
+
+    private func preferredPane(in tabID: String?) -> String? {
+        guard let tabID else { return nil }
+        let panes = snapshot?.panes.filter { $0.tabID == tabID } ?? []
+        if let remembered = lastPaneByTab[tabID], panes.contains(where: { $0.paneID == remembered }) {
+            return remembered
+        }
+        if let focused = snapshot?.focusedPaneID, panes.contains(where: { $0.paneID == focused }) {
+            return focused
+        }
+        return panes.first?.paneID
     }
 
     func select(paneID: String) {
@@ -856,7 +879,7 @@ final class HerdrStore: ObservableObject {
                 ?? snapshot.tabs.first { $0.workspaceID == selectedWorkspaceID }?.tabID
         }
         if !snapshot.panes.contains(where: { $0.paneID == selectedPaneID && $0.tabID == selectedTabID }) {
-            selectedPaneID = snapshot.panes.first { $0.tabID == selectedTabID }?.paneID
+            selectedPaneID = preferredPane(in: selectedTabID)
         }
     }
 }

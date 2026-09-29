@@ -77,7 +77,10 @@ struct TerminalPaneView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let view = scrollView.documentView as? HerdrTerminalTextView else { return }
-        view.paneID = paneID
+        if view.paneID != paneID {
+            view.paneID = paneID
+            view.claimKeyboardFocusIfIdle()
+        }
         if view.shortcutMap.prefixLabel != shortcutMap.prefixLabel { view.clearShortcutPrefix() }
         view.shortcutMap = shortcutMap
         view.onShortcut = onShortcut
@@ -238,6 +241,20 @@ private final class HerdrTerminalTextView: NSTextView {
     private var renderedHeight = 0
     private var selectedSnapshot: String?
     private var selectionAtSnapshot: NSRange?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Switching tabs rebuilds this view; give it the keyboard like a terminal would.
+        DispatchQueue.main.async { [weak self] in self?.claimKeyboardFocusIfIdle() }
+    }
+
+    /// Takes keyboard focus unless another text input in this window is being used.
+    func claimKeyboardFocusIfIdle() {
+        guard let window, window.firstResponder !== self else { return }
+        if let view = window.firstResponder as? NSView, view.window === window,
+           view is NSTextInputClient, !(view is HerdrTerminalTextView) { return }
+        window.makeFirstResponder(self)
+    }
 
     func clearShortcutPrefix() {
         shortcutPrefixPending = false
