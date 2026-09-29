@@ -519,11 +519,6 @@ struct ContentView: View {
                 Text(selectedWorkspace?.label ?? "Herdr")
                     .font(.system(size: typography.emphasis, weight: .semibold))
                     .lineLimit(1)
-                Button { showsFilesSidebar.toggle() } label: {
-                    Image(systemName: "sidebar.right")
-                }
-                .buttonStyle(.borderless)
-                .help(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes")
                 if shortcutPrefixActive {
                     Text("PREFIX")
                         .font(.system(size: typography.caption, weight: .semibold, design: .monospaced))
@@ -535,6 +530,11 @@ struct ContentView: View {
                         .font(.system(size: typography.secondary, design: .monospaced))
                         .foregroundStyle(theme.warning)
                 }
+                Button { showsFilesSidebar.toggle() } label: {
+                    Image(systemName: "sidebar.right")
+                }
+                .buttonStyle(.borderless)
+                .help(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes")
             }
             .padding(.horizontal, 11)
             .frame(height: typography.metric(35))
