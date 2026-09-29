@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -14,6 +15,9 @@ struct ContentView: View {
     @State private var activeDocumentID: String?
     @State private var pendingCloseDocumentID: String?
     @State private var fileRefreshVersion = 0
+    @State private var renameTarget: HerdrRenameTarget?
+    @State private var renameText = ""
+    @State private var closeTarget: HerdrCloseTarget?
 
     private let sidebarBackground = Color(red: 0.105, green: 0.115, blue: 0.13)
     private let barBackground = Color(red: 0.13, green: 0.14, blue: 0.155)
@@ -44,7 +48,15 @@ struct ContentView: View {
                                      localSession: herdr.sessionName,
                                      refreshVersion: fileRefreshVersion,
                                      onOpenFile: { location, path in openDocument(.file, path: path, at: location) },
-                                     onOpenDiff: { location, path in openDocument(.change, path: path, at: location) })
+                                     onOpenDiff: { location, path in openDocument(.change, path: path, at: location) },
+                                     onNewTab: { cwd in
+                                         activeDocumentID = nil
+                                         herdr.createTab(cwd: cwd)
+                                     },
+                                     onNewSpace: { cwd, label in
+                                         activeDocumentID = nil
+                                         herdr.createWorkspace(cwd: cwd, label: label)
+                                     })
                     .frame(width: 244)
             }
         }
@@ -75,6 +87,59 @@ struct ContentView: View {
                 pendingCloseDocumentID = nil
             }
         }
+        .alert(renameTarget?.title ?? "Rename", isPresented: Binding(
+            get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Rename") { commitRename() }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        }
+        .confirmationDialog(closeTarget?.title ?? "Close?", isPresented: Binding(
+            get: { closeTarget != nil }, set: { if !$0 { closeTarget = nil } }
+        )) {
+            Button("Close", role: .destructive) { commitClose() }
+        } message: {
+            Text("Processes running in its terminals will be terminated.")
+        }
+    }
+
+    @ViewBuilder
+    private var globalActions: some View {
+        Button("New Space", systemImage: "plus.square") {
+            activeDocumentID = nil
+            herdr.createWorkspace()
+        }
+            .disabled(!herdr.isConnected)
+        Button("New Tab", systemImage: "plus") {
+            activeDocumentID = nil
+            herdr.createTab()
+        }
+            .disabled(!herdr.isConnected || herdr.selectedWorkspaceID == nil)
+        Divider()
+        Button(showsSidebar ? "Hide Sidebar" : "Show Sidebar",
+               systemImage: "sidebar.left") { showsSidebar.toggle() }
+        Button(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes",
+               systemImage: "sidebar.right") { showsFilesSidebar.toggle() }
+        Button("Refresh Files and Repository", systemImage: "arrow.clockwise") { fileRefreshVersion += 1 }
+        Divider()
+        Button("Keyboard Shortcuts…", systemImage: "keyboard") {
+            settingsShowShortcuts = true
+            showsSettings = true
+        }
+        Button("Herdr Settings…", systemImage: "gearshape") {
+            settingsShowShortcuts = false
+            showsSettings = true
+        }
+        Button("Reload Herdr Config", systemImage: "arrow.triangle.2.circlepath") {
+            shortcutMap = HerdrShortcutMap.load()
+            herdr.reloadConfig()
+        }
+            .disabled(!herdr.isConnected)
+        Button("Switch Session…", systemImage: "point.3.connected.trianglepath.dotted") {
+            showsSidebar = true
+            requestedSessionName = herdr.sessionName
+            showsSessionPicker = true
+        }
     }
 
     private var sidebar: some View {
@@ -91,6 +156,8 @@ struct ContentView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 35)
+            .contentShape(Rectangle())
+            .contextMenu { globalActions }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 13) {
@@ -125,8 +192,10 @@ struct ContentView: View {
                                 }
                                 .font(.system(size: 12, weight: .medium))
                                 .sidebarRow(selected: workspace.workspaceID == herdr.selectedWorkspaceID)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .contextMenu { spaceActions(workspace) }
                         }
                     }
 
@@ -142,10 +211,7 @@ struct ContentView: View {
                         }
                         ForEach(agents) { agent in
                             Button {
-                                if let pane = herdr.snapshot?.panes.first(where: { $0.paneID == agent.paneID }) {
-                                    herdr.select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
-                                    activeDocumentID = nil
-                                }
+                                focusAgent(agent)
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 7) {
@@ -177,6 +243,21 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                             .help(agentTooltip(agent))
+                            .contextMenu {
+                                Button("Focus Pane", systemImage: "scope") { focusAgent(agent) }
+                                Button("Focus and Zoom", systemImage: "arrow.up.left.and.arrow.down.right") {
+                                    focusAgent(agent)
+                                    herdr.zoomPane()
+                                }
+                                Divider()
+                                Button("Copy Agent Name", systemImage: "doc.on.doc") {
+                                    AppActions.copy(agent.displayName)
+                                }
+                                Divider()
+                                Button("Close Pane…", systemImage: "xmark.square", role: .destructive) {
+                                    closeTarget = .pane(agent.paneID)
+                                }
+                            }
                         }
                     }
                 }
@@ -260,34 +341,7 @@ struct ContentView: View {
                 }
                 Spacer()
                 Menu {
-                    Button("New Space", systemImage: "plus.square") {
-                        activeDocumentID = nil
-                        herdr.createWorkspace()
-                    }
-                        .disabled(!herdr.isConnected)
-                    Button("New Tab", systemImage: "plus") {
-                        activeDocumentID = nil
-                        herdr.createTab()
-                    }
-                        .disabled(!herdr.isConnected || herdr.selectedWorkspaceID == nil)
-                    Divider()
-                    Button(showsSidebar ? "Hide Sidebar" : "Show Sidebar",
-                           systemImage: "sidebar.left") { showsSidebar.toggle() }
-                    Button(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes",
-                           systemImage: "sidebar.right") { showsFilesSidebar.toggle() }
-                    Button("Keyboard Shortcuts…", systemImage: "keyboard") {
-                        settingsShowShortcuts = true
-                        showsSettings = true
-                    }
-                    Button("Herdr Settings…", systemImage: "gearshape") {
-                        settingsShowShortcuts = false
-                        showsSettings = true
-                    }
-                    Button("Switch Session…", systemImage: "point.3.connected.trianglepath.dotted") {
-                        showsSidebar = true
-                        requestedSessionName = herdr.sessionName
-                        showsSessionPicker = true
-                    }
+                    globalActions
                 } label: {
                     Label("Menu", systemImage: "ellipsis.circle")
                         .font(.system(size: 10))
@@ -308,6 +362,13 @@ struct ContentView: View {
             .padding(.horizontal, 11)
             .frame(height: 35)
             .background(barBackground)
+            .contextMenu {
+                if let selectedWorkspace {
+                    spaceActions(selectedWorkspace)
+                    Divider()
+                }
+                globalActions
+            }
             Divider()
 
             if herdr.isConnected || !documents.isEmpty {
@@ -331,8 +392,24 @@ struct ContentView: View {
                                         ? Color.white.opacity(0.09) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 4)
                                 )
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("New Tab", systemImage: "plus") {
+                                    activeDocumentID = nil
+                                    herdr.createTab()
+                                }
+                                Button("Rename Tab…", systemImage: "pencil") {
+                                    renameText = tab.label
+                                    renameTarget = .tab(tab.tabID)
+                                }
+                                Divider()
+                                Button("Close Tab…", systemImage: "xmark", role: .destructive) {
+                                    closeTarget = .tab(tab.tabID, tab.label)
+                                }
+                                .disabled(selectedTabs.count < 2)
+                            }
                         }
                         if !documents.isEmpty { Divider().frame(height: 17).padding(.horizontal, 4) }
                         ForEach(documents) { document in
@@ -359,6 +436,7 @@ struct ContentView: View {
                             .background(activeDocumentID == document.id ? Color.white.opacity(0.09) : .clear,
                                         in: RoundedRectangle(cornerRadius: 4))
                             .help("\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.path)")
+                            .contextMenu { documentActions(document) }
                         }
                         Button {
                             activeDocumentID = nil
@@ -456,6 +534,29 @@ struct ContentView: View {
             .background(barBackground)
             .contentShape(Rectangle())
             .onTapGesture { herdr.selectedPaneID = pane.paneID }
+            .contextMenu {
+                Button("Split Right", systemImage: "rectangle.split.2x1") {
+                    herdr.selectedPaneID = pane.paneID
+                    herdr.splitPane("right")
+                }
+                Button("Split Down", systemImage: "rectangle.split.1x2") {
+                    herdr.selectedPaneID = pane.paneID
+                    herdr.splitPane("down")
+                }
+                Button("Zoom Pane", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    herdr.selectedPaneID = pane.paneID
+                    herdr.zoomPane()
+                }
+                if let cwd = pane.cwd {
+                    Divider()
+                    Button("Copy Working Directory", systemImage: "doc.on.doc") { AppActions.copy(cwd) }
+                    Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(cwd) }
+                }
+                Divider()
+                Button("Close Pane…", systemImage: "xmark.square", role: .destructive) {
+                    closeTarget = .pane(pane.paneID)
+                }
+            }
             Divider()
             TerminalPaneView(
                 text: herdr.paneText[pane.paneID] ?? "Reading pane…",
@@ -547,6 +648,92 @@ struct ContentView: View {
         }
         documents.remove(at: index)
         if activeDocumentID == id { activeDocumentID = nil }
+    }
+
+    @ViewBuilder
+    private func spaceActions(_ workspace: HerdrWorkspace) -> some View {
+        let root = herdr.snapshot.flatMap {
+            WorkspaceFiles.location(snapshot: $0, workspaceID: workspace.workspaceID,
+                                    session: herdr.sessionName, machine: nil)?.root
+        }
+        Button("New Tab in Space", systemImage: "plus") {
+            herdr.select(workspaceID: workspace.workspaceID)
+            activeDocumentID = nil
+            herdr.createTab()
+        }
+        Button("Rename Space…", systemImage: "pencil") {
+            renameText = workspace.label
+            renameTarget = .workspace(workspace.workspaceID)
+        }
+        if let root {
+            Divider()
+            Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(root) }
+            Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(root) }
+        }
+        Divider()
+        Button("Close Space…", systemImage: "xmark", role: .destructive) {
+            closeTarget = .workspace(workspace.workspaceID, workspace.label)
+        }
+    }
+
+    @ViewBuilder
+    private func documentActions(_ document: WorkspaceDocument) -> some View {
+        if document.kind == .file {
+            Button("Save", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
+                .disabled(!document.isDirty)
+            Button("Open Changes", systemImage: "arrow.left.arrow.right") {
+                openDocument(.change, path: document.path, at: document.location)
+            }
+        } else {
+            Button("Open File", systemImage: "doc.text") {
+                openDocument(.file, path: document.path, at: document.location)
+            }
+        }
+        Divider()
+        Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(document.location.absolutePath(document.path)) }
+        Button("Copy Relative Path") { AppActions.copy(document.path) }
+        if document.location.isLocal {
+            Button("Reveal in Finder", systemImage: "folder") {
+                AppActions.reveal(document.location.absolutePath(document.path))
+            }
+        }
+        Divider()
+        Button("Close", systemImage: "xmark") { closeDocument(document.id) }
+        Button("Close Others") {
+            for other in documents where other.id != document.id { closeDocument(other.id) }
+        }
+            .disabled(documents.count < 2)
+        Button("Close All") {
+            for other in documents { closeDocument(other.id) }
+        }
+    }
+
+    private func focusAgent(_ agent: HerdrAgent) {
+        guard let pane = herdr.snapshot?.panes.first(where: { $0.paneID == agent.paneID }) else { return }
+        herdr.select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
+        activeDocumentID = nil
+    }
+
+    private func commitRename() {
+        let label = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        defer { renameTarget = nil }
+        guard !label.isEmpty, let renameTarget else { return }
+        switch renameTarget {
+        case .workspace(let id): herdr.renameWorkspace(id, to: label)
+        case .tab(let id): herdr.renameTab(id, to: label)
+        }
+    }
+
+    private func commitClose() {
+        defer { closeTarget = nil }
+        switch closeTarget {
+        case .workspace(let id, _):
+            activeDocumentID = nil
+            herdr.closeWorkspace(id)
+        case .tab(let id, _): herdr.closeTab(id)
+        case .pane(let id): herdr.closePane(id)
+        case nil: break
+        }
     }
 
     private func handleShortcut(_ action: String) {
@@ -657,5 +844,47 @@ private extension View {
                 selected ? Color.white.opacity(0.08) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 4)
             )
+    }
+}
+
+private enum HerdrRenameTarget {
+    case workspace(String)
+    case tab(String)
+
+    var title: String {
+        switch self {
+        case .workspace: return "Rename Space"
+        case .tab: return "Rename Tab"
+        }
+    }
+}
+
+private enum HerdrCloseTarget {
+    case workspace(String, String)
+    case tab(String, String)
+    case pane(String)
+
+    var title: String {
+        switch self {
+        case .workspace(_, let label): return "Close Space “\(label)”?"
+        case .tab(_, let label): return "Close Tab “\(label)”?"
+        case .pane(let id): return "Close Pane \(id)?"
+        }
+    }
+}
+
+enum AppActions {
+    static func copy(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    static func reveal(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
     }
 }

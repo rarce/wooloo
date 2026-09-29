@@ -7,6 +7,8 @@ struct WorkspaceBrowserView: View {
     let refreshVersion: Int
     let onOpenFile: (WorkspaceFileLocation, String) -> Void
     let onOpenDiff: (WorkspaceFileLocation, String) -> Void
+    let onNewTab: (String) -> Void
+    let onNewSpace: (String, String) -> Void
 
     @State private var machines: [HerdrMachineProfile] = []
     @State private var selectedMachineID = "local"
@@ -21,6 +23,7 @@ struct WorkspaceBrowserView: View {
     @State private var collapsedModifiedDirectories: Set<String> = []
     @State private var collapsedRoots: Set<String> = []
     @State private var selectedItem: String?
+    @State private var operationError: String?
 
     private var isFilteredFiles: Bool { !showsChanges && modifiedOnly }
 
@@ -50,12 +53,21 @@ struct WorkspaceBrowserView: View {
         VSplitView {
             explorer
                 .frame(minHeight: 190)
-            WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion)
+            WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion,
+                                    onChange: loadListing,
+                                    onNewSpace: location?.isLocal == true ? onNewSpace : nil)
                 .frame(minHeight: 160)
         }
         .background(Color(red: 0.105, green: 0.115, blue: 0.13))
         .task { loadMachines() }
         .task(id: listingIdentity) { loadListing() }
+        .alert("Git operation failed", isPresented: Binding(
+            get: { operationError != nil }, set: { if !$0 { operationError = nil } }
+        )) {
+            Button("OK") { operationError = nil }
+        } message: {
+            Text(operationError ?? "")
+        }
     }
 
     private var explorer: some View {
@@ -175,7 +187,8 @@ struct WorkspaceBrowserView: View {
                             ForEach(rows) { row in
                                 treeRow(row, location: location,
                                         change: changesByPath[row.node.path],
-                                        directoryKind: directoryKinds[row.node.path])
+                                        directoryKind: directoryKinds[row.node.path],
+                                        hasGit: listing.hasGit)
                             }
                         }
                     }
@@ -239,11 +252,25 @@ struct WorkspaceBrowserView: View {
         .buttonStyle(.plain)
         .help(location.root)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+        .contextMenu {
+            if location.isLocal {
+                Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
+            }
+            Button("Collapse All Folders", systemImage: "rectangle.compress.vertical") { collapseAll(location) }
+            Divider()
+            if !showsChanges {
+                Button(modifiedOnly ? "Show All Files" : "Show Modified Only",
+                       systemImage: "line.3.horizontal.decrease") { modifiedOnly.toggle() }
+            }
+            Button("Refresh", systemImage: "arrow.clockwise") { refresh() }
+            Divider()
+            pathActions(location, path: "")
+        }
     }
 
     private func treeRow(_ row: WorkspaceTreeRow, location: WorkspaceFileLocation,
                          change: WorkspaceFileChange?,
-                         directoryKind: WorkspaceFileChange.Kind?) -> some View {
+                         directoryKind: WorkspaceFileChange.Kind?, hasGit: Bool) -> some View {
         let node = row.node
         let kind = node.isDirectory ? directoryKind : change?.kind
         let identity = treeIdentity(location) + "|" + node.path
@@ -252,14 +279,7 @@ struct WorkspaceBrowserView: View {
         let isSelected = selectedItem == identity
         return Button {
             if node.isDirectory {
-                if isFilteredFiles {
-                    if isExpanded { collapsedModifiedDirectories.insert(identity) }
-                    else { collapsedModifiedDirectories.remove(identity) }
-                } else if isExpanded {
-                    expandedDirectories.remove(identity)
-                } else {
-                    expandedDirectories.insert(identity)
-                }
+                toggleDirectory(identity, isExpanded: isExpanded)
             } else {
                 selectedItem = identity
                 if showsChanges { onOpenDiff(location, node.path) }
@@ -310,6 +330,92 @@ struct WorkspaceBrowserView: View {
         .buttonStyle(.plain)
         .help(node.path)
         .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
+        .contextMenu {
+            if node.isDirectory {
+                Button(isExpanded ? "Collapse" : "Expand",
+                       systemImage: isExpanded ? "chevron.up" : "chevron.down") {
+                    toggleDirectory(identity, isExpanded: isExpanded)
+                }
+                if location.isLocal {
+                    Button("Open in New Tab", systemImage: "terminal") {
+                        onNewTab(location.absolutePath(node.path))
+                    }
+                }
+            } else {
+                Button("Open", systemImage: "doc.text") {
+                    selectedItem = identity
+                    onOpenFile(location, node.path)
+                }
+                .disabled(change?.kind == .deleted)
+                if change != nil {
+                    Button("Open Changes", systemImage: "arrow.left.arrow.right") {
+                        selectedItem = identity
+                        onOpenDiff(location, node.path)
+                    }
+                }
+            }
+            if hasGit, let kind = node.isDirectory ? directoryKind : change?.kind {
+                Divider()
+                if node.isDirectory || change?.worktreeStatus != " " {
+                    Button(node.isDirectory ? "Stage Folder" : "Stage Changes", systemImage: "plus.circle") {
+                        runGit(location) { try WorkspaceFiles.stage(node.path, at: location) }
+                    }
+                }
+                if node.isDirectory ? kind != .untracked
+                    : (change?.indexStatus != " " && change?.indexStatus != "?") {
+                    Button(node.isDirectory ? "Unstage Folder" : "Unstage Changes", systemImage: "minus.circle") {
+                        runGit(location) { try WorkspaceFiles.unstage(node.path, at: location) }
+                    }
+                }
+            }
+            Divider()
+            pathActions(location, path: node.path)
+        }
+    }
+
+    @ViewBuilder
+    private func pathActions(_ location: WorkspaceFileLocation, path: String) -> some View {
+        Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(location.absolutePath(path)) }
+        if !path.isEmpty {
+            Button("Copy Relative Path") { AppActions.copy(path) }
+        }
+        if location.isLocal {
+            Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.absolutePath(path)) }
+        }
+    }
+
+    private func toggleDirectory(_ identity: String, isExpanded: Bool) {
+        if isFilteredFiles {
+            if isExpanded { collapsedModifiedDirectories.insert(identity) }
+            else { collapsedModifiedDirectories.remove(identity) }
+        } else if isExpanded {
+            expandedDirectories.remove(identity)
+        } else {
+            expandedDirectories.insert(identity)
+        }
+    }
+
+    private func collapseAll(_ location: WorkspaceFileLocation) {
+        let prefix = treeIdentity(location) + "|"
+        expandedDirectories = expandedDirectories.filter { !$0.hasPrefix(prefix) }
+        if isFilteredFiles, let listing {
+            let changed = Set(listing.changes.map(\.path))
+            for path in listing.files where changed.contains(path) {
+                var directory = (path as NSString).deletingLastPathComponent
+                while !directory.isEmpty {
+                    collapsedModifiedDirectories.insert(prefix + directory)
+                    directory = (directory as NSString).deletingLastPathComponent
+                }
+            }
+        }
+    }
+
+    private func runGit(_ location: WorkspaceFileLocation, _ operation: @escaping () throws -> Void) {
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { Result { try operation() } }.value
+            if case .failure(let failure) = result { operationError = failure.localizedDescription }
+            if self.location?.identity == location.identity { loadListing() }
+        }
     }
 
     private func statusColor(_ kind: WorkspaceFileChange.Kind) -> Color {

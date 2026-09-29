@@ -19,6 +19,11 @@ struct WorkspaceFileLocation: Hashable {
 
     var identity: String { "\(machine?.id ?? "local")|\(session)|\(workspaceID)|\(root)" }
     var machineLabel: String { machine?.label ?? "Local" }
+    var isLocal: Bool { machine == nil }
+
+    func absolutePath(_ relativePath: String) -> String {
+        relativePath.isEmpty ? root : (root as NSString).appendingPathComponent(relativePath)
+    }
 }
 
 struct WorkspaceFileChange: Identifiable {
@@ -303,6 +308,23 @@ enum WorkspaceFiles {
             throw WorkspaceFileError.message("This worktree cannot be removed")
         }
         _ = try git(location, ["worktree", "remove", "--", path], limit: 20_000)
+    }
+
+    static func stage(_ path: String, at location: WorkspaceFileLocation) throws {
+        try validateRelativePath(path)
+        _ = try git(location, ["add", "--", path], limit: 20_000)
+    }
+
+    static func unstage(_ path: String, at location: WorkspaceFileLocation) throws {
+        try validateRelativePath(path)
+        _ = try git(location, ["restore", "--staged", "--", path], limit: 20_000)
+    }
+
+    static func switchBranch(_ branch: WorkspaceBranch, at location: WorkspaceFileLocation) throws {
+        guard !branch.isRemote, !branch.isCurrent, !branch.name.hasPrefix("-") else {
+            throw WorkspaceFileError.message("Choose another local branch")
+        }
+        _ = try git(location, ["switch", branch.name], limit: 20_000)
     }
 
     private static func git(_ location: WorkspaceFileLocation, _ args: [String], limit: Int) throws -> Data {

@@ -277,9 +277,12 @@ enum HerdrSocket {
         _ = try request(path: path, method: "pane.send_input", params: params)
     }
 
-    static func createWorkspace(path: String, sourceWorkspaceID: String?) throws -> String {
+    static func createWorkspace(path: String, sourceWorkspaceID: String?,
+                                cwd: String? = nil, label: String? = nil) throws -> String {
         var params: [String: Any] = ["focus": true]
         if let sourceWorkspaceID { params["source_workspace_id"] = sourceWorkspaceID }
+        if let cwd { params["cwd"] = cwd }
+        if let label { params["label"] = label }
         let data = try request(path: path, method: "workspace.create", params: params)
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = root["result"] as? [String: Any],
@@ -290,10 +293,10 @@ enum HerdrSocket {
         return id
     }
 
-    static func createTab(path: String, workspaceID: String) throws -> String {
-        let data = try request(path: path, method: "tab.create", params: [
-            "workspace_id": workspaceID, "focus": true
-        ])
+    static func createTab(path: String, workspaceID: String, cwd: String? = nil) throws -> String {
+        var params: [String: Any] = ["workspace_id": workspaceID, "focus": true]
+        if let cwd { params["cwd"] = cwd }
+        let data = try request(path: path, method: "tab.create", params: params)
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = root["result"] as? [String: Any],
               let tab = result["tab"] as? [String: Any],
@@ -593,15 +596,16 @@ final class HerdrStore: ObservableObject {
 
     func clearActionError() { actionError = nil }
 
-    func createWorkspace() {
+    func createWorkspace(cwd: String? = nil, label: String? = nil) {
         guard isConnected else { return }
         let path = socketPath
-        let source = selectedWorkspaceID
+        let source = cwd == nil ? selectedWorkspaceID : nil
         let currentGeneration = generation
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { () throws -> (String, HerdrSnapshot) in
-                    let id = try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source)
+                    let id = try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source,
+                                                             cwd: cwd, label: label)
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
             }.value
@@ -616,14 +620,14 @@ final class HerdrStore: ObservableObject {
         }
     }
 
-    func createTab() {
+    func createTab(cwd: String? = nil) {
         guard isConnected, let workspaceID = selectedWorkspaceID else { return }
         let path = socketPath
         let currentGeneration = generation
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { () throws -> (String, HerdrSnapshot) in
-                    let id = try HerdrSocket.createTab(path: path, workspaceID: workspaceID)
+                    let id = try HerdrSocket.createTab(path: path, workspaceID: workspaceID, cwd: cwd)
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
             }.value
@@ -640,14 +644,14 @@ final class HerdrStore: ObservableObject {
 
     func focusPane(_ direction: String) {
         guard let paneID = selectedPaneID else { return }
-        performPaneAction(method: "pane.focus_direction", params: [
+        performAction(method: "pane.focus_direction", params: [
             "pane_id": paneID, "direction": direction
         ], followServerFocus: true)
     }
 
     func splitPane(_ direction: String) {
         guard let paneID = selectedPaneID, let workspaceID = selectedWorkspaceID else { return }
-        performPaneAction(method: "pane.split", params: [
+        performAction(method: "pane.split", params: [
             "workspace_id": workspaceID, "target_pane_id": paneID,
             "direction": direction, "focus": true
         ], followServerFocus: true)
@@ -655,7 +659,31 @@ final class HerdrStore: ObservableObject {
 
     func zoomPane() {
         guard let paneID = selectedPaneID else { return }
-        performPaneAction(method: "pane.zoom", params: ["pane_id": paneID], followServerFocus: false)
+        performAction(method: "pane.zoom", params: ["pane_id": paneID], followServerFocus: false)
+    }
+
+    func renameWorkspace(_ workspaceID: String, to label: String) {
+        performAction(method: "workspace.rename", params: [
+            "workspace_id": workspaceID, "label": label
+        ], followServerFocus: false)
+    }
+
+    func closeWorkspace(_ workspaceID: String) {
+        performAction(method: "workspace.close", params: ["workspace_id": workspaceID],
+                      followServerFocus: false)
+    }
+
+    func renameTab(_ tabID: String, to label: String) {
+        performAction(method: "tab.rename", params: ["tab_id": tabID, "label": label],
+                      followServerFocus: false)
+    }
+
+    func closeTab(_ tabID: String) {
+        performAction(method: "tab.close", params: ["tab_id": tabID], followServerFocus: false)
+    }
+
+    func closePane(_ paneID: String) {
+        performAction(method: "pane.close", params: ["pane_id": paneID], followServerFocus: false)
     }
 
     func reloadConfig() {
@@ -683,7 +711,7 @@ final class HerdrStore: ObservableObject {
         }
     }
 
-    private func performPaneAction(method: String, params: [String: Any], followServerFocus: Bool) {
+    private func performAction(method: String, params: [String: Any], followServerFocus: Bool) {
         guard isConnected else { return }
         let path = socketPath
         let currentGeneration = generation

@@ -3,6 +3,8 @@ import SwiftUI
 struct WorkspaceRepositoryView: View {
     let location: WorkspaceFileLocation?
     let refreshVersion: Int
+    let onChange: () -> Void
+    let onNewSpace: ((String, String) -> Void)?
 
     @State private var listing: WorkspaceRepositoryListing?
     @State private var error: String?
@@ -33,6 +35,21 @@ struct WorkspaceRepositoryView: View {
             }
             .padding(.horizontal, 11)
             .frame(height: 34)
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("Refresh", systemImage: "arrow.clockwise") { reloadVersion += 1 }
+                if let listing {
+                    Button("Add Worktree…", systemImage: "plus") { prepareAdd(listing) }
+                        .disabled(listing.branches.isEmpty)
+                }
+                if let location {
+                    Divider()
+                    Button("Copy Repository Path", systemImage: "doc.on.doc") { AppActions.copy(location.root) }
+                    if location.isLocal {
+                        Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.root) }
+                    }
+                }
+            }
             Divider()
             HStack(spacing: 2) {
                 tab("History", icon: "clock.arrow.circlepath", index: 0)
@@ -135,7 +152,13 @@ struct WorkspaceRepositoryView: View {
                 .padding(.horizontal, 11)
                 .padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .help(commit.id)
+                .contextMenu {
+                    Button("Copy Commit Hash", systemImage: "number") { AppActions.copy(commit.id) }
+                    Button("Copy Short Hash") { AppActions.copy(commit.shortHash) }
+                    Button("Copy Subject", systemImage: "text.quote") { AppActions.copy(commit.subject) }
+                }
             }
         }
     }
@@ -145,12 +168,12 @@ struct WorkspaceRepositoryView: View {
             heading("Local")
             let local = listing.branches.filter { !$0.isRemote }
             if local.isEmpty { hint("No local branches") }
-            ForEach(local) { branch in branchRow(branch) }
+            ForEach(local) { branch in branchRow(branch, listing: listing) }
 
             heading("Remote")
             let remote = listing.branches.filter(\.isRemote)
             if remote.isEmpty { hint("No remote branches") }
-            ForEach(remote) { branch in branchRow(branch) }
+            ForEach(remote) { branch in branchRow(branch, listing: listing) }
 
             HStack {
                 heading("Worktrees")
@@ -190,12 +213,34 @@ struct WorkspaceRepositoryView: View {
                 }
                 .padding(.horizontal, 11)
                 .frame(height: 35)
+                .contentShape(Rectangle())
                 .help(tree.path)
+                .contextMenu {
+                    if let onNewSpace, tree.path != location?.root, !tree.isBare {
+                        Button("Open as Space", systemImage: "square.stack") {
+                            onNewSpace(tree.path, tree.branch ?? (tree.path as NSString).lastPathComponent)
+                        }
+                        Divider()
+                    }
+                    Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(tree.path) }
+                    if let branch = tree.branch {
+                        Button("Copy Branch Name") { AppActions.copy(branch) }
+                    }
+                    if location?.isLocal == true {
+                        Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(tree.path) }
+                    }
+                    if tree.path != listing.root && !tree.isBare && !tree.isLocked && !tree.isPrunable {
+                        Divider()
+                        Button("Remove Worktree…", systemImage: "minus.circle", role: .destructive) {
+                            removing = tree
+                        }
+                    }
+                }
             }
         }
     }
 
-    private func branchRow(_ branch: WorkspaceBranch) -> some View {
+    private func branchRow(_ branch: WorkspaceBranch, listing: WorkspaceRepositoryListing) -> some View {
         HStack(spacing: 6) {
             Image(systemName: branch.isCurrent ? "checkmark.circle.fill" : "arrow.triangle.branch")
                 .font(.system(size: 10))
@@ -207,11 +252,23 @@ struct WorkspaceRepositoryView: View {
         .font(.system(size: 11))
         .padding(.horizontal, 11)
         .frame(height: 23)
+        .contentShape(Rectangle())
         .help(branch.upstream.isEmpty ? branch.id : "Tracks \(branch.upstream)")
+        .contextMenu {
+            if !branch.isRemote && !branch.isCurrent {
+                Button("Switch to Branch", systemImage: "arrow.triangle.swap") { switchTo(branch) }
+            }
+            Button("Add Worktree from Branch…", systemImage: "plus") { prepareAdd(listing, from: branch) }
+            Divider()
+            Button("Copy Branch Name", systemImage: "doc.on.doc") { AppActions.copy(branch.name) }
+            if !branch.upstream.isEmpty {
+                Button("Copy Upstream Name") { AppActions.copy(branch.upstream) }
+            }
+        }
     }
 
-    private func prepareAdd(_ listing: WorkspaceRepositoryListing) {
-        guard let branch = listing.branches.first(where: { !$0.isRemote && !$0.isCurrent })
+    private func prepareAdd(_ listing: WorkspaceRepositoryListing, from preferred: WorkspaceBranch? = nil) {
+        guard let branch = preferred ?? listing.branches.first(where: { !$0.isRemote && !$0.isCurrent })
             ?? listing.branches.first else { return }
         let newBranch = (branch.isCurrent || branch.isRemote)
             ? branch.name.split(separator: "/").last.map(String.init).map { $0 + "-worktree" } ?? "worktree"
@@ -249,6 +306,21 @@ struct WorkspaceRepositoryView: View {
             }.value
             switch result {
             case .success: reloadVersion += 1
+            case .failure(let failure): operationError = failure.localizedDescription
+            }
+        }
+    }
+
+    private func switchTo(_ branch: WorkspaceBranch) {
+        guard let location else { return }
+        Task {
+            let result = await Task.detached {
+                Result { try WorkspaceFiles.switchBranch(branch, at: location) }
+            }.value
+            switch result {
+            case .success:
+                reloadVersion += 1
+                onChange()
             case .failure(let failure): operationError = failure.localizedDescription
             }
         }
