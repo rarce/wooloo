@@ -80,6 +80,19 @@ struct WorkspaceCommit: Identifiable {
     let date: String
 }
 
+struct WorkspaceCommitFile: Identifiable {
+    let path: String
+    /// Source path when Git detected a rename or copy.
+    let originalPath: String?
+    /// Git's name-status letter: A, M, D, R, C, T.
+    let status: Character
+    /// Nil for binary files.
+    let additions: Int?
+    let deletions: Int?
+
+    var id: String { path }
+}
+
 struct WorkspaceBranch: Identifiable, Hashable {
     let id: String
     let name: String
@@ -340,6 +353,68 @@ enum WorkspaceFiles {
             else if field.hasPrefix("prunable") { prunable = true }
         }
         return WorkspaceRepositoryListing(commits: commits, branches: branches, worktrees: worktrees, root: root)
+    }
+
+    /// Files touched by a commit, compared with its first parent (or the empty tree for a root commit).
+    static func commitFiles(_ hash: String, at location: WorkspaceFileLocation) throws -> [WorkspaceCommitFile] {
+        try validateCommit(hash)
+        let base = ["diff-tree", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "-M", "-z"]
+        let statusData = try git(location, base + ["--name-status", hash, "--"], limit: 4_000_000)
+        let numstatData = try git(location, base + ["--numstat", hash, "--"], limit: 4_000_000)
+
+        var files: [WorkspaceCommitFile] = []
+        var fields = nulStrings(statusData)[...]
+        while let code = fields.popFirst(), let letter = code.first {
+            guard let first = fields.popFirst() else { break }
+            if letter == "R" || letter == "C", let second = fields.popFirst() {
+                files.append(WorkspaceCommitFile(path: second, originalPath: first, status: letter,
+                                                 additions: nil, deletions: nil))
+            } else {
+                files.append(WorkspaceCommitFile(path: first, originalPath: nil, status: letter,
+                                                 additions: nil, deletions: nil))
+            }
+        }
+
+        // numstat -z: "added\tdeleted\tpath" or, for renames, "added\tdeleted\t" followed by old and new paths.
+        var counts: [String: (Int?, Int?)] = [:]
+        var stats = nulStrings(numstatData)[...]
+        while let record = stats.popFirst() {
+            let parts = record.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 3 else { continue }
+            var path = parts[2]
+            if path.isEmpty {
+                _ = stats.popFirst()
+                guard let destination = stats.popFirst() else { break }
+                path = destination
+            }
+            counts[path] = (Int(parts[0]), Int(parts[1]))
+        }
+        return files.map { file in
+            let count = counts[file.path]
+            return WorkspaceCommitFile(path: file.path, originalPath: file.originalPath, status: file.status,
+                                       additions: count?.0, deletions: count?.1)
+        }
+    }
+
+    static func commitDiff(_ hash: String, path: String, originalPath: String?,
+                           at location: WorkspaceFileLocation) throws -> String {
+        try validateCommit(hash)
+        try validateRelativePath(path)
+        var paths = [path]
+        if let originalPath {
+            try validateRelativePath(originalPath)
+            paths.insert(originalPath, at: 0)
+        }
+        let data = try git(location, ["diff-tree", "-p", "-r", "--root", "-m", "--first-parent", "-M",
+                                      "--no-commit-id", hash, "--"] + paths, limit: maximumDiffBytes)
+        let text = String(decoding: data, as: UTF8.self)
+        return text.isEmpty ? "No textual changes" : text
+    }
+
+    private static func validateCommit(_ hash: String) throws {
+        guard (4...64).contains(hash.count), hash.allSatisfy(\.isHexDigit) else {
+            throw WorkspaceFileError.message("Invalid commit")
+        }
     }
 
     static func addWorktree(at location: WorkspaceFileLocation, path: String,

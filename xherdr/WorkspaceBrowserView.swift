@@ -13,6 +13,7 @@ struct WorkspaceBrowserView: View {
     let onLocationChange: (WorkspaceFileLocation?) -> Void
     let onFindInFolder: (WorkspaceFileLocation, String) -> Void
     let onOpenWorktree: (String, String) -> Void
+    let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
 
     @State private var machines: [HerdrMachineProfile] = []
     @State private var selectedMachineID = "local"
@@ -63,7 +64,8 @@ struct WorkspaceBrowserView: View {
                 .frame(minHeight: 190)
             WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion + gitVersion,
                                     onChange: loadListing,
-                                    onNewSpace: location?.isLocal == true ? onNewSpace : nil)
+                                    onNewSpace: location?.isLocal == true ? onNewSpace : nil,
+                                    onOpenCommitFile: onOpenCommitFile)
                 .frame(minHeight: 160)
         }
         .background(theme.sidebarBackground)

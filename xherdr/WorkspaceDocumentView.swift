@@ -5,8 +5,16 @@ import CodeEditLanguages
 enum WorkspaceDocumentKind: String {
     case file
     case change
+    /// A file's diff within a past commit.
+    case commit
 
-    var icon: String { self == .file ? "doc.text" : "arrow.left.arrow.right" }
+    var icon: String {
+        switch self {
+        case .file: return "doc.text"
+        case .change: return "arrow.left.arrow.right"
+        case .commit: return "clock.arrow.circlepath"
+        }
+    }
 }
 
 /// Where to put the cursor when a document opens, e.g. at a search match.
@@ -21,6 +29,10 @@ struct WorkspaceDocument: Identifiable {
     let location: WorkspaceFileLocation
     let path: String
     let kind: WorkspaceDocumentKind
+    /// Full hash for `.commit` documents.
+    var commit: String?
+    /// Pre-rename path for `.commit` documents.
+    var originalPath: String?
     var text = ""
     var savedText = ""
     var version: String?
@@ -33,9 +45,12 @@ struct WorkspaceDocument: Identifiable {
     /// Markdown files open as a rendered preview; a reveal (e.g. a search match) shows the source.
     var markdownMode: MarkdownDisplayMode = .preview
 
-    var id: String { "\(location.identity)|\(kind.rawValue)|\(path)" }
+    var id: String { "\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)" }
     var isDirty: Bool { kind == .file && text != savedText }
-    var title: String { (path as NSString).lastPathComponent }
+    var title: String {
+        let name = (path as NSString).lastPathComponent
+        return commit.map { "\(name) @ \($0.prefix(7))" } ?? name
+    }
 }
 
 struct WorkspaceDocumentView: View {
@@ -64,6 +79,11 @@ struct WorkspaceDocumentView: View {
                 Text(document.path)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let commit = document.commit {
+                    Text(commit.prefix(7))
+                        .foregroundStyle(theme.accent)
+                        .help(commit)
+                }
                 Spacer()
                 Text("\(document.location.machineLabel) · \(document.location.workspaceLabel)")
                     .lineLimit(1)
@@ -139,7 +159,8 @@ struct WorkspaceDocumentView: View {
             }
             Divider()
             HStack {
-                Text(document.kind == .file ? (document.isDirty ? "Unsaved changes" : "UTF-8 text") : "Git diff")
+                Text(document.kind == .file ? (document.isDirty ? "Unsaved changes" : "UTF-8 text")
+                     : (document.kind == .commit ? "Commit diff" : "Git diff"))
                 Spacer()
                 if document.kind == .file, let cursor = cursorPositions.first {
                     Text("Ln \(cursor.line), Col \(cursor.column)")

@@ -6,6 +6,7 @@ struct WorkspaceRepositoryView: View {
     let refreshVersion: Int
     let onChange: () -> Void
     let onNewSpace: ((String, String) -> Void)?
+    let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
 
     @State private var listing: WorkspaceRepositoryListing?
     @State private var error: String?
@@ -15,6 +16,10 @@ struct WorkspaceRepositoryView: View {
     @State private var addRequest: AddWorktreeRequest?
     @State private var removing: WorkspaceWorktree?
     @State private var operationError: String?
+    @State private var selectedCommit: WorkspaceCommit?
+    @State private var commitFiles: [WorkspaceCommitFile]?
+    @State private var commitFilesError: String?
+    @State private var selectedCommitFile: String?
 
     private var identity: String {
         "\(location?.identity ?? "none")|\(refreshVersion)|\(reloadVersion)"
@@ -67,12 +72,14 @@ struct WorkspaceRepositoryView: View {
             } else if let listing {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        if selectedTab == 0 { history(listing) }
+                        if selectedTab == 0 {
+                            if let selectedCommit { commitDetail(selectedCommit) } else { history(listing) }
+                        }
                         else { branches(listing) }
                     }
                     .padding(.vertical, 4)
                 }
-                .id(selectedTab)
+                .id("\(selectedTab)|\(selectedCommit?.id ?? "")")
             } else {
                 hint("Select a Space to browse its repository")
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -80,6 +87,8 @@ struct WorkspaceRepositoryView: View {
         }
         .background(theme.sidebarBackground)
         .task(id: identity) { load() }
+        .task(id: "\(location?.identity ?? "")|\(selectedCommit?.id ?? "")") { await loadCommitFiles() }
+        .onChange(of: location?.identity) { _, _ in selectedCommit = nil }
         .sheet(item: $addRequest) { request in
             AddWorktreeSheet(request: request) { branch, path, newBranch in
                 add(branch: branch, path: path, newBranch: newBranch)
@@ -139,31 +148,170 @@ struct WorkspaceRepositoryView: View {
         Group {
             if listing.commits.isEmpty { hint("No commits") }
             ForEach(listing.commits) { commit in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(commit.subject)
-                        .font(.system(size: 11))
-                        .lineLimit(2)
-                    HStack(spacing: 5) {
-                        Text(commit.shortHash).foregroundStyle(theme.accent)
-                        Text("·")
-                        Text(commit.author).lineLimit(1)
-                        Spacer(minLength: 0)
-                        Text(commit.date)
-                    }
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                Button {
+                    selectedCommitFile = nil
+                    selectedCommit = commit
+                } label: {
+                    commitSummary(commit)
                 }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
                 .help(commit.id)
-                .contextMenu {
-                    Button("Copy Commit Hash", systemImage: "number") { AppActions.copy(commit.id) }
-                    Button("Copy Short Hash") { AppActions.copy(commit.shortHash) }
-                    Button("Copy Subject", systemImage: "text.quote") { AppActions.copy(commit.subject) }
+                .contextMenu { commitActions(commit) }
+            }
+        }
+    }
+
+    private func commitSummary(_ commit: WorkspaceCommit) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(commit.subject)
+                .font(.system(size: 11))
+                .lineLimit(2)
+            HStack(spacing: 5) {
+                Text(commit.shortHash).foregroundStyle(theme.accent)
+                Text("·")
+                Text(commit.author).lineLimit(1)
+                Spacer(minLength: 0)
+                Text(commit.date)
+            }
+            .font(.system(size: 9))
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func commitActions(_ commit: WorkspaceCommit) -> some View {
+        Button("Copy Commit Hash", systemImage: "number") { AppActions.copy(commit.id) }
+        Button("Copy Short Hash") { AppActions.copy(commit.shortHash) }
+        Button("Copy Subject", systemImage: "text.quote") { AppActions.copy(commit.subject) }
+    }
+
+    private func commitDetail(_ commit: WorkspaceCommit) -> some View {
+        Group {
+            Button {
+                selectedCommit = nil
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.left").font(.system(size: 9, weight: .semibold))
+                    Text("History")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 11)
+                .frame(height: 22)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Back to history")
+
+            commitSummary(commit)
+                .help(commit.id)
+                .contextMenu { commitActions(commit) }
+            Divider().padding(.vertical, 2)
+
+            if let commitFilesError {
+                hint(commitFilesError).foregroundStyle(theme.warning)
+            } else if let commitFiles {
+                let added = commitFiles.compactMap(\.additions).reduce(0, +)
+                let removed = commitFiles.compactMap(\.deletions).reduce(0, +)
+                HStack(spacing: 6) {
+                    Text(commitFiles.count == 1 ? "1 file" : "\(commitFiles.count) files")
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    lineCounts(added, removed)
+                }
+                .font(.system(size: 10))
+                .padding(.horizontal, 11)
+                .frame(height: 20)
+                if commitFiles.isEmpty { hint("No file changes") }
+                ForEach(commitFiles) { file in commitFileRow(file, commit: commit) }
+            } else {
+                ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity)
+                    .padding(10)
+            }
+        }
+    }
+
+    private func commitFileRow(_ file: WorkspaceCommitFile, commit: WorkspaceCommit) -> some View {
+        let kind = commitFileKind(file.status)
+        let name = (file.path as NSString).lastPathComponent
+        let directory = (file.path as NSString).deletingLastPathComponent
+        return Button {
+            guard let location else { return }
+            selectedCommitFile = file.path
+            onOpenCommitFile(location, commit, file)
+        } label: {
+            HStack(spacing: 6) {
+                Text(String(file.status))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(theme.vcs(kind))
+                    .frame(width: 11)
+                Text(name)
+                    .foregroundStyle(theme.vcs(kind))
+                    .strikethrough(kind == .deleted)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if !directory.isEmpty {
+                    Text(directory)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+                Spacer(minLength: 4)
+                if let additions = file.additions, let deletions = file.deletions {
+                    lineCounts(additions, deletions)
+                } else {
+                    Text("binary").font(.system(size: 9)).foregroundStyle(.tertiary)
                 }
             }
+            .font(.system(size: 11))
+            .padding(.horizontal, 11)
+            .frame(height: 23)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selectedCommitFile == file.path ? Color.primary.opacity(0.12) : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(file.originalPath.map { "\($0) → \(file.path)" } ?? file.path)
+        .contextMenu {
+            Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(file.path) }
+        }
+    }
+
+    private func lineCounts(_ additions: Int, _ deletions: Int) -> some View {
+        HStack(spacing: 4) {
+            Text("+\(additions)").foregroundStyle(theme.diffAdded)
+            Text("−\(deletions)").foregroundStyle(theme.diffRemoved)
+        }
+        .font(.system(size: 10, design: .monospaced))
+    }
+
+    private func commitFileKind(_ status: Character) -> WorkspaceFileChange.Kind {
+        switch status {
+        case "A": return .added
+        case "D": return .deleted
+        case "R", "C": return .renamed
+        default: return .modified
+        }
+    }
+
+    private func loadCommitFiles() async {
+        commitFiles = nil
+        commitFilesError = nil
+        guard let location, let hash = selectedCommit?.id else { return }
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try WorkspaceFiles.commitFiles(hash, at: location) }
+        }.value
+        guard selectedCommit?.id == hash, self.location?.identity == location.identity else { return }
+        switch result {
+        case .success(let files): commitFiles = files
+        case .failure(let failure): commitFilesError = failure.localizedDescription
         }
     }
 

@@ -142,7 +142,11 @@ struct ContentView: View {
                                          search.showsFilters = !path.isEmpty
                                          openSearch(replace: false)
                                      },
-                                     onOpenWorktree: openWorktree)
+                                     onOpenWorktree: openWorktree,
+                                     onOpenCommitFile: { location, commit, file in
+                                         openDocument(.commit, path: file.path, at: location,
+                                                      commit: commit.id, originalPath: file.originalPath)
+                                     })
                     .frame(width: filesSidebarWidth)
             }
         }
@@ -708,9 +712,12 @@ struct ContentView: View {
     }
 
     private func openDocument(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
-                              reveal: WorkspaceDocumentReveal? = nil) {
+                              reveal: WorkspaceDocumentReveal? = nil,
+                              commit: String? = nil, originalPath: String? = nil) {
         var document = WorkspaceDocument(location: location, path: path, kind: kind)
         document.reveal = reveal
+        document.commit = commit
+        document.originalPath = originalPath
         if let index = documents.firstIndex(where: { $0.id == document.id }) {
             if let reveal { documents[index].reveal = reveal }
             activeDocumentID = document.id
@@ -724,9 +731,14 @@ struct ContentView: View {
     private func loadDocument(_ id: String) {
         guard let document = documents.first(where: { $0.id == id }) else { return }
         let (kind, path, location) = (document.kind, document.path, document.location)
+        let (commit, originalPath) = (document.commit, document.originalPath)
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { () throws -> WorkspaceFileContents in
+                    if kind == .commit, let commit {
+                        return WorkspaceFileContents(text: try WorkspaceFiles.commitDiff(
+                            commit, path: path, originalPath: originalPath, at: location), version: "")
+                    }
                     if kind == .change {
                         return WorkspaceFileContents(text: try WorkspaceFiles.diff(path, at: location), version: "")
                     }
