@@ -829,8 +829,11 @@ enum WorkspaceFiles {
         }
         if let port { args += ["-p", port] }
         args += [target, command]
-        return try run("/usr/bin/ssh", args, input: input, limit: limit, timeout: timeout, label: label, remote: true)
+        return try run(sshExecutable, args, input: input, limit: limit, timeout: timeout, label: label, remote: true)
     }
+
+    /// Tests replace it with a script that runs the remote command locally.
+    static var sshExecutable = "/usr/bin/ssh"
 
     /// Where SSH keeps the sockets of shared connections: a short path, since socket paths are
     /// limited to about 100 bytes, in a directory only this user can use. Nil turns sharing off.
