@@ -1,0 +1,303 @@
+import XCTest
+@testable import xherdr
+
+/// `WorkspaceFiles` against real Git repositories and files in a local sandbox.
+final class WorkspaceFilesIntegrationTests: XCTestCase {
+    private var sandbox: WorkspaceGitSandbox!
+
+    override func setUpWithError() throws {
+        sandbox = try WorkspaceGitSandbox()
+    }
+
+    override func tearDown() {
+        sandbox.tearDown()
+    }
+
+    private func changes(_ location: WorkspaceFileLocation) throws -> [String: String] {
+        try WorkspaceFiles.listing(at: location).changes.reduce(into: [:]) {
+            $0[$1.path] = String([$1.indexStatus, $1.worktreeStatus])
+        }
+    }
+
+    // MARK: Listing
+
+    func testListingShowsTrackedAndUntrackedFilesWithTheirChanges() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "one\n", "dir/b.txt": "b\n"])
+        try sandbox.sh("echo two >> a.txt && git add a.txt && echo three >> a.txt && echo new > notes.md && rm dir/b.txt",
+                       in: "repo")
+        let listing = try WorkspaceFiles.listing(at: repo)
+        XCTAssertTrue(listing.hasGit)
+        XCTAssertEqual(listing.files, ["a.txt", "dir/b.txt", "notes.md"])
+        XCTAssertEqual(listing.totalFiles, 3)
+        XCTAssertEqual(listing.changes.map(\.path), ["a.txt", "dir/b.txt", "notes.md"])
+        XCTAssertEqual(listing.changes.map(\.kind), [.modified, .deleted, .untracked])
+        XCTAssertEqual(listing.changes[0].stageState, .partial)
+    }
+
+    func testListingWithoutGitSkipsLinksOutsideTheFolder() throws {
+        try sandbox.write(["plain/a.txt": "a", "plain/sub/c.txt": "c"], in: ".")
+        try sandbox.sh("ln -s /etc/hosts outside", in: "plain")
+        let listing = try WorkspaceFiles.listing(at: sandbox.location("plain"))
+        XCTAssertFalse(listing.hasGit)
+        XCTAssertEqual(listing.files, ["a.txt", "sub/c.txt"])
+        XCTAssertTrue(listing.changes.isEmpty)
+    }
+
+    // MARK: Staging and commits
+
+    func testStageAndUnstageFilesAndFolders() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "dir/b.txt": "b\n", "dir/c.txt": "c\n"])
+        try sandbox.sh("echo x >> a.txt && echo x >> dir/b.txt && echo x >> dir/c.txt", in: "repo")
+
+        try WorkspaceFiles.stage("dir", at: repo)
+        XCTAssertEqual(try changes(repo), ["a.txt": " M", "dir/b.txt": "M ", "dir/c.txt": "M "])
+        try WorkspaceFiles.unstage("", at: repo)
+        XCTAssertEqual(try changes(repo), ["a.txt": " M", "dir/b.txt": " M", "dir/c.txt": " M"])
+        try WorkspaceFiles.stage("", at: repo)
+        XCTAssertEqual(try changes(repo), ["a.txt": "M ", "dir/b.txt": "M ", "dir/c.txt": "M "])
+
+        XCTAssertThrowsError(try WorkspaceFiles.stage("../outside", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.stage("/etc", at: repo))
+    }
+
+    func testCommitModesChooseWhatIsCommitted() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("echo more >> a.txt && echo new > new.txt", in: "repo")
+
+        XCTAssertThrowsError(try WorkspaceFiles.commit(message: "  \n", mode: .staged, at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.commit(message: "Nothing staged", mode: .staged, at: repo))
+
+        try WorkspaceFiles.commit(message: "Tracked\n\nBody text", mode: .tracked, at: repo)
+        XCTAssertEqual(try changes(repo), ["new.txt": "??"])
+        XCTAssertEqual(try WorkspaceFiles.repository(at: repo).commits.first?.subject, "Tracked")
+
+        try WorkspaceFiles.commit(message: "All", mode: .all, at: repo)
+        XCTAssertEqual(try changes(repo), [:])
+
+        try WorkspaceFiles.commit(message: "", mode: .amend, at: repo)
+        var commits = try WorkspaceFiles.repository(at: repo).commits
+        XCTAssertEqual(commits.map(\.subject), ["All", "Tracked", "Initial"])
+
+        try WorkspaceFiles.commit(message: "Everything", mode: .amend, at: repo)
+        commits = try WorkspaceFiles.repository(at: repo).commits
+        XCTAssertEqual(commits.map(\.subject), ["Everything", "Tracked", "Initial"])
+    }
+
+    // MARK: Reading and saving
+
+    func testSaveReplacesTheFileAndKeepsItsPermissions() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("chmod 755 a.txt", in: "repo")
+        let file = try WorkspaceFiles.read("a.txt", at: repo)
+        XCTAssertEqual(file.text, "one\n")
+        XCTAssertEqual(file.version, WorkspaceFiles.gitBlobHash(Data("one\n".utf8)))
+
+        let version = try WorkspaceFiles.save("two\n", path: "a.txt", expectedVersion: file.version, at: repo)
+        XCTAssertEqual(version, WorkspaceFiles.gitBlobHash(Data("two\n".utf8)))
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "two\n")
+        let attributes = try FileManager.default.attributesOfItem(atPath: sandbox.path("repo/a.txt"))
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o755)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: sandbox.path("repo"))
+            .filter { $0.hasPrefix(".xherdr-") }
+        XCTAssertEqual(leftovers, [])
+    }
+
+    func testSaveRejectsAFileChangedSinceItWasRead() throws {
+        let repo = try sandbox.repository("repo")
+        let file = try WorkspaceFiles.read("a.txt", at: repo)
+        try sandbox.write(["a.txt": "changed elsewhere\n"], in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.save("mine\n", path: "a.txt", expectedVersion: file.version, at: repo)) {
+            XCTAssertTrue($0.localizedDescription.contains("changed on disk"))
+        }
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "changed elsewhere\n")
+
+        let tooLarge = String(repeating: "x", count: WorkspaceFiles.maximumFileBytes + 1)
+        let current = try WorkspaceFiles.read("a.txt", at: repo).version
+        XCTAssertThrowsError(try WorkspaceFiles.save(tooLarge, path: "a.txt", expectedVersion: current, at: repo))
+    }
+
+    func testReadRefusesFilesItCannotEditSafely() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "dir/b.txt": "b\n"])
+        try sandbox.sh("""
+            printf 'a\\000b' > binary.dat
+            printf '\\377\\376' > latin.txt
+            head -c \(WorkspaceFiles.maximumFileBytes + 1) /dev/zero | tr '\\000' x > large.txt
+            ln -s /etc/hosts escape.txt
+            ln -s a.txt inside.txt
+            """, in: "repo")
+        for path in ["binary.dat", "latin.txt", "large.txt", "escape.txt", "dir", "missing.txt", "../repo/a.txt", "/etc/hosts"] {
+            XCTAssertThrowsError(try WorkspaceFiles.read(path, at: repo), path)
+        }
+        XCTAssertEqual(try WorkspaceFiles.read("inside.txt", at: repo).text, "a\n")
+        XCTAssertThrowsError(try WorkspaceFiles.save("x", path: "escape.txt",
+                                                     expectedVersion: WorkspaceFiles.gitBlobHash(Data()), at: repo))
+    }
+
+    // MARK: Diffs
+
+    func testFileWithStagedAndUnstagedChangesHasThreeDiffs() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "1\n2\n3\n"])
+        try sandbox.sh("printf 'ONE\\n2\\n3\\n' > a.txt && git add a.txt && printf 'ONE\\n2\\nTHREE\\n' > a.txt", in: "repo")
+
+        let patches = try WorkspaceFiles.diff("a.txt", at: repo)
+        XCTAssertEqual(Set(patches.keys), [.all, .staged, .unstaged])
+        XCTAssertTrue(patches[.staged]!.contains("+ONE"))
+        XCTAssertFalse(patches[.staged]!.contains("+THREE"))
+        XCTAssertTrue(patches[.unstaged]!.contains("+THREE"))
+        XCTAssertFalse(patches[.unstaged]!.contains("+ONE"))
+        XCTAssertTrue(patches[.all]!.contains("+ONE") && patches[.all]!.contains("+THREE"))
+
+        let staged = WorkspaceFiles.diffSides("a.txt", originalPath: nil, commit: nil, scope: .staged, at: repo)
+        XCTAssertEqual(staged.old, "1\n2\n3\n")
+        XCTAssertEqual(staged.new, "ONE\n2\n3\n")
+        let unstaged = WorkspaceFiles.diffSides("a.txt", originalPath: nil, commit: nil, scope: .unstaged, at: repo)
+        XCTAssertEqual(unstaged.old, "ONE\n2\n3\n")
+        XCTAssertEqual(unstaged.new, "ONE\n2\nTHREE\n")
+    }
+
+    func testDiffBeforeTheFirstCommitComparesWithAnEmptyTree() throws {
+        try sandbox.sh("git init -q -b main fresh")
+        try sandbox.configure("fresh")
+        try sandbox.sh("echo a > a.txt && git add a.txt && echo b > a.txt", in: "fresh")
+        let patches = try WorkspaceFiles.diff("a.txt", at: sandbox.location("fresh"))
+        XCTAssertEqual(Set(patches.keys), [.all, .staged, .unstaged])
+        XCTAssertTrue(patches[.all]!.contains("+b"))
+        XCTAssertFalse(patches[.all]!.contains("+a"))
+    }
+
+    /// An untracked file has no Git diff; the app builds one that adds every line.
+    func testUntrackedFileDiffAddsEachLine() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.write(["new.txt": "x\ny\n", "partial.txt": "last"], in: "repo")
+
+        let lines = ParsedDiff(try WorkspaceFiles.diff("new.txt", at: repo)[.all]!).files[0].hunks[0].lines
+        XCTAssertEqual(lines.map(\.text), ["x", "y"])
+        XCTAssertEqual(lines.map(\.newNumber), [1, 2])
+
+        let partial = ParsedDiff(try WorkspaceFiles.diff("partial.txt", at: repo)[.all]!).files[0].hunks[0].lines
+        XCTAssertEqual(partial.map(\.text), ["last"])
+        XCTAssertTrue(partial[0].missingNewline)
+    }
+
+    // MARK: History
+
+    func testRepositoryHistoryAndCommitFiles() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "one\n", "old name.txt": "same text\nfor rename\n"])
+        try sandbox.sh("git mv 'old name.txt' 'new name.txt' && echo two >> a.txt && git commit -qam Second && git branch feature",
+                       in: "repo")
+
+        let listing = try WorkspaceFiles.repository(at: repo)
+        XCTAssertEqual(listing.root, sandbox.path("repo"))
+        XCTAssertEqual(listing.commits.map(\.subject), ["Second", "Initial"])
+        XCTAssertEqual(listing.branches.map(\.name), ["feature", "main"])
+        XCTAssertEqual(listing.branches.first { $0.isCurrent }?.name, "main")
+        XCTAssertEqual(listing.worktrees.map(\.path), [sandbox.path("repo")])
+
+        let head = listing.commits[0].id
+        let files = try WorkspaceFiles.commitFiles(head, at: repo)
+        XCTAssertEqual(files.map(\.path), ["a.txt", "new name.txt"])
+        XCTAssertEqual(files.map(\.status), ["M", "R"])
+        XCTAssertEqual(files[1].originalPath, "old name.txt")
+        XCTAssertEqual(files[0].additions, 1)
+
+        let rename = try WorkspaceFiles.commitDiff(head, path: "new name.txt", originalPath: "old name.txt", at: repo)
+        XCTAssertTrue(rename.contains("rename from old name.txt"))
+        let sides = WorkspaceFiles.diffSides("a.txt", originalPath: nil, commit: head, scope: .all, at: repo)
+        XCTAssertEqual(sides.old, "one\n")
+        XCTAssertEqual(sides.new, "one\ntwo\n")
+
+        // The first commit has no parent: its files are all added.
+        let root = listing.commits[1].id
+        XCTAssertEqual(try WorkspaceFiles.commitFiles(root, at: repo).map(\.status), ["A", "A"])
+        XCTAssertNil(WorkspaceFiles.diffSides("a.txt", originalPath: nil, commit: root, scope: .all, at: repo).old)
+
+        XCTAssertThrowsError(try WorkspaceFiles.commitFiles("HEAD", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.commitDiff(head, path: "../a.txt", originalPath: nil, at: repo))
+    }
+
+    // MARK: Branches and worktrees
+
+    func testSwitchBranch() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("git branch feature", in: "repo")
+        let branches = try WorkspaceFiles.repository(at: repo).branches
+        let feature = try XCTUnwrap(branches.first { $0.name == "feature" })
+        let main = try XCTUnwrap(branches.first { $0.name == "main" })
+
+        XCTAssertThrowsError(try WorkspaceFiles.switchBranch(main, at: repo), "main is already current")
+        try WorkspaceFiles.switchBranch(feature, at: repo)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).branch, "feature")
+        let remote = WorkspaceBranch(id: "refs/remotes/origin/x", name: "origin/x", isRemote: true, isCurrent: false, upstream: "")
+        XCTAssertThrowsError(try WorkspaceFiles.switchBranch(remote, at: repo))
+    }
+
+    func testWorktreesAreAddedAndOnlyCleanOnesRemoved() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("git branch feature", in: "repo")
+        let branches = try WorkspaceFiles.repository(at: repo).branches
+        let feature = try XCTUnwrap(branches.first { $0.name == "feature" })
+        let main = try XCTUnwrap(branches.first { $0.name == "main" })
+        let remote = WorkspaceBranch(id: "refs/remotes/origin/main", name: "origin/main", isRemote: true, isCurrent: false, upstream: "")
+
+        XCTAssertThrowsError(try WorkspaceFiles.addWorktree(at: repo, path: "relative", branch: feature, newBranch: nil))
+        XCTAssertThrowsError(try WorkspaceFiles.addWorktree(at: repo, path: sandbox.path("r"), branch: remote, newBranch: nil))
+        XCTAssertThrowsError(try WorkspaceFiles.addWorktree(at: repo, path: sandbox.path("x"), branch: main, newBranch: "-x"))
+
+        let dirty = sandbox.path("dirty"), clean = sandbox.path("clean")
+        try WorkspaceFiles.addWorktree(at: repo, path: dirty, branch: feature, newBranch: nil)
+        try WorkspaceFiles.addWorktree(at: repo, path: clean, branch: main, newBranch: "topic")
+        // Git lists linked worktrees in directory order, so compare without order.
+        func worktreeBranches() throws -> [String: String?] {
+            try WorkspaceFiles.repository(at: repo).worktrees.reduce(into: [:]) { $0.updateValue($1.branch, forKey: $1.path) }
+        }
+        XCTAssertEqual(try worktreeBranches(), [sandbox.path("repo"): "main", dirty: "feature", clean: "topic"])
+
+        // Git's own check refuses to remove a worktree with changes or untracked files.
+        try sandbox.sh("echo edit >> a.txt", in: "dirty")
+        XCTAssertThrowsError(try WorkspaceFiles.removeWorktree(at: repo, path: dirty))
+        try sandbox.sh("git checkout -q a.txt && echo new > untracked.txt", in: "dirty")
+        XCTAssertThrowsError(try WorkspaceFiles.removeWorktree(at: repo, path: dirty))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dirty + "/untracked.txt"))
+
+        try sandbox.sh("rm untracked.txt && git worktree lock .", in: "dirty")
+        XCTAssertThrowsError(try WorkspaceFiles.removeWorktree(at: repo, path: dirty), "locked")
+        XCTAssertThrowsError(try WorkspaceFiles.removeWorktree(at: repo, path: sandbox.path("repo")), "main worktree")
+        XCTAssertThrowsError(try WorkspaceFiles.removeWorktree(at: repo, path: sandbox.path("unknown")))
+
+        try WorkspaceFiles.removeWorktree(at: repo, path: clean)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: clean))
+        XCTAssertEqual(try worktreeBranches(), [sandbox.path("repo"): "main", dirty: "feature"])
+    }
+
+    func testPublishPushFetchAndPullWithARemote() throws {
+        try sandbox.sh("git init -q --bare -b main origin.git")
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("git remote add origin ../origin.git", in: "repo")
+
+        var status = try WorkspaceFiles.branchStatus(at: repo)
+        XCTAssertEqual(status.branch, "main")
+        XCTAssertNil(status.upstream)
+        XCTAssertEqual(status.remotes, ["origin"])
+
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.publish(remote: "--mirror", branch: "main"), at: repo))
+        try WorkspaceFiles.sync(.publish(remote: "origin", branch: "main"), at: repo)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).upstream, "origin/main")
+
+        try sandbox.sh("echo local >> a.txt && git commit -qam Local", in: "repo")
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).ahead, 1)
+        try WorkspaceFiles.sync(.push, at: repo)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).ahead, 0)
+
+        try sandbox.sh("git clone -q origin.git other")
+        try sandbox.configure("other")
+        try sandbox.sh("echo other > b.txt && git add b.txt && git commit -qm Other && git push -q", in: "other")
+        try WorkspaceFiles.sync(.fetch, at: repo)
+        status = try WorkspaceFiles.branchStatus(at: repo)
+        XCTAssertEqual(status.behind, 1)
+        XCTAssertEqual(status.ahead, 0)
+
+        try WorkspaceFiles.sync(.pull, at: repo)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).behind, 0)
+        XCTAssertEqual(try sandbox.read("b.txt", in: "repo"), "other\n")
+    }
+}

@@ -50,6 +50,9 @@
 		C30000000000000000000016 /* ParsedDiffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000017 /* ParsedDiffTests.swift */; };
 		C30000000000000000000018 /* WorkspaceSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000019 /* WorkspaceSearchTests.swift */; };
 		C3000000000000000000001A /* HerdrSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000001B /* HerdrSnapshotTests.swift */; };
+		C30000000000000000000020 /* WorkspaceGitSandbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000021 /* WorkspaceGitSandbox.swift */; };
+		C30000000000000000000022 /* WorkspaceFilesIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000023 /* WorkspaceFilesIntegrationTests.swift */; };
+		C30000000000000000000024 /* WorkspaceSearchIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000025 /* WorkspaceSearchIntegrationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -104,6 +107,9 @@
 		C30000000000000000000017 /* ParsedDiffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParsedDiffTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000019 /* WorkspaceSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearchTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000001B /* HerdrSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSnapshotTests.swift; sourceTree = "<group>"; };
+		C30000000000000000000021 /* WorkspaceGitSandbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitSandbox.swift; sourceTree = "<group>"; };
+		C30000000000000000000023 /* WorkspaceFilesIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceFilesIntegrationTests.swift; sourceTree = "<group>"; };
+		C30000000000000000000025 /* WorkspaceSearchIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearchIntegrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -174,6 +180,9 @@
 				C30000000000000000000017 /* ParsedDiffTests.swift */,
 				C30000000000000000000019 /* WorkspaceSearchTests.swift */,
 				C3000000000000000000001B /* HerdrSnapshotTests.swift */,
+				C30000000000000000000021 /* WorkspaceGitSandbox.swift */,
+				C30000000000000000000023 /* WorkspaceFilesIntegrationTests.swift */,
+				C30000000000000000000025 /* WorkspaceSearchIntegrationTests.swift */,
 			);
 			path = xherdrTests;
 			sourceTree = "<group>";
@@ -333,6 +342,9 @@
 				C30000000000000000000016 /* ParsedDiffTests.swift in Sources */,
 				C30000000000000000000018 /* WorkspaceSearchTests.swift in Sources */,
 				C3000000000000000000001A /* HerdrSnapshotTests.swift in Sources */,
+				C30000000000000000000020 /* WorkspaceGitSandbox.swift in Sources */,
+				C30000000000000000000022 /* WorkspaceFilesIntegrationTests.swift in Sources */,
+				C30000000000000000000024 /* WorkspaceSearchIntegrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
