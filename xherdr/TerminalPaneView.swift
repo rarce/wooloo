@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+private struct RenderedTerminalSurface {
+    let text: NSAttributedString
+    /// UTF-16 offsets for every cell boundary, including the end of each row.
+    let cellOffsets: [Int]
+    let width: Int
+    let height: Int
+}
+
 /// A small AppKit input surface for Herdr's rendered pane snapshot. Herdr still
 /// owns the PTY; this view only displays its text and forwards keyboard input.
 struct TerminalPaneView: NSViewRepresentable {
@@ -39,6 +47,10 @@ struct TerminalPaneView: NSViewRepresentable {
         view.isRichText = false
         view.isEditable = true
         view.isSelectable = true
+        view.selectedTextAttributes = [
+            .backgroundColor: NSColor.selectedTextBackgroundColor,
+            .foregroundColor: NSColor.selectedTextColor
+        ]
         view.drawsBackground = false
         view.textColor = NSColor(red: 0.88, green: 0.91, blue: 0.93, alpha: 1)
         view.font = Self.terminalFont
@@ -67,27 +79,33 @@ struct TerminalPaneView: NSViewRepresentable {
         if splitsChanged { scrollView.window?.invalidateCursorRects(for: view) }
         if let surface {
             guard view.surfaceRevision != surface.revision || view.surfaceBootID != surface.bootID else { return }
+            if view.surfaceBootID != nil && view.surfaceBootID != surface.bootID {
+                view.clearTerminalSelection()
+            }
             view.surfaceRevision = surface.revision
             view.surfaceBootID = surface.bootID
-            view.textStorage?.setAttributedString(Self.render(surface))
+            view.applySurfaceText(Self.render(surface))
             return
         }
         view.surfaceRevision = nil
         guard view.string != text else { return }
         let visible = scrollView.contentView.bounds
         let wasAtBottom = visible.maxY >= view.bounds.maxY - 20
-        view.string = text
+        view.applyFallbackText(text)
         if wasAtBottom {
             view.scrollRangeToVisible(NSRange(location: (text as NSString).length, length: 0))
         }
     }
 
-    private static func render(_ surface: HerdrSurface) -> NSAttributedString {
+    private static func render(_ surface: HerdrSurface) -> RenderedTerminalSurface {
         let output = NSMutableAttributedString(string: "")
+        var cellOffsets: [Int] = []
+        cellOffsets.reserveCapacity(surface.height * (surface.width + 1))
         let font = terminalFont
         let boldFont = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
         for y in 0..<surface.height {
             for x in 0..<surface.width {
+                cellOffsets.append(output.length)
                 let cell = surface.cells[y * surface.width + x]
                 if cell.skip { continue }
                 let isCursor = surface.cursor?.visible == true && surface.cursor?.x == x && surface.cursor?.y == y
@@ -101,9 +119,11 @@ struct TerminalPaneView: NSViewRepresentable {
                 if cell.modifier & 8 != 0 { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
                 output.append(NSAttributedString(string: cell.symbol.isEmpty ? " " : cell.symbol, attributes: attributes))
             }
+            cellOffsets.append(output.length)
             if y + 1 < surface.height { output.append(NSAttributedString(string: "\n", attributes: [.font: font])) }
         }
-        return output
+        return RenderedTerminalSurface(text: output, cellOffsets: cellOffsets,
+                                       width: surface.width, height: surface.height)
     }
 
     private static func color(_ value: UInt32, default fallback: NSColor) -> NSColor {
@@ -159,6 +179,100 @@ private final class HerdrTerminalTextView: NSTextView {
     private var scrollRemainder: CGFloat = 0
     private var splitDrag: (split: HerdrSplit, grabOffset: Int, bootID: String,
                             lastSentAt: Double, lastRatio: Double?)?
+    private var cellOffsets: [Int] = []
+    private var renderedWidth = 0
+    private var renderedHeight = 0
+    private var selectedSnapshot: String?
+    private var selectionAtSnapshot: NSRange?
+
+    func clearTerminalSelection() {
+        selectedSnapshot = nil
+        selectionAtSnapshot = nil
+        setSelectedRange(NSRange(location: 0, length: 0))
+    }
+
+    func applySurfaceText(_ rendered: RenderedTerminalSurface) {
+        let selection = selectedRange()
+        let hasSelection = selection.location != NSNotFound && selection.length > 0
+        let oldStart = hasSelection ? cellAnchor(for: selection.location) : nil
+        let oldEnd = hasSelection ? cellAnchor(for: NSMaxRange(selection)) : nil
+        if hasSelection { captureSelectionIfChanged() }
+        textStorage?.setAttributedString(rendered.text)
+        cellOffsets = rendered.cellOffsets
+        renderedWidth = rendered.width
+        renderedHeight = rendered.height
+        if let oldStart, let oldEnd {
+            let start = offset(for: oldStart)
+            let end = offset(for: oldEnd)
+            let restored = NSRange(location: min(start, end), length: abs(end - start))
+            setSelectedRange(restored)
+            selectionAtSnapshot = restored
+        }
+    }
+
+    func applyFallbackText(_ text: String) {
+        let selection = selectedRange()
+        if selection.length > 0 { captureSelectionIfChanged() }
+        string = text
+        cellOffsets = []
+        renderedWidth = 0
+        renderedHeight = 0
+        if selection.location != NSNotFound && selection.length > 0 {
+            let start = min(selection.location, (text as NSString).length)
+            let end = min(NSMaxRange(selection), (text as NSString).length)
+            let restored = NSRange(location: start, length: max(0, end - start))
+            setSelectedRange(restored)
+            selectionAtSnapshot = restored
+        }
+    }
+
+    private func cellAnchor(for offset: Int) -> (row: Int, column: Int)? {
+        guard renderedWidth > 0, renderedHeight > 0, !cellOffsets.isEmpty else { return nil }
+        var low = 0
+        var high = cellOffsets.count
+        while low < high {
+            let middle = (low + high) / 2
+            if cellOffsets[middle] <= offset { low = middle + 1 } else { high = middle }
+        }
+        let index = max(0, low - 1)
+        return (index / (renderedWidth + 1), index % (renderedWidth + 1))
+    }
+
+    private func offset(for anchor: (row: Int, column: Int)) -> Int {
+        guard renderedWidth > 0, renderedHeight > 0 else { return 0 }
+        let row = min(anchor.row, renderedHeight - 1)
+        let column = min(anchor.column, renderedWidth)
+        return cellOffsets[row * (renderedWidth + 1) + column]
+    }
+
+    private func captureSelectionIfChanged() {
+        let selection = selectedRange()
+        guard selection.location != NSNotFound, selection.length > 0,
+              NSMaxRange(selection) <= (string as NSString).length else {
+            selectedSnapshot = nil
+            selectionAtSnapshot = nil
+            return
+        }
+        guard selectionAtSnapshot != selection || selectedSnapshot == nil else { return }
+        selectedSnapshot = (string as NSString).substring(with: selection)
+        selectionAtSnapshot = selection
+    }
+
+    override func copy(_ sender: Any?) {
+        captureSelectionIfChanged()
+        guard let selectedSnapshot, !selectedSnapshot.isEmpty else { return }
+        let lines = selectedSnapshot.components(separatedBy: "\n")
+        let copyText = lines.map { $0.replacingOccurrences(of: "[ \\t]+$", with: "", options: .regularExpression) }
+            .joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(copyText, forType: .string)
+    }
+
+    override func selectAll(_ sender: Any?) {
+        super.selectAll(sender)
+        selectedSnapshot = nil
+        captureSelectionIfChanged()
+    }
 
     override func resetCursorRects() {
         super.resetCursorRects()
@@ -189,7 +303,10 @@ private final class HerdrTerminalTextView: NSTextView {
         }
         if !event.modifierFlags.contains(.shift),
            forwardMouse(.down(0), event: event, hold: true) { return }
+        selectedSnapshot = nil
+        selectionAtSnapshot = nil
         super.mouseDown(with: event)
+        captureSelectionIfChanged()
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -200,6 +317,7 @@ private final class HerdrTerminalTextView: NSTextView {
         }
         if releaseMouse(button: 0, event: event) { return }
         super.mouseUp(with: event)
+        captureSelectionIfChanged()
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -209,6 +327,7 @@ private final class HerdrTerminalTextView: NSTextView {
         }
         if dragMouse(button: 0, event: event) { return }
         super.mouseDragged(with: event)
+        captureSelectionIfChanged()
     }
 
     private func surfacePoint(_ event: NSEvent) -> (Int, Int) {

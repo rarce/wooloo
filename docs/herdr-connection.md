@@ -30,14 +30,16 @@ The pane surface supplies its inner rectangle and `mouse_reporting` flag. When m
 
 The surface also supplies split handle areas, hit rectangles, and paths. Dragging a handle sends `layout.set_split_ratio` over the endpoint, capped at about 30 updates per second with a final update on release. The server owns the layout; xherdr redraws from the next surface. In `xherdr-ui-test`, dragging both split orientations changed the ratios reported by `session.snapshot`. Image placements and popup layers remain to implement. See [Protocol stability](https://herdr.dev/docs/socket-api/#protocol-stability) and [Reading panes](https://herdr.dev/docs/socket-api/#reading-panes).
 
+The live renderer records UTF-16 offsets at cell boundaries. Before replacing the attributed text for a new surface, it maps the selected range to cells, then restores the range in the new render. Copy uses a snapshot of the selected text so subsequent screen updates do not change clipboard content, and trims terminal row padding. In `xherdr-ui-test`, selection remained active through about 200 updates from another pane, and Command-C/Command-V reproduced the selected text.
+
 The suitability and integration boundary for [SwiftTerm](swiftterm-evaluation.md) are documented separately.
 
 The surface decoder follows the frozen generation-1 field order in Herdr 0.9.1. It should be checked against a new release's frozen fixtures before changing the parser. Unsupported optional messages are ignored without dropping the JSON connection.
 
 ## Implementation order
 
-1. Add terminal selection and copy behavior that survives surface updates, plus hyperlink actions.
-2. Render native image placements and popup layers.
+1. Render native image placements and popup layers.
+2. Add hyperlink actions.
 3. Add optional remote sessions after local behavior is stable.
 
 Validate against a running Herdr server with `herdr status`, `herdr api schema --json`, and `herdr api snapshot`. These commands should be used as local diagnostics; no server state needs to be changed for the initial connection.
