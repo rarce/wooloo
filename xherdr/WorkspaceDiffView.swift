@@ -487,7 +487,7 @@ struct WorkspaceDiffView: View {
                     GeometryReader { viewport in
                         ScrollView([.vertical, .horizontal]) {
                             rows(parsed.rows(.unified, expanded: expanded))
-                                .frame(minWidth: viewport.size.width, alignment: .leading)
+                                .frame(minWidth: viewport.size.width, minHeight: viewport.size.height, alignment: .topLeading)
                         }
                     }
                 }
