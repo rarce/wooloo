@@ -47,6 +47,18 @@ struct WorkspaceBrowserView: View {
     }
 
     var body: some View {
+        VSplitView {
+            explorer
+                .frame(minHeight: 190)
+            WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion)
+                .frame(minHeight: 160)
+        }
+        .background(Color(red: 0.105, green: 0.115, blue: 0.13))
+        .task { loadMachines() }
+        .task(id: listingIdentity) { loadListing() }
+    }
+
+    private var explorer: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("EXPLORER")
@@ -174,8 +186,6 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(Color(red: 0.105, green: 0.115, blue: 0.13))
-        .task { loadMachines() }
-        .task(id: listingIdentity) { loadListing() }
     }
 
     private func segment(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {

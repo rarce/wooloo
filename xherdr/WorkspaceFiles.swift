@@ -47,6 +47,38 @@ struct WorkspaceFileContents {
     let version: String
 }
 
+struct WorkspaceCommit: Identifiable {
+    let id: String
+    let shortHash: String
+    let subject: String
+    let author: String
+    let date: String
+}
+
+struct WorkspaceBranch: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let isRemote: Bool
+    let isCurrent: Bool
+    let upstream: String
+}
+
+struct WorkspaceWorktree: Identifiable {
+    let path: String
+    let branch: String?
+    let isBare: Bool
+    let isLocked: Bool
+    let isPrunable: Bool
+    var id: String { path }
+}
+
+struct WorkspaceRepositoryListing {
+    let commits: [WorkspaceCommit]
+    let branches: [WorkspaceBranch]
+    let worktrees: [WorkspaceWorktree]
+    let root: String
+}
+
 enum WorkspaceFileError: LocalizedError {
     case message(String)
 
@@ -179,6 +211,78 @@ enum WorkspaceFiles {
                 + lines.map { "+" + $0 }.joined(separator: "\n")
         }
         return "No text diff available. Open the file to view its contents."
+    }
+
+    static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
+        let rootData = try git(location, ["rev-parse", "--show-toplevel"], limit: 4_000)
+        let root = String(decoding: rootData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let logData = (try? git(location, ["log", "-n", "50", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ad%x1e", "--date=short"], limit: 200_000)) ?? Data()
+        let commits = String(decoding: logData, as: UTF8.self).split(separator: "\u{1e}").compactMap { record -> WorkspaceCommit? in
+            let fields = record.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\u{1f}", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 5 else { return nil }
+            return WorkspaceCommit(id: fields[0], shortHash: fields[1], subject: fields[2], author: fields[3], date: fields[4])
+        }
+        let refData = try git(location, ["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"], limit: 200_000)
+        let refs = String(decoding: refData, as: UTF8.self).split(separator: "\n")
+        let branches = refs.compactMap { line -> WorkspaceBranch? in
+            let fields = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count >= 3 else { return nil }
+            let ref = fields[0]
+            let remote = ref.hasPrefix("refs/remotes/")
+            guard ref.hasPrefix("refs/heads/") || remote,
+                  !ref.hasSuffix("/HEAD") else { return nil }
+            let name = String(ref.dropFirst(remote ? "refs/remotes/".count : "refs/heads/".count))
+            return WorkspaceBranch(id: ref, name: name, isRemote: remote,
+                                   isCurrent: fields[1] == "*", upstream: fields[2])
+        }
+        let worktreeData = try git(location, ["worktree", "list", "--porcelain", "-z"], limit: 200_000)
+        var worktrees: [WorkspaceWorktree] = []
+        var path: String?
+        var branch: String?
+        var bare = false
+        var locked = false
+        var prunable = false
+        let worktreeFields = worktreeData.split(separator: 0, omittingEmptySubsequences: false)
+            .compactMap { String(data: Data($0), encoding: .utf8) }
+        for field in worktreeFields {
+            if field.isEmpty {
+                if let path { worktrees.append(WorkspaceWorktree(path: path, branch: branch, isBare: bare, isLocked: locked, isPrunable: prunable)) }
+                path = nil; branch = nil; bare = false; locked = false; prunable = false
+            } else if field.hasPrefix("worktree ") { path = String(field.dropFirst("worktree ".count)) }
+            else if field.hasPrefix("branch refs/heads/") { branch = String(field.dropFirst("branch refs/heads/".count)) }
+            else if field == "bare" { bare = true }
+            else if field.hasPrefix("locked") { locked = true }
+            else if field.hasPrefix("prunable") { prunable = true }
+        }
+        return WorkspaceRepositoryListing(commits: commits, branches: branches, worktrees: worktrees, root: root)
+    }
+
+    static func addWorktree(at location: WorkspaceFileLocation, path: String,
+                            branch: WorkspaceBranch, newBranch: String?) throws {
+        guard path.hasPrefix("/"), !path.contains("\0"), !path.contains("\n"), path != "/" else {
+            throw WorkspaceFileError.message("Enter an absolute worktree path")
+        }
+        var args = ["worktree", "add"]
+        if let newBranch, !newBranch.isEmpty {
+            guard !newBranch.hasPrefix("-"), !newBranch.contains("\0") else {
+                throw WorkspaceFileError.message("Invalid branch name")
+            }
+            args += ["-b", newBranch]
+        } else if branch.isRemote {
+            throw WorkspaceFileError.message("Enter a local branch name for a remote branch")
+        }
+        args += ["--", path, branch.id]
+        _ = try git(location, args, limit: 20_000)
+    }
+
+    static func removeWorktree(at location: WorkspaceFileLocation, path: String) throws {
+        let repository = try repository(at: location)
+        guard path != repository.root,
+              let tree = repository.worktrees.first(where: { $0.path == path }),
+              !tree.isBare, !tree.isLocked, !tree.isPrunable else {
+            throw WorkspaceFileError.message("This worktree cannot be removed")
+        }
+        _ = try git(location, ["worktree", "remove", "--", path], limit: 20_000)
     }
 
     private static func git(_ location: WorkspaceFileLocation, _ args: [String], limit: Int) throws -> Data {

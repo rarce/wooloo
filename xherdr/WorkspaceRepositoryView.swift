@@ -1,0 +1,324 @@
+import SwiftUI
+
+struct WorkspaceRepositoryView: View {
+    let location: WorkspaceFileLocation?
+    let refreshVersion: Int
+
+    @State private var listing: WorkspaceRepositoryListing?
+    @State private var error: String?
+    @State private var isLoading = false
+    @State private var selectedTab = 0
+    @State private var reloadVersion = 0
+    @State private var addRequest: AddWorktreeRequest?
+    @State private var removing: WorkspaceWorktree?
+    @State private var operationError: String?
+
+    private var identity: String {
+        "\(location?.identity ?? "none")|\(refreshVersion)|\(reloadVersion)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("REPOSITORY")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.7)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button { reloadVersion += 1 } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .help("Refresh repository")
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 34)
+            Divider()
+            HStack(spacing: 2) {
+                tab("History", icon: "clock.arrow.circlepath", index: 0)
+                tab("Branches", icon: "point.3.connected.trianglepath.dotted", index: 1)
+            }
+            .padding(4)
+            Divider()
+
+            if isLoading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error {
+                hint(error).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else if let listing {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if selectedTab == 0 { history(listing) }
+                        else { branches(listing) }
+                    }
+                    .padding(.vertical, 4)
+                }
+            } else {
+                hint("Select a Space to browse its repository")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+        }
+        .background(Color(red: 0.105, green: 0.115, blue: 0.13))
+        .task(id: identity) { load() }
+        .sheet(item: $addRequest) { request in
+            AddWorktreeSheet(request: request) { branch, path, newBranch in
+                add(branch: branch, path: path, newBranch: newBranch)
+            }
+        }
+        .confirmationDialog("Remove worktree?", isPresented: Binding(
+            get: { removing != nil }, set: { if !$0 { removing = nil } }
+        )) {
+            if let removing {
+                Button("Remove \((removing.path as NSString).lastPathComponent)", role: .destructive) {
+                    remove(removing)
+                }
+            }
+        } message: {
+            Text("Git will remove this worktree only if it has no uncommitted changes.")
+        }
+        .alert("Repository operation failed", isPresented: Binding(
+            get: { operationError != nil }, set: { if !$0 { operationError = nil } }
+        )) {
+            Button("OK") { operationError = nil }
+        } message: {
+            Text(operationError ?? "")
+        }
+    }
+
+    private func tab(_ title: String, icon: String, index: Int) -> some View {
+        Button { selectedTab = index } label: {
+            Label(title, systemImage: icon)
+                .font(.system(size: 10, weight: selectedTab == index ? .semibold : .regular))
+                .frame(maxWidth: .infinity)
+                .frame(height: 25)
+                .background(selectedTab == index ? Color.white.opacity(0.1) : .clear,
+                            in: RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func hint(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(.secondary).padding(10)
+    }
+
+    private func heading(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .tracking(0.5)
+            .padding(.horizontal, 11)
+            .padding(.top, 10)
+            .padding(.bottom, 5)
+    }
+
+    private func history(_ listing: WorkspaceRepositoryListing) -> some View {
+        Group {
+            if listing.commits.isEmpty { hint("No commits") }
+            ForEach(listing.commits) { commit in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(commit.subject)
+                        .font(.system(size: 11))
+                        .lineLimit(2)
+                    HStack(spacing: 5) {
+                        Text(commit.shortHash).foregroundStyle(.cyan)
+                        Text("·")
+                        Text(commit.author).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text(commit.date)
+                    }
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(commit.id)
+            }
+        }
+    }
+
+    private func branches(_ listing: WorkspaceRepositoryListing) -> some View {
+        Group {
+            heading("Local")
+            let local = listing.branches.filter { !$0.isRemote }
+            if local.isEmpty { hint("No local branches") }
+            ForEach(local) { branch in branchRow(branch) }
+
+            heading("Remote")
+            let remote = listing.branches.filter(\.isRemote)
+            if remote.isEmpty { hint("No remote branches") }
+            ForEach(remote) { branch in branchRow(branch) }
+
+            HStack {
+                heading("Worktrees")
+                Spacer()
+                Button { prepareAdd(listing) } label: {
+                    Image(systemName: "plus").font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .help("Add worktree")
+                .padding(.trailing, 11)
+                .disabled(listing.branches.isEmpty)
+            }
+            ForEach(listing.worktrees) { tree in
+                HStack(spacing: 6) {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 15)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tree.branch ?? "Detached HEAD")
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                        Text(tree.path)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 0)
+                    if tree.path != listing.root && !tree.isBare && !tree.isLocked && !tree.isPrunable {
+                        Button { removing = tree } label: {
+                            Image(systemName: "minus.circle").font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove worktree")
+                    }
+                }
+                .padding(.horizontal, 11)
+                .frame(height: 35)
+                .help(tree.path)
+            }
+        }
+    }
+
+    private func branchRow(_ branch: WorkspaceBranch) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: branch.isCurrent ? "checkmark.circle.fill" : "arrow.triangle.branch")
+                .font(.system(size: 10))
+                .foregroundStyle(branch.isCurrent ? Color.cyan : Color.secondary)
+                .frame(width: 15)
+            Text(branch.name).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 11))
+        .padding(.horizontal, 11)
+        .frame(height: 23)
+        .help(branch.upstream.isEmpty ? branch.id : "Tracks \(branch.upstream)")
+    }
+
+    private func prepareAdd(_ listing: WorkspaceRepositoryListing) {
+        guard let branch = listing.branches.first(where: { !$0.isRemote && !$0.isCurrent })
+            ?? listing.branches.first else { return }
+        let newBranch = (branch.isCurrent || branch.isRemote)
+            ? branch.name.split(separator: "/").last.map(String.init).map { $0 + "-worktree" } ?? "worktree"
+            : ""
+        let parent = (listing.root as NSString).deletingLastPathComponent
+        let name = (listing.root as NSString).lastPathComponent
+        let path = parent + "/" + name + "-" + branch.name.replacingOccurrences(of: "/", with: "-")
+        addRequest = AddWorktreeRequest(branches: listing.branches, branchID: branch.id,
+                                        path: path, newBranch: newBranch)
+    }
+
+    private func load() {
+        guard let location else { listing = nil; error = nil; return }
+        isLoading = true
+        error = nil
+        Task {
+            let result = await Task.detached { Result { try WorkspaceFiles.repository(at: location) } }.value
+            guard self.location?.identity == location.identity else { return }
+            switch result {
+            case .success(let value): listing = value
+            case .failure(let failure): error = failure.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
+    private func add(branch: WorkspaceBranch, path: String, newBranch: String) {
+        guard let location else { return }
+        let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = newBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            let result = await Task.detached {
+                Result { try WorkspaceFiles.addWorktree(at: location, path: path, branch: branch,
+                                                        newBranch: name.isEmpty ? nil : name) }
+            }.value
+            switch result {
+            case .success: reloadVersion += 1
+            case .failure(let failure): operationError = failure.localizedDescription
+            }
+        }
+    }
+
+    private func remove(_ tree: WorkspaceWorktree) {
+        guard let location else { return }
+        removing = nil
+        Task {
+            let result = await Task.detached {
+                Result { try WorkspaceFiles.removeWorktree(at: location, path: tree.path) }
+            }.value
+            switch result {
+            case .success: reloadVersion += 1
+            case .failure(let failure): operationError = failure.localizedDescription
+            }
+        }
+    }
+}
+
+private struct AddWorktreeRequest: Identifiable {
+    let id = UUID()
+    let branches: [WorkspaceBranch]
+    let branchID: String
+    let path: String
+    let newBranch: String
+}
+
+private struct AddWorktreeSheet: View {
+    let request: AddWorktreeRequest
+    let onAdd: (WorkspaceBranch, String, String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var branchID: String
+    @State private var path: String
+    @State private var newBranch: String
+
+    init(request: AddWorktreeRequest, onAdd: @escaping (WorkspaceBranch, String, String) -> Void) {
+        self.request = request
+        self.onAdd = onAdd
+        _branchID = State(initialValue: request.branchID)
+        _path = State(initialValue: request.path)
+        _newBranch = State(initialValue: request.newBranch)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add Worktree").font(.headline)
+            Picker("Start from", selection: $branchID) {
+                ForEach(request.branches) { branch in
+                    Text(branch.isRemote ? "Remote · \(branch.name)" : "Local · \(branch.name)")
+                        .tag(branch.id)
+                }
+            }
+            TextField("Absolute path", text: $path)
+            TextField("New local branch (optional)", text: $newBranch)
+            Text("A remote branch needs a new local branch name. Git refuses to add a branch that is already checked out.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Add") {
+                    guard let branch = request.branches.first(where: { $0.id == branchID }) else { return }
+                    onAdd(branch, path, newBranch)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || branchID.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
