@@ -3,6 +3,7 @@ import SwiftUI
 /// Sticky footer under Files and Changes: worktree and branch pickers plus a Git sync split button.
 /// In Changes, a commit message editor sits above the status row.
 struct WorkspaceGitBar: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     let location: WorkspaceFileLocation
     let reloadToken: Int
@@ -49,9 +50,9 @@ struct WorkspaceGitBar: View {
                 Spacer()
             }
         }
-        .font(.system(size: 11))
+        .font(.system(size: typography.body))
         .padding(.horizontal, 9)
-        .frame(height: 32)
+        .frame(height: typography.metric(32))
     }
 
     // MARK: Commit
@@ -61,7 +62,7 @@ struct WorkspaceGitBar: View {
         let tracked = changes.filter { $0.kind != .untracked }
         let mode: WorkspaceCommitMode = staged.isEmpty ? .tracked : .staged
         let suggestion = suggestedMessage(staged.isEmpty ? tracked : staged)
-        let font = Font.system(size: 12, design: .monospaced)
+        let font = Font.system(size: typography.code, design: .monospaced)
         let hasMessage = !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || suggestion != nil
         let available: (WorkspaceCommitMode) -> Bool = { mode in
             switch mode {
@@ -91,9 +92,9 @@ struct WorkspaceGitBar: View {
                 } label: {
                     Image(systemName: expandsEditor ? "arrow.down.right.and.arrow.up.left"
                                                     : "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 10))
+                        .font(.system(size: typography.secondary))
                         .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 18)
+                        .frame(width: 18, height: typography.metric(18))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -201,7 +202,7 @@ struct WorkspaceGitBar: View {
     private func pickerLabel(_ title: String, icon: String) -> some View {
         HStack(spacing: 5) {
             Image(systemName: icon)
-                .font(.system(size: 10))
+                .font(.system(size: typography.secondary))
                 .foregroundStyle(.secondary)
             Text(title)
                 .lineLimit(1)
@@ -269,13 +270,13 @@ struct WorkspaceGitBar: View {
                     if running != nil {
                         ProgressView().controlSize(.mini)
                     } else if let icon {
-                        Image(systemName: icon).font(.system(size: 10))
+                        Image(systemName: icon).font(.system(size: typography.secondary))
                     }
                     Text(title).lineLimit(1)
                 }
-                .font(.system(size: 11))
+                .font(.system(size: typography.body))
                 .padding(.horizontal, 7)
-                .frame(height: 21)
+                .frame(height: typography.metric(21))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -284,16 +285,16 @@ struct WorkspaceGitBar: View {
 
             Rectangle()
                 .fill(Color.primary.opacity(0.14))
-                .frame(width: 1, height: 21)
+                .frame(width: 1, height: typography.metric(21))
 
             Menu(content: menu) {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.system(size: typography.tiny, weight: .semibold))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .frame(width: 22, height: 21)
+            .frame(width: 22, height: typography.metric(21))
             .contentShape(Rectangle())
             .help("More actions")
         }

@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct HerdrSettingsView: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     let socketPath: String
     let sessionName: String
@@ -16,6 +17,8 @@ struct HerdrSettingsView: View {
     @State private var previewSound: NSSound?
     @AppStorage(HerdrNotifier.dockBadgeKey) private var showsDockBadge = true
     @AppStorage(HerdrNotifier.bounceDockKey) private var bouncesDock = true
+    @AppStorage(XherdrTypography.baseKey) private var interfaceTextSize = XherdrTypography.defaultBase
+    @AppStorage(XherdrTypography.codeKey) private var codeTextSize = XherdrTypography.defaultCode
 
     private enum Category: String, CaseIterable, Identifiable {
         case terminal = "Terminal"
@@ -52,7 +55,7 @@ struct HerdrSettingsView: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("HERDR SETTINGS")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: typography.secondary, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
@@ -62,7 +65,7 @@ struct HerdrSettingsView: View {
                         message = nil
                     } label: {
                         Label(item.rawValue, systemImage: item.icon)
-                            .font(.system(size: 12))
+                            .font(.system(size: typography.emphasis))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 10)
                             .frame(height: 30)
@@ -82,7 +85,7 @@ struct HerdrSettingsView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text(category.rawValue)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: typography.title, weight: .semibold))
                     Spacer()
                     Button("Done") { dismiss() }
                         .buttonStyle(.borderless)
@@ -101,7 +104,7 @@ struct HerdrSettingsView: View {
                                 Text(category == .notifications
                                      ? "xherdr settings apply to this app. Herdr settings live in the local config.toml, shared by all Herdr sessions; reload applies to \(sessionName)."
                                      : "Local config.toml · shared by all Herdr sessions. Reload applies to \(sessionName).")
-                                    .font(.system(size: 11))
+                                    .font(.system(size: typography.body))
                                     .foregroundStyle(.secondary)
                                 categoryFields
                             }
@@ -116,12 +119,12 @@ struct HerdrSettingsView: View {
                 HStack(spacing: 10) {
                     if let message {
                         Text(message)
-                            .font(.system(size: 11))
+                            .font(.system(size: typography.body))
                             .foregroundStyle(message.hasPrefix("Saved") ? theme.success : theme.warning)
                             .lineLimit(2)
                     } else {
                         Text(document.text == original ? "No changes" : "Unsaved changes")
-                            .font(.system(size: 11))
+                            .font(.system(size: typography.body))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -211,7 +214,7 @@ struct HerdrSettingsView: View {
                           alignment: .leading, spacing: 6) {
                     ForEach(HerdrNotificationSettings.knownAgents, id: \.self) { agent in
                         HStack(spacing: 6) {
-                            Text(agent).font(.system(size: 11, design: .monospaced))
+                            Text(agent).font(.system(size: typography.body, design: .monospaced))
                                 .frame(width: 70, alignment: .leading)
                             Picker("", selection: agentSound(agent)) {
                                 Text("Default").tag("default")
@@ -252,6 +255,29 @@ struct HerdrSettingsView: View {
                 .frame(width: 220)
             }
         case .appearance:
+            settingsGroup("xherdr", subtitle: "This app only · applies immediately · not written to config.toml") {
+                field("Interface text size", hint: "Sidebar, tabs, History, Files, and settings. Default: \(Int(XherdrTypography.defaultBase)) pt") {
+                    textSizeControl($interfaceTextSize, range: XherdrTypography.baseRange,
+                                    default: XherdrTypography.defaultBase)
+                }
+                field("Code text size", hint: "Editor, diffs, commit messages, and search results. Default: \(Int(XherdrTypography.defaultCode)) pt. The terminal keeps Herdr's cell size.") {
+                    textSizeControl($codeTextSize, range: XherdrTypography.codeRange,
+                                    default: XherdrTypography.defaultCode)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Update package-lock.json").font(.system(size: typography.body))
+                    Text("a2679a6 · Roberto Arce · 3 days ago")
+                        .font(.system(size: typography.caption))
+                        .foregroundStyle(.secondary)
+                    Text("+  let total = items.count")
+                        .font(.system(size: typography.code, design: .monospaced))
+                        .foregroundStyle(theme.diffAdded)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(theme.sidebarBackground, in: RoundedRectangle(cornerRadius: 6))
+            }
+            groupHeader("Herdr", subtitle: "Saved to config.toml · Save & reload to apply")
             ThemeSettingsView(name: string("theme", "name", default: XherdrTheme.fallbackID),
                               autoSwitch: bool("theme", "auto_switch", default: false),
                               lightName: optionalString("theme", "light_name"),
@@ -276,26 +302,26 @@ struct HerdrSettingsView: View {
     private var advancedEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Full local config.toml. Other Herdr settings and comments stay here when guided fields change.")
-                .font(.system(size: 11))
+                .font(.system(size: typography.body))
                 .foregroundStyle(.secondary)
             Text(HerdrConfigFile.url.path)
-                .font(.system(size: 10, design: .monospaced))
+                .font(.system(size: typography.secondary, design: .monospaced))
                 .foregroundStyle(.tertiary)
                 .textSelection(.enabled)
             TextEditor(text: $document.text)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.system(size: typography.emphasis, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(5)
                 .background(Color.black.opacity(0.23), in: RoundedRectangle(cornerRadius: 5))
             Link("Herdr configuration reference", destination: URL(string: "https://herdr.dev/docs/config-reference/")!)
-                .font(.system(size: 11))
+                .font(.system(size: typography.body))
         }
         .padding(20)
     }
 
     private func description(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 12))
+            .font(.system(size: typography.emphasis))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -303,9 +329,9 @@ struct HerdrSettingsView: View {
     private func field<Content: View>(_ title: String, hint: String,
                                       @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: 12, weight: .medium))
+            Text(title).font(.system(size: typography.emphasis, weight: .medium))
             content()
-            Text(hint).font(.system(size: 10)).foregroundStyle(.tertiary)
+            Text(hint).font(.system(size: typography.secondary)).foregroundStyle(.tertiary)
         }
     }
 
@@ -345,8 +371,8 @@ struct HerdrSettingsView: View {
 
     private func groupHeader(_ title: String, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 13, weight: .semibold))
-            Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(title).font(.system(size: typography.heading, weight: .semibold))
+            Text(subtitle).font(.system(size: typography.secondary)).foregroundStyle(.secondary)
         }
         .padding(.top, 4)
     }
@@ -362,6 +388,19 @@ struct HerdrSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.accent.opacity(0.25)))
+    }
+
+    private func textSizeControl(_ value: Binding<Double>, range: ClosedRange<Double>,
+                                 default fallback: Double) -> some View {
+        HStack(spacing: 10) {
+            Slider(value: value, in: range, step: 1)
+                .frame(width: 220)
+            Text("\(Int(value.wrappedValue)) pt")
+                .font(.system(size: typography.body, design: .monospaced))
+                .frame(width: 44, alignment: .leading)
+            Button("Default") { value.wrappedValue = fallback }
+                .disabled(value.wrappedValue == fallback)
+        }
     }
 
     private func soundField(_ key: String, placeholder: String, kind: HerdrAlertKind?) -> some View {

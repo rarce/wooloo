@@ -299,6 +299,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
 
 /// In-app toasts for `delivery = "herdr"`, stacked in Herdr's configured corner.
 struct HerdrToastStack: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     @ObservedObject var notifier: HerdrNotifier
 
@@ -317,17 +318,17 @@ struct HerdrToastStack: View {
                 Button { notifier.open(toast) } label: {
                     HStack(alignment: .top, spacing: 9) {
                         Image(systemName: toast.kind.icon)
-                            .font(.system(size: 14))
+                            .font(.system(size: typography.heading))
                             .foregroundStyle(toast.kind == .request ? theme.warning : theme.success)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(toast.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                            Text(toast.title).font(.system(size: typography.emphasis, weight: .semibold)).lineLimit(1)
                             if !toast.body.isEmpty {
-                                Text(toast.body).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                                Text(toast.body).font(.system(size: typography.body)).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                         Spacer(minLength: 0)
                         Button { notifier.dismiss(toast) } label: {
-                            Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                            Image(systemName: "xmark").font(.system(size: typography.caption, weight: .semibold))
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
@@ -352,6 +353,7 @@ struct HerdrToastStack: View {
 
 /// A small count badge for sidebar and tab rows.
 struct HerdrAttentionBadge: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     let requests: Int
     let done: Int
@@ -365,8 +367,8 @@ struct HerdrAttentionBadge: View {
 
     private func pill(_ count: Int, icon: String, color: Color) -> some View {
         HStack(spacing: 2) {
-            Image(systemName: icon).font(.system(size: 7, weight: .bold))
-            if count > 1 { Text("\(count)").font(.system(size: 9, weight: .semibold)) }
+            Image(systemName: icon).font(.system(size: typography.tiny, weight: .bold))
+            if count > 1 { Text("\(count)").font(.system(size: typography.caption, weight: .semibold)) }
         }
         .foregroundStyle(color)
         .padding(.horizontal, 4)
@@ -378,6 +380,7 @@ struct HerdrAttentionBadge: View {
 /// xherdr's macOS notification permission: shows the current state and lets the user
 /// request it, open System Settings, or send a test notification.
 struct NotificationPermissionView: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     @State private var status: UNAuthorizationStatus?
     @State private var testResult: String?
@@ -393,7 +396,7 @@ struct NotificationPermissionView: View {
                 Image(systemName: statusIcon)
                     .foregroundStyle(statusColor)
                 Text(statusText)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: typography.emphasis, weight: .medium))
                 Spacer()
                 switch status {
                 case .notDetermined?:
@@ -409,11 +412,11 @@ struct NotificationPermissionView: View {
                     .help("Post a sample notification")
             }
             Text(statusDetail)
-                .font(.system(size: 10))
+                .font(.system(size: typography.secondary))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
             if let testResult {
-                Text(testResult).font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(testResult).font(.system(size: typography.secondary)).foregroundStyle(.secondary)
             }
         }
         .task { await refresh() }

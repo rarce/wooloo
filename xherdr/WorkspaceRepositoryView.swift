@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct WorkspaceRepositoryView: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     let location: WorkspaceFileLocation?
     let refreshVersion: Int
@@ -29,18 +30,18 @@ struct WorkspaceRepositoryView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("REPOSITORY")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: typography.secondary, weight: .semibold))
                     .tracking(0.7)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button { reloadVersion += 1 } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 10))
+                    Image(systemName: "arrow.clockwise").font(.system(size: typography.secondary))
                 }
                 .buttonStyle(.plain)
                 .help("Refresh repository")
             }
             .padding(.horizontal, 11)
-            .frame(height: 34)
+            .frame(height: typography.metric(34))
             .contentShape(Rectangle())
             .contextMenu {
                 Button("Refresh", systemImage: "arrow.clockwise") { reloadVersion += 1 }
@@ -117,9 +118,9 @@ struct WorkspaceRepositoryView: View {
     private func tab(_ title: String, icon: String, index: Int) -> some View {
         Button { selectedTab = index } label: {
             Label(title, systemImage: icon)
-                .font(.system(size: 10, weight: selectedTab == index ? .semibold : .regular))
+                .font(.system(size: typography.secondary, weight: selectedTab == index ? .semibold : .regular))
                 .frame(maxWidth: .infinity)
-                .frame(height: 25)
+                .frame(height: typography.metric(25))
                 .background(selectedTab == index ? Color.primary.opacity(0.1) : .clear,
                             in: RoundedRectangle(cornerRadius: 4))
                 // Keep the spacing inside the hit area so the whole strip is clickable.
@@ -131,12 +132,12 @@ struct WorkspaceRepositoryView: View {
     }
 
     private func hint(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(.secondary).padding(10)
+        Text(text).font(.system(size: typography.body)).foregroundStyle(.secondary).padding(10)
     }
 
     private func heading(_ title: String) -> some View {
         Text(title.uppercased())
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(size: typography.caption, weight: .semibold))
             .foregroundStyle(.tertiary)
             .tracking(0.5)
             .padding(.horizontal, 11)
@@ -164,7 +165,7 @@ struct WorkspaceRepositoryView: View {
     private func commitSummary(_ commit: WorkspaceCommit) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(commit.subject)
-                .font(.system(size: 11))
+                .font(.system(size: typography.body))
                 .lineLimit(2)
             HStack(spacing: 5) {
                 Text(commit.shortHash).foregroundStyle(theme.accent)
@@ -175,7 +176,7 @@ struct WorkspaceRepositoryView: View {
                     .lineLimit(1)
                     .help(commit.absoluteDate)
             }
-            .font(.system(size: 9))
+            .font(.system(size: typography.caption))
             .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 11)
@@ -197,14 +198,14 @@ struct WorkspaceRepositoryView: View {
                 selectedCommit = nil
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "chevron.left").font(.system(size: 9, weight: .semibold))
+                    Image(systemName: "chevron.left").font(.system(size: typography.caption, weight: .semibold))
                     Text("History")
                     Spacer(minLength: 0)
                 }
-                .font(.system(size: 10))
+                .font(.system(size: typography.secondary))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 11)
-                .frame(height: 22)
+                .frame(height: typography.metric(22))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -226,9 +227,9 @@ struct WorkspaceRepositoryView: View {
                     Spacer(minLength: 0)
                     lineCounts(added, removed)
                 }
-                .font(.system(size: 10))
+                .font(.system(size: typography.secondary))
                 .padding(.horizontal, 11)
-                .frame(height: 20)
+                .frame(height: typography.metric(20))
                 if commitFiles.isEmpty { hint("No file changes") }
                 ForEach(commitFiles) { file in commitFileRow(file, commit: commit) }
             } else {
@@ -250,7 +251,7 @@ struct WorkspaceRepositoryView: View {
         } label: {
             HStack(spacing: 6) {
                 Text(String(file.status))
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: typography.caption, weight: .semibold))
                     .foregroundStyle(theme.vcs(kind))
                     .frame(width: 11)
                 Text(name)
@@ -260,7 +261,7 @@ struct WorkspaceRepositoryView: View {
                     .layoutPriority(1)
                 if !directory.isEmpty {
                     Text(directory)
-                        .font(.system(size: 10))
+                        .font(.system(size: typography.secondary))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.head)
@@ -269,12 +270,12 @@ struct WorkspaceRepositoryView: View {
                 if let additions = file.additions, let deletions = file.deletions {
                     lineCounts(additions, deletions)
                 } else {
-                    Text("binary").font(.system(size: 9)).foregroundStyle(.tertiary)
+                    Text("binary").font(.system(size: typography.caption)).foregroundStyle(.tertiary)
                 }
             }
-            .font(.system(size: 11))
+            .font(.system(size: typography.body))
             .padding(.horizontal, 11)
-            .frame(height: 23)
+            .frame(height: typography.metric(23))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(selectedCommitFile == file.path ? Color.primary.opacity(0.12) : .clear)
             .contentShape(Rectangle())
@@ -291,7 +292,7 @@ struct WorkspaceRepositoryView: View {
             Text("+\(additions)").foregroundStyle(theme.diffAdded)
             Text("−\(deletions)").foregroundStyle(theme.diffRemoved)
         }
-        .font(.system(size: 10, design: .monospaced))
+        .font(.system(size: typography.secondary, design: .monospaced))
     }
 
     private func commitFileKind(_ status: Character) -> WorkspaceFileChange.Kind {
@@ -333,7 +334,7 @@ struct WorkspaceRepositoryView: View {
                 heading("Worktrees")
                 Spacer()
                 Button { prepareAdd(listing) } label: {
-                    Image(systemName: "plus").font(.system(size: 11))
+                    Image(systemName: "plus").font(.system(size: typography.body))
                 }
                 .buttonStyle(.plain)
                 .help("Add worktree")
@@ -343,15 +344,15 @@ struct WorkspaceRepositoryView: View {
             ForEach(listing.worktrees) { tree in
                 HStack(spacing: 6) {
                     Image(systemName: "square.stack.3d.up")
-                        .font(.system(size: 10))
+                        .font(.system(size: typography.secondary))
                         .foregroundStyle(.secondary)
                         .frame(width: 15)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(tree.branch ?? "Detached HEAD")
-                            .font(.system(size: 11))
+                            .font(.system(size: typography.body))
                             .lineLimit(1)
                         Text(tree.path)
-                            .font(.system(size: 9))
+                            .font(.system(size: typography.caption))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -359,14 +360,14 @@ struct WorkspaceRepositoryView: View {
                     Spacer(minLength: 0)
                     if tree.path != listing.root && !tree.isBare && !tree.isLocked && !tree.isPrunable {
                         Button { removing = tree } label: {
-                            Image(systemName: "minus.circle").font(.system(size: 11))
+                            Image(systemName: "minus.circle").font(.system(size: typography.body))
                         }
                         .buttonStyle(.plain)
                         .help("Remove worktree")
                     }
                 }
                 .padding(.horizontal, 11)
-                .frame(height: 35)
+                .frame(height: typography.metric(35))
                 .contentShape(Rectangle())
                 .help(tree.path)
                 .contextMenu {
@@ -397,15 +398,15 @@ struct WorkspaceRepositoryView: View {
     private func branchRow(_ branch: WorkspaceBranch, listing: WorkspaceRepositoryListing) -> some View {
         HStack(spacing: 6) {
             Image(systemName: branch.isCurrent ? "checkmark.circle.fill" : "arrow.triangle.branch")
-                .font(.system(size: 10))
+                .font(.system(size: typography.secondary))
                 .foregroundStyle(branch.isCurrent ? theme.accent : Color.secondary)
                 .frame(width: 15)
             Text(branch.name).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 0)
         }
-        .font(.system(size: 11))
+        .font(.system(size: typography.body))
         .padding(.horizontal, 11)
-        .frame(height: 23)
+        .frame(height: typography.metric(23))
         .contentShape(Rectangle())
         .help(branch.upstream.isEmpty ? branch.id : "Tracks \(branch.upstream)")
         .contextMenu {
@@ -504,6 +505,7 @@ private struct AddWorktreeRequest: Identifiable {
 }
 
 private struct AddWorktreeSheet: View {
+    @Environment(\.xherdrTypography) private var typography
     let request: AddWorktreeRequest
     let onAdd: (WorkspaceBranch, String, String) -> Void
 

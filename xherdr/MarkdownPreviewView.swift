@@ -24,6 +24,7 @@ enum MarkdownDisplayMode: String, CaseIterable, Identifiable {
 /// Renders a Markdown document from the Space with MarkdownView, drawing ```mermaid blocks
 /// natively with BeautifulMermaid. Images and links resolve against the Space, locally or over SSH.
 struct MarkdownPreviewView: View {
+    @Environment(\.xherdrTypography) private var typography
     let text: String
     let path: String
     let location: WorkspaceFileLocation
@@ -125,6 +126,7 @@ private struct SpaceImageRenderer: MarkdownImageRenderer {
 }
 
 private struct SpaceImage: View {
+    @Environment(\.xherdrTypography) private var typography
     let location: WorkspaceFileLocation
     let path: String
     let alt: String?
@@ -142,7 +144,7 @@ private struct SpaceImage: View {
                     .frame(maxWidth: image.size.width)
             } else if failed {
                 Label(alt?.isEmpty == false ? alt! : path, systemImage: "photo")
-                    .font(.system(size: 11))
+                    .font(.system(size: typography.body))
                     .foregroundStyle(theme.muted)
             } else {
                 ProgressView().controlSize(.small)
@@ -175,6 +177,7 @@ private struct XherdrCodeBlockStyle: MarkdownCodeBlockStyle {
 }
 
 private struct MermaidBlock: View {
+    @Environment(\.xherdrTypography) private var typography
     let source: String
     let theme: XherdrTheme
 
@@ -192,10 +195,10 @@ private struct MermaidBlock: View {
             } else if let error {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Mermaid diagram could not be rendered: \(error)", systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 11))
+                        .font(.system(size: typography.body))
                         .foregroundStyle(theme.warning)
                     Text(source)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.system(size: typography.code, design: .monospaced))
                         .textSelection(.enabled)
                 }
                 .padding(10)

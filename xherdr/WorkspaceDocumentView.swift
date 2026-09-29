@@ -54,6 +54,7 @@ struct WorkspaceDocument: Identifiable {
 }
 
 struct WorkspaceDocumentView: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     @Binding var document: WorkspaceDocument
     let onSave: () -> Void
@@ -105,7 +106,7 @@ struct WorkspaceDocumentView: View {
                         .disabled(document.isLoading || document.isSaving || !document.isDirty)
                 }
             }
-            .font(.system(size: 11))
+            .font(.system(size: typography.body))
             .padding(.horizontal, 12)
             .frame(height: 33)
             Divider()
@@ -114,7 +115,7 @@ struct WorkspaceDocumentView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = document.error, document.version == nil {
                 Text(error)
-                    .font(.system(size: 12))
+                    .font(.system(size: typography.emphasis))
                     .foregroundStyle(theme.warning)
                     .padding(16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -122,7 +123,7 @@ struct WorkspaceDocumentView: View {
                 VStack(spacing: 0) {
                     if let error = document.error {
                         Text(error)
-                            .font(.system(size: 11))
+                            .font(.system(size: typography.body))
                             .foregroundStyle(theme.warning)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
@@ -143,7 +144,7 @@ struct WorkspaceDocumentView: View {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(document.text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
                                 Text(String(line).isEmpty ? " " : String(line))
-                                    .font(.system(size: 11, design: .monospaced))
+                                    .font(.system(size: typography.code, design: .monospaced))
                                     .foregroundStyle(diffColor(String(line)))
                                     .fixedSize(horizontal: true, vertical: false)
                                     .padding(.horizontal, 10)
@@ -167,7 +168,7 @@ struct WorkspaceDocumentView: View {
                 }
                 if document.isSaving { ProgressView().controlSize(.small) }
             }
-            .font(.system(size: 10))
+            .font(.system(size: typography.secondary))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 11)
             .frame(height: 23)
@@ -180,7 +181,7 @@ struct WorkspaceDocumentView: View {
             $document.text,
             language: language,
             theme: editorTheme,
-            font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+            font: typography.codeFont,
             tabWidth: 4,
             lineHeight: 1.15,
             wrapLines: false,

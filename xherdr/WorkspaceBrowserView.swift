@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct WorkspaceBrowserView: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     let localSnapshot: HerdrSnapshot?
     let localWorkspaceID: String?
@@ -85,7 +86,7 @@ struct WorkspaceBrowserView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("EXPLORER")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: typography.secondary, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .tracking(0.7)
                 Spacer()
@@ -106,7 +107,7 @@ struct WorkspaceBrowserView: View {
                             Image(systemName: "line.3.horizontal.decrease")
                             if modifiedOnly { Text("Modified") }
                         }
-                        .font(.system(size: 10, weight: modifiedOnly ? .semibold : .regular))
+                        .font(.system(size: typography.secondary, weight: modifiedOnly ? .semibold : .regular))
                         .foregroundStyle(modifiedOnly ? theme.accent : Color.secondary)
                     }
                     .menuStyle(.borderlessButton)
@@ -115,13 +116,13 @@ struct WorkspaceBrowserView: View {
                 }
                 Button { refresh() } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10))
+                        .font(.system(size: typography.secondary))
                 }
                 .buttonStyle(.plain)
                 .help("Refresh files and changes")
             }
             .padding(.horizontal, 11)
-            .frame(height: 35)
+            .frame(height: typography.metric(35))
             Divider()
 
             HStack(spacing: 5) {
@@ -138,9 +139,9 @@ struct WorkspaceBrowserView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
-            .font(.system(size: 11))
+            .font(.system(size: typography.body))
             .padding(.horizontal, 9)
-            .frame(height: 27)
+            .frame(height: typography.metric(27))
 
             if let snapshot, machine != nil {
                 Menu {
@@ -154,7 +155,7 @@ struct WorkspaceBrowserView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .padding(.horizontal, 9)
-                .frame(height: 26)
+                .frame(height: typography.metric(26))
             }
 
             HStack(spacing: 0) {
@@ -168,7 +169,7 @@ struct WorkspaceBrowserView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error {
                 Text(error)
-                    .font(.system(size: 11))
+                    .font(.system(size: typography.body))
                     .foregroundStyle(theme.warning)
                     .padding(11)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -229,9 +230,9 @@ struct WorkspaceBrowserView: View {
     private func segment(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
-                .font(.system(size: 10, weight: selected ? .semibold : .regular))
+                .font(.system(size: typography.secondary, weight: selected ? .semibold : .regular))
                 .frame(maxWidth: .infinity)
-                .frame(height: 25)
+                .frame(height: typography.metric(25))
                 .background(selected ? Color.primary.opacity(0.1) : .clear,
                             in: RoundedRectangle(cornerRadius: 4))
                 // Keep the spacing inside the hit area so the whole strip is clickable.
@@ -244,7 +245,7 @@ struct WorkspaceBrowserView: View {
 
     private func hint(_ value: String) -> some View {
         Text(value)
-            .font(.system(size: 11))
+            .font(.system(size: typography.body))
             .foregroundStyle(.tertiary)
             .padding(10)
     }
@@ -269,10 +270,10 @@ struct WorkspaceBrowserView: View {
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .font(.system(size: 11))
+            .font(.system(size: typography.body))
             .padding(.leading, 11)
             .padding(.trailing, 8)
-            .frame(height: 24)
+            .frame(height: typography.metric(24))
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
@@ -318,7 +319,7 @@ struct WorkspaceBrowserView: View {
                 Image(systemName: node.isDirectory
                       ? (isExpanded ? "folder.fill" : "folder")
                       : (showsChanges ? "arrow.left.arrow.right" : fileIcon(node.path)))
-                    .font(.system(size: 11))
+                    .font(.system(size: typography.body))
                     .frame(width: 17)
                     .foregroundStyle(node.isDirectory ? Color.secondary : (showsChanges ? theme.accent : .secondary))
                 Text(node.displayName)
@@ -329,7 +330,7 @@ struct WorkspaceBrowserView: View {
                 Spacer(minLength: 0)
                 if let change, !node.isDirectory {
                     Text(change.statusLabel)
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: typography.caption, weight: .semibold))
                         .foregroundStyle(statusColor(change.kind))
                 } else if let kind {
                     Circle()
@@ -338,10 +339,10 @@ struct WorkspaceBrowserView: View {
                         .padding(.trailing, 2)
                 }
             }
-            .font(.system(size: 11))
+            .font(.system(size: typography.body))
             .padding(.leading, CGFloat(row.depth) * 19 + 11)
             .padding(.trailing, 8)
-            .frame(height: 23)
+            .frame(height: typography.metric(23))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected ? Color.primary.opacity(0.12) : .clear)
             .contentShape(Rectangle())

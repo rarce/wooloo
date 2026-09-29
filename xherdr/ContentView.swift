@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.xherdrTypography) private var typography
     @StateObject private var herdr = HerdrStore()
     @State private var showsSidebar = true
     @State private var showsFilesSidebar = true
@@ -28,6 +29,12 @@ struct ContentView: View {
 
     @StateObject private var themes = ThemeStore()
     @StateObject private var notifier = HerdrNotifier()
+    @AppStorage(XherdrTypography.baseKey) private var interfaceTextSize = XherdrTypography.defaultBase
+    @AppStorage(XherdrTypography.codeKey) private var codeTextSize = XherdrTypography.defaultCode
+    private var textScale: XherdrTypography {
+        XherdrTypography(base: interfaceTextSize.clamped(to: XherdrTypography.baseRange),
+                         code: codeTextSize.clamped(to: XherdrTypography.codeRange))
+    }
     private var theme: XherdrTheme { themes.theme }
     private var sidebarBackground: Color { theme.sidebarBackground }
     private var barBackground: Color { theme.barBackground }
@@ -51,6 +58,7 @@ struct ContentView: View {
         .frame(minWidth: 850, minHeight: 380)
         .preferredColorScheme(theme.colorScheme)
         .environment(\.xherdrTheme, theme)
+        .environment(\.xherdrTypography, textScale)
         .tint(theme.accent)
         .task { herdr.start() }
         .focusedSceneValue(\.xherdrCommands, XherdrCommandContext(
@@ -85,6 +93,7 @@ struct ContentView: View {
                 notifier.refreshDockBadge()
             }
             .environment(\.xherdrTheme, theme)
+            .environment(\.xherdrTypography, textScale)
         }
         .alert("Herdr action failed", isPresented: Binding(
             get: { herdr.actionError != nil },
@@ -216,14 +225,14 @@ struct ContentView: View {
                 Image(systemName: "square.stack.3d.up")
                     .foregroundStyle(theme.accent)
                 Text("herdr")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .font(.system(size: typography.emphasis, weight: .semibold, design: .monospaced))
                 Spacer()
                 Circle()
                     .fill(herdr.isConnected ? theme.success : theme.warning)
                     .frame(width: 6, height: 6)
             }
             .padding(.horizontal, 12)
-            .frame(height: 35)
+            .frame(height: typography.metric(35))
             .contentShape(Rectangle())
             .contextMenu { globalActions }
 
@@ -238,8 +247,8 @@ struct ContentView: View {
                                 herdr.createWorkspace()
                             } label: {
                                 Image(systemName: "plus")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .frame(width: 23, height: 20)
+                                    .font(.system(size: typography.secondary, weight: .semibold))
+                                    .frame(width: 23, height: typography.metric(20))
                             }
                             .buttonStyle(.plain)
                             .help("New Space")
@@ -261,7 +270,7 @@ struct ContentView: View {
                                                                         snapshot: herdr.snapshot)
                                     HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                                 }
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: typography.emphasis, weight: .medium))
                                 .sidebarRow(selected: workspace.workspaceID == herdr.selectedWorkspaceID)
                             }
                             .buttonStyle(.plain)
@@ -279,9 +288,9 @@ struct ContentView: View {
                                 Image(systemName: agentsInSelectedSpaceOnly
                                       ? "line.3.horizontal.decrease.circle.fill"
                                       : "line.3.horizontal.decrease.circle")
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .font(.system(size: typography.body, weight: .semibold))
                                     .foregroundStyle(agentsInSelectedSpaceOnly ? theme.accent : .secondary)
-                                    .frame(width: 23, height: 20)
+                                    .frame(width: 23, height: typography.metric(20))
                             }
                             .buttonStyle(.plain)
                             .help(agentsInSelectedSpaceOnly ? "Show Agents in All Spaces"
@@ -292,7 +301,7 @@ struct ContentView: View {
                         }
                         if agents.isEmpty {
                             Text(agentsInSelectedSpaceOnly ? "No agents in this Space" : "No agents")
-                                .font(.system(size: 11))
+                                .font(.system(size: typography.body))
                                 .foregroundStyle(.tertiary)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
@@ -312,15 +321,15 @@ struct ContentView: View {
                                         Text(agent.displayStatus)
                                             .lineLimit(1)
                                     }
-                                    .font(.system(size: 10))
+                                    .font(.system(size: typography.secondary))
                                     .foregroundStyle(.secondary)
                                     HStack(spacing: 5) {
                                         Text(agent.displayName)
-                                            .font(.system(size: 11, weight: .medium))
+                                            .font(.system(size: typography.body, weight: .medium))
                                             .lineLimit(1)
                                         if let alert = notifier.attention[agent.paneID] {
                                             Label(alert.label, systemImage: alert.icon)
-                                                .font(.system(size: 9, weight: .semibold))
+                                                .font(.system(size: typography.caption, weight: .semibold))
                                                 .foregroundStyle(alert == .request ? theme.warning : theme.success)
                                                 .padding(.horizontal, 5)
                                                 .frame(height: 15)
@@ -331,7 +340,7 @@ struct ContentView: View {
                                     .padding(.leading, 13)
                                     if let detail = agent.detail {
                                         Text(detail)
-                                            .font(.system(size: 10))
+                                            .font(.system(size: typography.secondary))
                                             .foregroundStyle(.tertiary)
                                             .lineLimit(1)
                                             .padding(.leading, 13)
@@ -378,12 +387,12 @@ struct ContentView: View {
                         Text(herdr.sessionName).lineLimit(1)
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 9))
+                            .font(.system(size: typography.caption))
                     }
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(size: typography.secondary, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .padding(.leading, 11)
-                    .frame(height: 29)
+                    .frame(height: typography.metric(29))
                 }
                 .buttonStyle(.plain)
                 Button {
@@ -391,9 +400,9 @@ struct ContentView: View {
                     showsSettings = true
                 } label: {
                     Image(systemName: "gearshape")
-                        .font(.system(size: 11))
+                        .font(.system(size: typography.body))
                         .foregroundStyle(.secondary)
-                        .frame(width: 29, height: 29)
+                        .frame(width: 29, height: typography.metric(29))
                 }
                 .buttonStyle(.plain)
                 .help("Herdr settings")
@@ -411,13 +420,13 @@ struct ContentView: View {
                                 HStack(spacing: 6) {
                                     Image(systemName: name == herdr.sessionName ? "checkmark.circle.fill" : "circle")
                                         .foregroundStyle(name == herdr.sessionName ? theme.accent : Color.secondary)
-                                    Text(name).font(.system(size: 12, design: .monospaced))
+                                    Text(name).font(.system(size: typography.emphasis, design: .monospaced))
                                     if name == HerdrStore.defaultSessionName {
                                         Text("primary").font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer(minLength: 0)
                                 }
-                                .frame(height: 22)
+                                .frame(height: typography.metric(22))
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -457,11 +466,11 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .help(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes")
                 Text(selectedWorkspace?.label ?? "Herdr")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: typography.emphasis, weight: .semibold))
                     .lineLimit(1)
                 if shortcutPrefixActive {
                     Text("PREFIX")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .font(.system(size: typography.caption, weight: .semibold, design: .monospaced))
                         .foregroundStyle(theme.accent)
                 }
                 Spacer()
@@ -469,23 +478,23 @@ struct ContentView: View {
                     globalActions
                 } label: {
                     Label("Menu", systemImage: "ellipsis.circle")
-                        .font(.system(size: 10))
+                        .font(.system(size: typography.secondary))
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Herdr menu")
                 Text(herdr.surface == nil ? "TEXT" : "LIVE")
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.system(size: typography.caption, design: .monospaced))
                     .foregroundStyle(herdr.surface == nil ? Color.secondary : theme.accent)
                     .help(herdr.surfaceError ?? (herdr.surface == nil ? "Text snapshot" : "Live Herdr surface"))
                 if !herdr.isConnected {
                     Text("Disconnected")
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: typography.secondary, design: .monospaced))
                         .foregroundStyle(theme.warning)
                 }
             }
             .padding(.horizontal, 11)
-            .frame(height: 35)
+            .frame(height: typography.metric(35))
             .background(barBackground)
             .contextMenu {
                 if let selectedWorkspace {
@@ -506,14 +515,14 @@ struct ContentView: View {
                             } label: {
                                 HStack(spacing: 5) {
                                     Image(systemName: "terminal")
-                                        .font(.system(size: 10))
+                                        .font(.system(size: typography.secondary))
                                     Text(tab.label).lineLimit(1)
                                     let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot)
                                     HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                                 }
-                                .font(.system(size: 11))
+                                .font(.system(size: typography.body))
                                 .padding(.horizontal, 10)
-                                .frame(height: 27)
+                                .frame(height: typography.metric(27))
                                 .background(
                                     activeDocumentID == nil && herdr.selectedTabID == tab.tabID
                                         ? Color.primary.opacity(0.09) : Color.clear,
@@ -538,7 +547,7 @@ struct ContentView: View {
                                 .disabled(selectedTabs.count < 2)
                             }
                         }
-                        if !documents.isEmpty || showsSearchTab { Divider().frame(height: 17).padding(.horizontal, 4) }
+                        if !documents.isEmpty || showsSearchTab { Divider().frame(height: typography.metric(17)).padding(.horizontal, 4) }
                         if showsSearchTab {
                             HStack(spacing: 0) {
                                 Button { openSearch(replace: false) } label: {
@@ -546,16 +555,16 @@ struct ContentView: View {
                                         Image(systemName: "magnifyingglass").foregroundStyle(theme.accent)
                                         Text(search.title).lineLimit(1).frame(maxWidth: 160)
                                     }
-                                    .font(.system(size: 11))
+                                    .font(.system(size: typography.body))
                                     .padding(.leading, 9)
-                                    .frame(height: 27)
+                                    .frame(height: typography.metric(27))
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                                 Button { closeSearch() } label: {
                                     Image(systemName: "xmark")
-                                        .font(.system(size: 8))
-                                        .frame(width: 22, height: 27)
+                                        .font(.system(size: typography.tiny))
+                                        .frame(width: 22, height: typography.metric(27))
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -572,15 +581,15 @@ struct ContentView: View {
                                         Text(document.title).lineLimit(1)
                                         if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
                                     }
-                                    .font(.system(size: 11))
+                                    .font(.system(size: typography.body))
                                     .padding(.leading, 9)
-                                    .frame(height: 27)
+                                    .frame(height: typography.metric(27))
                                 }
                                 .buttonStyle(.plain)
                                 Button { closeDocument(document.id) } label: {
                                     Image(systemName: "xmark")
-                                        .font(.system(size: 8))
-                                        .frame(width: 22, height: 27)
+                                        .font(.system(size: typography.tiny))
+                                        .frame(width: 22, height: typography.metric(27))
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -594,8 +603,8 @@ struct ContentView: View {
                             herdr.createTab()
                         } label: {
                             Image(systemName: "plus")
-                                .font(.system(size: 10, weight: .semibold))
-                                .frame(width: 26, height: 25)
+                                .font(.system(size: typography.secondary, weight: .semibold))
+                                .frame(width: 26, height: typography.metric(25))
                         }
                         .buttonStyle(.plain)
                         .help("New Tab")
@@ -603,7 +612,7 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 7)
                 }
-                .frame(height: 31)
+                .frame(height: typography.metric(31))
                 .background(barBackground)
                 Divider()
 
@@ -685,10 +694,10 @@ struct ContentView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .font(.system(size: 10, design: .monospaced))
+            .font(.system(size: typography.secondary, design: .monospaced))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
-            .frame(height: 26)
+            .frame(height: typography.metric(26))
             .background(barBackground)
             .contentShape(Rectangle())
             .onTapGesture { herdr.selectedPaneID = pane.paneID }
@@ -1060,7 +1069,7 @@ struct ContentView: View {
 
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(size: typography.caption, weight: .semibold))
             .foregroundStyle(.tertiary)
             .tracking(0.7)
             .padding(.horizontal, 8)
@@ -1087,8 +1096,20 @@ struct ContentView: View {
 
 private extension View {
     func sidebarRow(selected: Bool, height: CGFloat = 27) -> some View {
-        padding(.horizontal, 8)
-            .frame(height: height)
+        modifier(SidebarRowModifier(selected: selected, height: height))
+    }
+}
+
+private struct SidebarRowModifier: ViewModifier {
+    @Environment(\.xherdrTypography) private var typography
+    let selected: Bool
+    /// Height at 11 pt text; grows with the interface text size.
+    let height: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 8)
+            .frame(minHeight: typography.metric(height))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 selected ? Color.primary.opacity(0.08) : Color.clear,
@@ -1144,6 +1165,7 @@ enum AppActions {
 }
 
 private struct SidebarResizeHandle: View {
+    @Environment(\.xherdrTypography) private var typography
     @Binding var width: Double
     let defaultWidth: Double
     /// The side of the window the sidebar sits on; dragging away from it widens the sidebar.

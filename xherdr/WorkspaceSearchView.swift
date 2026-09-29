@@ -138,6 +138,7 @@ final class WorkspaceSearchModel: ObservableObject {
 }
 
 struct WorkspaceSearchView: View {
+    @Environment(\.xherdrTypography) private var typography
     @Environment(\.xherdrTheme) private var theme
     @ObservedObject var model: WorkspaceSearchModel
     let onOpen: (WorkspaceFileLocation, String, Int, NSRange?) -> Void
@@ -178,16 +179,16 @@ struct WorkspaceSearchView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: model.showsReplace ? "text.magnifyingglass" : "magnifyingglass")
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: typography.title, weight: .medium))
                 .foregroundStyle(theme.accent)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 1) {
                 Text(model.showsReplace ? "Project Search & Replace" : "Project Search")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: typography.emphasis, weight: .semibold))
                 Text(model.showsReplace
                      ? "Find text in every file of the Space and replace matches; replaced files are saved to disk."
                      : "Find text in every file of the Space, including remote Spaces over SSH.")
-                    .font(.system(size: 10))
+                    .font(.system(size: typography.secondary))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -195,14 +196,14 @@ struct WorkspaceSearchView: View {
             if let location = model.location {
                 Label("\(location.machineLabel) · \(location.workspaceLabel)",
                       systemImage: location.isLocal ? "desktopcomputer" : "network")
-                    .font(.system(size: 10))
+                    .font(.system(size: typography.secondary))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .help(location.root)
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 44)
+        .frame(height: typography.metric(44))
     }
 
     // MARK: - Search bar
@@ -240,7 +241,7 @@ struct WorkspaceSearchView: View {
             if model.showsReplace {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.turn.down.right")
-                        .font(.system(size: 11))
+                        .font(.system(size: typography.body))
                         .foregroundStyle(.secondary)
                         .frame(width: 14)
                         .help("Replace with")
@@ -264,14 +265,14 @@ struct WorkspaceSearchView: View {
                     field("Exclude: e.g. Vendor/**, *.lock", text: $model.options.exclude, focus: .exclude)
                     Toggle("Ignored files", isOn: $model.options.includeIgnored)
                         .toggleStyle(.checkbox)
-                        .font(.system(size: 11))
+                        .font(.system(size: typography.body))
                         .help("Also search files ignored by .gitignore")
                 }
             }
             if let error = model.error {
-                Text(error).font(.system(size: 11)).foregroundStyle(theme.error)
+                Text(error).font(.system(size: typography.body)).foregroundStyle(theme.error)
             } else if let status = model.status {
-                Text(status).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                Text(status).font(.system(size: typography.body)).foregroundStyle(.secondary).lineLimit(2)
             }
         }
         .padding(.horizontal, 12)
@@ -281,9 +282,9 @@ struct WorkspaceSearchView: View {
     private func field(_ prompt: String, text: Binding<String>, focus: Field) -> some View {
         TextField(prompt, text: text)
             .textFieldStyle(.plain)
-            .font(.system(size: 12, design: .monospaced))
+            .font(.system(size: typography.code, design: .monospaced))
             .padding(.horizontal, 8)
-            .frame(height: 26)
+            .frame(height: typography.metric(26))
             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5)
                 .stroke(focus == .query && model.error != nil ? theme.error.opacity(0.7)
@@ -294,9 +295,9 @@ struct WorkspaceSearchView: View {
     private func toggle(_ label: String, help: String, isOn: Binding<Bool>, underline: Bool = false) -> some View {
         Button { isOn.wrappedValue.toggle() } label: {
             Text(label)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: typography.body, weight: .semibold, design: .monospaced))
                 .underline(underline)
-                .frame(width: 26, height: 22)
+                .frame(width: 26, height: typography.metric(22))
                 .background(isOn.wrappedValue ? theme.accent.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 4))
                 .foregroundStyle(isOn.wrappedValue ? theme.accent : Color.secondary)
                 .contentShape(Rectangle())
@@ -309,8 +310,8 @@ struct WorkspaceSearchView: View {
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 11))
-                .frame(width: 24, height: 22)
+                .font(.system(size: typography.body))
+                .frame(width: 24, height: typography.metric(22))
                 .background(active ? theme.accent.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 4))
                 .foregroundStyle(active ? theme.accent : Color.secondary)
                 .contentShape(Rectangle())
@@ -323,9 +324,9 @@ struct WorkspaceSearchView: View {
                                action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: symbol)
-                .font(.system(size: 10, weight: active ? .semibold : .regular))
+                .font(.system(size: typography.secondary, weight: active ? .semibold : .regular))
                 .padding(.horizontal, 7)
-                .frame(height: 22)
+                .frame(height: typography.metric(22))
                 .background(active ? theme.accent.opacity(0.25) : Color.primary.opacity(0.06),
                             in: RoundedRectangle(cornerRadius: 4))
                 .foregroundStyle(active ? theme.accent : Color.secondary)
@@ -348,7 +349,7 @@ struct WorkspaceSearchView: View {
             Text(total == 0 ? "0/0" : "\(model.activeMatch + 1)/\(total)\(suffix)")
                 .foregroundStyle(total == 0 && !model.options.isEmpty && !model.isSearching ? theme.error : Color.secondary)
         }
-        .font(.system(size: 11, design: .monospaced))
+        .font(.system(size: typography.body, design: .monospaced))
         .frame(minWidth: 64, alignment: .trailing)
     }
 
@@ -382,9 +383,9 @@ struct WorkspaceSearchView: View {
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(.tertiary)
                 .padding(.bottom, 4)
-            Text(title).font(.system(size: 15, weight: .semibold))
+            Text(title).font(.system(size: typography.heading, weight: .semibold))
             if let detail {
-                Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text(detail).font(.system(size: typography.body)).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
         }
         .padding(20)
@@ -400,7 +401,7 @@ struct WorkspaceSearchView: View {
                         fileHeader(file)
                         ForEach(Array(file.excerpts.enumerated()), id: \.offset) { index, excerpt in
                             if index > 0 {
-                                Text("⋯").font(.system(size: 10)).foregroundStyle(.tertiary)
+                                Text("⋯").font(.system(size: typography.secondary)).foregroundStyle(.tertiary)
                                     .padding(.leading, 18).frame(height: 14)
                             }
                             ForEach(excerpt) { line in
@@ -438,12 +439,12 @@ struct WorkspaceSearchView: View {
                     .truncationMode(.middle)
                 Spacer(minLength: 6)
                 Text("\(file.matchCount)")
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(size: typography.secondary, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            .font(.system(size: 11))
+            .font(.system(size: typography.body))
             .padding(.horizontal, 12)
-            .frame(height: 26)
+            .frame(height: typography.metric(26))
             .background(Color.primary.opacity(0.04))
             .contentShape(Rectangle())
         }
@@ -465,9 +466,9 @@ struct WorkspaceSearchView: View {
                 .truncationMode(.tail)
             Spacer(minLength: 0)
         }
-        .font(.system(size: 11.5, design: .monospaced))
+        .font(.system(size: typography.code, design: .monospaced))
         .padding(.trailing, 12)
-        .frame(height: 19)
+        .frame(height: typography.metric(19))
         .background(isActiveLine ? theme.accent.opacity(0.10) : .clear)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { open(line, file: file, occurrence: activeOccurrence ?? 0) }
