@@ -28,11 +28,31 @@ struct WorkspaceFileChange: Identifiable {
     let originalPath: String?
 
     var id: String { path }
-    var statusLabel: String {
-        if indexStatus == "?" { return "U" }
-        if indexStatus != " " && worktreeStatus != " " { return "M" }
-        if indexStatus != " " { return "S" }
-        return "M"
+    var kind: Kind {
+        let statuses = [indexStatus, worktreeStatus]
+        if indexStatus == "?" { return .untracked }
+        if statuses.contains("U") || (indexStatus == "A" && worktreeStatus == "A")
+            || (indexStatus == "D" && worktreeStatus == "D") { return .conflicted }
+        if statuses.contains("D") { return .deleted }
+        if indexStatus == "A" { return .added }
+        if indexStatus == "R" || indexStatus == "C" { return .renamed }
+        return .modified
+    }
+    var statusLabel: String { kind.label }
+
+    enum Kind: Int {
+        case untracked, renamed, modified, added, deleted, conflicted
+
+        var label: String {
+            switch self {
+            case .modified: return "M"
+            case .untracked: return "U"
+            case .added: return "A"
+            case .deleted: return "D"
+            case .renamed: return "R"
+            case .conflicted: return "!"
+            }
+        }
     }
 }
 

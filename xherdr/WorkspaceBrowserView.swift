@@ -155,6 +155,7 @@ struct WorkspaceBrowserView: View {
                     : (modifiedOnly ? listing.files.filter { changedPaths.contains($0) } : listing.files)
                 let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
                                                uniquingKeysWith: { first, _ in first })
+                let directoryKinds = directoryKinds(listing.changes)
                 let rows = WorkspaceTreeNode.visibleRows(
                     paths: paths,
                     expanded: expandedDirectories,
@@ -173,7 +174,8 @@ struct WorkspaceBrowserView: View {
                             }
                             ForEach(rows) { row in
                                 treeRow(row, location: location,
-                                        change: changesByPath[row.node.path])
+                                        change: changesByPath[row.node.path],
+                                        directoryKind: directoryKinds[row.node.path])
                             }
                         }
                     }
@@ -240,8 +242,10 @@ struct WorkspaceBrowserView: View {
     }
 
     private func treeRow(_ row: WorkspaceTreeRow, location: WorkspaceFileLocation,
-                         change: WorkspaceFileChange?) -> some View {
+                         change: WorkspaceFileChange?,
+                         directoryKind: WorkspaceFileChange.Kind?) -> some View {
         let node = row.node
+        let kind = node.isDirectory ? directoryKind : change?.kind
         let identity = treeIdentity(location) + "|" + node.path
         let isExpanded = isFilteredFiles
             ? !collapsedModifiedDirectories.contains(identity) : expandedDirectories.contains(identity)
@@ -272,11 +276,18 @@ struct WorkspaceBrowserView: View {
                 Text(node.displayName)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .strikethrough(!node.isDirectory && kind == .deleted)
+                    .foregroundStyle(kind.map(statusColor) ?? Color.primary)
                 Spacer(minLength: 0)
-                if (showsChanges || isFilteredFiles), let change {
+                if let change, !node.isDirectory {
                     Text(change.statusLabel)
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(statusColor(change.kind))
+                } else if let kind {
+                    Circle()
+                        .fill(statusColor(kind).opacity(0.8))
+                        .frame(width: 5, height: 5)
+                        .padding(.trailing, 2)
                 }
             }
             .font(.system(size: 11))
@@ -299,6 +310,31 @@ struct WorkspaceBrowserView: View {
         .buttonStyle(.plain)
         .help(node.path)
         .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
+    }
+
+    private func statusColor(_ kind: WorkspaceFileChange.Kind) -> Color {
+        switch kind {
+        case .modified: return Color(red: 0.89, green: 0.75, blue: 0.55)
+        case .untracked: return Color(white: 0.6)
+        case .added: return Color(red: 0.51, green: 0.72, blue: 0.55)
+        case .deleted: return Color(red: 0.78, green: 0.31, blue: 0.22)
+        case .renamed: return Color(red: 0.45, green: 0.66, blue: 0.87)
+        case .conflicted: return Color(red: 0.89, green: 0.40, blue: 0.42)
+        }
+    }
+
+    /// Strongest change kind under each directory, keyed by directory path.
+    private func directoryKinds(_ changes: [WorkspaceFileChange]) -> [String: WorkspaceFileChange.Kind] {
+        var kinds: [String: WorkspaceFileChange.Kind] = [:]
+        for change in changes {
+            var directory = (change.path as NSString).deletingLastPathComponent
+            while !directory.isEmpty {
+                if let existing = kinds[directory], existing.rawValue >= change.kind.rawValue { break }
+                kinds[directory] = change.kind
+                directory = (directory as NSString).deletingLastPathComponent
+            }
+        }
+        return kinds
     }
 
     private func fileIcon(_ path: String) -> String {
