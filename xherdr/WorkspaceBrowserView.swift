@@ -6,6 +6,8 @@ struct WorkspaceBrowserView: View {
     let localSnapshot: HerdrSnapshot?
     let localWorkspaceID: String?
     let localSession: String
+    /// The SSH machine chosen in the session picker; nil browses this Mac.
+    let machine: HerdrMachineProfile?
     let refreshVersion: Int
     let onOpenFile: (WorkspaceFileLocation, String) -> Void
     let onOpenDiff: (WorkspaceFileLocation, String) -> Void
@@ -16,8 +18,6 @@ struct WorkspaceBrowserView: View {
     let onOpenWorktree: (String, String) -> Void
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
 
-    @State private var machines: [HerdrMachineProfile] = []
-    @State private var selectedMachineID = "local"
     @State private var remoteSnapshot: HerdrSnapshot?
     @State private var remoteWorkspaceID: String?
     @State private var listing: WorkspaceFileListing?
@@ -37,10 +37,6 @@ struct WorkspaceBrowserView: View {
 
     private var isFilteredFiles: Bool { !showsChanges && modifiedOnly }
 
-    private var machine: HerdrMachineProfile? {
-        machines.first { $0.id == selectedMachineID }
-    }
-
     private var snapshot: HerdrSnapshot? {
         machine == nil ? localSnapshot : remoteSnapshot
     }
@@ -56,7 +52,7 @@ struct WorkspaceBrowserView: View {
     }
 
     private var listingIdentity: String {
-        (location?.identity ?? "none|\(selectedMachineID)|\(workspaceID ?? "")") + "|\(refreshVersion)"
+        (location?.identity ?? "none|\(machine?.id ?? "local")|\(workspaceID ?? "")") + "|\(refreshVersion)"
     }
 
     var body: some View {
@@ -70,7 +66,7 @@ struct WorkspaceBrowserView: View {
                 .frame(minHeight: 160)
         }
         .background(theme.sidebarBackground)
-        .task { loadMachines() }
+        .task(id: machine) { machineChanged() }
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { onLocationChange(location) }
         .alert("Git operation failed", isPresented: Binding(
@@ -89,6 +85,7 @@ struct WorkspaceBrowserView: View {
                     .font(.system(size: typography.secondary, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .tracking(0.7)
+                machineIcon
                 Spacer()
                 if !showsChanges {
                     Menu {
@@ -124,24 +121,6 @@ struct WorkspaceBrowserView: View {
             .padding(.horizontal, 11)
             .frame(height: typography.metric(35))
             Divider()
-
-            HStack(spacing: 5) {
-                Menu {
-                    Button("Local") { selectMachine("local") }
-                    ForEach(machines) { profile in
-                        Button(profile.label) { selectMachine(profile.id) }
-                    }
-                } label: {
-                    Label(machine?.label ?? "Local", systemImage: "desktopcomputer")
-                        .lineLimit(1)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-            .font(.system(size: typography.body))
-            .padding(.horizontal, 9)
-            .frame(height: typography.metric(27))
 
             if let snapshot, machine != nil {
                 Menu {
@@ -475,8 +454,15 @@ struct WorkspaceBrowserView: View {
         }
     }
 
-    private func selectMachine(_ id: String) {
-        selectedMachineID = id
+    /// Shows whether the explorer browses this Mac or an SSH machine.
+    private var machineIcon: some View {
+        Image(systemName: machine == nil ? "desktopcomputer" : "network")
+            .font(.system(size: typography.secondary))
+            .foregroundStyle(machine == nil ? Color.secondary : theme.accent)
+            .help(machine.map { "SSH · \($0.label)" } ?? "Local")
+    }
+
+    private func machineChanged() {
         remoteSnapshot = nil
         remoteWorkspaceID = nil
         listing = nil
@@ -486,16 +472,8 @@ struct WorkspaceBrowserView: View {
 
     private func refresh() {
         WorkspaceFiles.forgetRecentResults()
-        loadMachines()
         if let machine { loadRemote(machine) }
         else { loadListing() }
-    }
-
-    private func loadMachines() {
-        Task {
-            let result = await Task.detached { Result { try WorkspaceFiles.machines() } }.value
-            if case .success(let profiles) = result { machines = profiles }
-        }
     }
 
     private func loadRemote(_ profile: HerdrMachineProfile) {
@@ -503,7 +481,7 @@ struct WorkspaceBrowserView: View {
         error = nil
         Task {
             let result = await Task.detached { Result { try WorkspaceFiles.remoteSnapshot(profile) } }.value
-            guard selectedMachineID == profile.id else { return }
+            guard machine?.id == profile.id else { return }
             switch result {
             case .success(let snapshot):
                 remoteSnapshot = snapshot

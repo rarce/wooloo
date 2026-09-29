@@ -13,6 +13,9 @@ struct ContentView: View {
     @State private var shortcutPrefixActive = false
     @State private var requestedSessionName = ""
     @State private var availableSessions: [String] = []
+    @State private var machines: [HerdrMachineProfile] = []
+    /// The SSH machine whose files and repository the explorer shows; nil is this Mac.
+    @State private var explorerMachine: HerdrMachineProfile?
     @State private var documents: [WorkspaceDocument] = []
     @State private var activeDocumentID: String?
     @State private var pendingCloseDocumentID: String?
@@ -146,6 +149,7 @@ struct ContentView: View {
                 WorkspaceBrowserView(localSnapshot: herdr.snapshot,
                                      localWorkspaceID: herdr.selectedWorkspaceID,
                                      localSession: herdr.sessionName,
+                                     machine: explorerMachine,
                                      refreshVersion: fileRefreshVersion,
                                      onOpenFile: { location, path in openDocument(.file, path: path, at: location) },
                                      onOpenDiff: { location, path in openDocument(.change, path: path, at: location) },
@@ -388,6 +392,10 @@ struct ContentView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "point.3.connected.trianglepath.dotted")
                         Text(herdr.sessionName).lineLimit(1)
+                        if let explorerMachine {
+                            Image(systemName: "network").foregroundStyle(theme.accent)
+                            Text(explorerMachine.label).lineLimit(1)
+                        }
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.system(size: typography.caption))
@@ -444,13 +452,58 @@ struct ContentView: View {
                     if let error = herdr.sessionSelectionError {
                         Text(error).font(.caption).foregroundStyle(theme.warning)
                     }
+                    Divider()
+                    Text("Files and changes")
+                        .font(.subheadline.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        machineRow(nil)
+                        ForEach(machines) { machineRow($0) }
+                    }
                 }
                 .padding(14)
                 .frame(width: 305)
-                .onAppear { availableSessions = HerdrStore.availableSessions() }
+                .onAppear {
+                    availableSessions = HerdrStore.availableSessions()
+                    loadMachines()
+                }
             }
         }
         .background(sidebarBackground)
+    }
+
+    private func machineRow(_ profile: HerdrMachineProfile?) -> some View {
+        let selected = profile?.id == explorerMachine?.id
+        return Button {
+            explorerMachine = profile
+            showsSessionPicker = false
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? theme.accent : Color.secondary)
+                Image(systemName: profile == nil ? "desktopcomputer" : "network")
+                    .foregroundStyle(.secondary)
+                Text(profile?.label ?? "Local").font(.system(size: typography.emphasis))
+                if let profile {
+                    Text(profile.target).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(height: typography.metric(22))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func loadMachines() {
+        Task {
+            let result = await Task.detached { Result { try WorkspaceFiles.machines() } }.value
+            guard case .success(let profiles) = result else { return }
+            machines = profiles
+            // A machine removed from Herdr's list falls back to this Mac.
+            if let current = explorerMachine, !profiles.contains(where: { $0.id == current.id }) {
+                explorerMachine = nil
+            }
+        }
     }
 
     private var mainArea: some View {
@@ -463,33 +516,20 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(showsSidebar ? "Hide sidebar" : "Show sidebar")
+                Text(selectedWorkspace?.label ?? "Herdr")
+                    .font(.system(size: typography.emphasis, weight: .semibold))
+                    .lineLimit(1)
                 Button { showsFilesSidebar.toggle() } label: {
                     Image(systemName: "sidebar.right")
                 }
                 .buttonStyle(.borderless)
                 .help(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes")
-                Text(selectedWorkspace?.label ?? "Herdr")
-                    .font(.system(size: typography.emphasis, weight: .semibold))
-                    .lineLimit(1)
                 if shortcutPrefixActive {
                     Text("PREFIX")
                         .font(.system(size: typography.caption, weight: .semibold, design: .monospaced))
                         .foregroundStyle(theme.accent)
                 }
                 Spacer()
-                Menu {
-                    globalActions
-                } label: {
-                    Label("Menu", systemImage: "ellipsis.circle")
-                        .font(.system(size: typography.secondary))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Herdr menu")
-                Text(herdr.surfaceLayout == nil ? "TEXT" : "LIVE")
-                    .font(.system(size: typography.caption, design: .monospaced))
-                    .foregroundStyle(herdr.surfaceLayout == nil ? Color.secondary : theme.accent)
-                    .help(herdr.surfaceError ?? (herdr.surfaceLayout == nil ? "Text snapshot" : "Live Herdr surface"))
                 if !herdr.isConnected {
                     Text("Disconnected")
                         .font(.system(size: typography.secondary, design: .monospaced))
