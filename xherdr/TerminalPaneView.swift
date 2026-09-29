@@ -554,8 +554,78 @@ private final class HerdrTerminalTextView: NSTextView {
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        if forwardMouse(.down(1), event: event, hold: true) { return }
+        // Right-click opens the pane menu; Option-right-click still reaches mouse-aware programs.
+        if event.modifierFlags.contains(.option),
+           forwardMouse(.down(1), event: event, hold: true) { return }
+        if let surface, let (id, _, _) = mouseHit(event, in: surface) { selectPane?(id) }
+        window?.makeFirstResponder(self)
         super.rightMouseDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(standardItem("Copy", #selector(copy(_:)), enabled: selectedRange().length > 0))
+        menu.addItem(standardItem("Paste", #selector(paste(_:)),
+                                  enabled: NSPasteboard.general.string(forType: .string) != nil))
+        menu.addItem(standardItem("Select All", #selector(selectAll(_:)), enabled: true))
+        menu.addItem(.separator())
+        menu.addItem(herdrItem("Split Right", "split_vertical", symbol: "rectangle.split.2x1"))
+        menu.addItem(herdrItem("Split Down", "split_horizontal", symbol: "rectangle.split.1x2"))
+        menu.addItem(herdrItem("Zoom Pane", "zoom", symbol: "arrow.up.left.and.arrow.down.right"))
+        let focus = NSMenuItem(title: "Focus Pane", action: nil, keyEquivalent: "")
+        focus.image = NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
+        focus.submenu = NSMenu()
+        focus.submenu?.addItem(herdrItem("Left", "focus_pane_left", symbol: "arrow.left"))
+        focus.submenu?.addItem(herdrItem("Right", "focus_pane_right", symbol: "arrow.right"))
+        focus.submenu?.addItem(herdrItem("Up", "focus_pane_up", symbol: "arrow.up"))
+        focus.submenu?.addItem(herdrItem("Down", "focus_pane_down", symbol: "arrow.down"))
+        menu.addItem(focus)
+        menu.addItem(.separator())
+        menu.addItem(herdrItem("Copy Working Directory", "copy_pane_cwd", symbol: "doc.on.doc"))
+        menu.addItem(herdrItem("Reveal in Finder", "reveal_pane_cwd", symbol: "folder"))
+        menu.addItem(.separator())
+        menu.addItem(herdrItem("New Tab", "new_tab", symbol: "plus"))
+        menu.addItem(herdrItem("Previous Tab", "previous_tab", symbol: "chevron.left"))
+        menu.addItem(herdrItem("Next Tab", "next_tab", symbol: "chevron.right"))
+        menu.addItem(herdrItem("New Space", "new_workspace", symbol: "plus.square"))
+        menu.addItem(.separator())
+        menu.addItem(herdrItem("Toggle Sidebar", "toggle_sidebar", symbol: "sidebar.left"))
+        menu.addItem(herdrItem("Shortcut Help", "help", symbol: "keyboard"))
+        menu.addItem(.separator())
+        menu.addItem(herdrItem("Close Pane…", "close_pane", symbol: "xmark.square"))
+        return menu
+    }
+
+    private func standardItem(_ title: String, _ selector: Selector, enabled: Bool) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: enabled ? selector : nil, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    /// A menu item that runs a Herdr action and shows its binding from config.toml.
+    private func herdrItem(_ title: String, _ action: String, symbol: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(performHerdrAction(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = action
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        if let shortcut = shortcutMap.displayLabel(for: action) {
+            let font = NSFont.menuFont(ofSize: 0)
+            let style = NSMutableParagraphStyle()
+            style.tabStops = [NSTextTab(textAlignment: .right, location: 250)]
+            let label = NSMutableAttributedString(string: title + "\t",
+                                                  attributes: [.font: font, .paragraphStyle: style])
+            label.append(NSAttributedString(string: shortcut, attributes: [
+                .font: font, .paragraphStyle: style, .foregroundColor: NSColor.secondaryLabelColor
+            ]))
+            item.attributedTitle = label
+            item.toolTip = "Herdr shortcut: \(shortcut)"
+        }
+        return item
+    }
+
+    @objc private func performHerdrAction(_ sender: NSMenuItem) {
+        guard let action = sender.representedObject as? String else { return }
+        onShortcut?(action)
     }
 
     override func rightMouseUp(with event: NSEvent) {

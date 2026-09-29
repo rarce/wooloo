@@ -838,6 +838,9 @@ struct ContentView: View {
         case "close_pane":
             guard let paneID = herdr.selectedPaneID else { return }
             closeTarget = .pane(paneID)
+        case "copy_pane_cwd", "reveal_pane_cwd":
+            guard let cwd = selectedPanes.first(where: { $0.paneID == herdr.selectedPaneID })?.cwd else { return }
+            if action == "copy_pane_cwd" { AppActions.copy(cwd) } else { AppActions.reveal(cwd) }
         default:
             if action.hasPrefix("switch_tab_"),
                let number = Int(action.dropFirst("switch_tab_".count)),

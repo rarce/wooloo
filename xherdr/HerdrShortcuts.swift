@@ -141,6 +141,33 @@ struct HerdrShortcutMap {
         return Self(document: HerdrConfigDocument(text: content))
     }
 
+    /// The first binding for an action in Mac notation, for example "⌃B V" for prefix+v.
+    func displayLabel(for action: String) -> String? {
+        guard let raw = labels[action]?.first(where: { !$0.isEmpty }) else { return nil }
+        if raw.lowercased().hasPrefix("prefix+") {
+            return Self.displayChord(prefixLabel) + " " + Self.displayChord(String(raw.dropFirst(7)))
+        }
+        return Self.displayChord(raw)
+    }
+
+    private static func displayChord(_ raw: String) -> String {
+        var parts = raw.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
+        if raw.hasSuffix("++") { parts = parts.dropLast(2) + ["+"] }
+        guard let key = parts.last, !key.isEmpty else { return raw }
+        let modifiers = Set(parts.dropLast().map { $0.lowercased() })
+        var symbols = ""
+        if modifiers.contains("ctrl") || modifiers.contains("control") { symbols += "⌃" }
+        if modifiers.contains("alt") || modifiers.contains("option") || modifiers.contains("meta") { symbols += "⌥" }
+        if modifiers.contains("shift") || (key.count == 1 && key.first!.isUppercase) { symbols += "⇧" }
+        if modifiers.contains("cmd") || modifiers.contains("command") || modifiers.contains("super") { symbols += "⌘" }
+        let names = ["minus": "-", "plus": "+", "comma": ",", "period": ".", "slash": "/", "backslash": "\\",
+                     "semicolon": ";", "quote": "'", "backtick": "`", "space": "Space", "enter": "↩",
+                     "return": "↩", "esc": "⎋", "escape": "⎋", "tab": "⇥", "backspace": "⌫", "delete": "⌦",
+                     "left": "←", "right": "→", "up": "↑", "down": "↓", "home": "↖", "end": "↘",
+                     "pageup": "⇞", "pagedown": "⇟"]
+        return symbols + (names[key.lowercased()] ?? key.uppercased())
+    }
+
     func match(_ event: NSEvent, prefixPending: Bool) -> Match {
         let candidates = HerdrKeyChord.candidates(for: event)
         if prefixPending {
