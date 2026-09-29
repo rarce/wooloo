@@ -16,9 +16,13 @@ struct WorkspaceBrowserView: View {
     @State private var error: String?
     @State private var isLoading = false
     @State private var showsChanges = false
+    @State private var modifiedOnly = false
     @State private var expandedDirectories: Set<String> = []
+    @State private var collapsedModifiedDirectories: Set<String> = []
     @State private var collapsedRoots: Set<String> = []
     @State private var selectedItem: String?
+
+    private var isFilteredFiles: Bool { !showsChanges && modifiedOnly }
 
     private var machine: HerdrMachineProfile? {
         machines.first { $0.id == selectedMachineID }
@@ -50,6 +54,30 @@ struct WorkspaceBrowserView: View {
                     .foregroundStyle(.secondary)
                     .tracking(0.7)
                 Spacer()
+                if !showsChanges {
+                    Menu {
+                        Button {
+                            modifiedOnly = false
+                        } label: {
+                            Label("All files", systemImage: modifiedOnly ? "doc.text" : "checkmark")
+                        }
+                        Button {
+                            modifiedOnly = true
+                        } label: {
+                            Label("Modified only", systemImage: modifiedOnly ? "checkmark" : "line.3.horizontal.decrease")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "line.3.horizontal.decrease")
+                            if modifiedOnly { Text("Modified") }
+                        }
+                        .font(.system(size: 10, weight: modifiedOnly ? .semibold : .regular))
+                        .foregroundStyle(modifiedOnly ? Color.cyan : Color.secondary)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help(modifiedOnly ? "Showing modified files" : "Showing all files")
+                }
                 Button { refresh() } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 10))
@@ -110,22 +138,26 @@ struct WorkspaceBrowserView: View {
                     .padding(11)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if let listing, let location {
-                let paths = showsChanges ? listing.changes.map(\.path) : listing.files
+                let changedPaths = Set(listing.changes.map(\.path))
+                let paths = showsChanges ? listing.changes.map(\.path)
+                    : (modifiedOnly ? listing.files.filter { changedPaths.contains($0) } : listing.files)
                 let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
                                                uniquingKeysWith: { first, _ in first })
                 let rows = WorkspaceTreeNode.visibleRows(
                     paths: paths,
                     expanded: expandedDirectories,
+                    collapsed: collapsedModifiedDirectories,
+                    expandAll: isFilteredFiles,
                     identity: treeIdentity(location)
                 )
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         treeRoot(location)
                         if !collapsedRoots.contains(treeIdentity(location)) {
-                            if showsChanges && !listing.hasGit {
+                            if (showsChanges || isFilteredFiles) && !listing.hasGit {
                                 hint("No Git repository in this Space")
                             } else if paths.isEmpty {
-                                hint(showsChanges ? "No changes" : "No files")
+                                hint(showsChanges ? "No changes" : (modifiedOnly ? "No modified files" : "No files"))
                             }
                             ForEach(rows) { row in
                                 treeRow(row, location: location,
@@ -135,7 +167,7 @@ struct WorkspaceBrowserView: View {
                     }
                     .padding(.vertical, 3)
                 }
-                .id(showsChanges ? "changes|\(location.identity)" : "files|\(location.identity)")
+                .id(treeIdentity(location))
             } else {
                 hint("Select a Space to browse")
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -166,7 +198,7 @@ struct WorkspaceBrowserView: View {
     }
 
     private func treeIdentity(_ location: WorkspaceFileLocation) -> String {
-        "\(location.identity)|\(showsChanges ? "changes" : "files")"
+        "\(location.identity)|\(showsChanges ? "changes" : (modifiedOnly ? "modified" : "files"))"
     }
 
     private func treeRoot(_ location: WorkspaceFileLocation) -> some View {
@@ -201,12 +233,19 @@ struct WorkspaceBrowserView: View {
                          change: WorkspaceFileChange?) -> some View {
         let node = row.node
         let identity = treeIdentity(location) + "|" + node.path
-        let isExpanded = expandedDirectories.contains(identity)
+        let isExpanded = isFilteredFiles
+            ? !collapsedModifiedDirectories.contains(identity) : expandedDirectories.contains(identity)
         let isSelected = selectedItem == identity
         return Button {
             if node.isDirectory {
-                if isExpanded { expandedDirectories.remove(identity) }
-                else { expandedDirectories.insert(identity) }
+                if isFilteredFiles {
+                    if isExpanded { collapsedModifiedDirectories.insert(identity) }
+                    else { collapsedModifiedDirectories.remove(identity) }
+                } else if isExpanded {
+                    expandedDirectories.remove(identity)
+                } else {
+                    expandedDirectories.insert(identity)
+                }
             } else {
                 selectedItem = identity
                 if showsChanges { onOpenDiff(location, node.path) }
@@ -224,7 +263,7 @@ struct WorkspaceBrowserView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
-                if showsChanges, let change {
+                if (showsChanges || isFilteredFiles), let change {
                     Text(change.statusLabel)
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -322,7 +361,8 @@ private struct WorkspaceTreeNode {
     let isDirectory: Bool
     let children: [WorkspaceTreeNode]
 
-    static func visibleRows(paths: [String], expanded: Set<String>, identity: String) -> [WorkspaceTreeRow] {
+    static func visibleRows(paths: [String], expanded: Set<String>, collapsed: Set<String>,
+                            expandAll: Bool, identity: String) -> [WorkspaceTreeRow] {
         let root = WorkspaceTreeBuilderNode(name: "", path: "")
         for path in paths {
             let components = path.split(separator: "/").map(String.init)
@@ -345,7 +385,8 @@ private struct WorkspaceTreeNode {
         func append(_ nodes: [WorkspaceTreeNode], depth: Int) {
             for node in nodes {
                 rows.append(WorkspaceTreeRow(node: node, depth: depth))
-                if node.isDirectory && expanded.contains(identity + "|" + node.path) {
+                let key = identity + "|" + node.path
+                if node.isDirectory && (expandAll ? !collapsed.contains(key) : expanded.contains(key)) {
                     append(node.children, depth: depth + 1)
                 }
             }
