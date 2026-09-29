@@ -53,6 +53,14 @@ private struct XherdrCommands: Commands {
     private var hasPane: Bool { connected && context?.hasPane == true }
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Third-Party Notices") {
+                if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "txt") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+
         CommandGroup(replacing: .appSettings) {
             item("Herdr Settings…", "settings", enabled: context != nil)
                 .keyboardShortcut(",", modifiers: .command)

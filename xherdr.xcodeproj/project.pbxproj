@@ -29,6 +29,7 @@
 		A10000000000000000000058 /* WorkspaceDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000059 /* WorkspaceDiffView.swift */; };
 		A1000000000000000000005A /* DocumentFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005B /* DocumentFind.swift */; };
 		A10000000000000000000042 /* WorkspaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000043 /* WorkspaceSearch.swift */; };
+		C30000000000000000000001 /* THIRD_PARTY_NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */; };
 		A10000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000041 /* Assets.xcassets */; };
 		A10000000000000000000032 /* CodeEditSourceEditor in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000034 /* CodeEditSourceEditor */; };
 		A10000000000000000000035 /* CodeEditLanguages in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000037 /* CodeEditLanguages */; };
@@ -78,6 +79,7 @@
 		A10000000000000000000059 /* WorkspaceDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiffView.swift; sourceTree = "<group>"; };
 		A1000000000000000000005B /* DocumentFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentFind.swift; sourceTree = "<group>"; };
 		A10000000000000000000043 /* WorkspaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearch.swift; sourceTree = "<group>"; };
+		C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = THIRD_PARTY_NOTICES.txt; sourceTree = "<group>"; };
 		A10000000000000000000041 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000000000000000000005 /* xherdr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xherdr.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000002 /* TerminalPipelineMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPipelineMetrics.swift; sourceTree = "<group>"; };
@@ -98,6 +100,7 @@
 			children = (
 				A10000000000000000000007 /* xherdr */,
 				B20000000000000000000031 /* xherdrTests */,
+				C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */,
 				A10000000000000000000008 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -250,6 +253,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000040 /* Assets.xcassets in Resources */,
+				C30000000000000000000001 /* THIRD_PARTY_NOTICES.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

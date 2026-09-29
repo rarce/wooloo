@@ -25,3 +25,7 @@ Their source files are unchanged except for one change, marked "xherdr patch": `
 The local `Package.swift` files drop test targets, examples, and MarkdownView's default `LaTeX` trait, so SwiftMath and its ~7 MB of math fonts are not linked and `ENABLE_MATH_RENDERING` stays undefined.
 
 Remote runtime dependencies resolve through Swift Package Manager: swift-markdown and RichText (MarkdownView), Highlightr (MarkdownView, highlight.js under BSD-3-Clause), and [elk-swift](https://github.com/lukilabs/elk-swift) (BeautifulMermaid). elk-swift is licensed under EPL-2.0: linking it is fine, but modified elk-swift source files must be published under EPL-2.0, and its license notice must ship with xherdr.
+
+# Notices
+
+`THIRD_PARTY_NOTICES.txt` at the repository root collects the licenses of every package above, their SwiftPM dependencies, and the tree-sitter grammars built into CodeEditLanguages. It is copied into the app bundle and opened from xherdr → Third-Party Notices. After changing a dependency, build xherdr and run `scripts/third-party-notices.py`.
