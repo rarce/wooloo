@@ -143,6 +143,18 @@ struct TerminalPaneView: NSViewRepresentable {
         return style
     }()
 
+    /// Natural advance of a symbol, including any fallback font it renders with.
+    private static var advanceCache: [String: CGFloat] = [:]
+
+    private static func advance(of symbol: String, font: NSFont, bold: Bool) -> CGFloat {
+        let key = bold ? "b" + symbol : "r" + symbol
+        if let cached = advanceCache[key] { return cached }
+        let width = NSAttributedString(string: symbol, attributes: [.font: font]).size().width
+        if advanceCache.count > 4_096 { advanceCache.removeAll() }
+        advanceCache[key] = width
+        return width
+    }
+
     private static func render(_ surface: HerdrSurface) -> RenderedTerminalSurface {
         let output = NSMutableAttributedString(string: "")
         var cellOffsets: [Int] = []
@@ -168,7 +180,14 @@ struct TerminalPaneView: NSViewRepresentable {
                     .backgroundColor: isCursor ? foreground : (imageBehind ? NSColor.clear : background)
                 ]
                 if cell.modifier & 8 != 0 { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
-                output.append(NSAttributedString(string: cell.symbol.isEmpty ? " " : cell.symbol, attributes: attributes))
+                // Snap each glyph to its cells so the drawn columns match Herdr's grid.
+                let symbol = cell.symbol.isEmpty ? " " : cell.symbol
+                let isBold = cell.modifier & 1 != 0
+                let span = x + 1 < surface.width && surface.cells[y * surface.width + x + 1].skip ? 2 : 1
+                let kern = CGFloat(span) * cellWidth
+                    - advance(of: symbol, font: isBold ? boldFont : font, bold: isBold)
+                if abs(kern) > 0.01 { attributes[.kern] = kern }
+                output.append(NSAttributedString(string: symbol, attributes: attributes))
             }
             cellOffsets.append(output.length)
             if y + 1 < surface.height {
@@ -241,6 +260,10 @@ private final class HerdrTerminalTextView: NSTextView {
     private var renderedHeight = 0
     private var selectedSnapshot: String?
     private var selectionAtSnapshot: NSRange?
+    /// NSTextView tracks a selection drag inside mouseDown; replacing the text meanwhile
+    /// (a busy TUI redraws constantly) would move its anchor, so frames wait until release.
+    private var isTrackingSelection = false
+    private var pendingSurfaceText: RenderedTerminalSurface?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -342,6 +365,10 @@ private final class HerdrTerminalTextView: NSTextView {
     }
 
     func applySurfaceText(_ rendered: RenderedTerminalSurface) {
+        if isTrackingSelection {
+            pendingSurfaceText = rendered
+            return
+        }
         let selection = selectedRange()
         let hasSelection = selection.location != NSNotFound && selection.length > 0
         let oldStart = hasSelection ? cellAnchor(for: selection.location) : nil
@@ -455,8 +482,14 @@ private final class HerdrTerminalTextView: NSTextView {
            forwardMouse(.down(0), event: event, hold: true) { return }
         selectedSnapshot = nil
         selectionAtSnapshot = nil
+        isTrackingSelection = true
         super.mouseDown(with: event)
+        isTrackingSelection = false
         captureSelectionIfChanged()
+        if let pending = pendingSurfaceText {
+            pendingSurfaceText = nil
+            applySurfaceText(pending)
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
