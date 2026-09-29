@@ -20,6 +20,8 @@ xherdr is at the beginning of development. The compact SwiftUI app has a left si
 
 The JSON `pane.read` view remains a fallback while the endpoint is unavailable. Terminal programs that enable mouse reporting receive clicks, drags, and wheel events through the endpoint. Split borders can be dragged to resize panes. Text selection stays active as the live surface changes, and Command-C copies the selected text. The live surface also draws Herdr's native PNG, RGB, and RGBA image placements.
 
+The gear button in the sidebar opens Herdr settings. Guided sections cover terminal defaults, worktrees, appearance, and headless server size; the Advanced TOML section edits the complete local `config.toml`. Saving checks the file with `herdr config check`, refuses to overwrite external changes, then calls `server.reload_config` on the selected named session. The config file is shared by local Herdr sessions; xherdr's own native colors do not yet follow Herdr's terminal theme.
+
 The server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md). The [SwiftTerm evaluation](docs/swiftterm-evaluation.md) explains when a full terminal view would be useful.
 
 ## Run locally

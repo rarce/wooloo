@@ -4,6 +4,7 @@ struct ContentView: View {
     @StateObject private var herdr = HerdrStore()
     @State private var showsSidebar = true
     @State private var showsSessionPicker = false
+    @State private var showsSettings = false
     @State private var requestedSessionName = "xherdr-ui-test"
 
     private let sidebarBackground = Color(red: 0.105, green: 0.115, blue: 0.13)
@@ -33,6 +34,9 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .task { herdr.start() }
         .onDisappear { herdr.stop() }
+        .sheet(isPresented: $showsSettings) {
+            HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName)
+        }
     }
 
     private var sidebar: some View {
@@ -109,23 +113,33 @@ struct ContentView: View {
             }
 
             Divider()
-            Button {
-                requestedSessionName = herdr.sessionName
-                showsSessionPicker = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                    Text(herdr.sessionName).lineLimit(1)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9))
+            HStack(spacing: 0) {
+                Button {
+                    requestedSessionName = herdr.sessionName
+                    showsSessionPicker = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                        Text(herdr.sessionName).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9))
+                    }
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 11)
+                    .frame(height: 29)
                 }
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 11)
-                .frame(height: 29)
+                .buttonStyle(.plain)
+                Button { showsSettings = true } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 29, height: 29)
+                }
+                .buttonStyle(.plain)
+                .help("Herdr settings")
             }
-            .buttonStyle(.plain)
             .popover(isPresented: $showsSessionPicker) {
                 VStack(alignment: .leading, spacing: 9) {
                     Text("Connect to a named session")

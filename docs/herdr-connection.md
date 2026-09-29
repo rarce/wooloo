@@ -36,6 +36,12 @@ The live renderer records UTF-16 offsets at cell boundaries. Before replacing th
 
 The suitability and integration boundary for [SwiftTerm](swiftterm-evaluation.md) are documented separately.
 
+## Herdr configuration
+
+The sidebar gear opens a compact settings sheet for common Herdr options and the full TOML file. The file path follows `HERDR_CONFIG_PATH` when set, otherwise `~/.config/herdr/config.toml`, as described in [Herdr configuration](https://herdr.dev/docs/configuration/). Guided edits preserve unrelated tables and comments. `herdr config check` validates a temporary copy before any write; the save then checks that the on-disk file still matches the loaded version and writes atomically. After saving, xherdr calls `server.reload_config` only on the selected named session and reports partial or failed reloads. Settings that Herdr applies only at startup still need a server restart. The local file is shared across local sessions, so changing it can affect another session when that server next reloads or starts.
+
+The settings screen was checked against the local config without saving to it. A separate temporary TOML fixture verified comment preservation, nested tables, validation errors, and external-change rejection. A reload request to `xherdr-ui-test` returned `applied` with no diagnostics. Herdr's presentation theme applies to its terminal client; xherdr keeps its own native colors for now.
+
 The surface decoder follows the frozen generation-1 field order in Herdr 0.9.1. It should be checked against a new release's frozen fixtures before changing the parser. Unsupported optional messages are ignored without dropping the JSON connection.
 
 ## Implementation order
