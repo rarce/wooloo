@@ -29,6 +29,23 @@ final class TerminalRenderingTests: XCTestCase {
         }
     }
 
+    /// Command-C goes through menu validation, which must see the grid selection even though
+    /// the text view itself holds no selected range.
+    func testCopyIsEnabledForGridSelection() throws {
+        let workload = TerminalWorkload.colorScroll(width: 90, height: 25, frames: 1)
+        let view = TerminalRenderHarness.makeView(width: workload.width, height: workload.height)
+        TerminalRenderHarness.show(workload.final.surface, in: view)
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        XCTAssertFalse(view.validateUserInterfaceItem(copyItem))
+
+        view.selectAll(nil)
+        XCTAssertTrue(view.validateUserInterfaceItem(copyItem))
+        NSPasteboard.general.clearContents()
+        view.copy(nil)
+        let copied = try XCTUnwrap(NSPasteboard.general.string(forType: .string))
+        XCTAssertFalse(copied.isEmpty)
+    }
+
     /// Pixel snapshots of each workload's final screen. A missing snapshot is recorded and the
     /// test skipped; set `XHERDR_RECORD_SNAPSHOTS=1` to record them all again. Snapshots depend
     /// on the installed terminal font, so record them on the machine that compares them.

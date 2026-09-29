@@ -792,6 +792,12 @@ final class HerdrTerminalTextView: NSTextView {
         NSPasteboard.general.setString(copyText, forType: .string)
     }
 
+    /// The grid selection is not a TextKit range, so NSTextView alone would disable Copy.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)), terminalGrid != nil { return hasCellSelection }
+        return super.validateUserInterfaceItem(item)
+    }
+
     override func selectAll(_ sender: Any?) {
         if let grid = terminalGrid {
             selectionAnchor = GridPoint(row: 0, column: 0)
