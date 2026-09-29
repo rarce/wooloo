@@ -28,7 +28,9 @@ An AppKit text view captures keyboard input and paste without editing the displa
 
 The pane surface supplies its inner rectangle and `mouse_reporting` flag. When mouse reporting is active, clicks, releases, drags, and wheel events go to that pane as cell-relative semantic mouse events; Shift-click keeps native text selection available. The input remains local to `herdr-client.sock` and is skipped while the endpoint is unavailable because JSON `pane.send_input` has no mouse field. A test program in `xherdr-ui-test` enabled DEC mouse mode and received SGR press, release, and wheel sequences.
 
-The surface also supplies split handle areas, hit rectangles, and paths. Dragging a handle sends `layout.set_split_ratio` over the endpoint, capped at about 30 updates per second with a final update on release. The server owns the layout; xherdr redraws from the next surface. In `xherdr-ui-test`, dragging both split orientations changed the ratios reported by `session.snapshot`. Image placements and popup layers remain to implement. See [Protocol stability](https://herdr.dev/docs/socket-api/#protocol-stability) and [Reading panes](https://herdr.dev/docs/socket-api/#reading-panes).
+The surface also supplies split handle areas, hit rectangles, and paths. Dragging a handle sends `layout.set_split_ratio` over the endpoint, capped at about 30 updates per second with a final update on release. The server owns the layout; xherdr redraws from the next surface. In `xherdr-ui-test`, dragging both split orientations changed the ratios reported by `session.snapshot`. See [Protocol stability](https://herdr.dev/docs/socket-api/#protocol-stability) and [Reading panes](https://herdr.dev/docs/socket-api/#reading-panes).
+
+Complete surfaces also carry native graphics assets and placements. xherdr decodes PNG, RGB, and RGBA bytes, caches assets by the protocol key while the server retains them, and draws pane placements in z order with source cropping. Graphics survive incremental cell patches because patches update only text and cursor state. Popup graphics are parsed but are not displayed until popup layers are implemented. A four-color PNG sent with `pane.graphics.set` to pane `w1:p6` in `xherdr-ui-test` appeared in the live surface.
 
 The live renderer records UTF-16 offsets at cell boundaries. Before replacing the attributed text for a new surface, it maps the selected range to cells, then restores the range in the new render. Copy uses a snapshot of the selected text so subsequent screen updates do not change clipboard content, and trims terminal row padding. In `xherdr-ui-test`, selection remained active through about 200 updates from another pane, and Command-C/Command-V reproduced the selected text.
 
@@ -38,7 +40,7 @@ The surface decoder follows the frozen generation-1 field order in Herdr 0.9.1. 
 
 ## Implementation order
 
-1. Render native image placements and popup layers.
+1. Render popup layers and their graphics.
 2. Add hyperlink actions.
 3. Add optional remote sessions after local behavior is stable.
 

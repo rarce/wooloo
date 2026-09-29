@@ -30,6 +30,59 @@ struct HerdrSplit: Equatable {
     let path: [Bool]
 }
 
+struct HerdrGraphicKey: Hashable {
+    enum Format: UInt64 {
+        case rgb = 0
+        case rgba = 1
+        case png = 2
+    }
+
+    let identity: Data
+    let width: Int
+    let height: Int
+    let format: Format
+    let isPopup: Bool
+    let dataLength: Int
+}
+
+struct HerdrGraphic: Equatable {
+    let key: HerdrGraphicKey
+    let data: Data
+    let x: Int
+    let y: Int
+    let cols: Int
+    let rows: Int
+    let sourceX: Int
+    let sourceY: Int
+    let sourceWidth: Int
+    let sourceHeight: Int
+    let xOffset: Int
+    let yOffset: Int
+    let z: Int
+}
+
+private struct HerdrGraphicPlacement {
+    let key: HerdrGraphicKey
+    let x: Int
+    let y: Int
+    let cols: Int
+    let rows: Int
+    let sourceX: Int
+    let sourceY: Int
+    let sourceWidth: Int
+    let sourceHeight: Int
+    let xOffset: Int
+    let yOffset: Int
+    let z: Int
+
+    func resolved(with data: Data) -> HerdrGraphic {
+        HerdrGraphic(key: key, data: data, x: x, y: y, cols: cols, rows: rows,
+                     sourceX: sourceX, sourceY: sourceY,
+                     sourceWidth: sourceWidth, sourceHeight: sourceHeight,
+                     xOffset: xOffset, yOffset: yOffset, z: z)
+    }
+}
+
 struct HerdrSurface: Equatable {
     let bootID: String
     let projectionRevision: UInt64
@@ -43,6 +96,7 @@ struct HerdrSurface: Equatable {
     var paneInnerRects: [String: HerdrRect]
     var mouseReportingPaneIDs: Set<String>
     let splits: [HerdrSplit]
+    var graphics: [HerdrGraphic]
 }
 
 private enum SurfaceProtocolError: Error {
@@ -94,6 +148,20 @@ private struct SurfaceReader {
         let value = try number()
         guard value <= 1_000_000 else { throw SurfaceProtocolError.invalidFrame }
         return Int(value)
+    }
+
+    mutating func data(maximum: Int = 32 * 1024 * 1024) throws -> Data {
+        let length = try number()
+        guard length <= maximum, length <= bytes.count - position else { throw SurfaceProtocolError.invalidFrame }
+        let result = Data(bytes[position..<(position + Int(length))])
+        position += Int(length)
+        return result
+    }
+
+    mutating func signedNumber() throws -> Int {
+        let encoded = try number()
+        guard encoded <= UInt64(Int.max) else { throw SurfaceProtocolError.invalidFrame }
+        return encoded & 1 == 0 ? Int(encoded / 2) : -Int(encoded / 2) - 1
     }
 
     mutating func optional<T>(_ read: (inout SurfaceReader) throws -> T) throws -> T? {
@@ -166,7 +234,86 @@ private struct SurfaceReader {
         return HerdrSplit(direction: direction, pos: pos, area: area, hitRect: hitRect, path: path)
     }
 
-    mutating func surface() throws -> HerdrSurface {
+    mutating func skipFrame() throws {
+        for _ in 0..<(try count()) { _ = try cell() }
+        _ = try number() // width
+        _ = try number() // height
+        _ = try optional { reader in try reader.cursor() }
+        for _ in 0..<(try count()) { _ = try string() }
+        _ = try data() // legacy graphics bytes
+    }
+
+    mutating func skipPopup() throws {
+        _ = try string() // terminal ID
+        _ = try string() // title
+        for _ in 0..<2 {
+            _ = try optional { reader in
+                switch try reader.number() {
+                case 0, 1: _ = try reader.number()
+                default: throw SurfaceProtocolError.invalidFrame
+                }
+            }
+        }
+        try skipFrame()
+        _ = try byte() // mouse reporting
+        _ = try byte() // pixel mouse
+        _ = try number() // pixel width
+        _ = try number() // pixel height
+    }
+
+    mutating func graphicKey() throws -> HerdrGraphicKey {
+        let start = position
+        let isPopup: Bool
+        switch try number() {
+        case 0:
+            switch try number() {
+            case 0: isPopup = false
+            case 1: isPopup = true
+            default: throw SurfaceProtocolError.invalidFrame
+            }
+            _ = try string() // target ID
+            _ = try number() // image ID
+        case 1:
+            isPopup = false
+            _ = try string() // pane ID
+            _ = try string() // layer ID
+        default: throw SurfaceProtocolError.invalidFrame
+        }
+        let width = try number()
+        let height = try number()
+        guard width > 0, height > 0, width <= 16_384, height <= 16_384,
+              let format = HerdrGraphicKey.Format(rawValue: try number()) else {
+            throw SurfaceProtocolError.invalidFrame
+        }
+        let dataLength = try number()
+        guard dataLength <= 32 * 1024 * 1024 else { throw SurfaceProtocolError.invalidFrame }
+        _ = try number() // fingerprint
+        return HerdrGraphicKey(identity: Data(bytes[start..<position]), width: Int(width),
+                               height: Int(height), format: format, isPopup: isPopup,
+                               dataLength: Int(dataLength))
+    }
+
+    mutating func graphicPlacement() throws -> HerdrGraphicPlacement {
+        let key = try graphicKey()
+        _ = try number() // logical placement ID
+        let x = try number(), y = try number()
+        let cols = try number(), rows = try number()
+        let sourceX = try number(), sourceY = try number()
+        let sourceWidth = try number(), sourceHeight = try number()
+        let xOffset = try number(), yOffset = try number()
+        let z = try signedNumber()
+        _ = try number() // scrollback offset
+        guard x <= 16_384, y <= 16_384, cols <= 16_384, rows <= 16_384,
+              sourceX <= key.width, sourceY <= key.height,
+              sourceWidth <= UInt64(key.width) - sourceX, sourceHeight <= UInt64(key.height) - sourceY,
+              xOffset <= 16_384, yOffset <= 16_384 else { throw SurfaceProtocolError.invalidFrame }
+        return HerdrGraphicPlacement(key: key, x: Int(x), y: Int(y), cols: Int(cols), rows: Int(rows),
+                                     sourceX: Int(sourceX), sourceY: Int(sourceY),
+                                     sourceWidth: Int(sourceWidth), sourceHeight: Int(sourceHeight),
+                                     xOffset: Int(xOffset), yOffset: Int(yOffset), z: z)
+    }
+
+    mutating func surface(graphicsCache: inout [Data: Data]) throws -> HerdrSurface {
         let bootID = try string()
         let projectionRevision = try number()
         let revision = try number()
@@ -194,12 +341,30 @@ private struct SurfaceReader {
         }
         var splits: [HerdrSplit] = []
         for _ in 0..<(try count()) { splits.append(try split()) }
-        // Popups and graphics follow the split handles and are decoded separately.
+        _ = try optional { reader in try reader.skipPopup() }
+        var delivered: [Data: Data] = [:]
+        for _ in 0..<(try count()) {
+            let key = try graphicKey()
+            let bytes = try data()
+            guard bytes.count == key.dataLength else { throw SurfaceProtocolError.invalidFrame }
+            delivered[key.identity] = bytes
+        }
+        var placements: [HerdrGraphicPlacement] = []
+        for _ in 0..<(try count()) { placements.append(try graphicPlacement()) }
+        var retained = Set<Data>()
+        for _ in 0..<(try count()) { retained.insert(try graphicKey().identity) }
+        retained.formUnion(placements.map { $0.key.identity })
+        graphicsCache = graphicsCache.filter { retained.contains($0.key) }
+        graphicsCache.merge(delivered) { _, new in new }
+        let graphics = placements.compactMap { placement -> HerdrGraphic? in
+            guard !placement.key.isPopup, let bytes = graphicsCache[placement.key.identity] else { return nil }
+            return placement.resolved(with: bytes)
+        }
         return HerdrSurface(bootID: bootID, projectionRevision: projectionRevision,
                             revision: revision, width: width, height: height,
                             cells: cells, cursor: cursor, paneIDs: paneIDs, paneRects: paneRects,
                             paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs,
-                            splits: splits)
+                            splits: splits, graphics: graphics)
     }
 
     mutating func applyPatch(to surface: inout HerdrSurface) throws {
@@ -478,6 +643,7 @@ final class HerdrSurfaceStream {
             throw SurfaceProtocolError.unexpectedEnd
         }
         var currentSurface: HerdrSurface?
+        var graphicsCache: [Data: Data] = [:]
         var welcomed = false
         while !isCancelled {
             let frame = try readFrame(fd: connected)
@@ -509,7 +675,7 @@ final class HerdrSurfaceStream {
                     onReady()
                 }
             case 13 where welcomed:
-                let surface = try reader.surface()
+                let surface = try reader.surface(graphicsCache: &graphicsCache)
                 currentSurface = surface
                 onSurface(surface)
             case 19 where welcomed:

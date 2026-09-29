@@ -76,6 +76,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.selectPane = selectPane
         let splitsChanged = view.surface?.splits != surface?.splits
         view.surface = surface
+        if let surface { view.prepareGraphics(surface.graphics) }
         if splitsChanged { scrollView.window?.invalidateCursorRects(for: view) }
         if let surface {
             guard view.surfaceRevision != surface.revision || view.surfaceBootID != surface.bootID else { return }
@@ -103,6 +104,7 @@ struct TerminalPaneView: NSViewRepresentable {
         cellOffsets.reserveCapacity(surface.height * (surface.width + 1))
         let font = terminalFont
         let boldFont = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+        let behindImages = surface.graphics.filter { $0.z < 0 }
         for y in 0..<surface.height {
             for x in 0..<surface.width {
                 cellOffsets.append(output.length)
@@ -111,10 +113,13 @@ struct TerminalPaneView: NSViewRepresentable {
                 let isCursor = surface.cursor?.visible == true && surface.cursor?.x == x && surface.cursor?.y == y
                 let foreground = color(cell.foreground, default: NSColor(red: 0.88, green: 0.91, blue: 0.93, alpha: 1))
                 let background = color(cell.background, default: NSColor(red: 0.075, green: 0.082, blue: 0.091, alpha: 1))
+                let imageBehind = behindImages.contains {
+                    x >= $0.x && x < $0.x + $0.cols && y >= $0.y && y < $0.y + $0.rows
+                }
                 var attributes: [NSAttributedString.Key: Any] = [
                     .font: cell.modifier & 1 != 0 ? boldFont : font,
                     .foregroundColor: isCursor ? background : foreground,
-                    .backgroundColor: isCursor ? foreground : background
+                    .backgroundColor: isCursor ? foreground : (imageBehind ? NSColor.clear : background)
                 ]
                 if cell.modifier & 8 != 0 { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
                 output.append(NSAttributedString(string: cell.symbol.isEmpty ? " " : cell.symbol, attributes: attributes))
@@ -184,6 +189,65 @@ private final class HerdrTerminalTextView: NSTextView {
     private var renderedHeight = 0
     private var selectedSnapshot: String?
     private var selectionAtSnapshot: NSRange?
+    private var decodedGraphics: [Data: NSImage] = [:]
+
+    func prepareGraphics(_ graphics: [HerdrGraphic]) {
+        let keys = Set(graphics.map { $0.key.identity })
+        decodedGraphics = decodedGraphics.filter { keys.contains($0.key) }
+        for graphic in graphics where decodedGraphics[graphic.key.identity] == nil {
+            guard let image = Self.decodeGraphic(graphic) else { continue }
+            decodedGraphics[graphic.key.identity] = image
+        }
+        needsDisplay = true
+    }
+
+    private static func decodeGraphic(_ graphic: HerdrGraphic) -> NSImage? {
+        if graphic.key.format == .png { return NSImage(data: graphic.data) }
+        let channels = graphic.key.format == .rgba ? 4 : 3
+        let (rowBytes, overflow) = graphic.key.width.multipliedReportingOverflow(by: channels)
+        guard !overflow, rowBytes <= Int.max / graphic.key.height,
+              graphic.data.count == rowBytes * graphic.key.height,
+              let provider = CGDataProvider(data: graphic.data as CFData) else { return nil }
+        let alpha: CGImageAlphaInfo = channels == 4 ? .last : .none
+        guard let cgImage = CGImage(width: graphic.key.width, height: graphic.key.height,
+                                    bitsPerComponent: 8, bitsPerPixel: channels * 8,
+                                    bytesPerRow: rowBytes, space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGBitmapInfo(rawValue: alpha.rawValue),
+                                    provider: provider, decode: nil,
+                                    shouldInterpolate: true, intent: .defaultIntent) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: graphic.key.width, height: graphic.key.height))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        drawGraphics(in: dirtyRect, behindText: true)
+        super.draw(dirtyRect)
+        drawGraphics(in: dirtyRect, behindText: false)
+    }
+
+    private func drawGraphics(in dirtyRect: NSRect, behindText: Bool) {
+        guard let surface else { return }
+        let viewport = NSRect(x: textContainerInset.width, y: textContainerInset.height,
+                              width: CGFloat(surface.width) * TerminalPaneView.cellWidth,
+                              height: CGFloat(surface.height) * TerminalPaneView.cellHeight)
+        NSGraphicsContext.current?.saveGraphicsState()
+        viewport.intersection(dirtyRect).clip()
+        for graphic in surface.graphics.sorted(by: { $0.z < $1.z }) where (graphic.z < 0) == behindText {
+            guard let image = decodedGraphics[graphic.key.identity],
+                  graphic.cols > 0, graphic.rows > 0,
+                  graphic.sourceWidth > 0, graphic.sourceHeight > 0 else { continue }
+            let destination = NSRect(x: viewport.minX + CGFloat(graphic.x) * TerminalPaneView.cellWidth + CGFloat(graphic.xOffset),
+                                     y: viewport.minY + CGFloat(graphic.y) * TerminalPaneView.cellHeight + CGFloat(graphic.yOffset),
+                                     width: CGFloat(graphic.cols) * TerminalPaneView.cellWidth,
+                                     height: CGFloat(graphic.rows) * TerminalPaneView.cellHeight)
+            guard destination.intersects(dirtyRect) else { continue }
+            let source = NSRect(x: graphic.sourceX,
+                                y: graphic.key.height - graphic.sourceY - graphic.sourceHeight,
+                                width: graphic.sourceWidth, height: graphic.sourceHeight)
+            image.draw(in: destination, from: source, operation: .sourceOver,
+                       fraction: 1, respectFlipped: true, hints: nil)
+        }
+        NSGraphicsContext.current?.restoreGraphicsState()
+    }
 
     func clearTerminalSelection() {
         selectedSnapshot = nil
