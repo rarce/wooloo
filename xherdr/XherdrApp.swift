@@ -2,9 +2,21 @@ import SwiftUI
 
 @main
 struct XherdrApp: App {
+    /// Unit tests run inside the app; they must not connect to a Herdr session.
+    static let isHostingTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
+    init() {
+        // Opens the metrics file at launch, so a run that never shows a surface still records its start.
+        _ = TerminalPipelineMetrics.shared
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            if Self.isHostingTests {
+                Text("Running tests")
+            } else {
+                ContentView()
+            }
         }
         .commands { XherdrCommands() }
     }

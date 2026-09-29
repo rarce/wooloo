@@ -401,6 +401,33 @@ private struct SurfaceReader {
     }
 }
 
+/// Turns endpoint frames into surfaces: a complete surface replaces the current one and a
+/// patch updates it. The live stream and the pipeline tests share it.
+struct HerdrSurfaceDecoder {
+    private(set) var surface: HerdrSurface?
+    private var graphicsCache: [Data: Data] = [:]
+
+    /// Applies one surface (tag 13) or patch (tag 19) frame; other frames return nil.
+    mutating func apply(frame: Data) throws -> HerdrSurface? {
+        var reader = SurfaceReader(frame)
+        let tag = try reader.number()
+        guard tag == 13 || tag == 19 else { return nil }
+        return try apply(tag: tag, from: &reader)
+    }
+
+    fileprivate mutating func apply(tag: UInt64, from reader: inout SurfaceReader) throws -> HerdrSurface {
+        if tag == 13 {
+            let decoded = try reader.surface(graphicsCache: &graphicsCache)
+            surface = decoded
+            return decoded
+        }
+        guard var patched = surface else { throw SurfaceProtocolError.invalidFrame }
+        try reader.applyPatch(to: &patched)
+        surface = patched
+        return patched
+    }
+}
+
 private enum SurfaceWriter {
     static func number(_ value: UInt64) -> Data {
         if value < 251 { return Data([UInt8(value)]) }
@@ -642,11 +669,13 @@ final class HerdrSurfaceStream {
         guard send(SurfaceWriter.control(kind: "endpoint.hello.v1", data: helloString)) else {
             throw SurfaceProtocolError.unexpectedEnd
         }
-        var currentSurface: HerdrSurface?
-        var graphicsCache: [Data: Data] = [:]
+        var decoder = HerdrSurfaceDecoder()
         var welcomed = false
+        let metrics = TerminalPipelineMetrics.shared
+        let recorder = TerminalSurfaceTraceRecorder.shared
         while !isCancelled {
             let frame = try readFrame(fd: connected)
+            let receivedAt = TerminalPipelineMetrics.now()
             var reader = SurfaceReader(frame)
             let tag = try reader.number()
             switch tag {
@@ -674,14 +703,13 @@ final class HerdrSurfaceStream {
                     lock.unlock()
                     onReady()
                 }
-            case 13 where welcomed:
-                let surface = try reader.surface(graphicsCache: &graphicsCache)
-                currentSurface = surface
-                onSurface(surface)
-            case 19 where welcomed:
-                guard var surface = currentSurface else { throw SurfaceProtocolError.invalidFrame }
-                try reader.applyPatch(to: &surface)
-                currentSurface = surface
+            case 13 where welcomed, 19 where welcomed:
+                recorder?.record(frame, at: receivedAt)
+                let surface = try TerminalPipelineMetrics.signposter.withIntervalSignpost("decode") {
+                    try decoder.apply(tag: tag, from: &reader)
+                }
+                metrics?.received(surface, isPatch: tag == 19, bytes: frame.count, at: receivedAt,
+                                  decodeNanos: TerminalPipelineMetrics.now() - receivedAt)
                 onSurface(surface)
             default: break
             }

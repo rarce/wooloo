@@ -581,6 +581,7 @@ final class HerdrStore: ObservableObject {
                             guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
                             store.surface = newSurface
                             store.surfaceError = nil
+                            TerminalPipelineMetrics.shared?.delivered(newSurface)
                         }
                     }
                 } catch {

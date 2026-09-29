@@ -1,12 +1,42 @@
 import AppKit
 import SwiftUI
 
-private struct RenderedTerminalSurface {
-    let text: NSAttributedString
-    /// UTF-16 offsets for every cell boundary, including the end of each row.
-    let cellOffsets: [Int]
+/// A Herdr surface laid out for Core Text. Every glyph is placed at its cell's origin, so
+/// fallback fonts with other metrics can never change a row's height or a column's width.
+struct TerminalGrid {
+    struct Fill {
+        let rect: CGRect
+        let color: CGColor
+    }
+
+    struct GlyphRun {
+        let font: CTFont
+        let color: CGColor
+        var glyphs: [CGGlyph] = []
+        /// Baseline-relative positions, x measured from the grid's left edge.
+        var positions: [CGPoint] = []
+        var columns: [Int] = []
+    }
+
     let width: Int
     let height: Int
+    /// Cell symbols per row; a wide character's continuation cell holds "".
+    let symbols: [[String]]
+    let backgrounds: [Fill]
+    let rows: [[GlyphRun]]
+    let underlines: [Fill]
+    let selectionFill: CGColor
+    let selectionText: CGColor
+}
+
+/// A caret position between cells: `column` ranges over 0...width.
+private struct GridPoint: Comparable {
+    var row: Int
+    var column: Int
+
+    static func < (lhs: GridPoint, rhs: GridPoint) -> Bool {
+        (lhs.row, lhs.column) < (rhs.row, rhs.column)
+    }
 }
 
 /// A small AppKit input surface for Herdr's rendered pane snapshot. Herdr still
@@ -16,6 +46,9 @@ struct TerminalPaneView: NSViewRepresentable {
         ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     static let cellWidth = ("M" as NSString).size(withAttributes: [.font: terminalFont]).width
     static let cellHeight = NSLayoutManager().defaultLineHeight(for: terminalFont)
+    static let boldFont = NSFontManager.shared.convert(terminalFont, toHaveTrait: .boldFontMask)
+    /// Distance from a row's top to its baseline, matching where TextKit placed the text.
+    static let baseline = cellHeight - ceil(-terminalFont.descender)
 
     let text: String
     let paneID: String
@@ -43,7 +76,9 @@ struct TerminalPaneView: NSViewRepresentable {
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsetsZero
 
-        let view = HerdrTerminalTextView(frame: .zero)
+        // The live grid is drawn with Core Text; TextKit only lays out the fallback text,
+        // and its drawing is only overridden reliably under TextKit 1.
+        let view = HerdrTerminalTextView(usingTextLayoutManager: false)
         view.paneID = paneID
         view.shortcutMap = shortcutMap
         view.onShortcut = onShortcut
@@ -77,6 +112,9 @@ struct TerminalPaneView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let view = scrollView.documentView as? HerdrTerminalTextView else { return }
+        let updateStart = TerminalPipelineMetrics.now()
+        var layoutNanos: UInt64?
+        defer { TerminalPipelineMetrics.shared?.updated(revision: surface?.revision, start: updateStart, layoutNanos: layoutNanos) }
         if view.paneID != paneID {
             view.paneID = paneID
             view.claimKeyboardFocusIfIdle()
@@ -112,10 +150,16 @@ struct TerminalPaneView: NSViewRepresentable {
             }
             view.surfaceRevision = surface.revision
             view.surfaceBootID = surface.bootID
-            view.applySurfaceText(Self.render(surface, theme: theme))
+            let layoutStart = TerminalPipelineMetrics.now()
+            let grid = TerminalPipelineMetrics.signposter.withIntervalSignpost("layout") {
+                Self.layoutGrid(surface, theme: theme)
+            }
+            layoutNanos = TerminalPipelineMetrics.now() - layoutStart
+            view.applySurfaceGrid(grid)
             return
         }
         view.surfaceRevision = nil
+        view.terminalGrid = nil
         guard view.string != text else { return }
         let visible = scrollView.contentView.bounds
         let wasAtBottom = visible.maxY >= view.bounds.maxY - 20
@@ -127,7 +171,8 @@ struct TerminalPaneView: NSViewRepresentable {
 
     /// A live surface is a fixed cols × rows grid sized to the view, so it never scrolls:
     /// glyphs from fallback fonts that overflow a cell are clipped instead of adding
-    /// scrollers, which would shrink the grid and cascade into both scrollbars.
+    /// scrollers, which would shrink the grid and cascade into both scrollbars. The text
+    /// storage is empty then, so the view keeps the clip view's size instead of fitting it.
     private static func configureScrolling(_ scrollView: NSScrollView, view: NSTextView, live: Bool) {
         guard scrollView.hasVerticalScroller == live else { return }
         scrollView.hasVerticalScroller = !live
@@ -135,78 +180,138 @@ struct TerminalPaneView: NSViewRepresentable {
         scrollView.verticalScrollElasticity = live ? .none : .automatic
         scrollView.horizontalScrollElasticity = live ? .none : .automatic
         view.isHorizontallyResizable = !live
-        view.autoresizingMask = live ? [.width] : []
+        view.isVerticallyResizable = !live
+        view.autoresizingMask = live ? [.width, .height] : []
         if live {
-            view.setFrameSize(NSSize(width: scrollView.contentSize.width, height: view.frame.height))
+            view.setFrameSize(scrollView.contentSize)
             scrollView.contentView.scroll(to: .zero)
             scrollView.reflectScrolledClipView(scrollView.contentView)
         }
     }
 
-    /// Pins every row to the grid's cell height, even when a fallback font is taller.
-    private static let cellParagraphStyle: NSParagraphStyle = {
-        let style = NSMutableParagraphStyle()
-        style.minimumLineHeight = cellHeight
-        style.maximumLineHeight = cellHeight
-        style.lineBreakMode = .byClipping
-        return style
-    }()
-
-    /// Natural advance of a symbol, including any fallback font it renders with.
-    private static var advanceCache: [String: CGFloat] = [:]
-
-    private static func advance(of symbol: String, font: NSFont, bold: Bool) -> CGFloat {
-        let key = bold ? "b" + symbol : "r" + symbol
-        if let cached = advanceCache[key] { return cached }
-        let width = NSAttributedString(string: symbol, attributes: [.font: font]).size().width
-        if advanceCache.count > 4_096 { advanceCache.removeAll() }
-        advanceCache[key] = width
-        return width
-    }
-
-    private static func render(_ surface: HerdrSurface, theme: XherdrTheme) -> RenderedTerminalSurface {
+    /// Places each cell's glyphs at the cell origin. Core Text still shapes a whole row, so
+    /// font fallback and ligatures work, but its advances never move the next column.
+    static func layoutGrid(_ surface: HerdrSurface, theme: XherdrTheme) -> TerminalGrid {
         let defaultForeground = theme.terminalForeground
         let defaultBackground = theme.terminalBackground
-        let output = NSMutableAttributedString(string: "")
-        var cellOffsets: [Int] = []
-        cellOffsets.reserveCapacity(surface.height * (surface.width + 1))
-        let font = terminalFont
-        let boldFont = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+        let regularFont = terminalFont
+        let underlineY = -terminalFont.underlinePosition
+        let underlineHeight = max(1, terminalFont.underlineThickness)
         let behindImages = surface.graphics.filter { $0.z < 0 }
+        var symbols: [[String]] = []
+        var backgrounds: [TerminalGrid.Fill] = []
+        var rows: [[TerminalGrid.GlyphRun]] = []
+        var underlines: [TerminalGrid.Fill] = []
+        symbols.reserveCapacity(surface.height)
+        rows.reserveCapacity(surface.height)
+
         for y in 0..<surface.height {
+            let top = CGFloat(y) * cellHeight
+            let line = NSMutableAttributedString()
+            var rowSymbols: [String] = []
+            var foregrounds: [CGColor] = []
+            /// The cell column of every UTF-16 unit in `line`.
+            var columnAt: [Int] = []
+            var fill: (start: Int, color: NSColor)?
+
+            func closeFill(at end: Int) {
+                guard let current = fill else { return }
+                backgrounds.append(TerminalGrid.Fill(
+                    rect: CGRect(x: CGFloat(current.start) * cellWidth, y: top,
+                                 width: CGFloat(end - current.start) * cellWidth, height: cellHeight),
+                    color: current.color.cgColor))
+                fill = nil
+            }
+
             for x in 0..<surface.width {
-                cellOffsets.append(output.length)
                 let cell = surface.cells[y * surface.width + x]
-                if cell.skip { continue }
                 let isCursor = surface.cursor?.visible == true && surface.cursor?.x == x && surface.cursor?.y == y
                 let foreground = color(cell.foreground, default: defaultForeground, ansi: theme.ansi)
                 let background = color(cell.background, default: defaultBackground, ansi: theme.ansi)
                 let imageBehind = behindImages.contains {
                     x >= $0.x && x < $0.x + $0.cols && y >= $0.y && y < $0.y + $0.rows
                 }
-                var attributes: [NSAttributedString.Key: Any] = [
-                    .paragraphStyle: cellParagraphStyle,
-                    .font: cell.modifier & 1 != 0 ? boldFont : font,
-                    .foregroundColor: isCursor ? background : foreground,
-                    .backgroundColor: isCursor ? foreground : (imageBehind ? NSColor.clear : background)
-                ]
-                if cell.modifier & 8 != 0 { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
-                // Snap each glyph to its cells so the drawn columns match Herdr's grid.
+                // Default backgrounds come from the scroll view; the cursor is drawn inverted.
+                let cellFill: NSColor? = isCursor ? foreground
+                    : (cell.background == 0 || imageBehind ? nil : background)
+                if fill?.color != cellFill {
+                    closeFill(at: x)
+                    if let cellFill { fill = (x, cellFill) }
+                }
+                let textColor = (isCursor ? background : foreground).cgColor
+                foregrounds.append(textColor)
+                if cell.skip {
+                    rowSymbols.append("")
+                    continue
+                }
                 let symbol = cell.symbol.isEmpty ? " " : cell.symbol
+                rowSymbols.append(symbol)
                 let isBold = cell.modifier & 1 != 0
-                let span = x + 1 < surface.width && surface.cells[y * surface.width + x + 1].skip ? 2 : 1
-                let kern = CGFloat(span) * cellWidth
-                    - advance(of: symbol, font: isBold ? boldFont : font, bold: isBold)
-                if abs(kern) > 0.01 { attributes[.kern] = kern }
-                output.append(NSAttributedString(string: symbol, attributes: attributes))
+                line.append(NSAttributedString(string: symbol, attributes: [.font: isBold ? boldFont : regularFont]))
+                columnAt.append(contentsOf: repeatElement(x, count: symbol.utf16.count))
+                if cell.modifier & 8 != 0 {
+                    let span = x + 1 < surface.width && surface.cells[y * surface.width + x + 1].skip ? 2 : 1
+                    underlines.append(TerminalGrid.Fill(
+                        rect: CGRect(x: CGFloat(x) * cellWidth, y: top + baseline + underlineY - underlineHeight / 2,
+                                     width: CGFloat(span) * cellWidth, height: underlineHeight),
+                        color: textColor))
+                }
             }
-            cellOffsets.append(output.length)
-            if y + 1 < surface.height {
-                output.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: cellParagraphStyle]))
+            closeFill(at: surface.width)
+
+            var runs: [TerminalGrid.GlyphRun] = []
+            let ctLine = CTLineCreateWithAttributedString(line)
+            for ctRun in CTLineGetGlyphRuns(ctLine) as? [CTRun] ?? [] {
+                let count = CTRunGetGlyphCount(ctRun)
+                guard count > 0 else { continue }
+                let attributes = CTRunGetAttributes(ctRun) as NSDictionary
+                let font = attributes[kCTFontAttributeName] as! CTFont
+                var glyphs = [CGGlyph](repeating: 0, count: count)
+                var positions = [CGPoint](repeating: .zero, count: count)
+                var indices = [CFIndex](repeating: 0, count: count)
+                CTRunGetGlyphs(ctRun, CFRange(), &glyphs)
+                CTRunGetPositions(ctRun, CFRange(), &positions)
+                CTRunGetStringIndices(ctRun, CFRange(), &indices)
+                // Glyphs sharing a cell (combining marks, clusters) keep their offsets from
+                // the cell's first glyph.
+                var cellStart: (column: Int, x: CGFloat)?
+                for index in 0..<count {
+                    let column = columnAt[min(max(0, indices[index]), columnAt.count - 1)]
+                    if rowSymbols[column] == " " { continue }
+                    if cellStart?.column != column { cellStart = (column, positions[index].x) }
+                    let position = CGPoint(x: CGFloat(column) * cellWidth + positions[index].x - (cellStart?.x ?? 0),
+                                           y: positions[index].y)
+                    let textColor = foregrounds[column]
+                    if let last = runs.last, last.font == font, last.color == textColor {
+                        runs[runs.count - 1].glyphs.append(glyphs[index])
+                        runs[runs.count - 1].positions.append(position)
+                        runs[runs.count - 1].columns.append(column)
+                    } else {
+                        runs.append(TerminalGrid.GlyphRun(font: font, color: textColor, glyphs: [glyphs[index]],
+                                                          positions: [position], columns: [column]))
+                    }
+                }
             }
+            symbols.append(rowSymbols)
+            rows.append(runs)
         }
-        return RenderedTerminalSurface(text: output, cellOffsets: cellOffsets,
-                                       width: surface.width, height: surface.height)
+
+        let selectionFill = XherdrTheme.nsColor(theme.selectionBackground)
+        return TerminalGrid(width: surface.width, height: surface.height, symbols: symbols,
+                            backgrounds: backgrounds, rows: rows, underlines: underlines,
+                            selectionFill: selectionFill.cgColor,
+                            selectionText: readableText(on: selectionFill, theme: theme).cgColor)
+    }
+
+    /// The theme's foreground or background, whichever contrasts more with `fill`.
+    private static func readableText(on fill: NSColor, theme: XherdrTheme) -> NSColor {
+        func luminance(_ color: NSColor) -> CGFloat {
+            guard let rgb = color.usingColorSpace(.sRGB) else { return 0.5 }
+            return 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
+        }
+        let target = luminance(fill)
+        return abs(luminance(theme.terminalForeground) - target) >= abs(luminance(theme.terminalBackground) - target)
+            ? theme.terminalForeground : theme.terminalBackground
     }
 
     /// Resolves a Herdr cell color: kind 0 is the default (0) or ANSI 1–16, kind 1 the 256-color
@@ -244,7 +349,7 @@ struct TerminalPaneView: NSViewRepresentable {
     }
 }
 
-private final class HerdrTerminalTextView: NSTextView {
+final class HerdrTerminalTextView: NSTextView {
     var surfaceRevision: UInt64?
     var themeID: String?
     var surfaceBootID: String?
@@ -264,15 +369,17 @@ private final class HerdrTerminalTextView: NSTextView {
     private var scrollRemainder: CGFloat = 0
     private var splitDrag: (split: HerdrSplit, grabOffset: Int, bootID: String,
                             lastSentAt: Double, lastRatio: Double?)?
-    private var cellOffsets: [Int] = []
-    private var renderedWidth = 0
-    private var renderedHeight = 0
+    /// The live surface drawn in `draw(_:)`; nil while showing fallback `pane.read` text.
+    var terminalGrid: TerminalGrid?
     private var selectedSnapshot: String?
     private var selectionAtSnapshot: NSRange?
-    /// NSTextView tracks a selection drag inside mouseDown; replacing the text meanwhile
-    /// (a busy TUI redraws constantly) would move its anchor, so frames wait until release.
-    private var isTrackingSelection = false
-    private var pendingSurfaceText: RenderedTerminalSurface?
+    /// The live selection lives in cell coordinates, so screen updates never move it.
+    private var selectionAnchor: GridPoint?
+    private var selectionHead: GridPoint?
+    private var isSelectingCells = false
+
+    /// Herdr's cursor is drawn in the grid; a caret at the end of the text would be a second one.
+    override var shouldDrawInsertionPoint: Bool { false }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -337,8 +444,63 @@ private final class HerdrTerminalTextView: NSTextView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        guard let grid = terminalGrid, let context = NSGraphicsContext.current?.cgContext else {
+            super.draw(dirtyRect)
+            return
+        }
+        let drawStart = TerminalPipelineMetrics.now()
+        let signpost = TerminalPipelineMetrics.signposter.beginInterval("draw")
+        defer {
+            TerminalPipelineMetrics.signposter.endInterval("draw", signpost)
+            if let surface { TerminalPipelineMetrics.shared?.drawn(surface, start: drawStart) }
+        }
+        let cellWidth = TerminalPaneView.cellWidth
+        let cellHeight = TerminalPaneView.cellHeight
+        let origin = CGPoint(x: textContainerInset.width, y: textContainerInset.height)
         drawGraphics(in: dirtyRect, behindText: true)
-        super.draw(dirtyRect)
+        for fill in grid.backgrounds {
+            context.setFillColor(fill.color)
+            context.fill(fill.rect.offsetBy(dx: origin.x, dy: origin.y))
+        }
+        let selection = orderedSelection(in: grid)
+        if let selection {
+            context.setFillColor(grid.selectionFill)
+            for row in selection.start.row...selection.end.row {
+                let columns = selectedColumns(row: row, selection: selection, width: grid.width)
+                guard !columns.isEmpty else { continue }
+                context.fill(CGRect(x: origin.x + CGFloat(columns.lowerBound) * cellWidth,
+                                    y: origin.y + CGFloat(row) * cellHeight,
+                                    width: CGFloat(columns.count) * cellWidth, height: cellHeight))
+            }
+        }
+        context.setShouldSubpixelPositionFonts(true)
+        context.setAllowsFontSubpixelPositioning(true)
+        for (row, runs) in grid.rows.enumerated() {
+            let top = origin.y + CGFloat(row) * cellHeight
+            // Fallback glyphs may overhang their row, so rows beside the dirty area redraw too.
+            guard top + 2 * cellHeight >= dirtyRect.minY, top - cellHeight <= dirtyRect.maxY else { continue }
+            let selected = selection.map { selectedColumns(row: row, selection: $0, width: grid.width) } ?? 0..<0
+            context.saveGState()
+            context.translateBy(x: origin.x, y: top + TerminalPaneView.baseline)
+            context.scaleBy(x: 1, y: -1)
+            context.textMatrix = .identity
+            for run in runs {
+                if selected.isEmpty || !run.columns.contains(where: selected.contains) {
+                    context.setFillColor(run.color)
+                    CTFontDrawGlyphs(run.font, run.glyphs, run.positions, run.glyphs.count, context)
+                    continue
+                }
+                for index in run.glyphs.indices {
+                    context.setFillColor(selected.contains(run.columns[index]) ? grid.selectionText : run.color)
+                    CTFontDrawGlyphs(run.font, [run.glyphs[index]], [run.positions[index]], 1, context)
+                }
+            }
+            context.restoreGState()
+        }
+        for fill in grid.underlines {
+            context.setFillColor(fill.color)
+            context.fill(fill.rect.offsetBy(dx: origin.x, dy: origin.y))
+        }
         drawGraphics(in: dirtyRect, behindText: false)
     }
 
@@ -370,39 +532,89 @@ private final class HerdrTerminalTextView: NSTextView {
     func clearTerminalSelection() {
         selectedSnapshot = nil
         selectionAtSnapshot = nil
+        selectionAnchor = nil
+        selectionHead = nil
         setSelectedRange(NSRange(location: 0, length: 0))
+        needsDisplay = true
     }
 
-    func applySurfaceText(_ rendered: RenderedTerminalSurface) {
-        if isTrackingSelection {
-            pendingSurfaceText = rendered
-            return
+    func applySurfaceGrid(_ grid: TerminalGrid) {
+        // The grid is drawn directly; leftover fallback text would only feed TextKit.
+        if !string.isEmpty { string = "" }
+        terminalGrid = grid
+        needsDisplay = true
+    }
+
+    private var hasCellSelection: Bool {
+        guard let terminalGrid else { return false }
+        return orderedSelection(in: terminalGrid) != nil
+    }
+
+    private func orderedSelection(in grid: TerminalGrid) -> (start: GridPoint, end: GridPoint)? {
+        guard let selectionAnchor, let selectionHead, selectionAnchor != selectionHead,
+              grid.width > 0, grid.height > 0 else { return nil }
+        func clamped(_ point: GridPoint) -> GridPoint {
+            GridPoint(row: min(max(0, point.row), grid.height - 1), column: min(max(0, point.column), grid.width))
         }
-        let selection = selectedRange()
-        let hasSelection = selection.location != NSNotFound && selection.length > 0
-        let oldStart = hasSelection ? cellAnchor(for: selection.location) : nil
-        let oldEnd = hasSelection ? cellAnchor(for: NSMaxRange(selection)) : nil
-        if hasSelection { captureSelectionIfChanged() }
-        textStorage?.setAttributedString(rendered.text)
-        cellOffsets = rendered.cellOffsets
-        renderedWidth = rendered.width
-        renderedHeight = rendered.height
-        if let oldStart, let oldEnd {
-            let start = offset(for: oldStart)
-            let end = offset(for: oldEnd)
-            let restored = NSRange(location: min(start, end), length: abs(end - start))
-            setSelectedRange(restored)
-            selectionAtSnapshot = restored
+        let start = clamped(min(selectionAnchor, selectionHead))
+        let end = clamped(max(selectionAnchor, selectionHead))
+        return start < end ? (start, end) : nil
+    }
+
+    private func selectedColumns(row: Int, selection: (start: GridPoint, end: GridPoint), width: Int) -> Range<Int> {
+        guard row >= selection.start.row, row <= selection.end.row else { return 0..<0 }
+        let lower = row == selection.start.row ? selection.start.column : 0
+        let upper = row == selection.end.row ? selection.end.column : width
+        return lower < upper ? lower..<upper : 0..<0
+    }
+
+    private func selectedCellText() -> String? {
+        guard let grid = terminalGrid, let selection = orderedSelection(in: grid) else { return nil }
+        return (selection.start.row...selection.end.row).map { row in
+            grid.symbols[row][selectedColumns(row: row, selection: selection, width: grid.width)].joined()
+        }.joined(separator: "\n")
+    }
+
+    /// The caret position nearest to the pointer, clamped to the grid.
+    private func gridPoint(_ event: NSEvent, in grid: TerminalGrid) -> GridPoint {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
+        let column = Int(((point.x - textContainerInset.width) / TerminalPaneView.cellWidth).rounded())
+        return GridPoint(row: min(max(0, row), grid.height - 1), column: min(max(0, column), grid.width))
+    }
+
+    private func beginCellSelection(with event: NSEvent, in grid: TerminalGrid) {
+        window?.makeFirstResponder(self)
+        guard grid.width > 0, grid.height > 0 else { return }
+        let point = gridPoint(event, in: grid)
+        selectedSnapshot = nil
+        let symbols = grid.symbols[point.row]
+        let cell = min(max(0, surfacePoint(event).0), grid.width - 1)
+        let isWord = { (column: Int) in symbols[column] != " " }
+        switch event.clickCount {
+        case 2 where isWord(cell):
+            var lower = cell
+            var upper = cell + 1
+            while lower > 0, isWord(lower - 1) { lower -= 1 }
+            while upper < grid.width, isWord(upper) { upper += 1 }
+            selectionAnchor = GridPoint(row: point.row, column: lower)
+            selectionHead = GridPoint(row: point.row, column: upper)
+        case 3...:
+            selectionAnchor = GridPoint(row: point.row, column: 0)
+            selectionHead = GridPoint(row: point.row, column: grid.width)
+        default:
+            if !event.modifierFlags.contains(.shift) || selectionAnchor == nil { selectionAnchor = point }
+            selectionHead = point
         }
+        isSelectingCells = event.clickCount < 2
+        selectedSnapshot = selectedCellText()
+        needsDisplay = true
     }
 
     func applyFallbackText(_ text: String) {
         let selection = selectedRange()
         if selection.length > 0 { captureSelectionIfChanged() }
         string = text
-        cellOffsets = []
-        renderedWidth = 0
-        renderedHeight = 0
         if selection.location != NSNotFound && selection.length > 0 {
             let start = min(selection.location, (text as NSString).length)
             let end = min(NSMaxRange(selection), (text as NSString).length)
@@ -410,25 +622,6 @@ private final class HerdrTerminalTextView: NSTextView {
             setSelectedRange(restored)
             selectionAtSnapshot = restored
         }
-    }
-
-    private func cellAnchor(for offset: Int) -> (row: Int, column: Int)? {
-        guard renderedWidth > 0, renderedHeight > 0, !cellOffsets.isEmpty else { return nil }
-        var low = 0
-        var high = cellOffsets.count
-        while low < high {
-            let middle = (low + high) / 2
-            if cellOffsets[middle] <= offset { low = middle + 1 } else { high = middle }
-        }
-        let index = max(0, low - 1)
-        return (index / (renderedWidth + 1), index % (renderedWidth + 1))
-    }
-
-    private func offset(for anchor: (row: Int, column: Int)) -> Int {
-        guard renderedWidth > 0, renderedHeight > 0 else { return 0 }
-        let row = min(anchor.row, renderedHeight - 1)
-        let column = min(anchor.column, renderedWidth)
-        return cellOffsets[row * (renderedWidth + 1) + column]
     }
 
     private func captureSelectionIfChanged() {
@@ -445,7 +638,12 @@ private final class HerdrTerminalTextView: NSTextView {
     }
 
     override func copy(_ sender: Any?) {
-        captureSelectionIfChanged()
+        if terminalGrid != nil {
+            // The text captured when the selection was made, not what the screen shows now.
+            selectedSnapshot = selectedSnapshot ?? selectedCellText()
+        } else {
+            captureSelectionIfChanged()
+        }
         guard let selectedSnapshot, !selectedSnapshot.isEmpty else { return }
         let lines = selectedSnapshot.components(separatedBy: "\n")
         let copyText = lines.map { $0.replacingOccurrences(of: "[ \\t]+$", with: "", options: .regularExpression) }
@@ -455,6 +653,13 @@ private final class HerdrTerminalTextView: NSTextView {
     }
 
     override func selectAll(_ sender: Any?) {
+        if let grid = terminalGrid {
+            selectionAnchor = GridPoint(row: 0, column: 0)
+            selectionHead = GridPoint(row: grid.height - 1, column: grid.width)
+            selectedSnapshot = selectedCellText()
+            needsDisplay = true
+            return
+        }
         super.selectAll(sender)
         selectedSnapshot = nil
         captureSelectionIfChanged()
@@ -489,16 +694,14 @@ private final class HerdrTerminalTextView: NSTextView {
         }
         if !event.modifierFlags.contains(.shift),
            forwardMouse(.down(0), event: event, hold: true) { return }
+        if let terminalGrid {
+            beginCellSelection(with: event, in: terminalGrid)
+            return
+        }
         selectedSnapshot = nil
         selectionAtSnapshot = nil
-        isTrackingSelection = true
         super.mouseDown(with: event)
-        isTrackingSelection = false
         captureSelectionIfChanged()
-        if let pending = pendingSurfaceText {
-            pendingSurfaceText = nil
-            applySurfaceText(pending)
-        }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -508,6 +711,11 @@ private final class HerdrTerminalTextView: NSTextView {
             return
         }
         if releaseMouse(button: 0, event: event) { return }
+        if terminalGrid != nil {
+            isSelectingCells = false
+            selectedSnapshot = selectedCellText()
+            return
+        }
         super.mouseUp(with: event)
         captureSelectionIfChanged()
     }
@@ -518,6 +726,12 @@ private final class HerdrTerminalTextView: NSTextView {
             return
         }
         if dragMouse(button: 0, event: event) { return }
+        if let terminalGrid {
+            guard isSelectingCells else { return }
+            selectionHead = gridPoint(event, in: terminalGrid)
+            needsDisplay = true
+            return
+        }
         super.mouseDragged(with: event)
         captureSelectionIfChanged()
     }
@@ -573,7 +787,7 @@ private final class HerdrTerminalTextView: NSTextView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(standardItem("Copy", #selector(copy(_:)), enabled: selectedRange().length > 0))
+        menu.addItem(standardItem("Copy", #selector(copy(_:)), enabled: hasCellSelection || selectedRange().length > 0))
         menu.addItem(standardItem("Paste", #selector(paste(_:)),
                                   enabled: NSPasteboard.general.string(forType: .string) != nil))
         menu.addItem(standardItem("Select All", #selector(selectAll(_:)), enabled: true))

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-The macOS app lives in `xherdr/`; `xherdr.xcodeproj` defines the `xherdr` scheme and includes Swift files explicitly. `ContentView.swift` assembles the interface, `HerdrConnection.swift` and `HerdrSurface.swift` handle the server and terminal surface, and `WorkspaceFiles.swift` handles local and SSH file and Git operations. Keep related views beside these files. Update `project.pbxproj` when adding a Swift source file. `Assets.xcassets` contains the app icon, `docs/` contains implementation research, `Vendor/` contains pinned CodeEdit packages and licenses, and `TODO.md` tracks deferred work. There is no test target yet.
+The macOS app lives in `xherdr/`; `xherdr.xcodeproj` defines the `xherdr` scheme and includes Swift files explicitly. `ContentView.swift` assembles the interface, `HerdrConnection.swift` and `HerdrSurface.swift` handle the server and terminal surface, and `WorkspaceFiles.swift` handles local and SSH file and Git operations. Keep related views beside these files. Update `project.pbxproj` when adding a Swift source file. `Assets.xcassets` contains the app icon, `docs/` contains implementation research, `Vendor/` contains pinned CodeEdit packages and licenses, and `TODO.md` tracks deferred work. `xherdrTests` holds the unit tests and terminal pipeline benchmarks, and `scripts/` the measurement scripts described in `docs/perf/README.md`.
 
 ## Build, Test, and Development Commands
 
@@ -14,7 +14,7 @@ Use four spaces for Swift indentation. Follow the existing SwiftUI style: `Upper
 
 ## Testing Guidelines
 
-There is no automated test suite or coverage threshold. Build after Swift or project changes, then exercise affected controls in the app against the isolated Herdr session. Test Git worktree operations in a disposable repository under `/private/tmp`; confirm that normal removal rejects dirty worktrees. If adding a test target, name tests for the behavior they verify.
+Run the unit tests with the build command above, replacing `build` with `test`. There is no coverage threshold. For terminal rendering or surface changes, also run `scripts/terminal-bench.sh` and `scripts/terminal-e2e.sh`; the second uses its own `xherdr-perf` Herdr session. Build after Swift or project changes, then exercise affected controls in the app against the isolated Herdr session. Test Git worktree operations in a disposable repository under `/private/tmp`; confirm that normal removal rejects dirty worktrees. Name tests for the behavior they verify.
 
 ## Commit & Pull Request Guidelines
 
