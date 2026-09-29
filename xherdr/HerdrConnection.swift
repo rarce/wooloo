@@ -416,7 +416,11 @@ final class HerdrStore: ObservableObject {
     @Published var selectedTabID: String?
     @Published var selectedPaneID: String?
 
-    @Published private(set) var sessionName = "xherdr-ui-test"
+    static let defaultSessionName = "default"
+    private static let lastSessionKey = "HerdrLastSession"
+
+    @Published private(set) var sessionName = UserDefaults.standard.string(forKey: lastSessionKey)
+        ?? defaultSessionName
     private var eventTask: Task<Void, Never>?
     private var paneTask: Task<Void, Never>?
     private var surfaceTask: Task<Void, Never>?
@@ -430,29 +434,43 @@ final class HerdrStore: ObservableObject {
     private var cellWidth = 8
     private var cellHeight = 16
 
+    /// The default session lives at the Herdr config root; named sessions live under `sessions/`.
+    private static func sessionDirectory(_ name: String) -> URL {
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/herdr")
+        return name == defaultSessionName ? root : root.appendingPathComponent("sessions/\(name)")
+    }
+
+    /// Sessions with a server socket on disk, default first.
+    static func availableSessions() -> [String] {
+        let fileManager = FileManager.default
+        let sessionsURL = sessionDirectory(defaultSessionName).appendingPathComponent("sessions")
+        let named = ((try? fileManager.contentsOfDirectory(atPath: sessionsURL.path)) ?? [])
+            .filter { fileManager.fileExists(atPath: sessionDirectory($0).appendingPathComponent("herdr.sock").path) }
+            .sorted()
+        return [defaultSessionName] + named.filter { $0 != defaultSessionName }
+    }
+
     var socketPath: String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/herdr/sessions/\(sessionName)/herdr.sock").path
+        Self.sessionDirectory(sessionName).appendingPathComponent("herdr.sock").path
     }
 
     var isConnected: Bool { snapshot != nil && errorMessage == nil }
 
     var clientSocketPath: String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/herdr/sessions/\(sessionName)/herdr-client.sock").path
+        Self.sessionDirectory(sessionName).appendingPathComponent("herdr-client.sock").path
     }
 
     func connect(to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              trimmed != "default",
               trimmed.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
-            sessionSelectionError = "Choose a named session; default is excluded"
+            sessionSelectionError = "Use letters, numbers, hyphens, or underscores"
             return
         }
         sessionSelectionError = nil
         stop()
         sessionName = trimmed
+        UserDefaults.standard.set(trimmed, forKey: Self.lastSessionKey)
         snapshot = nil
         paneText = [:]
         surface = nil

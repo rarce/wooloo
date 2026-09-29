@@ -10,7 +10,8 @@ struct ContentView: View {
     @State private var settingsShowShortcuts = false
     @State private var shortcutMap = HerdrShortcutMap.load()
     @State private var shortcutPrefixActive = false
-    @State private var requestedSessionName = "xherdr-ui-test"
+    @State private var requestedSessionName = ""
+    @State private var availableSessions: [String] = []
     @State private var documents: [WorkspaceDocument] = []
     @State private var activeDocumentID: String?
     @State private var pendingCloseDocumentID: String?
@@ -306,8 +307,29 @@ struct ContentView: View {
             }
             .popover(isPresented: $showsSessionPicker) {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("Connect to a named session")
+                    Text("Connect to a Herdr session")
                         .font(.subheadline.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(availableSessions, id: \.self) { name in
+                            Button {
+                                requestedSessionName = name
+                                connect()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: name == herdr.sessionName ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(name == herdr.sessionName ? Color.cyan : Color.secondary)
+                                    Text(name).font(.system(size: 12, design: .monospaced))
+                                    if name == HerdrStore.defaultSessionName {
+                                        Text("primary").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(height: 22)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                     HStack {
                         TextField("Session name", text: $requestedSessionName)
                             .textFieldStyle(.roundedBorder)
@@ -320,6 +342,7 @@ struct ContentView: View {
                 }
                 .padding(14)
                 .frame(width: 305)
+                .onAppear { availableSessions = HerdrStore.availableSessions() }
             }
         }
         .background(sidebarBackground)
@@ -472,7 +495,7 @@ struct ContentView: View {
                     }
                     .id(activeDocumentID)
                 } else if !herdr.isConnected {
-                    emptyState(herdr.errorMessage ?? "Connecting to test session…")
+                    emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")
                 } else if let surface = herdr.surface,
                    !selectedPanes.isEmpty,
                    Set(surface.paneIDs) == Set(selectedPanes.map(\.paneID)) {
@@ -515,7 +538,7 @@ struct ContentView: View {
                     emptyState("This tab has no panes")
                 }
             } else {
-                emptyState(herdr.errorMessage ?? "Connecting to test session…")
+                emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
