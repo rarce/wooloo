@@ -569,8 +569,11 @@ final class HerdrStore: ObservableObject {
                                    cellWidth: size.2, cellHeight: size.3) {
                         Task { @MainActor in
                             guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
-                            if let workspaceID = store.selectedWorkspaceID { stream.focus(workspaceID: workspaceID) }
-                            if let tabID = store.selectedTabID { stream.focus(tabID: tabID) }
+                            if let tabID = store.selectedTabID {
+                                stream.focus(tabID: tabID)
+                            } else if let workspaceID = store.selectedWorkspaceID {
+                                stream.focus(workspaceID: workspaceID)
+                            }
                             if let paneID = store.selectedPaneID { stream.focus(paneID: paneID) }
                         }
                     } onSurface: { newSurface in
@@ -617,8 +620,13 @@ final class HerdrStore: ObservableObject {
         let activeTabID = snapshot?.workspaces.first { $0.workspaceID == workspaceID }?.activeTabID
         selectedTabID = tabID ?? tabs.first { $0.tabID == activeTabID }?.tabID ?? tabs.first?.tabID
         selectedPaneID = paneID ?? preferredPane(in: selectedTabID)
-        surfaceStream?.focus(workspaceID: workspaceID)
-        if let selectedTabID { surfaceStream?.focus(tabID: selectedTabID) }
+        // `tab.focus` also switches the workspace; sending `workspace.focus` first can race
+        // and leave the surface on the workspace's previously active tab.
+        if let selectedTabID {
+            surfaceStream?.focus(tabID: selectedTabID)
+        } else {
+            surfaceStream?.focus(workspaceID: workspaceID)
+        }
         if let selectedPaneID { surfaceStream?.focus(paneID: selectedPaneID) }
     }
 
