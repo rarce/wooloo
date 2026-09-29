@@ -6,6 +6,20 @@
   - Reproduce by alternating either pair of tabs rapidly; some clicks appear delayed or do not take effect immediately.
   - Profile the main thread during the delay and check whether live Herdr surface updates, SwiftUI view recomputation, or file and Git refreshes are occupying it. Compare a quiet session with one receiving frequent terminal updates.
   - Keep all Git, filesystem, and SSH work off the main thread, and verify that switching tabs responds consistently under live updates.
+  - Since `ee67e20`, live surfaces no longer update SwiftUI on every frame (`HerdrSurfaceFeed`), and the terminal keeps the main thread 5–13% busy under streaming output. Re-check whether the delay remains.
+
+## Terminal performance
+
+Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.sh`; see `docs/perf/README.md`. xherdr now draws every frame Herdr sends (about 43 fps). Arrival to draw takes about 3 ms at p50 and 15–18 ms at worst.
+
+- [ ] Measure keystroke-to-screen latency. `terminal-e2e.sh` times only frame arrival to draw; add a workload that timestamps input sent through `HerdrSurfaceStream.sendInput` and the first drawn revision that shows it.
+- [ ] Measure when a frame reaches the screen, not only when `draw` returns; the compositor adds up to one display refresh.
+- [ ] Add end-to-end workloads for tab switches, resizes, split panes, graphics and a selection drag during output. None of them is covered yet.
+- [ ] Cut the cold layout, about 5 ms at 311×80, which runs after a clear, resize or tab switch. Try caching glyphs per character and font for plain rows, keeping Core Text for rows that need shaping. Fira Code ligatures must still render, and the snapshots will show it if they do not.
+- [ ] Bound the row matching in `TerminalGrid.row(matching:near:)`. A row with no match compares against every row of the previous grid, so a screen of all-new content costs rows² comparisons; fall back to a hash only for unmatched rows if it shows up in profiles.
+- [ ] Cut the full redraw when scrolling, 1–2 ms at 200×60: every row changes position, so the whole view is invalidated. Consider moving the existing pixels (layer copy) and drawing only new rows. Consider a Metal glyph-atlas renderer only if Herdr's frame rate or grid sizes grow enough to need it.
+- [ ] Decode, on the stream thread: every patch copies the whole cell array (about 1 MB at 311×80), because the main thread still holds the previous surface. Each frame is also copied from `Data` to `[UInt8]` and allocated anew in `readFrame`. Consider a row-chunked cell store so a patch copies only the rows it touches.
+- [ ] Check whether Herdr's optional retained or delta encodings (`surface_reuse` and `surface_delta`, both off in the endpoint hello) reduce the bytes per frame, and what limits Herdr to about 43 fps under streaming output.
 
 ## Terminal
 
