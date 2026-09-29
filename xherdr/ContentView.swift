@@ -16,6 +16,8 @@ struct ContentView: View {
     @State private var activeDocumentID: String?
     @State private var pendingCloseDocumentID: String?
     @State private var fileRefreshVersion = 0
+    @AppStorage("SidebarWidth") private var sidebarWidth = 206.0
+    @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
     @State private var renameTarget: HerdrRenameTarget?
     @State private var renameText = ""
     @State private var closeTarget: HerdrCloseTarget?
@@ -36,30 +38,8 @@ struct ContentView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            if showsSidebar {
-                sidebar.frame(width: 206)
-                Divider()
-            }
-            mainArea
-            if showsFilesSidebar {
-                Divider()
-                WorkspaceBrowserView(localSnapshot: herdr.snapshot,
-                                     localWorkspaceID: herdr.selectedWorkspaceID,
-                                     localSession: herdr.sessionName,
-                                     refreshVersion: fileRefreshVersion,
-                                     onOpenFile: { location, path in openDocument(.file, path: path, at: location) },
-                                     onOpenDiff: { location, path in openDocument(.change, path: path, at: location) },
-                                     onNewTab: { cwd in
-                                         activeDocumentID = nil
-                                         herdr.createTab(cwd: cwd)
-                                     },
-                                     onNewSpace: { cwd, label in
-                                         activeDocumentID = nil
-                                         herdr.createWorkspace(cwd: cwd, label: label)
-                                     })
-                    .frame(width: 244)
-            }
+        GeometryReader { geometry in
+            content(totalWidth: geometry.size.width)
         }
         .frame(minWidth: 850, minHeight: 380)
         .preferredColorScheme(.dark)
@@ -110,6 +90,40 @@ struct ContentView: View {
             Button("Close", role: .destructive) { commitClose() }
         } message: {
             Text("Processes running in its terminals will be terminated.")
+        }
+    }
+
+    private func content(totalWidth: CGFloat) -> some View {
+        // Keep the terminal area usable however wide the sidebars are dragged.
+        let mainMinimum = 360.0
+        let left = showsSidebar ? sidebarWidth : 0
+        let right = showsFilesSidebar ? filesSidebarWidth : 0
+        return HStack(spacing: 0) {
+            if showsSidebar {
+                sidebar.frame(width: sidebarWidth)
+                SidebarResizeHandle(width: $sidebarWidth, defaultWidth: 206, edge: .leading,
+                                    range: 160...max(160, min(420, totalWidth - right - mainMinimum)))
+            }
+            mainArea
+            if showsFilesSidebar {
+                SidebarResizeHandle(width: $filesSidebarWidth, defaultWidth: 244, edge: .trailing,
+                                    range: 200...max(200, min(560, totalWidth - left - mainMinimum)))
+                WorkspaceBrowserView(localSnapshot: herdr.snapshot,
+                                     localWorkspaceID: herdr.selectedWorkspaceID,
+                                     localSession: herdr.sessionName,
+                                     refreshVersion: fileRefreshVersion,
+                                     onOpenFile: { location, path in openDocument(.file, path: path, at: location) },
+                                     onOpenDiff: { location, path in openDocument(.change, path: path, at: location) },
+                                     onNewTab: { cwd in
+                                         activeDocumentID = nil
+                                         herdr.createTab(cwd: cwd)
+                                     },
+                                     onNewSpace: { cwd, label in
+                                         activeDocumentID = nil
+                                         herdr.createWorkspace(cwd: cwd, label: label)
+                                     })
+                    .frame(width: filesSidebarWidth)
+            }
         }
     }
 
@@ -942,5 +956,47 @@ enum AppActions {
         } else {
             NSWorkspace.shared.open(url.deletingLastPathComponent())
         }
+    }
+}
+
+private struct SidebarResizeHandle: View {
+    @Binding var width: Double
+    let defaultWidth: Double
+    /// The side of the window the sidebar sits on; dragging away from it widens the sidebar.
+    let edge: HorizontalEdge
+    let range: ClosedRange<Double>
+
+    @State private var dragStartWidth: Double?
+    @State private var isHovering = false
+
+    var body: some View {
+        Divider()
+            .overlay {
+                Color.clear
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        guard hovering != isHovering else { return }
+                        isHovering = hovering
+                        if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                let start = dragStartWidth ?? width
+                                dragStartWidth = start
+                                let delta = edge == .leading ? value.translation.width : -value.translation.width
+                                width = min(max(start + delta, range.lowerBound), range.upperBound)
+                            }
+                            .onEnded { _ in dragStartWidth = nil }
+                    )
+                    .onTapGesture(count: 2) { width = defaultWidth }
+                    .help("Drag to resize · double-click to reset")
+            }
+            .zIndex(1)
+            .onChange(of: range) { _, range in
+                width = min(max(width, range.lowerBound), range.upperBound)
+            }
+            .onDisappear { if isHovering { NSCursor.pop() } }
     }
 }
