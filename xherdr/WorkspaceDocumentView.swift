@@ -111,20 +111,23 @@ struct WorkspaceDocumentView: View {
                     )
                 }
             } else {
-                ScrollView([.vertical, .horizontal]) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(document.text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
-                            Text(String(line).isEmpty ? " " : String(line))
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(diffColor(String(line)))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 1)
-                                .background(diffBackground(String(line)))
+                GeometryReader { viewport in
+                    ScrollView([.vertical, .horizontal]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(document.text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
+                                Text(String(line).isEmpty ? " " : String(line))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(diffColor(String(line)))
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(diffBackground(String(line)))
+                            }
                         }
+                        .frame(minWidth: viewport.size.width, alignment: .leading)
+                        .textSelection(.enabled)
                     }
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             Divider()
