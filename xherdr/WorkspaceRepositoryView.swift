@@ -54,6 +54,7 @@ struct WorkspaceRepositoryView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                .id(selectedTab)
             } else {
                 hint("Select a Space to browse its repository")
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -94,6 +95,7 @@ struct WorkspaceRepositoryView: View {
                 .frame(height: 25)
                 .background(selectedTab == index ? Color.white.opacity(0.1) : .clear,
                             in: RoundedRectangle(cornerRadius: 4))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
