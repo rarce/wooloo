@@ -171,7 +171,9 @@ struct WorkspaceRepositoryView: View {
                 Text("·")
                 Text(commit.author).lineLimit(1)
                 Spacer(minLength: 0)
-                Text(commit.date)
+                Text(commit.relativeDate)
+                    .lineLimit(1)
+                    .help(commit.absoluteDate)
             }
             .font(.system(size: 9))
             .foregroundStyle(.secondary)

@@ -77,7 +77,31 @@ struct WorkspaceCommit: Identifiable {
     let shortHash: String
     let subject: String
     let author: String
-    let date: String
+    let date: Date
+
+    /// English relative age, e.g. "3 days ago".
+    var relativeDate: String {
+        let seconds = Date().timeIntervalSince(date)
+        if seconds >= 0 && seconds < 60 { return "just now" }
+        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    var absoluteDate: String { Self.absoluteFormatter.string(from: date) }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
+    private static let absoluteFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
 }
 
 struct WorkspaceCommitFile: Identifiable {
@@ -314,11 +338,12 @@ enum WorkspaceFiles {
     static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
         let rootData = try git(location, ["rev-parse", "--show-toplevel"], limit: 4_000)
         let root = String(decoding: rootData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let logData = (try? git(location, ["log", "-n", "50", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ad%x1e", "--date=short"], limit: 200_000)) ?? Data()
+        let logData = (try? git(location, ["log", "-n", "50", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ct%x1e"], limit: 200_000)) ?? Data()
         let commits = String(decoding: logData, as: UTF8.self).split(separator: "\u{1e}").compactMap { record -> WorkspaceCommit? in
             let fields = record.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\u{1f}", omittingEmptySubsequences: false).map(String.init)
-            guard fields.count == 5 else { return nil }
-            return WorkspaceCommit(id: fields[0], shortHash: fields[1], subject: fields[2], author: fields[3], date: fields[4])
+            guard fields.count == 5, let timestamp = TimeInterval(fields[4]) else { return nil }
+            return WorkspaceCommit(id: fields[0], shortHash: fields[1], subject: fields[2], author: fields[3],
+                                   date: Date(timeIntervalSince1970: timestamp))
         }
         let refData = try git(location, ["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"], limit: 200_000)
         let refs = String(decoding: refData, as: UTF8.self).split(separator: "\n")
