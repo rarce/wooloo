@@ -222,12 +222,16 @@ struct ContentView: View {
             .padding(.horizontal, 14)
             .frame(height: 36)
             Divider()
-            ScrollView {
-                Text(herdr.paneText[pane.paneID] ?? "Reading pane…")
-                    .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
+            ScrollView(.vertical) {
+                ScrollView(.horizontal) {
+                    Text(herdr.paneText[pane.paneID] ?? "Reading pane…")
+                        .font(Font(NSFont(name: "FiraCodeNFM-Reg", size: 12)
+                            ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .padding(16)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
             HStack(spacing: 8) {

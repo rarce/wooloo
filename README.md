@@ -20,7 +20,7 @@ xherdr is at the beginning of development. The SwiftUI app has a left sidebar fo
 
 Pane output currently uses `pane.read`, so full terminal colors, cursor behavior, graphics, and key-by-key interaction still require Herdr's terminal surface protocol.
 
-The proposed server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md).
+The server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md). The [SwiftTerm evaluation](docs/swiftterm-evaluation.md) explains when a full terminal view would be useful.
 
 ## Run locally
 

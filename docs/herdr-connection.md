@@ -26,6 +26,8 @@ This was validated against `xherdr-ui-test` by creating a workspace, tabs, and a
 
 `pane.read` shows visible text, and `pane.send_input` sends a complete line. Periodic reads are insufficient for a faithful interactive terminal: cursor movement, colors, resizing, alternate screen applications, graphics, and key-by-key input need the client terminal surface. Herdr documents a stable endpoint generation that negotiates snapshot, screen, input, and blob codecs, while a numbered binary protocol remains for same-install operations. The native client should implement the negotiated endpoint for full terminal interaction. See [Protocol stability](https://herdr.dev/docs/socket-api/#protocol-stability) and [Reading panes](https://herdr.dev/docs/socket-api/#reading-panes).
 
+The suitability and integration boundary for [SwiftTerm](swiftterm-evaluation.md) are documented separately.
+
 Once a live surface is available, render each pane in a terminal view, forward keyboard and mouse input to the selected pane, report pane size on layout changes, and make split dividers update Herdr's layout. Keep preview text visibly labeled until the real surface replaces it.
 
 ## Implementation order
