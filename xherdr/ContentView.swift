@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var explorerLocation: WorkspaceFileLocation?
     @AppStorage("SidebarWidth") private var sidebarWidth = 206.0
     @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
+    @AppStorage("AgentsInSelectedSpaceOnly") private var agentsInSelectedSpaceOnly = false
     @State private var renameTarget: HerdrRenameTarget?
     @State private var renameText = ""
     @State private var closeTarget: HerdrCloseTarget?
@@ -246,10 +247,28 @@ struct ContentView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 3) {
-                        sectionTitle("AGENTS")
-                        let agents = herdr.snapshot?.agents ?? []
+                        HStack(spacing: 0) {
+                            sectionTitle("AGENTS")
+                            Spacer()
+                            Button {
+                                agentsInSelectedSpaceOnly.toggle()
+                            } label: {
+                                Image(systemName: agentsInSelectedSpaceOnly
+                                      ? "line.3.horizontal.decrease.circle.fill"
+                                      : "line.3.horizontal.decrease.circle")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(agentsInSelectedSpaceOnly ? theme.accent : .secondary)
+                                    .frame(width: 23, height: 20)
+                            }
+                            .buttonStyle(.plain)
+                            .help(agentsInSelectedSpaceOnly ? "Show Agents in All Spaces"
+                                                            : "Show Agents in Selected Space Only")
+                        }
+                        let agents = (herdr.snapshot?.agents ?? []).filter {
+                            !agentsInSelectedSpaceOnly || $0.workspaceID == herdr.selectedWorkspaceID
+                        }
                         if agents.isEmpty {
-                            Text("No agents")
+                            Text(agentsInSelectedSpaceOnly ? "No agents in this Space" : "No agents")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.tertiary)
                                 .padding(.horizontal, 8)
