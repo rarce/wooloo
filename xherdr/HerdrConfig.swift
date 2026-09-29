@@ -135,8 +135,9 @@ struct HerdrConfigDocument {
         return [string(section: "keys", key: key, default: "")]
     }
 
+    /// Writes a TOML basic string. JSON escapes are valid TOML except `\/`, which is turned off.
     mutating func setString(_ value: String, section: String, key: String) {
-        let data = try! JSONSerialization.data(withJSONObject: [value], options: [.fragmentsAllowed])
+        let data = try! JSONSerialization.data(withJSONObject: [value], options: [.fragmentsAllowed, .withoutEscapingSlashes])
         let quoted = String(data: data, encoding: .utf8)!.dropFirst().dropLast()
         set(String(quoted), section: section, key: key)
     }
@@ -150,7 +151,7 @@ struct HerdrConfigDocument {
     }
 
     mutating func setBindings(_ values: [String], key: String) {
-        let data = try! JSONSerialization.data(withJSONObject: values)
+        let data = try! JSONSerialization.data(withJSONObject: values, options: .withoutEscapingSlashes)
         let array = String(data: data, encoding: .utf8)!
         if values.count == 1 {
             setString(values[0], section: "keys", key: key)
