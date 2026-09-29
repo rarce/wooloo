@@ -31,7 +31,9 @@ struct HerdrNotificationSettings {
     var requestPath: String?
     /// Per-agent override: "default", "on", or "off".
     var agentSounds: [String: String] = [:]
-    var delivery = Delivery.off
+    /// Herdr defaults to off; xherdr shows system notifications unless config.toml says otherwise.
+    static let defaultDelivery = Delivery.system
+    var delivery = defaultDelivery
     var delaySeconds = 1
     var toastPosition = "bottom-right"
 
@@ -53,7 +55,8 @@ struct HerdrNotificationSettings {
             let value = document.string(section: "ui.sound.agents", key: agent, default: "default")
             if value != "default" { settings.agentSounds[agent] = value }
         }
-        settings.delivery = Delivery(rawValue: document.string(section: "ui.toast", key: "delivery", default: "off")) ?? .off
+        settings.delivery = Delivery(rawValue: document.string(section: "ui.toast", key: "delivery",
+                                                                default: defaultDelivery.rawValue)) ?? defaultDelivery
         settings.delaySeconds = max(0, document.integer(section: "ui.toast", key: "delay_seconds", default: 1))
         settings.toastPosition = document.string(section: "ui.toast.herdr", key: "position", default: "bottom-right")
         return settings
@@ -104,6 +107,11 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
         super.init()
         if Bundle.main.bundleIdentifier != nil {
             UNUserNotificationCenter.current().delegate = self
+        }
+        // The Dock badge toggle lives in UserDefaults; apply it as soon as it changes.
+        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
+                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateDockBadge() }
         }
     }
 
@@ -228,9 +236,12 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
             content.body = toast.body
             content.userInfo = ["paneID": toast.paneID]
             let request = UNNotificationRequest(identifier: toast.id.uuidString, content: content, trigger: nil)
-            UNUserNotificationCenter.current().add(request) { [weak self] error in
-                guard error != nil else { return }
-                Task { @MainActor in self?.showToast(toast) }
+            let center = UNUserNotificationCenter.current()
+            Task {
+                // Without permission macOS drops the alert silently, so show it in the app instead.
+                let status = await center.notificationSettings().authorizationStatus
+                guard status == .authorized || status == .provisional else { showToast(toast); return }
+                do { try await center.add(request) } catch { showToast(toast) }
             }
         }
     }
@@ -361,5 +372,120 @@ struct HerdrAttentionBadge: View {
         .padding(.horizontal, 4)
         .frame(height: 14)
         .background(color.opacity(0.16), in: Capsule())
+    }
+}
+
+/// xherdr's macOS notification permission: shows the current state and lets the user
+/// request it, open System Settings, or send a test notification.
+struct NotificationPermissionView: View {
+    @Environment(\.xherdrTheme) private var theme
+    @State private var status: UNAuthorizationStatus?
+    @State private var testResult: String?
+
+    private var settingsURL: URL? {
+        let id = Bundle.main.bundleIdentifier ?? ""
+        return URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: statusIcon)
+                    .foregroundStyle(statusColor)
+                Text(statusText)
+                    .font(.system(size: 12, weight: .medium))
+                Spacer()
+                switch status {
+                case .notDetermined?:
+                    Button("Request Permission") { request() }
+                        .buttonStyle(.borderedProminent)
+                case .denied?:
+                    Button("Open System Settings") { settingsURL.map { _ = NSWorkspace.shared.open($0) } }
+                default:
+                    EmptyView()
+                }
+                Button("Send Test") { sendTest() }
+                    .disabled(!isAllowed)
+                    .help("Post a sample notification")
+            }
+            Text(statusDetail)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let testResult {
+                Text(testResult).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+        .task { await refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await refresh() }
+        }
+    }
+
+    private var isAllowed: Bool { status == .authorized || status == .provisional }
+
+    private var statusText: String {
+        switch status {
+        case .authorized?, .provisional?: return "Notifications allowed"
+        case .denied?: return "Notifications blocked"
+        case .notDetermined?: return "Permission not requested"
+        default: return "Checking permission…"
+        }
+    }
+
+    private var statusDetail: String {
+        switch status {
+        case .denied?:
+            return "macOS blocks xherdr's notifications. Allow them in System Settings > Notifications > xherdr. Until then, alerts appear inside xherdr."
+        case .notDetermined?:
+            return "macOS asks once. Until xherdr is allowed, System delivery falls back to pop-ups inside xherdr."
+        case .authorized?, .provisional?:
+            return "Banner style and sounds for xherdr are managed in System Settings > Notifications."
+        default:
+            return ""
+        }
+    }
+
+    private var statusIcon: String {
+        switch status {
+        case .authorized?, .provisional?: return "checkmark.circle.fill"
+        case .denied?: return "xmark.octagon.fill"
+        default: return "questionmark.circle"
+        }
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .authorized?, .provisional?: return theme.success
+        case .denied?: return theme.warning
+        default: return .secondary
+        }
+    }
+
+    private func refresh() async {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
+
+    private func request() {
+        Task {
+            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
+            await refresh()
+        }
+    }
+
+    private func sendTest() {
+        let content = UNMutableNotificationContent()
+        content.title = "xherdr notifications work"
+        content.body = "Agents that finish or need input will appear like this."
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        Task {
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+                testResult = "Test notification sent."
+            } catch {
+                testResult = "macOS rejected the notification: \(error.localizedDescription)"
+            }
+        }
     }
 }

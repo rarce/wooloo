@@ -98,7 +98,9 @@ struct HerdrSettingsView: View {
                     } else {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 19) {
-                                Text("Local config.toml · shared by all Herdr sessions. Reload applies to \(sessionName).")
+                                Text(category == .notifications
+                                     ? "xherdr settings apply to this app. Herdr settings live in the local config.toml, shared by all Herdr sessions; reload applies to \(sessionName)."
+                                     : "Local config.toml · shared by all Herdr sessions. Reload applies to \(sessionName).")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.secondary)
                                 categoryFields
@@ -180,7 +182,20 @@ struct HerdrSettingsView: View {
                     .textFieldStyle(.roundedBorder)
             }
         case .notifications:
-            description("Herdr alerts when an agent finishes (done) or needs input (request). Sounds play for agents outside the pane you are viewing, or when xherdr is in the background.")
+            description("Alerts fire when an agent finishes (done) or needs input (request). Unread marks stay on agents, Spaces, and tabs until you open the pane.")
+            settingsGroup("xherdr", subtitle: "This app only · applies immediately · not written to config.toml") {
+                field("macOS permission", hint: "Needed for System delivery. Herdr does not use this permission.") {
+                    NotificationPermissionView()
+                }
+                field("Dock", hint: "xherdr's Dock icon") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("Show unread count on the Dock icon", isOn: $showsDockBadge)
+                        Toggle("Bounce the Dock icon when an agent needs input", isOn: $bouncesDock)
+                    }
+                }
+            }
+            groupHeader("Herdr", subtitle: "Saved to config.toml · shared with Herdr's terminal client · Save & reload to apply")
+            description("Sounds play for agents outside the pane you are viewing, or when xherdr is in the background.")
             Toggle("Play sounds", isOn: bool("ui.sound", "enabled", default: true))
             field("Sound file", hint: "Optional mp3 for all alerts. Relative paths resolve from config.toml's folder. Blank uses the system sound.") {
                 soundField("path", placeholder: "sounds/notification.mp3", kind: nil)
@@ -210,8 +225,9 @@ struct HerdrSettingsView: View {
                 }
             }
             Divider()
-            field("Pop-up notifications", hint: "Herdr's [ui.toast] delivery. xherdr has no outer terminal, so Terminal uses system notifications.") {
-                Picker("", selection: string("ui.toast", "delivery", default: "off")) {
+            field("Pop-up notifications", hint: "Herdr's [ui.toast] delivery. Unset, xherdr uses System (Herdr itself defaults to Off). xherdr has no outer terminal, so Terminal uses system notifications.") {
+                Picker("", selection: string("ui.toast", "delivery",
+                                             default: HerdrNotificationSettings.defaultDelivery.rawValue)) {
                     Text("Off").tag("off")
                     Text("In xherdr").tag("herdr")
                     Text("Terminal").tag("terminal")
@@ -234,13 +250,6 @@ struct HerdrSettingsView: View {
                 }
                 .labelsHidden()
                 .frame(width: 220)
-            }
-            Divider()
-            field("xherdr", hint: "Stored by xherdr, not in config.toml. Unread marks stay on agents, Spaces, and tabs until you open the pane.") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle("Show unread count on the Dock icon", isOn: $showsDockBadge)
-                    Toggle("Bounce the Dock icon when an agent needs input", isOn: $bouncesDock)
-                }
             }
         case .appearance:
             ThemeSettingsView(name: string("theme", "name", default: XherdrTheme.fallbackID),
@@ -332,6 +341,27 @@ struct HerdrSettingsView: View {
                     guard $0 != document.integer(section: section, key: key, default: fallback) else { return }
                     document.setInteger($0, section: section, key: key)
                 })
+    }
+
+    private func groupHeader(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 13, weight: .semibold))
+            Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        .padding(.top, 4)
+    }
+
+    /// A boxed group for settings that belong to xherdr rather than Herdr's config.toml.
+    private func settingsGroup<Content: View>(_ title: String, subtitle: String,
+                                              @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            groupHeader(title, subtitle: subtitle)
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.accent.opacity(0.25)))
     }
 
     private func soundField(_ key: String, placeholder: String, kind: HerdrAlertKind?) -> some View {
