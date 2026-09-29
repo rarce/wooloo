@@ -3,8 +3,11 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var herdr = HerdrStore()
     @State private var showsSidebar = true
-    @State private var inputByPane: [String: String] = [:]
+    @State private var showsSessionPicker = false
     @State private var requestedSessionName = "xherdr-ui-test"
+
+    private let sidebarBackground = Color(red: 0.105, green: 0.115, blue: 0.13)
+    private let barBackground = Color(red: 0.13, green: 0.14, blue: 0.155)
 
     private var selectedWorkspace: HerdrWorkspace? {
         herdr.snapshot?.workspaces.first { $0.workspaceID == herdr.selectedWorkspaceID }
@@ -21,12 +24,12 @@ struct ContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             if showsSidebar {
-                sidebar.frame(width: 260)
+                sidebar.frame(width: 206)
                 Divider()
             }
             mainArea
         }
-        .frame(minWidth: 760, minHeight: 500)
+        .frame(minWidth: 640, minHeight: 380)
         .preferredColorScheme(.dark)
         .task { herdr.start() }
         .onDisappear { herdr.stop() }
@@ -34,54 +37,51 @@ struct ContentView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text("HERDR")
-                    .font(.caption.weight(.bold))
-                    .tracking(1.2)
+            HStack(spacing: 7) {
+                Image(systemName: "square.stack.3d.up")
+                    .foregroundStyle(.cyan)
+                Text("herdr")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 Spacer()
                 Circle()
                     .fill(herdr.isConnected ? Color.green : Color.orange)
-                    .frame(width: 8, height: 8)
-                    .help(herdr.isConnected ? "Connected to test session" : "Waiting for test session")
+                    .frame(width: 6, height: 6)
             }
-            .padding(.horizontal, 16)
-            .frame(height: 46)
-            Divider()
+            .padding(.horizontal, 12)
+            .frame(height: 35)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 13) {
+                    VStack(alignment: .leading, spacing: 3) {
                         sectionTitle("SPACES")
                         ForEach(herdr.snapshot?.workspaces ?? []) { workspace in
                             Button {
                                 herdr.select(workspaceID: workspace.workspaceID)
                             } label: {
-                                HStack(spacing: 10) {
+                                HStack(spacing: 7) {
                                     Circle()
                                         .fill(statusColor(workspace.agentStatus))
-                                        .frame(width: 8, height: 8)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(workspace.label).font(.subheadline.weight(.medium))
-                                        Text(workspace.workspaceID)
-                                            .font(.caption.monospaced())
-                                            .foregroundStyle(.secondary)
-                                    }
+                                        .frame(width: 6, height: 6)
+                                    Text(workspace.label)
+                                        .lineLimit(1)
                                     Spacer(minLength: 0)
                                 }
+                                .font(.system(size: 12, weight: .medium))
                                 .sidebarRow(selected: workspace.workspaceID == herdr.selectedWorkspaceID)
                             }
                             .buttonStyle(.plain)
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
                         sectionTitle("AGENTS")
                         let agents = herdr.snapshot?.agents ?? []
                         if agents.isEmpty {
-                            Text("No agents detected")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 9)
+                            Text("No agents")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
                         }
                         ForEach(agents) { agent in
                             Button {
@@ -89,45 +89,67 @@ struct ContentView: View {
                                     herdr.select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
                                 }
                             } label: {
-                                HStack(spacing: 10) {
+                                HStack(spacing: 7) {
                                     Circle()
                                         .fill(statusColor(agent.agentStatus))
-                                        .frame(width: 8, height: 8)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(agent.displayName).font(.subheadline.weight(.medium))
-                                        Text(agent.agentStatus ?? "unknown")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
+                                        .frame(width: 6, height: 6)
+                                    Text(agent.displayName).lineLimit(1)
                                     Spacer(minLength: 0)
+                                    Text(agent.agentStatus ?? "")
+                                        .foregroundStyle(.secondary)
                                 }
+                                .font(.system(size: 11))
                                 .sidebarRow(selected: agent.paneID == herdr.selectedPaneID)
                             }
                             .buttonStyle(.plain)
                         }
                     }
                 }
-                .padding(12)
+                .padding(7)
             }
 
             Divider()
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(herdr.isConnected ? Color.green : Color.orange)
-                    .frame(width: 7, height: 7)
-                Text("\(herdr.isConnected ? "Connected" : "Disconnected") · \(herdr.sessionName)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            Button {
+                requestedSessionName = herdr.sessionName
+                showsSessionPicker = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                    Text(herdr.sessionName).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9))
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 11)
+                .frame(height: 29)
             }
-            .padding(14)
+            .buttonStyle(.plain)
+            .popover(isPresented: $showsSessionPicker) {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Connect to a named session")
+                        .font(.subheadline.weight(.semibold))
+                    HStack {
+                        TextField("Session name", text: $requestedSessionName)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit(connect)
+                        Button("Connect", action: connect)
+                    }
+                    if let error = herdr.sessionSelectionError {
+                        Text(error).font(.caption).foregroundStyle(.orange)
+                    }
+                }
+                .padding(14)
+                .frame(width: 305)
+            }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(sidebarBackground)
     }
 
     private var mainArea: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button {
                     showsSidebar.toggle()
                 } label: {
@@ -136,49 +158,47 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .help(showsSidebar ? "Hide sidebar" : "Show sidebar")
                 Text(selectedWorkspace?.label ?? "Herdr")
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
                 Spacer()
-                TextField("Named session", text: $requestedSessionName)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption.monospaced())
-                    .frame(width: 145)
-                    .onSubmit { herdr.connect(to: requestedSessionName) }
-                    .help("Named sessions only; default is excluded")
-                Button("Connect") { herdr.connect(to: requestedSessionName) }
-                    .buttonStyle(.borderless)
-                if let sessionSelectionError = herdr.sessionSelectionError {
-                    Text(sessionSelectionError)
-                        .font(.caption)
+                if !herdr.isConnected {
+                    Text("Disconnected")
+                        .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.orange)
-                        .lineLimit(1)
                 }
             }
-            .padding(.horizontal, 16)
-            .frame(height: 46)
+            .padding(.horizontal, 11)
+            .frame(height: 35)
+            .background(barBackground)
             Divider()
 
             if herdr.isConnected {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 2) {
                         ForEach(selectedTabs) { tab in
                             Button {
                                 herdr.select(tabID: tab.tabID)
                             } label: {
-                                Label(tab.label, systemImage: "terminal")
-                                    .font(.subheadline)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(
-                                        herdr.selectedTabID == tab.tabID ? Color.accentColor.opacity(0.15) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 7)
-                                    )
+                                HStack(spacing: 5) {
+                                    Image(systemName: "terminal")
+                                        .font(.system(size: 10))
+                                    Text(tab.label).lineLimit(1)
+                                }
+                                .font(.system(size: 11))
+                                .padding(.horizontal, 10)
+                                .frame(height: 27)
+                                .background(
+                                    herdr.selectedTabID == tab.tabID ? Color.white.opacity(0.09) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 4)
+                                )
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 7)
                 }
-                .frame(height: 44)
+                .frame(height: 31)
+                .background(barBackground)
                 Divider()
 
                 if let layout = herdr.snapshot?.layouts.first(where: { $0.tabID == herdr.selectedTabID }),
@@ -209,87 +229,52 @@ struct ContentView: View {
     }
 
     private func terminalPane(_ pane: HerdrPane) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+        VStack(spacing: 0) {
+            HStack(spacing: 7) {
                 Image(systemName: "terminal")
-                Text(pane.paneID).fontWeight(.semibold)
-                Spacer()
+                Text(pane.paneID).fontWeight(.medium)
+                Spacer(minLength: 5)
+                if let error = herdr.inputError {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .help(error)
+                }
                 Text(pane.cwd ?? "")
                     .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .font(.system(size: 11, design: .monospaced))
+            .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .frame(height: 36)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(barBackground)
+            .contentShape(Rectangle())
+            .onTapGesture { herdr.selectedPaneID = pane.paneID }
             Divider()
-            ScrollView(.vertical) {
-                ScrollView(.horizontal) {
-                    Text(herdr.paneText[pane.paneID] ?? "Reading pane…")
-                        .font(Font(NSFont(name: "FiraCodeNFM-Reg", size: 12)
-                            ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: true, vertical: true)
-                        .padding(16)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Divider()
-            HStack(spacing: 8) {
-                Text("›")
-                    .foregroundStyle(.secondary)
-                TextField("Send a line to this pane", text: Binding(
-                    get: { inputByPane[pane.paneID] ?? "" },
-                    set: { inputByPane[pane.paneID] = $0 }
-                ))
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, design: .monospaced))
-                .onSubmit { sendInput(to: pane.paneID) }
-                Button("Send") { sendInput(to: pane.paneID) }
-                    .buttonStyle(.borderless)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 34)
-            if let inputError = herdr.inputError {
-                Text(inputError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 14)
-            }
-            HStack {
-                Text("LIVE SNAPSHOT · line input")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(pane.agentStatus ?? "unknown")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(statusColor(pane.agentStatus))
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 30)
+            TerminalPaneView(
+                text: herdr.paneText[pane.paneID] ?? "Reading pane…",
+                paneID: pane.paneID,
+                sendText: { text, id in herdr.sendText(text, to: id) },
+                sendKey: { key, id in herdr.sendKey(key, to: id) }
+            )
+            .id(pane.paneID)
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color(red: 0.075, green: 0.082, blue: 0.091))
         .overlay {
-            RoundedRectangle(cornerRadius: 2)
-                .stroke(pane.paneID == herdr.selectedPaneID ? Color.accentColor.opacity(0.8) : Color.clear, lineWidth: 1)
+            Rectangle()
+                .stroke(pane.paneID == herdr.selectedPaneID ? Color.cyan.opacity(0.45) : Color.clear, lineWidth: 1)
         }
-        .contentShape(Rectangle())
-        .onTapGesture { herdr.selectedPaneID = pane.paneID }
     }
 
-    private func sendInput(to paneID: String) {
-        let text = inputByPane[paneID] ?? ""
-        guard !text.isEmpty else { return }
-        Task {
-            if await herdr.sendLine(text, to: paneID) {
-                inputByPane[paneID] = ""
-            }
-        }
+    private func connect() {
+        herdr.connect(to: requestedSessionName)
+        if herdr.sessionSelectionError == nil { showsSessionPicker = false }
     }
 
     private func emptyState(_ message: String) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             Image(systemName: "network")
-                .font(.system(size: 30, weight: .light))
+                .font(.system(size: 24, weight: .light))
             Text(message)
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
@@ -304,10 +289,11 @@ struct ContentView: View {
 
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .tracking(0.8)
-            .padding(.horizontal, 9)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .tracking(0.7)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
     }
 
     private func statusColor(_ status: String?) -> Color {
@@ -323,11 +309,12 @@ struct ContentView: View {
 
 private extension View {
     func sidebarRow(selected: Bool) -> some View {
-        padding(9)
+        padding(.horizontal, 8)
+            .frame(height: 27)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                selected ? Color.accentColor.opacity(0.12) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 7)
+                selected ? Color.white.opacity(0.08) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 4)
             )
     }
 }

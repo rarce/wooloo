@@ -241,12 +241,11 @@ enum HerdrSocket {
         return try JSONDecoder().decode(PaneReadResponse.self, from: data).result.read.text
     }
 
-    static func sendLine(path: String, paneID: String, text: String) throws {
-        _ = try request(path: path, method: "pane.send_input", params: [
-            "pane_id": paneID,
-            "text": text,
-            "keys": ["enter"]
-        ])
+    static func sendInput(path: String, paneID: String, text: String? = nil, keys: [String] = []) throws {
+        var params: [String: Any] = ["pane_id": paneID]
+        if let text { params["text"] = text }
+        if !keys.isEmpty { params["keys"] = keys }
+        _ = try request(path: path, method: "pane.send_input", params: params)
     }
 }
 
@@ -361,6 +360,8 @@ final class HerdrStore: ObservableObject {
     private var paneTask: Task<Void, Never>?
     private var eventStream: HerdrEventStream?
     private var generation = 0
+    private var pendingInput: [(paneID: String, text: String?, keys: [String])] = []
+    private var inputTask: Task<Void, Never>?
 
     var socketPath: String {
         FileManager.default.homeDirectoryForCurrentUser
@@ -387,6 +388,7 @@ final class HerdrStore: ObservableObject {
         selectedPaneID = nil
         errorMessage = nil
         inputError = nil
+        pendingInput = []
         start()
     }
 
@@ -454,6 +456,9 @@ final class HerdrStore: ObservableObject {
         eventTask = nil
         paneTask?.cancel()
         paneTask = nil
+        inputTask?.cancel()
+        inputTask = nil
+        pendingInput = []
     }
 
     func select(workspaceID: String, tabID: String? = nil, paneID: String? = nil) {
@@ -468,19 +473,35 @@ final class HerdrStore: ObservableObject {
         selectedPaneID = snapshot?.panes.first { $0.tabID == tabID }?.paneID
     }
 
-    func sendLine(_ text: String, to paneID: String) async -> Bool {
-        guard isConnected, !text.isEmpty else { return false }
+    func sendText(_ text: String, to paneID: String) {
+        guard !text.isEmpty else { return }
+        enqueueInput(paneID: paneID, text: text)
+    }
+
+    func sendKey(_ key: String, to paneID: String) {
+        enqueueInput(paneID: paneID, keys: [key])
+    }
+
+    private func enqueueInput(paneID: String, text: String? = nil, keys: [String] = []) {
+        guard isConnected else { return }
+        pendingInput.append((paneID, text, keys))
+        guard inputTask == nil else { return }
         let path = socketPath
-        let result = await Task.detached(priority: .userInitiated) {
-            Result { try HerdrSocket.sendLine(path: path, paneID: paneID, text: text) }
-        }.value
-        switch result {
-        case .success:
-            inputError = nil
-            return true
-        case .failure(let error):
-            inputError = error.localizedDescription
-            return false
+        let currentGeneration = generation
+        inputTask = Task {
+            while !pendingInput.isEmpty && !Task.isCancelled {
+                let item = pendingInput.removeFirst()
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result { try HerdrSocket.sendInput(path: path, paneID: item.paneID, text: item.text, keys: item.keys) }
+                }.value
+                guard generation == currentGeneration else { break }
+                if case .failure(let error) = result {
+                    inputError = error.localizedDescription
+                } else {
+                    inputError = nil
+                }
+            }
+            if generation == currentGeneration { inputTask = nil }
         }
     }
 

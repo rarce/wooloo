@@ -10,12 +10,14 @@
 		A10000000000000000000001 /* XherdrApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* XherdrApp.swift */; };
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* ContentView.swift */; };
 		A10000000000000000000014 /* HerdrConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* HerdrConnection.swift */; };
+		A10000000000000000000016 /* TerminalPaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* TerminalPaneView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A10000000000000000000003 /* XherdrApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XherdrApp.swift; sourceTree = "<group>"; };
 		A10000000000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* HerdrConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConnection.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* TerminalPaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPaneView.swift; sourceTree = "<group>"; };
 		A10000000000000000000005 /* xherdr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xherdr.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -34,6 +36,7 @@
 				A10000000000000000000003 /* XherdrApp.swift */,
 				A10000000000000000000004 /* ContentView.swift */,
 				A10000000000000000000015 /* HerdrConnection.swift */,
+				A10000000000000000000017 /* TerminalPaneView.swift */,
 			);
 			path = xherdr;
 			sourceTree = "<group>";
@@ -117,6 +120,7 @@
 				A10000000000000000000001 /* XherdrApp.swift in Sources */,
 				A10000000000000000000002 /* ContentView.swift in Sources */,
 				A10000000000000000000014 /* HerdrConnection.swift in Sources */,
+				A10000000000000000000016 /* TerminalPaneView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

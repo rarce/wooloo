@@ -16,9 +16,9 @@ The direction is simple:
 
 ## Status
 
-xherdr is at the beginning of development. The SwiftUI app has a left sidebar for spaces and agents, workspace tabs, and terminal pane layouts. It starts with the dedicated Herdr test session `xherdr-ui-test`, subscribes to server events, reads visible pane text, and can send a line of input to a pane. The toolbar accepts another named session; `default` is excluded by this build. The interface follows Herdr's [workspace, tab, pane, and agent model](https://herdr.dev/docs/concepts/) and the layout shown on [herdr.dev](https://herdr.dev/).
+xherdr is at the beginning of development. The compact SwiftUI app has a left sidebar for spaces and agents, workspace tabs, and terminal pane layouts. It starts with the dedicated Herdr test session `xherdr-ui-test`, subscribes to server events, and reads visible pane text. Click a pane and type directly: text, Enter, Backspace, arrows, Tab, Escape, control and option chords, and paste are forwarded to Herdr in order. The session picker lives at the bottom of the sidebar; `default` is excluded by this build. The interface follows Herdr's [workspace, tab, pane, and agent model](https://herdr.dev/docs/concepts/) and the layout shown on [herdr.dev](https://herdr.dev/).
 
-Pane output currently uses `pane.read`, so full terminal colors, cursor behavior, graphics, and key-by-key interaction still require Herdr's terminal surface protocol.
+Pane output currently uses `pane.read`, so terminal colors, cursor placement, graphics, resize reporting, and alternate-screen rendering still require Herdr's terminal surface protocol. Input is interactive through `pane.send_input`.
 
 The server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md). The [SwiftTerm evaluation](docs/swiftterm-evaluation.md) explains when a full terminal view would be useful.
 
