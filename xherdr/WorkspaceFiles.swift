@@ -379,11 +379,20 @@ enum WorkspaceFiles {
         if !staged.isEmpty || !unstaged.isEmpty { return [.all: staged + unstaged] }
         if (try? git(location, ["ls-files", "--error-unmatch", "--", path], limit: 1_000)) == nil,
            let file = try? read(path, at: location) {
-            let lines = file.text.split(separator: "\n", omittingEmptySubsequences: false)
-            return [.all: "--- /dev/null\n+++ b/\(path)\n@@ -0,0 +1,\(lines.count) @@\n"
-                + lines.map { "+" + $0 }.joined(separator: "\n")]
+            return [.all: untrackedPatch(file.text, path: path)]
         }
         return [.all: "No text diff available. Open the file to view its contents."]
+    }
+
+    /// A patch that adds every line of an untracked file, as `git diff --no-index /dev/null` would.
+    static func untrackedPatch(_ text: String, path: String) -> String {
+        let header = "--- /dev/null\n+++ b/\(path)\n"
+        guard !text.isEmpty else { return header }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let endsWithNewline = text.hasSuffix("\n")
+        if endsWithNewline { lines.removeLast() }
+        return header + "@@ -0,0 +1,\(lines.count) @@\n" + lines.map { "+" + $0 }.joined(separator: "\n")
+            + (endsWithNewline ? "\n" : "\n\\ No newline at end of file\n")
     }
 
     /// The whole file before and after a patch, for syntax highlighting and expanding unchanged lines.
