@@ -42,6 +42,7 @@
 		B20000000000000000000024 /* TerminalRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000014 /* TerminalRenderingTests.swift */; };
 		B20000000000000000000025 /* TerminalPipelineBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000015 /* TerminalPipelineBenchmarks.swift */; };
 		B20000000000000000000026 /* WorkspaceFilesBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000016 /* WorkspaceFilesBenchmarks.swift */; };
+		B20000000000000000000027 /* SharedLoadsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000017 /* SharedLoadsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -88,6 +89,7 @@
 		B20000000000000000000015 /* TerminalPipelineBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPipelineBenchmarks.swift; sourceTree = "<group>"; };
 		B20000000000000000000030 /* xherdrTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = xherdrTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000016 /* WorkspaceFilesBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceFilesBenchmarks.swift; sourceTree = "<group>"; };
+		B20000000000000000000017 /* SharedLoadsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedLoadsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -150,6 +152,7 @@
 				B20000000000000000000014 /* TerminalRenderingTests.swift */,
 				B20000000000000000000015 /* TerminalPipelineBenchmarks.swift */,
 				B20000000000000000000016 /* WorkspaceFilesBenchmarks.swift */,
+				B20000000000000000000017 /* SharedLoadsTests.swift */,
 			);
 			path = xherdrTests;
 			sourceTree = "<group>";
@@ -301,6 +304,7 @@
 				B20000000000000000000024 /* TerminalRenderingTests.swift in Sources */,
 				B20000000000000000000025 /* TerminalPipelineBenchmarks.swift in Sources */,
 				B20000000000000000000026 /* WorkspaceFilesBenchmarks.swift in Sources */,
+				B20000000000000000000027 /* SharedLoadsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

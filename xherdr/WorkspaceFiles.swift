@@ -382,7 +382,23 @@ enum WorkspaceFiles {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Recent repository listings. When the Files sidebar refreshes, the Git bar and the
+    /// repository panel each ask for one; they share a single load instead of running the same
+    /// four git commands twice.
+    private static let repositoryLoads = SharedLoads<WorkspaceRepositoryListing>(maxAge: 2)
+
+    /// Forgets recently loaded results, so the next load reads the repository again. Git
+    /// operations run here do this themselves; an explicit refresh does it for changes made
+    /// elsewhere, such as in a terminal.
+    static func forgetRecentResults() {
+        repositoryLoads.forget()
+    }
+
     static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
+        try repositoryLoads.value(for: location.identity) { try loadRepository(at: location) }
+    }
+
+    private static func loadRepository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
         let rootData = try git(location, ["rev-parse", "--show-toplevel"], limit: 4_000)
         let root = String(decoding: rootData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         let logData = (try? git(location, ["log", "-n", "50", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ct%x1e"], limit: 200_000)) ?? Data()
@@ -491,6 +507,7 @@ enum WorkspaceFiles {
 
     static func addWorktree(at location: WorkspaceFileLocation, path: String,
                             branch: WorkspaceBranch, newBranch: String?) throws {
+        defer { forgetRecentResults() }
         guard path.hasPrefix("/"), !path.contains("\0"), !path.contains("\n"), path != "/" else {
             throw WorkspaceFileError.message("Enter an absolute worktree path")
         }
@@ -508,6 +525,7 @@ enum WorkspaceFiles {
     }
 
     static func removeWorktree(at location: WorkspaceFileLocation, path: String) throws {
+        defer { forgetRecentResults() }
         let repository = try repository(at: location)
         guard path != repository.root,
               let tree = repository.worktrees.first(where: { $0.path == path }),
@@ -518,11 +536,13 @@ enum WorkspaceFiles {
     }
 
     static func stage(_ path: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
         try validateRelativePath(path)
         _ = try git(location, ["add", "--", path], limit: 20_000)
     }
 
     static func unstage(_ path: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
         try validateRelativePath(path)
         _ = try git(location, ["restore", "--staged", "--", path], limit: 20_000)
     }
@@ -554,6 +574,7 @@ enum WorkspaceFiles {
     }
 
     static func sync(_ action: WorkspaceGitSync, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
         let args: [String]
         switch action {
         case .fetch: args = ["fetch", "--prune"]
@@ -571,6 +592,7 @@ enum WorkspaceFiles {
     }
 
     static func commit(message: String, mode: WorkspaceCommitMode, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
         let message = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty || mode == .amend else {
             throw WorkspaceFileError.message("Enter a commit message")
@@ -591,6 +613,7 @@ enum WorkspaceFiles {
     }
 
     static func switchBranch(_ branch: WorkspaceBranch, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
         guard !branch.isRemote, !branch.isCurrent, !branch.name.hasPrefix("-") else {
             throw WorkspaceFileError.message("Choose another local branch")
         }
@@ -608,14 +631,28 @@ enum WorkspaceFiles {
     private static func git(_ location: WorkspaceFileLocation, _ args: [String], input: Data? = nil,
                             limit: Int, timeout: TimeInterval = 15) throws -> Data {
         // No terminal is attached, so credential prompts must fail instead of hanging.
-        let command = ["GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + args
         let label = "git " + (args.first ?? "")
         if let machine = location.machine {
-            let remote = (["env"] + command).map(quote).joined(separator: " ")
+            let remote = (["env", "GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + args).map(quote).joined(separator: " ")
             return try ssh(machine, remote, input: input, limit: limit, timeout: timeout, label: label)
         }
-        return try run("/usr/bin/env", command, input: input, limit: limit, timeout: timeout, label: label)
+        guard let localGit else {
+            return try run("/usr/bin/env", ["GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + args,
+                           input: input, limit: limit, timeout: timeout, label: label)
+        }
+        return try run(localGit, ["-C", location.root] + args, environment: ["GIT_TERMINAL_PROMPT": "0"],
+                       input: input, limit: limit, timeout: timeout, label: label)
     }
+
+    /// The git that `/usr/bin/git` forwards to. The shim looks it up again on every call, which
+    /// takes longer than most git commands the app runs. `nil` when xcrun cannot find one, for
+    /// example without the command line tools; git then runs through the shim.
+    private static let localGit: String? = {
+        guard let data = try? run("/usr/bin/xcrun", ["--find", "git"], limit: 4096, label: "xcrun"),
+              let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        return path
+    }()
 
     private static func localFiles(root: String) throws -> [String] {
         let rootURL = URL(fileURLWithPath: root).resolvingSymlinksInPath()
@@ -713,14 +750,29 @@ enum WorkspaceFiles {
             throw WorkspaceFileError.message("Invalid SSH target")
         }
         var args = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+        if let directory = sshControlDirectory {
+            // One connection per machine, kept for a minute, instead of a handshake per command.
+            args += ["-o", "ControlMaster=auto", "-o", "ControlPath=\(directory)/%C", "-o", "ControlPersist=60"]
+        }
         if let port { args += ["-p", port] }
         args += [target, command]
         return try run("/usr/bin/ssh", args, input: input, limit: limit, timeout: timeout, label: label, remote: true)
     }
 
+    /// Where SSH keeps the sockets of shared connections: a short path, since socket paths are
+    /// limited to about 100 bytes, in a directory only this user can use. Nil turns sharing off.
+    private static let sshControlDirectory: String? = {
+        let path = "/tmp/xherdr-ssh-\(getuid())"
+        mkdir(path, 0o700)
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid(),
+              info.st_mode & 0o077 == 0 else { return nil }
+        return path
+    }()
+
     /// Runs a process and returns its output. `label` names it in the process log, for
     /// example `git status`, and `remote` marks commands sent over SSH.
-    private static func run(_ executable: String, _ arguments: [String],
+    private static func run(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
                             input: Data? = nil, limit: Int, timeout: TimeInterval = 15,
                             label: String? = nil, remote: Bool = false) throws -> Data {
         let start = TerminalPipelineMetrics.now()
@@ -733,11 +785,15 @@ enum WorkspaceFiles {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if !environment.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
+        }
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
         let source = input.map { _ in Pipe() }
-        if let source { process.standardInput = source }
+        // Without input, a command must not read the app's own stdin; SSH would forward it.
+        process.standardInput = source ?? FileHandle.nullDevice
         try process.run()
         let timer = DispatchSource.makeTimerSource()
         timer.schedule(deadline: .now() + timeout)
@@ -818,5 +874,47 @@ enum WorkspaceProcessLog {
         let processes = collected ?? []
         lock.unlock()
         return (result, processes)
+    }
+}
+
+/// Shares one load per key between callers that ask at about the same time: a caller waits
+/// for a load already running, and reuses a result younger than `maxAge`. A load that
+/// `forget()` overtook is returned to its caller but not kept.
+final class SharedLoads<Value> {
+    private let maxAge: TimeInterval
+    private let condition = NSCondition()
+    private var results: [String: (time: TimeInterval, value: Value)] = [:]
+    private var running: Set<String> = []
+    private var generation = 0
+
+    init(maxAge: TimeInterval) { self.maxAge = maxAge }
+
+    func value(for key: String, load: () throws -> Value) throws -> Value {
+        condition.lock()
+        while running.contains(key) { condition.wait() }
+        if let recent = results[key], ProcessInfo.processInfo.systemUptime - recent.time < maxAge {
+            condition.unlock()
+            return recent.value
+        }
+        running.insert(key)
+        let startedGeneration = generation
+        condition.unlock()
+
+        let result = Result { try load() }
+        condition.lock()
+        running.remove(key)
+        if case .success(let value) = result, generation == startedGeneration {
+            results[key] = (ProcessInfo.processInfo.systemUptime, value)
+        }
+        condition.broadcast()
+        condition.unlock()
+        return try result.get()
+    }
+
+    func forget() {
+        condition.lock()
+        results.removeAll()
+        generation += 1
+        condition.unlock()
     }
 }

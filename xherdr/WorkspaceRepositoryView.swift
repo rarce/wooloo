@@ -34,7 +34,7 @@ struct WorkspaceRepositoryView: View {
                     .tracking(0.7)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button { reloadVersion += 1 } label: {
+                Button { reload() } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: typography.secondary))
                 }
                 .buttonStyle(.plain)
@@ -44,7 +44,7 @@ struct WorkspaceRepositoryView: View {
             .frame(height: typography.metric(34))
             .contentShape(Rectangle())
             .contextMenu {
-                Button("Refresh", systemImage: "arrow.clockwise") { reloadVersion += 1 }
+                Button("Refresh", systemImage: "arrow.clockwise") { reload() }
                 if let listing {
                     Button("Add Worktree…", systemImage: "plus") { prepareAdd(listing) }
                         .disabled(listing.branches.isEmpty)
@@ -435,6 +435,12 @@ struct WorkspaceRepositoryView: View {
         let path = parent + "/" + name + "-" + branch.name.replacingOccurrences(of: "/", with: "-")
         addRequest = AddWorktreeRequest(branches: listing.branches, branchID: branch.id,
                                         path: path, newBranch: newBranch)
+    }
+
+    /// An explicit refresh reads the repository again, even if it was just loaded.
+    private func reload() {
+        WorkspaceFiles.forgetRecentResults()
+        reloadVersion += 1
     }
 
     private func load() {

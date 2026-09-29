@@ -194,7 +194,10 @@ struct ContentView: View {
                systemImage: "sidebar.left") { showsSidebar.toggle() }
         Button(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes",
                systemImage: "sidebar.right") { showsFilesSidebar.toggle() }
-        Button("Refresh Files and Repository", systemImage: "arrow.clockwise") { fileRefreshVersion += 1 }
+        Button("Refresh Files and Repository", systemImage: "arrow.clockwise") {
+            WorkspaceFiles.forgetRecentResults()
+            fileRefreshVersion += 1
+        }
         Button("Find in Project…", systemImage: "magnifyingglass") { openSearch(replace: false) }
         Button("Replace in Project…", systemImage: "text.magnifyingglass") { openSearch(replace: true) }
         Divider()
@@ -1012,7 +1015,9 @@ struct ContentView: View {
             themes.reload()
             herdr.reloadConfig()
         case "toggle_files_sidebar": showsFilesSidebar.toggle()
-        case "refresh_files": fileRefreshVersion += 1
+        case "refresh_files":
+            WorkspaceFiles.forgetRecentResults()
+            fileRefreshVersion += 1
         case "switch_session":
             showsSidebar = true
             requestedSessionName = herdr.sessionName

@@ -21,7 +21,8 @@ stamp=$(date +%Y%m%d-%H%M%S)
 log=$out_dir/bench-$stamp.log
 results=$out_dir/bench-$stamp.jsonl
 
-echo "{\"machine\":\"$(sysctl -n hw.model)\",\"commit\":\"$(git -C $root rev-parse --short HEAD)\"}" > $results
+# The load average marks runs that shared the machine with builds or other heavy work.
+echo "{\"machine\":\"$(sysctl -n hw.model)\",\"commit\":\"$(git -C $root rev-parse --short HEAD)\",\"load_before\":\"$(sysctl -n vm.loadavg | tr -d '{}' | awk '{print $1}')\"}" > $results
 export TEST_RUNNER_XHERDR_BENCH=1 TEST_RUNNER_XHERDR_BENCH_OUT=$results
 for name in COLS ROWS FRAMES REPEAT; do
     value=${(P)${:-XHERDR_BENCH_$name}:-}
@@ -38,6 +39,8 @@ if ! xcodebuild test -project $root/xherdr.xcodeproj -scheme xherdr -configurati
     echo "Benchmarks failed; see $log" >&2
     exit 1
 fi
+
+echo "{\"load_after\":\"$(sysctl -n vm.loadavg | tr -d '{}' | awk '{print $1}')\"}" >> $results
 
 if [[ $save_baseline == 1 ]]; then
     mkdir -p ${baseline:h}

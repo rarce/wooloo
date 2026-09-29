@@ -23,6 +23,16 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 - [ ] Decode, on the stream thread: every patch copies the whole cell array (about 1 MB at 311×80), because the main thread still holds the previous surface. Each frame is also copied from `Data` to `[UInt8]` and allocated anew in `readFrame`. Consider a row-chunked cell store so a patch copies only the rows it touches.
 - [ ] Check whether Herdr's optional retained or delta encodings (`surface_reuse` and `surface_delta`, both off in the endpoint hello) reduce the bytes per frame, and what limits Herdr to about 43 fps under streaming output.
 
+## Workspace performance
+
+Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
+
+- [x] Share SSH connections, load the repository once per refresh, and run git without the `/usr/bin/git` shim. A local refresh of a large repository dropped from 631 to about 200 ms, and over SSH from 1.8 s to about 0.8 s.
+- [ ] Batch the SSH commands of one refresh into a single remote script. Each command still costs a round trip, which the local VM hides, but a remote over the internet will not.
+- [ ] Cut the `git rev-parse` calls that `listing` and `repository` each make for the same root.
+- [ ] Syntax colors for a large diff take about 0.3–0.5 s of CPU (`parse-big-diff-highlighted`). Profile `ParsedDiff` with old and new sides.
+- [ ] Once, the first SSH command of a benchmark run failed with its output complete but a nonzero exit, and it did not happen again. If it recurs, log SSH's exit status and stderr, and check how shared connections behave when the master expires.
+
 ## Terminal
 
 - [ ] Fix mouse text selection in panes running Claude Code. Selection works in a plain shell (for example after `ls`) but is still unreliable while Claude Code is running.

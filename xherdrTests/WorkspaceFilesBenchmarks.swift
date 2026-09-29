@@ -65,6 +65,7 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
             // What one refresh of the Files sidebar runs: the listing, then the Git bar, which
             // loads the branch status and repository, then the repository panel.
             ("refresh", {
+                WorkspaceFiles.forgetRecentResults()
                 _ = try WorkspaceFiles.listing(at: location)
                 _ = try WorkspaceFiles.branchStatus(at: location)
                 _ = try? WorkspaceFiles.repository(at: location)
@@ -94,6 +95,8 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
             var nanos: [UInt64] = []
             var processes: [WorkspaceProcessLog.Record] = []
             for _ in 0..<repetitions {
+                // Each operation reads the repository afresh, as after a change.
+                WorkspaceFiles.forgetRecentResults()
                 let start = DispatchTime.now().uptimeNanoseconds
                 processes = try WorkspaceProcessLog.collect(operation).processes
                 nanos.append(DispatchTime.now().uptimeNanoseconds - start)

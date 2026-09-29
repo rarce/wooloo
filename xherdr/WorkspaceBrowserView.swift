@@ -485,6 +485,7 @@ struct WorkspaceBrowserView: View {
     }
 
     private func refresh() {
+        WorkspaceFiles.forgetRecentResults()
         loadMachines()
         if let machine { loadRemote(machine) }
         else { loadListing() }

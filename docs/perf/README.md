@@ -114,7 +114,7 @@ This script runs `xherdrTests/WorkspaceFilesBenchmarks` in a Release build. Ever
 
 Both repositories are built once and reused. They live under `/private/tmp/xherdr-bench` locally, and under `/tmp/xherdr-bench` on an SSH target. The SSH target is the first enabled Herdr machine that answers; set it with `XHERDR_BENCH_SSH_TARGET`, or set that variable to `none` to skip SSH. Results go to `build/perf/`, and the script compares them with `files-baseline.jsonl`.
 
-## Baseline (2026-09-29, Mac16,5; SSH to an OrbStack VM with a 40 ms handshake)
+## Before (2026-09-29, Mac16,5; SSH to an OrbStack VM with a 40 ms handshake)
 
 | operation | processes | local small | local large | SSH small | SSH large |
 |---|---|---|---|---|---|
@@ -133,3 +133,23 @@ What the numbers show:
 - **A refresh runs 13 processes, and 4 of them are duplicates.** The Git bar and the repository panel each load `repository()`, and `git rev-parse` runs three times. Over SSH, a refresh takes about 1.8 s, whatever the repository's size.
 - **Syntax colors for a large diff take about 0.5 s of CPU.** This work runs off the main thread, after the plain patch is already on screen.
 - Opening a local file is immediate. The editor itself (CodeEditSourceEditor) is not measured here.
+
+## After sharing SSH connections, loads and the real git
+
+`files-baseline.jsonl` now holds the numbers after three changes:
+
+1. **SSH connections are shared.** `ssh` runs with `ControlMaster=auto` and `ControlPersist=60`, with sockets in `/tmp/xherdr-ssh-<uid>`, a directory only the user can use. Commands after the first skip the handshake. Commands without input also get `/dev/null` as stdin, since SSH would otherwise forward the app's own stdin, which cost about 15 ms per call.
+2. **A refresh loads the repository once.** The Git bar and the repository panel share one `repository()` load (`SharedLoads`, kept for 2 s). Git operations the app runs, and every explicit refresh, forget it, so a change is never hidden. `SharedLoadsTests` checks this.
+3. **Local git runs without the shim.** `xcrun --find git` is resolved once, and `/usr/bin/git` is used only if it fails.
+
+Measured under heavy machine load (load average 13–25, from parallel builds), so local numbers here are pessimistic:
+
+| operation | processes | local large, before → after | SSH large, before → after |
+|---|---|---|---|
+| refresh | 13 → 9 | 631 → 197 ms | 1775 → 767 ms |
+| repository | 4 | 250 → 47 ms | 619 → 321 ms |
+| git-bar | 6 | 282 → 87 ms | 771 → 498 ms |
+| open-change | 4 | 166 → 50 ms | 1162 → 327 ms |
+
+Over SSH, a command through the shared connection takes 11–15 ms against a normal `sshd`. The OrbStack VM used here answers through OrbStack's own SSH proxy. After about 60 sessions on one connection, its commands go back to about 80 ms each, so its SSH numbers are noisy. For example, the small repository's refresh took 103 ms in the same run.
+
