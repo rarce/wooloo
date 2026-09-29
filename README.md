@@ -24,6 +24,8 @@ The gear button in the sidebar opens Herdr settings. Guided sections cover termi
 
 The compact controls mirror Herdr's everyday actions: the plus beside Spaces creates a new workspace, the plus in the tab row creates a tab, Menu collects the same actions and settings, and the sidebar button hides or restores the sidebar. Creation runs through Herdr's socket API in the selected named session.
 
+The Agents section now shows each agent's space and tab above its name and status. When Herdr supplies a summary or title, that appears beneath the name. Custom state labels from the server are used for the visible status.
+
 The terminal accepts Herdr's prefix shortcuts (default `ctrl+b`, then an action key) and direct bindings for common tab, space, pane, sidebar, settings, and reload actions. Menu → Keyboard Shortcuts opens the Shortcuts section in settings, where bindings can be edited as Herdr `[keys]` values. Alternatives are separated with commas. The same file configures Herdr; xherdr applies supported shortcuts in its terminal after saving. Other Herdr actions remain available through Advanced TOML and the Herdr TUI.
 
 The server integration is documented in [docs/herdr-connection.md](docs/herdr-connection.md). The [SwiftTerm evaluation](docs/swiftterm-evaluation.md) explains when a full terminal view would be useful.

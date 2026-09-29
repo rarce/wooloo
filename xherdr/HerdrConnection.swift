@@ -75,19 +75,35 @@ struct HerdrAgent: Decodable, Identifiable {
     let tabID: String?
     let agent: String?
     let name: String?
+    let title: String?
+    let terminalTitleStripped: String?
     let displayAgent: String?
     let agentStatus: String?
+    let stateLabels: [String: String]?
+    let tokens: [String: String]?
 
     var id: String { paneID }
-    var displayName: String { displayAgent ?? name ?? agent ?? paneID }
+    var displayName: String { displayAgent ?? name ?? agent ?? title ?? paneID }
+    var displayStatus: String {
+        let status = agentStatus ?? "unknown"
+        return stateLabels?[status] ?? status
+    }
+    var detail: String? {
+        for value in [tokens?["summary"], title, terminalTitleStripped] {
+            if let value, !value.isEmpty, value != displayName { return value }
+        }
+        return nil
+    }
 
     enum CodingKeys: String, CodingKey {
         case paneID = "pane_id"
         case workspaceID = "workspace_id"
         case tabID = "tab_id"
-        case agent, name
+        case agent, name, title, tokens
+        case terminalTitleStripped = "terminal_title_stripped"
         case displayAgent = "display_agent"
         case agentStatus = "agent_status"
+        case stateLabels = "state_labels"
     }
 }
 

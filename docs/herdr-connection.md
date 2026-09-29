@@ -22,6 +22,8 @@ The selected tab uses the binary client endpoint at `herdr-client.sock`. xherdr 
 
 This was validated against `xherdr-ui-test` by creating a workspace, tabs, and a split pane; sending `printf xherdr_socket_ok` from the app; and reporting then clearing a test agent status. The UI updated from `working` to `blocked` and removed the agent after the authority was cleared.
 
+Agent rows use the snapshot's workspace and tab IDs to show location, plus `display_agent`, `name`, `agent`, or `title` for the label. They use `state_labels` when present and show a `summary` token, title, or stripped terminal title as secondary detail. The default two-line structure follows Herdr's [Agent sidebar rows](https://herdr.dev/docs/config-reference/); xherdr adds the secondary detail when available. These fields are refreshed through the existing snapshot event stream.
+
 ## Terminal surface
 
 An AppKit text view captures keyboard input and paste without editing the displayed screen. A serialized queue sends `TextCommit`, `Paste`, and semantic `Key` events to the selected pane through the client endpoint. When that endpoint is unavailable, the queue uses JSON `pane.send_input`. The shell was checked with typed commands, Enter, Backspace, paste, and Ctrl+C in `xherdr-ui-test`. The live endpoint was also checked with colored shell output, a split tab with input directed to its right pane, and a full-screen Codex pane.

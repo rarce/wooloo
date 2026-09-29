@@ -118,19 +118,36 @@ struct ContentView: View {
                                     herdr.select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
                                 }
                             } label: {
-                                HStack(spacing: 7) {
-                                    Circle()
-                                        .fill(statusColor(agent.agentStatus))
-                                        .frame(width: 6, height: 6)
-                                    Text(agent.displayName).lineLimit(1)
-                                    Spacer(minLength: 0)
-                                    Text(agent.agentStatus ?? "")
-                                        .foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 7) {
+                                        Circle()
+                                            .fill(statusColor(agent.agentStatus))
+                                            .frame(width: 6, height: 6)
+                                        Text(agentLocation(agent))
+                                            .lineLimit(1)
+                                        Spacer(minLength: 0)
+                                        Text(agent.displayStatus)
+                                            .lineLimit(1)
+                                    }
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                    Text(agent.displayName)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .lineLimit(1)
+                                        .padding(.leading, 13)
+                                    if let detail = agent.detail {
+                                        Text(detail)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.tertiary)
+                                            .lineLimit(1)
+                                            .padding(.leading, 13)
+                                    }
                                 }
-                                .font(.system(size: 11))
-                                .sidebarRow(selected: agent.paneID == herdr.selectedPaneID)
+                                .sidebarRow(selected: agent.paneID == herdr.selectedPaneID,
+                                            height: agent.detail == nil ? 44 : 59)
                             }
                             .buttonStyle(.plain)
+                            .help(agentTooltip(agent))
                         }
                     }
                 }
@@ -463,12 +480,25 @@ struct ContentView: View {
         default: return .gray
         }
     }
+
+    private func agentLocation(_ agent: HerdrAgent) -> String {
+        let workspace = herdr.snapshot?.workspaces.first { $0.workspaceID == agent.workspaceID }?.label
+            ?? agent.workspaceID ?? "Space"
+        let tab = herdr.snapshot?.tabs.first { $0.tabID == agent.tabID }?.label
+        return tab.map { "\(workspace) · \($0)" } ?? workspace
+    }
+
+    private func agentTooltip(_ agent: HerdrAgent) -> String {
+        var lines = [agent.displayName, agentLocation(agent), agent.displayStatus]
+        if let detail = agent.detail { lines.append(detail) }
+        return lines.joined(separator: "\n")
+    }
 }
 
 private extension View {
-    func sidebarRow(selected: Bool) -> some View {
+    func sidebarRow(selected: Bool, height: CGFloat = 27) -> some View {
         padding(.horizontal, 8)
-            .frame(height: 27)
+            .frame(height: height)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 selected ? Color.white.opacity(0.08) : Color.clear,
