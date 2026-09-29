@@ -9,6 +9,8 @@ struct WorkspaceBrowserView: View {
     let onOpenDiff: (WorkspaceFileLocation, String) -> Void
     let onNewTab: (String) -> Void
     let onNewSpace: (String, String) -> Void
+    let onLocationChange: (WorkspaceFileLocation?) -> Void
+    let onFindInFolder: (WorkspaceFileLocation, String) -> Void
 
     @State private var machines: [HerdrMachineProfile] = []
     @State private var selectedMachineID = "local"
@@ -61,6 +63,7 @@ struct WorkspaceBrowserView: View {
         .background(Color(red: 0.105, green: 0.115, blue: 0.13))
         .task { loadMachines() }
         .task(id: listingIdentity) { loadListing() }
+        .task(id: location?.identity) { onLocationChange(location) }
         .alert("Git operation failed", isPresented: Binding(
             get: { operationError != nil }, set: { if !$0 { operationError = nil } }
         )) {
@@ -256,6 +259,7 @@ struct WorkspaceBrowserView: View {
             if location.isLocal {
                 Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
             }
+            Button("Find in Space…", systemImage: "magnifyingglass") { onFindInFolder(location, "") }
             Button("Collapse All Folders", systemImage: "rectangle.compress.vertical") { collapseAll(location) }
             Divider()
             if !showsChanges {
@@ -336,6 +340,7 @@ struct WorkspaceBrowserView: View {
                        systemImage: isExpanded ? "chevron.up" : "chevron.down") {
                     toggleDirectory(identity, isExpanded: isExpanded)
                 }
+                Button("Find in Folder…", systemImage: "magnifyingglass") { onFindInFolder(location, node.path) }
                 if location.isLocal {
                     Button("Open in New Tab", systemImage: "terminal") {
                         onNewTab(location.absolutePath(node.path))

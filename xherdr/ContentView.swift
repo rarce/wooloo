@@ -16,6 +16,9 @@ struct ContentView: View {
     @State private var activeDocumentID: String?
     @State private var pendingCloseDocumentID: String?
     @State private var fileRefreshVersion = 0
+    @StateObject private var search = WorkspaceSearchModel()
+    @State private var showsSearchTab = false
+    @State private var explorerLocation: WorkspaceFileLocation?
     @AppStorage("SidebarWidth") private var sidebarWidth = 206.0
     @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
     @State private var renameTarget: HerdrRenameTarget?
@@ -121,6 +124,16 @@ struct ContentView: View {
                                      onNewSpace: { cwd, label in
                                          activeDocumentID = nil
                                          herdr.createWorkspace(cwd: cwd, label: label)
+                                     },
+                                     onLocationChange: { location in
+                                         explorerLocation = location
+                                         search.setLocation(location)
+                                     },
+                                     onFindInFolder: { location, path in
+                                         search.setLocation(location)
+                                         search.options.include = path.isEmpty ? "" : path + "/**"
+                                         search.showsFilters = !path.isEmpty
+                                         openSearch(replace: false)
                                      })
                     .frame(width: filesSidebarWidth)
             }
@@ -145,6 +158,8 @@ struct ContentView: View {
         Button(showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes",
                systemImage: "sidebar.right") { showsFilesSidebar.toggle() }
         Button("Refresh Files and Repository", systemImage: "arrow.clockwise") { fileRefreshVersion += 1 }
+        Button("Find in Project…", systemImage: "magnifyingglass") { openSearch(replace: false) }
+        Button("Replace in Project…", systemImage: "text.magnifyingglass") { openSearch(replace: true) }
         Divider()
         Button("Keyboard Shortcuts…", systemImage: "keyboard") {
             settingsShowShortcuts = true
@@ -457,7 +472,31 @@ struct ContentView: View {
                                 .disabled(selectedTabs.count < 2)
                             }
                         }
-                        if !documents.isEmpty { Divider().frame(height: 17).padding(.horizontal, 4) }
+                        if !documents.isEmpty || showsSearchTab { Divider().frame(height: 17).padding(.horizontal, 4) }
+                        if showsSearchTab {
+                            HStack(spacing: 0) {
+                                Button { openSearch(replace: false) } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "magnifyingglass").foregroundStyle(.cyan)
+                                        Text(search.title).lineLimit(1).frame(maxWidth: 160)
+                                    }
+                                    .font(.system(size: 11))
+                                    .padding(.leading, 9)
+                                    .frame(height: 27)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                Button { closeSearch() } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 8))
+                                        .frame(width: 22, height: 27)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .background(activeDocumentID == WorkspaceSearchModel.tabID ? Color.white.opacity(0.09) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 4))
+                            .help("Project Search")
+                        }
                         ForEach(documents) { document in
                             HStack(spacing: 0) {
                                 Button { activeDocumentID = document.id } label: {
@@ -502,7 +541,12 @@ struct ContentView: View {
                 .background(barBackground)
                 Divider()
 
-                if let activeDocumentID,
+                if activeDocumentID == WorkspaceSearchModel.tabID {
+                    WorkspaceSearchView(model: search) { location, path, line, range in
+                        openDocument(.file, path: path, at: location,
+                                     reveal: WorkspaceDocumentReveal(line: line, range: range))
+                    }
+                } else if let activeDocumentID,
                    let index = documents.firstIndex(where: { $0.id == activeDocumentID }) {
                     WorkspaceDocumentView(document: $documents[index]) {
                         saveDocument(activeDocumentID)
@@ -631,14 +675,23 @@ struct ContentView: View {
         activeDocumentID = nil
     }
 
-    private func openDocument(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation) {
-        let document = WorkspaceDocument(location: location, path: path, kind: kind)
-        if documents.contains(where: { $0.id == document.id }) {
+    private func openDocument(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
+                              reveal: WorkspaceDocumentReveal? = nil) {
+        var document = WorkspaceDocument(location: location, path: path, kind: kind)
+        document.reveal = reveal
+        if let index = documents.firstIndex(where: { $0.id == document.id }) {
+            if let reveal { documents[index].reveal = reveal }
             activeDocumentID = document.id
             return
         }
         documents.append(document)
         activeDocumentID = document.id
+        loadDocument(document.id)
+    }
+
+    private func loadDocument(_ id: String) {
+        guard let document = documents.first(where: { $0.id == id }) else { return }
+        let (kind, path, location) = (document.kind, document.path, document.location)
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { () throws -> WorkspaceFileContents in
@@ -648,7 +701,7 @@ struct ContentView: View {
                     return try WorkspaceFiles.read(path, at: location)
                 }
             }.value
-            guard let index = documents.firstIndex(where: { $0.id == document.id }) else { return }
+            guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
             documents[index].isLoading = false
             switch result {
             case .success(let content):
@@ -684,6 +737,33 @@ struct ContentView: View {
                 documents[currentIndex].error = failure.localizedDescription
             }
         }
+    }
+
+    private func openSearch(replace: Bool) {
+        if !showsSearchTab {
+            search.hasUnsavedEdits = { [documents = $documents] location, path in
+                documents.wrappedValue.contains {
+                    $0.kind == .file && $0.isDirty && $0.path == path && $0.location.identity == location.identity
+                }
+            }
+            search.didModifyFiles = { location, paths in
+                for document in documents where document.kind == .file && !document.isDirty
+                    && document.location.identity == location.identity && paths.contains(document.path) {
+                    loadDocument(document.id)
+                }
+                fileRefreshVersion += 1
+            }
+        }
+        showsSearchTab = true
+        if replace { search.showsReplace = true }
+        search.setLocation(explorerLocation)
+        activeDocumentID = WorkspaceSearchModel.tabID
+        search.requestFocus()
+    }
+
+    private func closeSearch() {
+        showsSearchTab = false
+        if activeDocumentID == WorkspaceSearchModel.tabID { activeDocumentID = nil }
     }
 
     private func closeDocument(_ id: String, force: Bool = false) {
@@ -838,6 +918,8 @@ struct ContentView: View {
         case "close_pane":
             guard let paneID = herdr.selectedPaneID else { return }
             closeTarget = .pane(paneID)
+        case "project_search": openSearch(replace: false)
+        case "project_replace": openSearch(replace: true)
         case "copy_pane_cwd", "reveal_pane_cwd":
             guard let cwd = selectedPanes.first(where: { $0.paneID == herdr.selectedPaneID })?.cwd else { return }
             if action == "copy_pane_cwd" { AppActions.copy(cwd) } else { AppActions.reveal(cwd) }

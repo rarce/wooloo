@@ -327,6 +327,14 @@ enum WorkspaceFiles {
         _ = try git(location, ["switch", branch.name], limit: 20_000)
     }
 
+    /// Runs a POSIX shell script in the Space root: locally with /bin/sh, remotely over SSH,
+    /// so both paths execute the same text.
+    static func shell(_ script: String, at location: WorkspaceFileLocation, limit: Int) throws -> Data {
+        let rooted = "cd \(quote(location.root)) || exit 3\n" + script
+        if let machine = location.machine { return try ssh(machine, rooted, limit: limit) }
+        return try run("/bin/sh", ["-c", rooted], limit: limit)
+    }
+
     private static func git(_ location: WorkspaceFileLocation, _ args: [String], limit: Int) throws -> Data {
         if let machine = location.machine {
             let command = (["git", "-C", location.root] + args).map(quote).joined(separator: " ")
@@ -372,7 +380,7 @@ enum WorkspaceFiles {
             + "[ -f \"$file\" ] || exit 73; "
     }
 
-    private static func validateRelativePath(_ path: String) throws {
+    static func validateRelativePath(_ path: String) throws {
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         guard !path.isEmpty, !path.hasPrefix("/"), !components.contains(".."), !components.contains("."),
               !components.contains("") else {
@@ -411,7 +419,7 @@ enum WorkspaceFiles {
         return Insecure.SHA1.hash(data: blob).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func quote(_ value: String) -> String {
+    static func quote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 

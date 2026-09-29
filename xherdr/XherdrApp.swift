@@ -54,6 +54,14 @@ private struct XherdrCommands: Commands {
                 .keyboardShortcut("t", modifiers: .command)
         }
 
+        CommandGroup(after: .textEditing) {
+            Divider()
+            item("Find in Project…", "project_search", enabled: context != nil)
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+            item("Replace in Project…", "project_replace", enabled: context != nil)
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+        }
+
         CommandGroup(after: .sidebar) {
             item(context?.showsSidebar == false ? "Show Sidebar" : "Hide Sidebar",
                  "toggle_sidebar", enabled: context != nil)

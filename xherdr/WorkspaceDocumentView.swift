@@ -9,6 +9,14 @@ enum WorkspaceDocumentKind: String {
     var icon: String { self == .file ? "doc.text" : "arrow.left.arrow.right" }
 }
 
+/// Where to put the cursor when a document opens, e.g. at a search match.
+struct WorkspaceDocumentReveal: Equatable {
+    let line: Int
+    /// UTF-16 range within the line to select.
+    let range: NSRange?
+    let token = UUID()
+}
+
 struct WorkspaceDocument: Identifiable {
     let location: WorkspaceFileLocation
     let path: String
@@ -19,6 +27,7 @@ struct WorkspaceDocument: Identifiable {
     var isLoading = true
     var isSaving = false
     var error: String?
+    var reveal: WorkspaceDocumentReveal?
 
     var id: String { "\(location.identity)|\(kind.rawValue)|\(path)" }
     var isDirty: Bool { kind == .file && text != savedText }
@@ -29,6 +38,7 @@ struct WorkspaceDocumentView: View {
     @Binding var document: WorkspaceDocument
     let onSave: () -> Void
     @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
+    @State private var revealCoordinator = EditorRevealCoordinator()
 
     private var language: CodeLanguage {
         CodeLanguage.detectLanguageFrom(
@@ -107,8 +117,11 @@ struct WorkspaceDocumentView: View {
                         tabWidth: 4,
                         lineHeight: 1.15,
                         wrapLines: false,
-                        cursorPositions: $cursorPositions
+                        cursorPositions: $cursorPositions,
+                        coordinators: [revealCoordinator]
                     )
+                    .onAppear { applyReveal() }
+                    .onChange(of: document.reveal) { _, _ in applyReveal() }
                 }
             } else {
                 GeometryReader { viewport in
@@ -147,6 +160,17 @@ struct WorkspaceDocumentView: View {
         .background(Color(red: 0.075, green: 0.082, blue: 0.091))
     }
 
+    /// Selects the requested line or match and scrolls it into view.
+    private func applyReveal() {
+        guard let reveal = document.reveal,
+              let line = WorkspaceSearch.range(ofLine: reveal.line, in: document.text as NSString) else { return }
+        let selection = reveal.range.map { NSRange(location: line.location + $0.location, length: $0.length) }
+            ?? NSRange(location: line.location, length: 0)
+        cursorPositions = [CursorPosition(range: selection)]
+        document.reveal = nil
+        DispatchQueue.main.async { revealCoordinator.scrollSelectionToVisible() }
+    }
+
     private func diffColor(_ line: String) -> Color {
         if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") { return .cyan }
         if line.hasPrefix("@@") { return .blue }
@@ -161,4 +185,15 @@ struct WorkspaceDocumentView: View {
         if line.hasPrefix("@@") { return .blue.opacity(0.08) }
         return .clear
     }
+}
+
+/// Keeps the editor controller so a reveal can scroll the new selection into view.
+final class EditorRevealCoordinator: TextViewCoordinator {
+    private weak var controller: TextViewController?
+
+    func prepareCoordinator(controller: TextViewController) { self.controller = controller }
+
+    func scrollSelectionToVisible() { controller?.textView.scrollSelectionToVisible() }
+
+    func destroy() { controller = nil }
 }
