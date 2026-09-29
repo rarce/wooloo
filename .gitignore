@@ -6,3 +6,9 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# SwiftPM
+.build/
+
+# Coverage
+*.profraw

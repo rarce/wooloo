@@ -26,7 +26,6 @@ struct WorkspaceBrowserView: View {
     @State private var showsChanges = false
     @State private var modifiedOnly = false
     @State private var expandedDirectories: Set<String> = []
-    @State private var collapsedModifiedDirectories: Set<String> = []
     @State private var collapsedRoots: Set<String> = []
     @State private var selectedItem: String?
     @State private var operationError: String?
@@ -88,28 +87,18 @@ struct WorkspaceBrowserView: View {
                 machineIcon
                 Spacer()
                 if !showsChanges {
-                    Menu {
-                        Button {
-                            modifiedOnly = false
-                        } label: {
-                            Label("All files", systemImage: modifiedOnly ? "doc.text" : "checkmark")
-                        }
-                        Button {
-                            modifiedOnly = true
-                        } label: {
-                            Label("Modified only", systemImage: modifiedOnly ? "checkmark" : "line.3.horizontal.decrease")
-                        }
-                    } label: {
+                    // A plain button, because a borderless Menu ignores its label's color and weight.
+                    Button { modifiedOnly.toggle() } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: "line.3.horizontal.decrease")
+                            Image(systemName: modifiedOnly ? "line.3.horizontal.decrease.circle.fill"
+                                                           : "line.3.horizontal.decrease.circle")
                             if modifiedOnly { Text("Modified") }
                         }
                         .font(.system(size: typography.secondary, weight: modifiedOnly ? .semibold : .regular))
                         .foregroundStyle(modifiedOnly ? theme.accent : Color.secondary)
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help(modifiedOnly ? "Showing modified files" : "Showing all files")
+                    .buttonStyle(.plain)
+                    .help(modifiedOnly ? "Showing modified files; click to show all" : "Show modified files only")
                 }
                 Button { refresh() } label: {
                     Image(systemName: "arrow.clockwise")
@@ -162,8 +151,6 @@ struct WorkspaceBrowserView: View {
                 let rows = WorkspaceTreeNode.visibleRows(
                     paths: paths,
                     expanded: expandedDirectories,
-                    collapsed: collapsedModifiedDirectories,
-                    expandAll: isFilteredFiles,
                     identity: treeIdentity(location)
                 )
                 ScrollView {
@@ -174,6 +161,9 @@ struct WorkspaceBrowserView: View {
                                 hint("No Git repository in this Space")
                             } else if paths.isEmpty {
                                 hint(showsChanges ? "No changes" : (modifiedOnly ? "No modified files" : "No files"))
+                            }
+                            if !showsChanges && listing.totalFiles > listing.files.count {
+                                hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
                             }
                             ForEach(rows) { row in
                                 treeRow(row, location: location,
@@ -229,8 +219,9 @@ struct WorkspaceBrowserView: View {
             .padding(10)
     }
 
+    /// The modified-only filter shares the file tree's expanded folders, so switching keeps the layout.
     private func treeIdentity(_ location: WorkspaceFileLocation) -> String {
-        "\(location.identity)|\(showsChanges ? "changes" : (modifiedOnly ? "modified" : "files"))"
+        "\(location.identity)|\(showsChanges ? "changes" : "files")"
     }
 
     private func treeRoot(_ location: WorkspaceFileLocation) -> some View {
@@ -282,8 +273,7 @@ struct WorkspaceBrowserView: View {
         let node = row.node
         let kind = node.isDirectory ? directoryKind : change?.kind
         let identity = treeIdentity(location) + "|" + node.path
-        let isExpanded = isFilteredFiles
-            ? !collapsedModifiedDirectories.contains(identity) : expandedDirectories.contains(identity)
+        let isExpanded = expandedDirectories.contains(identity)
         let isSelected = selectedItem == identity
         return Button {
             if node.isDirectory {
@@ -394,10 +384,7 @@ struct WorkspaceBrowserView: View {
     }
 
     private func toggleDirectory(_ identity: String, isExpanded: Bool) {
-        if isFilteredFiles {
-            if isExpanded { collapsedModifiedDirectories.insert(identity) }
-            else { collapsedModifiedDirectories.remove(identity) }
-        } else if isExpanded {
+        if isExpanded {
             expandedDirectories.remove(identity)
         } else {
             expandedDirectories.insert(identity)
@@ -407,16 +394,6 @@ struct WorkspaceBrowserView: View {
     private func collapseAll(_ location: WorkspaceFileLocation) {
         let prefix = treeIdentity(location) + "|"
         expandedDirectories = expandedDirectories.filter { !$0.hasPrefix(prefix) }
-        if isFilteredFiles, let listing {
-            let changed = Set(listing.changes.map(\.path))
-            for path in listing.files where changed.contains(path) {
-                var directory = (path as NSString).deletingLastPathComponent
-                while !directory.isEmpty {
-                    collapsedModifiedDirectories.insert(prefix + directory)
-                    directory = (directory as NSString).deletingLastPathComponent
-                }
-            }
-        }
     }
 
     private func runGit(_ location: WorkspaceFileLocation, _ operation: @escaping () throws -> Void) {
@@ -518,8 +495,7 @@ private struct WorkspaceTreeNode {
     let isDirectory: Bool
     let children: [WorkspaceTreeNode]
 
-    static func visibleRows(paths: [String], expanded: Set<String>, collapsed: Set<String>,
-                            expandAll: Bool, identity: String) -> [WorkspaceTreeRow] {
+    static func visibleRows(paths: [String], expanded: Set<String>, identity: String) -> [WorkspaceTreeRow] {
         let root = WorkspaceTreeBuilderNode(name: "", path: "")
         for path in paths {
             let components = path.split(separator: "/").map(String.init)
@@ -543,7 +519,7 @@ private struct WorkspaceTreeNode {
             for node in nodes {
                 rows.append(WorkspaceTreeRow(node: node, depth: depth))
                 let key = identity + "|" + node.path
-                if node.isDirectory && (expandAll ? !collapsed.contains(key) : expanded.contains(key)) {
+                if node.isDirectory && expanded.contains(key) {
                     append(node.children, depth: depth + 1)
                 }
             }

@@ -236,3 +236,12 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
     echo built
     """#
 }
+
+final class WorkspaceListingTests: XCTestCase {
+    func testTrackedFilesComeBeforeUntrackedOnes() {
+        let entries = ["? .build/a", "H xherdr/App.swift", "? notes.txt", "M both.swift", "M both.swift", "? both.swift"]
+        let split = WorkspaceFiles.trackedFirst(entries)
+        XCTAssertEqual(split.tracked, ["both.swift", "xherdr/App.swift"])
+        XCTAssertEqual(split.untracked, [".build/a", "notes.txt"])
+    }
+}

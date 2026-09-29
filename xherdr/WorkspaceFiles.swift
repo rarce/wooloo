@@ -65,6 +65,8 @@ struct WorkspaceFileListing {
     let files: [String]
     let changes: [WorkspaceFileChange]
     let hasGit: Bool
+    /// Files found before the listing was cut to `maximumEntries`.
+    let totalFiles: Int
 }
 
 struct WorkspaceFileContents {
@@ -255,9 +257,13 @@ enum WorkspaceFiles {
         let hasGit = (try? git(location, ["rev-parse", "--is-inside-work-tree"], limit: 100)) != nil
         let files: [String]
         let changes: [WorkspaceFileChange]
+        var totalFiles: Int?
         if hasGit {
-            let fileData = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."], limit: 4_000_000)
-            files = Array(Set(nulStrings(fileData))).sorted().prefix(maximumEntries).map { $0 }
+            let fileData = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."],
+                                   limit: 4_000_000)
+            let (tracked, untracked) = trackedFirst(nulStrings(fileData))
+            totalFiles = tracked.count + untracked.count
+            files = (tracked + untracked).prefix(maximumEntries).sorted()
             let status = try git(location, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
             changes = parseStatus(status)
         } else if location.machine == nil {
@@ -270,7 +276,19 @@ enum WorkspaceFiles {
                 .sorted().prefix(maximumEntries).map { $0 }
             changes = []
         }
-        return WorkspaceFileListing(files: files, changes: changes, hasGit: hasGit)
+        return WorkspaceFileListing(files: files, changes: changes, hasGit: hasGit, totalFiles: totalFiles ?? files.count)
+    }
+
+    /// Splits `git ls-files -t` entries so that a listing cut to `maximumEntries` keeps every tracked file
+    /// before untracked ones, such as a build cache missing from `.gitignore`.
+    static func trackedFirst(_ entries: [String]) -> (tracked: [String], untracked: [String]) {
+        var tracked = Set<String>()
+        var untracked = Set<String>()
+        for entry in entries where entry.count > 2 {
+            let path = String(entry.dropFirst(2))
+            if entry.hasPrefix("? ") { untracked.insert(path) } else { tracked.insert(path) }
+        }
+        return (tracked.sorted(), untracked.subtracting(tracked).sorted())
     }
 
     static func read(_ path: String, at location: WorkspaceFileLocation) throws -> WorkspaceFileContents {
