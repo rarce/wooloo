@@ -11,6 +11,7 @@
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* ContentView.swift */; };
 		C30000000000000000000062 /* ContentCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000063 /* ContentCommands.swift */; };
 		C30000000000000000000066 /* WorkspaceExplorerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000067 /* WorkspaceExplorerModel.swift */; };
+		C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000071 /* HerdrSettingsModel.swift */; };
 		A10000000000000000000014 /* HerdrConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* HerdrConnection.swift */; };
 		A10000000000000000000016 /* TerminalPaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* TerminalPaneView.swift */; };
 		A10000000000000000000018 /* HerdrSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* HerdrSurface.swift */; };
@@ -38,6 +39,7 @@
 		C30000000000000000000060 /* HostStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000061 /* HostStatsTests.swift */; };
 		C30000000000000000000064 /* ContentCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000065 /* ContentCommandsTests.swift */; };
 		C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */; };
+		C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000073 /* HerdrSettingsModelTests.swift */; };
 		C30000000000000000000001 /* THIRD_PARTY_NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */; };
 		A10000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000041 /* Assets.xcassets */; };
 		A10000000000000000000032 /* CodeEditSourceEditor in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000034 /* CodeEditSourceEditor */; };
@@ -96,6 +98,7 @@
 		A10000000000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		C30000000000000000000063 /* ContentCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCommands.swift; sourceTree = "<group>"; };
 		C30000000000000000000067 /* WorkspaceExplorerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerModel.swift; sourceTree = "<group>"; };
+		C30000000000000000000071 /* HerdrSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* HerdrConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConnection.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* TerminalPaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPaneView.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* HerdrSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSurface.swift; sourceTree = "<group>"; };
@@ -123,6 +126,7 @@
 		C30000000000000000000061 /* HostStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000065 /* ContentCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCommandsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerModelTests.swift; sourceTree = "<group>"; };
+		C30000000000000000000073 /* HerdrSettingsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModelTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = THIRD_PARTY_NOTICES.txt; sourceTree = "<group>"; };
 		A10000000000000000000041 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000000000000000000005 /* xherdr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xherdr.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -182,6 +186,7 @@
 				A10000000000000000000004 /* ContentView.swift */,
 				C30000000000000000000063 /* ContentCommands.swift */,
 				C30000000000000000000067 /* WorkspaceExplorerModel.swift */,
+				C30000000000000000000071 /* HerdrSettingsModel.swift */,
 				A10000000000000000000015 /* HerdrConnection.swift */,
 				A10000000000000000000017 /* TerminalPaneView.swift */,
 				A10000000000000000000019 /* HerdrSurface.swift */,
@@ -247,6 +252,7 @@
 				C30000000000000000000061 /* HostStatsTests.swift */,
 				C30000000000000000000065 /* ContentCommandsTests.swift */,
 				C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */,
+				C30000000000000000000073 /* HerdrSettingsModelTests.swift */,
 				C30000000000000000000041 /* WorkspaceTreeTests.swift */,
 				C30000000000000000000043 /* DocumentFindTests.swift */,
 				C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */,
@@ -380,6 +386,7 @@
 				A10000000000000000000002 /* ContentView.swift in Sources */,
 				C30000000000000000000062 /* ContentCommands.swift in Sources */,
 				C30000000000000000000066 /* WorkspaceExplorerModel.swift in Sources */,
+				C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */,
 				A10000000000000000000014 /* HerdrConnection.swift in Sources */,
 				A10000000000000000000016 /* TerminalPaneView.swift in Sources */,
 				A10000000000000000000018 /* HerdrSurface.swift in Sources */,
@@ -435,6 +442,7 @@
 				C30000000000000000000060 /* HostStatsTests.swift in Sources */,
 				C30000000000000000000064 /* ContentCommandsTests.swift in Sources */,
 				C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */,
+				C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */,
 				C30000000000000000000040 /* WorkspaceTreeTests.swift in Sources */,
 				C30000000000000000000042 /* DocumentFindTests.swift in Sources */,
 				C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */,

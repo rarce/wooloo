@@ -10,11 +10,7 @@ struct HerdrSettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var category: Category = .terminal
-    @State private var document = HerdrConfigDocument(text: "")
-    @State private var original = ""
-    @State private var message: String?
-    @State private var isSaving = false
-    @State private var previewSound: NSSound?
+    @StateObject private var model = HerdrSettingsModel()
     @AppStorage(HerdrNotifier.dockBadgeKey) private var showsDockBadge = true
     @AppStorage(HerdrNotifier.bounceDockKey) private var bouncesDock = true
     @AppStorage(XherdrTypography.baseKey) private var interfaceTextSize = XherdrTypography.defaultBase
@@ -62,7 +58,7 @@ struct HerdrSettingsView: View {
                 ForEach(Category.allCases) { item in
                     Button {
                         category = item
-                        message = nil
+                        model.message = nil
                     } label: {
                         Label(item.rawValue, systemImage: item.icon)
                             .font(.system(size: typography.emphasis))
@@ -89,7 +85,7 @@ struct HerdrSettingsView: View {
                     Spacer()
                     Button("Done") { dismiss() }
                         .buttonStyle(.borderless)
-                        .disabled(isSaving)
+                        .disabled(model.isSaving)
                 }
                 .padding(.horizontal, 20)
                 .frame(height: 48)
@@ -117,22 +113,24 @@ struct HerdrSettingsView: View {
 
                 Divider()
                 HStack(spacing: 10) {
-                    if let message {
+                    if let message = model.message {
                         Text(message)
                             .font(.system(size: typography.body))
-                            .foregroundStyle(message.hasPrefix("Saved") ? theme.success : theme.warning)
+                            .foregroundStyle(model.messageIsSuccess ? theme.success : theme.warning)
                             .lineLimit(2)
                     } else {
-                        Text(document.text == original ? "No changes" : "Unsaved changes")
+                        Text(model.hasChanges ? "Unsaved changes" : "No changes")
                             .font(.system(size: typography.body))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button(document.text == original ? "Reload file" : "Discard & reload") { load() }
-                        .disabled(isSaving)
-                    Button("Save & reload Herdr") { save() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isSaving || document.text == original)
+                    Button(model.hasChanges ? "Discard & reload" : "Reload file") { model.load() }
+                        .disabled(model.isSaving)
+                    Button("Save & reload Herdr") {
+                        model.save(socketPath: socketPath, session: sessionName, onSaved: onSaved)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isSaving || !model.hasChanges)
                 }
                 .padding(.horizontal, 20)
                 .frame(height: 54)
@@ -140,7 +138,7 @@ struct HerdrSettingsView: View {
         }
         .frame(width: 800, height: 540)
         .preferredColorScheme(theme.colorScheme)
-        .onAppear(perform: load)
+        .onAppear(perform: model.load)
     }
 
     @ViewBuilder
@@ -308,7 +306,7 @@ struct HerdrSettingsView: View {
                 .font(.system(size: typography.secondary, design: .monospaced))
                 .foregroundStyle(.tertiary)
                 .textSelection(.enabled)
-            TextEditor(text: $document.text)
+            TextEditor(text: $model.document.text)
                 .font(.system(size: typography.emphasis, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(5)
@@ -336,37 +334,23 @@ struct HerdrSettingsView: View {
     }
 
     private func string(_ section: String, _ key: String, default fallback: String) -> Binding<String> {
-        Binding(get: { document.string(section: section, key: key, default: fallback) },
-                set: {
-                    guard $0 != document.string(section: section, key: key, default: fallback) else { return }
-                    document.setString($0, section: section, key: key)
-                })
+        Binding(get: { model.string(section, key, default: fallback) },
+                set: { model.setString($0, section, key, default: fallback) })
     }
 
-    /// Empty removes the key, so Herdr falls back to its own default instead of an unknown value.
     private func optionalString(_ section: String, _ key: String) -> Binding<String> {
-        Binding(get: { document.string(section: section, key: key, default: "") },
-                set: {
-                    guard $0 != document.string(section: section, key: key, default: "") else { return }
-                    if $0.isEmpty { document.remove(section: section, key: key) }
-                    else { document.setString($0, section: section, key: key) }
-                })
+        Binding(get: { model.string(section, key, default: "") },
+                set: { model.setOptionalString($0, section, key) })
     }
 
     private func bool(_ section: String, _ key: String, default fallback: Bool) -> Binding<Bool> {
-        Binding(get: { document.bool(section: section, key: key, default: fallback) },
-                set: {
-                    guard $0 != document.bool(section: section, key: key, default: fallback) else { return }
-                    document.setBool($0, section: section, key: key)
-                })
+        Binding(get: { model.bool(section, key, default: fallback) },
+                set: { model.setBool($0, section, key, default: fallback) })
     }
 
     private func integer(_ section: String, _ key: String, default fallback: Int) -> Binding<Int> {
-        Binding(get: { document.integer(section: section, key: key, default: fallback) },
-                set: {
-                    guard $0 != document.integer(section: section, key: key, default: fallback) else { return }
-                    document.setInteger($0, section: section, key: key)
-                })
+        Binding(get: { model.integer(section, key, default: fallback) },
+                set: { model.setInteger($0, section, key, default: fallback) })
     }
 
     private func groupHeader(_ title: String, subtitle: String) -> some View {
@@ -408,7 +392,7 @@ struct HerdrSettingsView: View {
             TextField(placeholder, text: optionalString("ui.sound", key))
                 .textFieldStyle(.roundedBorder)
             Button {
-                playPreview(key: key, kind: kind ?? .done)
+                model.playPreview(key: key, kind: kind ?? .done)
             } label: {
                 Image(systemName: "play.fill")
             }
@@ -416,74 +400,12 @@ struct HerdrSettingsView: View {
         }
     }
 
-    private func playPreview(key: String, kind: HerdrAlertKind) {
-        var settings = HerdrNotificationSettings()
-        settings.soundPath = document.string(section: "ui.sound", key: "path", default: "")
-        settings.donePath = key == "path" ? nil : document.string(section: "ui.sound", key: "done_path", default: "")
-        settings.requestPath = key == "path" ? nil : document.string(section: "ui.sound", key: "request_path", default: "")
-        previewSound?.stop()
-        previewSound = settings.soundURL(for: kind).flatMap { NSSound(contentsOf: $0, byReference: true) }
-            ?? NSSound(named: kind == .done ? "Glass" : "Ping")
-        previewSound?.play()
-    }
-
-    /// "Default" removes the override so Herdr's own default applies.
     private func agentSound(_ agent: String) -> Binding<String> {
-        Binding(get: { document.string(section: "ui.sound.agents", key: agent, default: "default") },
-                set: {
-                    guard $0 != document.string(section: "ui.sound.agents", key: agent, default: "default") else { return }
-                    if $0 == "default" { document.remove(section: "ui.sound.agents", key: agent) }
-                    else { document.setString($0, section: "ui.sound.agents", key: agent) }
-                })
+        Binding(get: { model.agentSound(agent) }, set: { model.setAgentSound($0, agent) })
     }
 
     private func shortcutBindings(_ definition: HerdrShortcutDefinition) -> Binding<String> {
-        Binding(get: {
-            document.bindings(definition.key, default: definition.defaultBindings).joined(separator: ", ")
-        }, set: { value in
-            let current = document.bindings(definition.key, default: definition.defaultBindings)
-                .joined(separator: ", ")
-            guard value != current else { return }
-            let values = value.split(separator: ",", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-            document.setBindings(values, key: definition.key)
-        })
-    }
-
-    private func load() {
-        do {
-            original = try HerdrConfigFile.read(at: HerdrConfigFile.url)
-            document = HerdrConfigDocument(text: original)
-            message = nil
-        } catch {
-            message = error.localizedDescription
-        }
-    }
-
-    private func save() {
-        let text = document.text
-        let old = original
-        let url = HerdrConfigFile.url
-        let path = socketPath
-        let session = sessionName
-        isSaving = true
-        message = "Validating with Herdr…"
-        Task.detached(priority: .userInitiated) {
-            do {
-                let result = try HerdrConfigFile.saveAndReload(text, original: old, at: url,
-                                                               socketPath: path, session: session)
-                await MainActor.run {
-                    original = text
-                    message = result
-                    isSaving = false
-                    onSaved()
-                }
-            } catch {
-                await MainActor.run {
-                    message = error.localizedDescription
-                    isSaving = false
-                }
-            }
-        }
+        Binding(get: { model.shortcutBindings(definition) },
+                set: { model.setShortcutBindings($0, definition) })
     }
 }
