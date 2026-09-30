@@ -9,8 +9,9 @@ struct WorkspaceBrowserView: View {
     /// The SSH machine chosen in the session picker; nil browses this Mac.
     let machine: HerdrMachineProfile?
     let refreshVersion: Int
-    let onOpenFile: (WorkspaceFileLocation, String) -> Void
-    let onOpenDiff: (WorkspaceFileLocation, String) -> Void
+    /// Opens a file or its changes; `preview` opens it in the preview tab, replaced by the next preview.
+    let onOpenFile: (_ location: WorkspaceFileLocation, _ path: String, _ preview: Bool) -> Void
+    let onOpenDiff: (_ location: WorkspaceFileLocation, _ path: String, _ preview: Bool) -> Void
     let onNewTab: (String) -> Void
     let onNewSpace: (String, String) -> Void
     let onLocationChange: (WorkspaceFileLocation?) -> Void
@@ -413,8 +414,8 @@ struct WorkspaceBrowserView: View {
             if node.isDirectory {
                 toggleDirectory(identity, isExpanded: isExpanded)
             } else {
-                if showsChanges { onOpenDiff(location, node.path) }
-                else { onOpenFile(location, node.path) }
+                if showsChanges { onOpenDiff(location, node.path, true) }
+                else { onOpenFile(location, node.path, true) }
             }
         } label: {
             HStack(spacing: 6) {
@@ -459,6 +460,12 @@ struct WorkspaceBrowserView: View {
             }
         }
         .buttonStyle(.plain)
+        // A click opens a file in the preview tab; a double click keeps it open.
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            guard !node.isDirectory else { return }
+            if showsChanges { onOpenDiff(location, node.path, false) }
+            else { onOpenFile(location, node.path, false) }
+        })
         .overlay(alignment: .trailing) {
             if let stageState { stageToggle(stageState, path: node.path, location: location) }
         }
@@ -479,13 +486,13 @@ struct WorkspaceBrowserView: View {
             } else {
                 Button("Open", systemImage: "doc.text") {
                     selectedItem = identity
-                    onOpenFile(location, node.path)
+                    onOpenFile(location, node.path, false)
                 }
                 .disabled(change?.kind == .deleted)
                 if change != nil {
                     Button("Open Changes", systemImage: "arrow.left.arrow.right") {
                         selectedItem = identity
-                        onOpenDiff(location, node.path)
+                        onOpenDiff(location, node.path, false)
                     }
                 }
             }
@@ -754,7 +761,7 @@ struct WorkspaceBrowserView: View {
         } completion: {
             if draft.isFolder { createdDirectories[location.identity, default: []].insert(path) }
             reveal(path, in: location)
-            if !draft.isFolder { onOpenFile(location, path) }
+            if !draft.isFolder { onOpenFile(location, path, false) }
         }
     }
 

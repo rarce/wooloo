@@ -84,6 +84,11 @@ struct ContentView: View {
         }
         .onChange(of: herdr.selectedPaneID) { _, paneID in notifier.acknowledge(paneID: paneID) }
         .onChange(of: herdr.sessionName) { _, _ in notifier.reset() }
+        // Editing a preview keeps it open, so later previews never replace unsaved work.
+        .onChange(of: documents.contains { $0.isPreview && $0.isDirty }) { _, edited in
+            guard edited else { return }
+            for index in documents.indices where documents[index].isDirty { documents[index].isPreview = false }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             notifier.acknowledge(paneID: herdr.selectedPaneID)
         }
@@ -151,8 +156,12 @@ struct ContentView: View {
                                      localSession: herdr.sessionName,
                                      machine: explorerMachine,
                                      refreshVersion: fileRefreshVersion,
-                                     onOpenFile: { location, path in openDocument(.file, path: path, at: location) },
-                                     onOpenDiff: { location, path in openDocument(.change, path: path, at: location) },
+                                     onOpenFile: { location, path, preview in
+                                         openDocument(.file, path: path, at: location, preview: preview)
+                                     },
+                                     onOpenDiff: { location, path, preview in
+                                         openDocument(.change, path: path, at: location, preview: preview)
+                                     },
                                      onNewTab: { cwd in
                                          activeDocumentID = nil
                                          herdr.createTab(cwd: cwd)
@@ -621,7 +630,7 @@ struct ContentView: View {
                                     HStack(spacing: 5) {
                                         Image(systemName: document.kind.icon)
                                             .foregroundStyle(theme.accent)
-                                        Text(document.title).lineLimit(1)
+                                        Text(document.title).lineLimit(1).italic(document.isPreview)
                                         if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
                                     }
                                     .font(.system(size: typography.body))
@@ -629,6 +638,7 @@ struct ContentView: View {
                                     .frame(height: typography.metric(27))
                                 }
                                 .buttonStyle(.plain)
+                                .simultaneousGesture(TapGesture(count: 2).onEnded { keepDocumentOpen(document.id) })
                                 Button { closeDocument(document.id) } label: {
                                     Image(systemName: "xmark")
                                         .font(.system(size: typography.tiny))
@@ -797,19 +807,37 @@ struct ContentView: View {
 
     private func openDocument(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
                               reveal: WorkspaceDocumentReveal? = nil,
-                              commit: String? = nil, originalPath: String? = nil) {
+                              commit: String? = nil, originalPath: String? = nil, preview: Bool = false) {
         var document = WorkspaceDocument(location: location, path: path, kind: kind)
         document.reveal = reveal
         document.commit = commit
         document.originalPath = originalPath
+        document.isPreview = preview
         if let index = documents.firstIndex(where: { $0.id == document.id }) {
             if let reveal { documents[index].reveal = reveal }
+            if !preview { documents[index].isPreview = false }
             activeDocumentID = document.id
             return
+        }
+        // A new preview takes the place of the previous one, unless that one has unsaved edits.
+        if preview, let index = documents.firstIndex(where: \.isPreview) {
+            if documents[index].isDirty {
+                documents[index].isPreview = false
+            } else {
+                documents[index] = document
+                activeDocumentID = document.id
+                loadDocument(document.id)
+                return
+            }
         }
         documents.append(document)
         activeDocumentID = document.id
         loadDocument(document.id)
+    }
+
+    private func keepDocumentOpen(_ id: String) {
+        guard let index = documents.firstIndex(where: { $0.id == id }), documents[index].isPreview else { return }
+        documents[index].isPreview = false
     }
 
     private func loadDocument(_ id: String) {
@@ -939,6 +967,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private func documentActions(_ document: WorkspaceDocument) -> some View {
+        if document.isPreview {
+            Button("Keep Open", systemImage: "pin") { keepDocumentOpen(document.id) }
+            Divider()
+        }
         if document.kind == .file {
             Button("Save", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
                 .disabled(!document.isDirty)

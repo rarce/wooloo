@@ -48,6 +48,9 @@ struct WorkspaceDocument: Identifiable {
     /// A `.change` document's patches; more than one when the file has staged and unstaged changes.
     var diffPatches: [WorkspaceDiffScope: String] = [:]
     var diffScope: WorkspaceDiffScope = .all
+    /// Opened with a single click in the explorer: the next such file replaces it, until it is
+    /// kept open by a double click or an edit.
+    var isPreview = false
 
     var id: String { "\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)" }
     var isDirty: Bool { kind == .file && text != savedText }
