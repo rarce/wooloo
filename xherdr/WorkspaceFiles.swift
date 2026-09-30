@@ -150,10 +150,12 @@ struct WorkspaceCommit: Identifiable {
     let date: Date
 
     /// English relative age, e.g. "3 days ago".
-    var relativeDate: String {
-        let seconds = Date().timeIntervalSince(date)
+    var relativeDate: String { relativeDate(relativeTo: Date()) }
+
+    func relativeDate(relativeTo now: Date) -> String {
+        let seconds = now.timeIntervalSince(date)
         if seconds >= 0 && seconds < 60 { return "just now" }
-        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
+        return Self.relativeFormatter.localizedString(for: date, relativeTo: now)
     }
 
     var absoluteDate: String { Self.absoluteFormatter.string(from: date) }

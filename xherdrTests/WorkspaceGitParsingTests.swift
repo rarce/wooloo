@@ -50,6 +50,43 @@ final class WorkspaceGitParsingTests: XCTestCase {
         XCTAssertTrue(WorkspaceFiles.parseLog(Data()).isEmpty)
     }
 
+    private func commit(at date: Date) -> WorkspaceCommit {
+        WorkspaceCommit(id: "c8515cac533043d5a53ffb3db97350fece607f69", shortHash: "c8515ca",
+                        subject: "Second", author: "Test Author", date: date)
+    }
+
+    func testHistoryRelativeDatesAreEnglishAndMeasuredFromNow() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func age(_ seconds: TimeInterval) -> String {
+            commit(at: now.addingTimeInterval(-seconds)).relativeDate(relativeTo: now)
+        }
+        XCTAssertEqual(age(0), "just now")
+        XCTAssertEqual(age(59), "just now")
+        XCTAssertEqual(age(60), "1 minute ago")
+        XCTAssertEqual(age(5 * 60), "5 minutes ago")
+        XCTAssertEqual(age(3 * 3600), "3 hours ago")
+        XCTAssertEqual(age(2 * 86400), "2 days ago")
+        XCTAssertEqual(age(3 * 7 * 86400), "3 weeks ago")
+        XCTAssertEqual(age(400 * 86400), "1 year ago")
+        // A commit dated slightly ahead of this clock is not "just now".
+        XCTAssertEqual(age(-30), "in 30 seconds")
+    }
+
+    func testHistoryRelativeDateGetterUsesTheCurrentTime() {
+        XCTAssertEqual(commit(at: Date()).relativeDate, "just now")
+        XCTAssertEqual(commit(at: Date().addingTimeInterval(-2 * 86400 - 60)).relativeDate, "2 days ago")
+    }
+
+    func testHistoryAbsoluteDateIsEnglishMediumDateAndShortTimeInTheLocalZone() throws {
+        // Built in the machine's zone, so the wall-clock time is the same wherever the test runs.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let date = try XCTUnwrap(calendar.date(from: DateComponents(year: 2024, month: 3, day: 5, hour: 14, minute: 7)))
+        let text = commit(at: date).absoluteDate
+            .replacingOccurrences(of: "\u{202F}", with: " ")
+        XCTAssertEqual(text, "Mar 5, 2024 at 2:07 PM")
+    }
+
     func testBranchesMarkCurrentRemoteAndUpstreamAndSkipRemoteHead() {
         let refs = "refs/heads/feature\0 \0\0\n"
             + "refs/heads/main\0*\0origin/main\0\n"
