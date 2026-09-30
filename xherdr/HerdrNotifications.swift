@@ -110,6 +110,12 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
         sound.stop()
         sound.play()
     }
+    var requestAuthorization: () -> Void = {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+    }
+    /// Whether xherdr is the frontmost app; tests replace it.
+    var isAppActive: () -> Bool = { NSApp.isActive }
 
     private var statuses: [String: String] = [:]
     private var hasBaseline = false
@@ -178,7 +184,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
 
     /// The user is looking at this pane, so its alert has been seen.
     func acknowledge(paneID: String?) {
-        guard let paneID, NSApp.isActive, attention[paneID] != nil else { return }
+        guard let paneID, isAppActive(), attention[paneID] != nil else { return }
         attention[paneID] = nil
         updateDockBadge()
     }
@@ -210,13 +216,13 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
                        selectedPaneID: String?) {
         // Herdr's terminal UI shows one workspace at a time, so it sounds only for background
         // workspaces. xherdr shows one pane, so any pane out of view counts as background.
-        let isWatched = NSApp.isActive && agent.paneID == selectedPaneID
+        let isWatched = isAppActive() && agent.paneID == selectedPaneID
         if !isWatched {
             attention[agent.paneID] = kind
             updateDockBadge()
             if settings.playsSound(for: agent.agent) { playSound(kind) }
         }
-        if kind == .request, !NSApp.isActive, bouncesDock {
+        if kind == .request, !isAppActive(), bouncesDock {
             NSApp.requestUserAttention(.informationalRequest)
         }
         guard !isWatched, settings.delivery != .off else { return }
@@ -231,7 +237,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
         Task {
             if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000) }
             // Skip alerts the user already handled during the delay.
-            guard attention[paneID] == kind || !NSApp.isActive else { return }
+            guard attention[paneID] == kind || !self.isAppActive() else { return }
             deliver(toast)
         }
     }
@@ -284,11 +290,6 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
 
     func refreshDockBadge() { updateDockBadge() }
 
-    private func requestAuthorization() {
-        guard Bundle.main.bundleIdentifier != nil else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
-    }
-
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
@@ -298,7 +299,14 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
-        let paneID = response.notification.request.content.userInfo["paneID"] as? String
+        openNotification(userInfo: response.notification.request.content.userInfo,
+                         completionHandler: completionHandler)
+    }
+
+    /// Opens the pane named in a clicked notification's userInfo, then reports back to macOS.
+    nonisolated func openNotification(userInfo: [AnyHashable: Any],
+                                      completionHandler: @escaping () -> Void) {
+        let paneID = userInfo["paneID"] as? String
         Task { @MainActor in
             self.openNotification(paneID: paneID)
             completionHandler()

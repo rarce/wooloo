@@ -1,3 +1,4 @@
+import AppKit
 import UserNotifications
 import XCTest
 @testable import xherdr
@@ -284,6 +285,135 @@ final class HerdrNotifierTests: XCTestCase {
         notifier.openNotification(paneID: "w1:p2")
         notifier.openNotification(paneID: nil)
         XCTAssertEqual(opened, ["w1:p2"])
+    }
+
+    /// A clicked system notification opens the pane in its userInfo, then tells macOS it is handled.
+    func testClickedNotificationResponseOpensItsPaneAndCompletes() async {
+        let notifier = HerdrNotifier()
+        var opened: [String] = []
+        var completed = 0
+        notifier.onOpenPane = { opened.append($0) }
+        notifier.openNotification(userInfo: ["paneID": "w1:p2"]) { completed += 1 }
+        await waitUntil { completed == 1 }
+        XCTAssertEqual(opened, ["w1:p2"])
+
+        // Without a pane the app still comes forward and the handler still runs.
+        notifier.openNotification(userInfo: [:]) { completed += 1 }
+        notifier.openNotification(userInfo: ["paneID": 42]) { completed += 1 }
+        await waitUntil { completed == 3 }
+        XCTAssertEqual(opened, ["w1:p2"])
+    }
+
+    /// Sets xherdr's UserDefaults preferences and returns a closure that restores them.
+    private func setDefaults(_ values: [String: Bool]) -> () -> Void {
+        let defaults = UserDefaults.standard
+        let saved = values.keys.map { ($0, defaults.object(forKey: $0)) }
+        for (key, value) in values { defaults.set(value, forKey: key) }
+        return {
+            for (key, value) in saved {
+                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+    }
+
+    func testReloadSettingsRereadsTheConfig() throws {
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        var authorizations = 0
+        notifier.requestAuthorization = { authorizations += 1 }
+        XCTAssertEqual(notifier.settings.delivery, .herdr)
+
+        try config.write("[ui.sound]\nenabled = false\n[ui.toast]\ndelivery = \"system\"\ndelay_seconds = 4\n[ui.toast.herdr]\nposition = \"top-left\"\n")
+        XCTAssertEqual(notifier.settings.delivery, .herdr, "Settings change only on reload")
+        notifier.reloadSettings()
+        XCTAssertEqual(notifier.settings.delivery, .system)
+        XCTAssertFalse(notifier.settings.soundEnabled)
+        XCTAssertEqual(notifier.settings.delaySeconds, 4)
+        XCTAssertEqual(notifier.settings.toastPosition, "top-left")
+        XCTAssertEqual(authorizations, 1, "System delivery asks macOS for permission")
+
+        // Terminal delivery also goes to macOS; in-app and off do not need permission.
+        for (delivery, expected) in [("terminal", 2), ("herdr", 2), ("off", 2)] {
+            try config.write("[ui.toast]\ndelivery = \"\(delivery)\"\n")
+            notifier.reloadSettings()
+            XCTAssertEqual(notifier.settings.delivery.rawValue, delivery)
+            XCTAssertEqual(authorizations, expected, delivery)
+        }
+    }
+
+    /// Reloading drops cached sounds so a new sound path takes effect.
+    func testReloadSettingsReloadsTheSounds() throws {
+        unsetenv("HERDR_DISABLE_SOUND")
+        try config.write("[ui.toast]\ndelivery = \"off\"\n")
+        let restore = setDefaults([HerdrNotifier.bounceDockKey: false])
+        defer { restore() }
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        notifier.isAppActive = { false }
+        var played: [NSSound] = []
+        notifier.play = { played.append($0) }
+        func finish() throws {
+            notifier.process(try snapshot(["w1:p1": "working"]), selectedPaneID: nil)
+            notifier.process(try snapshot(["w1:p1": "done"]), selectedPaneID: nil)
+        }
+        try finish()
+        XCTAssertEqual(played.map(\.name), ["Glass"])
+
+        try config.write("[ui.sound]\ndone_path = \"/System/Library/Sounds/Hero.aiff\"\n[ui.toast]\ndelivery = \"off\"\n")
+        try finish()
+        XCTAssertEqual(played.count, 2)
+        XCTAssertTrue(played[1] === played[0], "Before a reload the cached sound plays")
+
+        notifier.reloadSettings()
+        try finish()
+        XCTAssertEqual(played.count, 3)
+        XCTAssertFalse(played[2] === played[0], "The reload loads the configured sound")
+        XCTAssertNotEqual(played[2].name, "Glass")
+    }
+
+    /// Looking at a pane while xherdr is active clears its mark and the Dock badge count.
+    func testAcknowledgeClearsTheMarkWhileActive() throws {
+        let restore = setDefaults([HerdrNotifier.dockBadgeKey: true, HerdrNotifier.bounceDockKey: false])
+        defer { restore() }
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        var active = false
+        notifier.isAppActive = { active }
+        notifier.process(try snapshot(["w1:p1": "working", "w1:p2": "working"]), selectedPaneID: nil)
+        notifier.process(try snapshot(["w1:p1": "blocked", "w1:p2": "done"]), selectedPaneID: nil)
+        XCTAssertEqual(notifier.attention, ["w1:p1": .request, "w1:p2": .done])
+        XCTAssertEqual(NSApp.dockTile.badgeLabel, "2")
+
+        notifier.acknowledge(paneID: "w1:p1")
+        XCTAssertEqual(notifier.attention.count, 2, "In the background the user has not seen the pane")
+
+        active = true
+        notifier.acknowledge(paneID: nil)
+        notifier.acknowledge(paneID: "w1:p9")
+        XCTAssertEqual(notifier.attention.count, 2)
+        XCTAssertEqual(NSApp.dockTile.badgeLabel, "2")
+
+        notifier.acknowledge(paneID: "w1:p1")
+        XCTAssertEqual(notifier.attention, ["w1:p2": .done])
+        XCTAssertEqual(NSApp.dockTile.badgeLabel, "1")
+        notifier.acknowledge(paneID: "w1:p2")
+        XCTAssertTrue(notifier.attention.isEmpty)
+        XCTAssertNil(NSApp.dockTile.badgeLabel)
+    }
+
+    func testDockBadgeFollowsItsPreference() throws {
+        let restore = setDefaults([HerdrNotifier.dockBadgeKey: false, HerdrNotifier.bounceDockKey: false])
+        defer { restore() }
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        notifier.isAppActive = { false }
+        notifier.process(try snapshot(["w1:p1": "working"]), selectedPaneID: nil)
+        notifier.process(try snapshot(["w1:p1": "done"]), selectedPaneID: nil)
+        XCTAssertEqual(notifier.attention, ["w1:p1": .done])
+        XCTAssertNil(NSApp.dockTile.badgeLabel)
+        UserDefaults.standard.set(true, forKey: HerdrNotifier.dockBadgeKey)
+        notifier.refreshDockBadge()
+        XCTAssertEqual(NSApp.dockTile.badgeLabel, "1")
     }
 }
 
