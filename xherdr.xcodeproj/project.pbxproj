@@ -61,6 +61,7 @@
 		C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */; };
 		C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000047 /* HerdrNotificationTests.swift */; };
 		C30000000000000000000048 /* HerdrStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000049 /* HerdrStoreTests.swift */; };
+		C30000000000000000000050 /* WorkspaceGitBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000051 /* WorkspaceGitBarTests.swift */; };
 		C3000000000000000000004E /* DiffHighlighterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004F /* DiffHighlighterTests.swift */; };
 		C3000000000000000000004C /* WorkspaceSearchModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004D /* WorkspaceSearchModelTests.swift */; };
 		C3000000000000000000004A /* SurfaceLayersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004B /* SurfaceLayersTests.swift */; };
@@ -129,6 +130,7 @@
 		C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSurfaceStreamTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000047 /* HerdrNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrNotificationTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000049 /* HerdrStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrStoreTests.swift; sourceTree = "<group>"; };
+		C30000000000000000000051 /* WorkspaceGitBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitBarTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000004F /* DiffHighlighterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffHighlighterTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000004D /* WorkspaceSearchModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearchModelTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000004B /* SurfaceLayersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceLayersTests.swift; sourceTree = "<group>"; };
@@ -213,6 +215,7 @@
 				C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */,
 				C30000000000000000000047 /* HerdrNotificationTests.swift */,
 				C30000000000000000000049 /* HerdrStoreTests.swift */,
+				C30000000000000000000051 /* WorkspaceGitBarTests.swift */,
 				C3000000000000000000004F /* DiffHighlighterTests.swift */,
 				C3000000000000000000004D /* WorkspaceSearchModelTests.swift */,
 				C3000000000000000000004B /* SurfaceLayersTests.swift */,
@@ -386,6 +389,7 @@
 				C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */,
 				C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */,
 				C30000000000000000000048 /* HerdrStoreTests.swift in Sources */,
+				C30000000000000000000050 /* WorkspaceGitBarTests.swift in Sources */,
 				C3000000000000000000004E /* DiffHighlighterTests.swift in Sources */,
 				C3000000000000000000004C /* WorkspaceSearchModelTests.swift in Sources */,
 				C3000000000000000000004A /* SurfaceLayersTests.swift in Sources */,

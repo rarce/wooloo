@@ -13,14 +13,12 @@ struct WorkspaceGitBar: View {
     let onOpenWorktree: ((String, String) -> Void)?
     let onError: (String) -> Void
 
-    @State private var status: WorkspaceBranchStatus?
-    @State private var repository: WorkspaceRepositoryListing?
-    @State private var running: String?
+    @StateObject private var model = WorkspaceGitBarModel()
     @State private var confirmsForcePush = false
-    @State private var message = ""
     @State private var expandsEditor = false
 
     private var identity: String { "\(location.identity)|\(reloadToken)" }
+    private var running: String? { model.running }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,7 +29,7 @@ struct WorkspaceGitBar: View {
             statusRow
         }
         .background(theme.sidebarBackground)
-        .task(id: identity) { await load() }
+        .task(id: identity) { await model.load(location) }
         .confirmationDialog("Force push this branch?", isPresented: $confirmsForcePush) {
             Button("Force Push", role: .destructive) { perform(.forcePush) }
         } message: {
@@ -41,7 +39,7 @@ struct WorkspaceGitBar: View {
 
     private var statusRow: some View {
         HStack(spacing: 4) {
-            if let status {
+            if let status = model.status {
                 worktreeMenu
                 branchMenu(status)
                 Spacer(minLength: 6)
@@ -58,28 +56,18 @@ struct WorkspaceGitBar: View {
     // MARK: Commit
 
     private func commitEditor(_ changes: [WorkspaceFileChange]) -> some View {
-        let staged = changes.filter { $0.indexStatus != " " && $0.indexStatus != "?" }
-        let tracked = changes.filter { $0.kind != .untracked }
-        let mode: WorkspaceCommitMode = staged.isEmpty ? .tracked : .staged
-        let suggestion = suggestedMessage(staged.isEmpty ? tracked : staged)
+        let plan = WorkspaceCommitPlan(changes: changes)
+        let mode = plan.defaultMode
         let font = Font.system(size: typography.code, design: .monospaced)
-        let hasMessage = !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || suggestion != nil
-        let available: (WorkspaceCommitMode) -> Bool = { mode in
-            switch mode {
-            case .staged: return !staged.isEmpty && hasMessage
-            case .tracked: return !tracked.isEmpty && hasMessage
-            case .all: return !changes.isEmpty && hasMessage
-            case .amend: return true
-            }
-        }
+        let available = { (mode: WorkspaceCommitMode) in plan.isAvailable(mode, typed: model.message) }
         return VStack(alignment: .trailing, spacing: 6) {
             ZStack(alignment: .topLeading) {
-                TextEditor(text: $message)
+                TextEditor(text: $model.message)
                     .font(font)
                     .scrollContentBackground(.hidden)
                     .padding(.trailing, 18)
-                if message.isEmpty {
-                    Text(suggestion ?? "Commit message")
+                if model.message.isEmpty {
+                    Text(plan.suggestion ?? "Commit message")
                         .font(font)
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 5)
@@ -103,13 +91,13 @@ struct WorkspaceGitBar: View {
             .frame(height: expandsEditor ? 220 : 84)
 
             splitButton(title: running ?? mode.title, icon: nil, enabled: available(mode),
-                        help: "Commit (⌘↩)", action: { commit(mode, suggestion: suggestion) }) {
+                        help: "Commit (⌘↩)", action: { model.commit(mode, plan: plan, finished: finished) }) {
                 ForEach([WorkspaceCommitMode.staged, .tracked, .all], id: \.title) { item in
-                    Button(item.title) { commit(item, suggestion: suggestion) }
+                    Button(item.title) { model.commit(item, plan: plan, finished: finished) }
                         .disabled(!available(item))
                 }
                 Divider()
-                Button("Amend Last Commit") { commit(.amend, suggestion: nil) }
+                Button("Amend Last Commit") { model.commit(.amend, plan: plan, finished: finished) }
             }
             .keyboardShortcut(.return, modifiers: .command)
         }
@@ -118,38 +106,21 @@ struct WorkspaceGitBar: View {
         .padding(.bottom, 7)
     }
 
-    /// Zed-style default message when exactly one file changed.
-    private func suggestedMessage(_ changes: [WorkspaceFileChange]) -> String? {
-        guard changes.count == 1, let change = changes.first else { return nil }
-        let name = (change.path as NSString).lastPathComponent
-        switch change.kind {
-        case .added, .untracked: return "Create \(name)"
-        case .deleted: return "Delete \(name)"
-        default: return "Update \(name)"
-        }
-    }
-
-    private func commit(_ mode: WorkspaceCommitMode, suggestion: String?) {
-        let typed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = typed.isEmpty && mode != .amend ? (suggestion ?? "") : typed
-        run("Committing…", onSuccess: { message = "" }) {
-            try WorkspaceFiles.commit(message: text, mode: mode, at: $0)
-        }
+    /// Reports an operation's failure, then lets the explorer refresh.
+    private func finished(_ error: String?) {
+        if let error { onError(error) }
+        onChange()
     }
 
     // MARK: Pickers
 
-    private var currentWorktree: WorkspaceWorktree? {
-        repository?.worktrees.first { $0.path == repository?.root }
-    }
-
     @ViewBuilder
     private var worktreeMenu: some View {
-        let others = (repository?.worktrees ?? []).filter { $0.path != repository?.root && !$0.isBare }
+        let others = model.otherWorktrees
         if !others.isEmpty {
             Menu {
                 Section("Worktrees") {
-                    if let currentWorktree {
+                    if let currentWorktree = model.currentWorktree {
                         Button {} label: { Label(worktreeName(currentWorktree), systemImage: "checkmark") }
                             .disabled(true)
                     }
@@ -161,7 +132,7 @@ struct WorkspaceGitBar: View {
                     }
                 }
             } label: {
-                pickerLabel(currentWorktree.map(worktreeName) ?? (location.root as NSString).lastPathComponent,
+                pickerLabel(model.currentWorktree.map(worktreeName) ?? (location.root as NSString).lastPathComponent,
                             icon: "folder")
             }
             .menuStyle(.borderlessButton)
@@ -173,12 +144,11 @@ struct WorkspaceGitBar: View {
     }
 
     private func branchMenu(_ status: WorkspaceBranchStatus) -> some View {
-        let locals = (repository?.branches ?? []).filter { !$0.isRemote }
-        return Menu {
+        Menu {
             Section("Branches") {
-                ForEach(locals) { branch in
+                ForEach(model.localBranches) { branch in
                     Button {
-                        switchBranch(branch)
+                        model.switchBranch(branch, finished: finished)
                     } label: {
                         if branch.isCurrent { Label(branch.name, systemImage: "checkmark") } else { Text(branch.name) }
                     }
@@ -216,43 +186,16 @@ struct WorkspaceGitBar: View {
 
     // MARK: Sync
 
-    private func primaryAction(_ status: WorkspaceBranchStatus) -> WorkspaceGitSync {
-        if status.upstream == nil, let branch = status.branch,
-           let remote = status.remotes.first(where: { $0 == "origin" }) ?? status.remotes.first {
-            return .publish(remote: remote, branch: branch)
-        }
-        if status.behind > 0 { return .pull }
-        if status.ahead > 0 { return .push }
-        return .fetch
-    }
-
-    /// The action's icon already shows the direction, so the title carries only the commit count.
-    private func primaryTitle(_ action: WorkspaceGitSync, _ status: WorkspaceBranchStatus) -> String {
-        switch action {
-        case .pull: return "Pull \(status.behind)"
-        case .push: return "Push \(status.ahead)"
-        default: return action.title
-        }
-    }
-
-    private func primaryHelp(_ action: WorkspaceGitSync, _ status: WorkspaceBranchStatus) -> String {
-        let commits: (Int) -> String = { $0 == 1 ? "1 commit" : "\($0) commits" }
-        switch action {
-        case .pull:
-            let pull = "Pull \(commits(status.behind))"
-            return status.ahead > 0 ? pull + "; \(commits(status.ahead)) to push afterwards" : pull
-        case .push: return "Push \(commits(status.ahead))"
-        default: return action.title
-        }
+    private func perform(_ action: WorkspaceGitSync) {
+        model.perform(action, finished: finished)
     }
 
     private func syncButton(_ status: WorkspaceBranchStatus) -> some View {
-        let action = primaryAction(status)
-        let hasRemote = !status.remotes.isEmpty
-        let tracks = status.upstream != nil
-        return splitButton(title: running ?? primaryTitle(action, status), icon: action.icon,
-                           enabled: hasRemote,
-                           help: hasRemote ? primaryHelp(action, status) : "This repository has no remotes",
+        let plan = WorkspaceSyncPlan(status: status)
+        let action = plan.primaryAction
+        let tracks = plan.tracksUpstream
+        return splitButton(title: running ?? plan.primaryTitle, icon: action.icon,
+                           enabled: plan.hasRemote, help: plan.primaryHelp,
                            action: { perform(action) }) {
             Button(WorkspaceGitSync.fetch.title, systemImage: WorkspaceGitSync.fetch.icon) { perform(.fetch) }
             Divider()
@@ -315,17 +258,122 @@ struct WorkspaceGitBar: View {
         .fixedSize()
         .disabled(running != nil)
     }
+}
 
-    // MARK: Operations
+/// What the commit button offers for a set of working tree changes.
+struct WorkspaceCommitPlan {
+    let changes: [WorkspaceFileChange]
+    let staged: [WorkspaceFileChange]
+    let tracked: [WorkspaceFileChange]
 
-    private func load() async {
-        let location = location
+    init(changes: [WorkspaceFileChange]) {
+        self.changes = changes
+        staged = changes.filter { $0.indexStatus != " " && $0.indexStatus != "?" }
+        tracked = changes.filter { $0.kind != .untracked }
+    }
+
+    /// Staged changes when there are any, otherwise every tracked change.
+    var defaultMode: WorkspaceCommitMode { staged.isEmpty ? .tracked : .staged }
+
+    /// Zed-style default message when exactly one file changed.
+    var suggestion: String? {
+        let committed = staged.isEmpty ? tracked : staged
+        guard committed.count == 1, let change = committed.first else { return nil }
+        let name = (change.path as NSString).lastPathComponent
+        switch change.kind {
+        case .added, .untracked: return "Create \(name)"
+        case .deleted: return "Delete \(name)"
+        default: return "Update \(name)"
+        }
+    }
+
+    func isAvailable(_ mode: WorkspaceCommitMode, typed: String) -> Bool {
+        let hasMessage = !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || suggestion != nil
+        switch mode {
+        case .staged: return !staged.isEmpty && hasMessage
+        case .tracked: return !tracked.isEmpty && hasMessage
+        case .all: return !changes.isEmpty && hasMessage
+        case .amend: return true
+        }
+    }
+
+    /// The typed message, or the suggestion when nothing was typed. An amend with no message
+    /// keeps the last commit's.
+    func message(for mode: WorkspaceCommitMode, typed: String) -> String {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty && mode != .amend ? (suggestion ?? "") : trimmed
+    }
+}
+
+/// The sync button's main action for a branch: publish, pull, push, or fetch.
+struct WorkspaceSyncPlan {
+    let status: WorkspaceBranchStatus
+
+    var hasRemote: Bool { !status.remotes.isEmpty }
+    var tracksUpstream: Bool { status.upstream != nil }
+
+    var primaryAction: WorkspaceGitSync {
+        if status.upstream == nil, let branch = status.branch,
+           let remote = status.remotes.first(where: { $0 == "origin" }) ?? status.remotes.first {
+            return .publish(remote: remote, branch: branch)
+        }
+        if status.behind > 0 { return .pull }
+        if status.ahead > 0 { return .push }
+        return .fetch
+    }
+
+    /// The action's icon already shows the direction, so the title carries only the commit count.
+    var primaryTitle: String {
+        switch primaryAction {
+        case .pull: return "Pull \(status.behind)"
+        case .push: return "Push \(status.ahead)"
+        case let action: return action.title
+        }
+    }
+
+    var primaryHelp: String {
+        guard hasRemote else { return "This repository has no remotes" }
+        let commits: (Int) -> String = { $0 == 1 ? "1 commit" : "\($0) commits" }
+        switch primaryAction {
+        case .pull:
+            let pull = "Pull \(commits(status.behind))"
+            return status.ahead > 0 ? pull + "; \(commits(status.ahead)) to push afterwards" : pull
+        case .push: return "Push \(commits(status.ahead))"
+        case let action: return action.title
+        }
+    }
+}
+
+/// The Git bar's branch status and repository, and the one Git operation it may run at a time.
+@MainActor
+final class WorkspaceGitBarModel: ObservableObject {
+    @Published private(set) var status: WorkspaceBranchStatus?
+    @Published private(set) var repository: WorkspaceRepositoryListing?
+    /// The running operation's label, such as "Committing…".
+    @Published private(set) var running: String?
+    @Published var message = ""
+    private var location: WorkspaceFileLocation?
+
+    var currentWorktree: WorkspaceWorktree? {
+        repository?.worktrees.first { $0.path == repository?.root }
+    }
+
+    var otherWorktrees: [WorkspaceWorktree] {
+        (repository?.worktrees ?? []).filter { $0.path != repository?.root && !$0.isBare }
+    }
+
+    var localBranches: [WorkspaceBranch] {
+        (repository?.branches ?? []).filter { !$0.isRemote }
+    }
+
+    func load(_ location: WorkspaceFileLocation) async {
+        self.location = location
         let start = TerminalPipelineMetrics.now()
         defer { TerminalPipelineMetrics.spanShown("git-bar", start: start, detail: location.isLocal ? "local" : "ssh") }
         let result = await Task.detached(priority: .utility) {
             Result { (try WorkspaceFiles.branchStatus(at: location), try? WorkspaceFiles.repository(at: location)) }
         }.value
-        guard location.identity == self.location.identity else { return }
+        guard location.identity == self.location?.identity else { return }
         switch result {
         case .success(let (status, repository)):
             self.status = status
@@ -336,28 +384,39 @@ struct WorkspaceGitBar: View {
         }
     }
 
-    private func perform(_ action: WorkspaceGitSync) {
-        run(action.title + "…") { try WorkspaceFiles.sync(action, at: $0) }
+    /// Commits with the typed message or the plan's suggestion, and clears the message on success.
+    func commit(_ mode: WorkspaceCommitMode, plan: WorkspaceCommitPlan, finished: @escaping (String?) -> Void) {
+        let text = plan.message(for: mode, typed: message)
+        run("Committing…", onSuccess: { [weak self] in self?.message = "" }, finished: finished) {
+            try WorkspaceFiles.commit(message: text, mode: mode, at: $0)
+        }
     }
 
-    private func switchBranch(_ branch: WorkspaceBranch) {
-        run("Switching…") { try WorkspaceFiles.switchBranch(branch, at: $0) }
+    func perform(_ action: WorkspaceGitSync, finished: @escaping (String?) -> Void) {
+        run(action.title + "…", finished: finished) { try WorkspaceFiles.sync(action, at: $0) }
     }
 
-    private func run(_ label: String, onSuccess: @escaping () -> Void = {},
+    func switchBranch(_ branch: WorkspaceBranch, finished: @escaping (String?) -> Void) {
+        run("Switching…", finished: finished) { try WorkspaceFiles.switchBranch(branch, at: $0) }
+    }
+
+    /// Runs one operation off the main thread, reports its error (nil on success), and reloads.
+    private func run(_ label: String, onSuccess: @escaping () -> Void = {}, finished: @escaping (String?) -> Void,
                      _ operation: @escaping @Sendable (WorkspaceFileLocation) throws -> Void) {
-        guard running == nil else { return }
-        let location = location
+        guard running == nil, let location else { return }
         running = label
         Task {
             let result = await Task.detached(priority: .userInitiated) { Result { try operation(location) } }.value
             running = nil
             switch result {
-            case .success: onSuccess()
-            case .failure(let failure): onError(failure.localizedDescription)
+            case .success:
+                onSuccess()
+                finished(nil)
+            case .failure(let failure):
+                finished(failure.localizedDescription)
             }
-            onChange()
-            await load()
+            // A bar that moved to another location meanwhile loads that one itself.
+            if self.location?.identity == location.identity { await load(location) }
         }
     }
 }
