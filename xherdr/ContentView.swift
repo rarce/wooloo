@@ -12,7 +12,7 @@ struct ContentView: View {
     /// The SSH machine whose files and repository the explorer shows; nil is this Mac.
     @State private var explorerMachine: HerdrMachineProfile?
     @StateObject private var documentStore = WorkspaceDocumentStore()
-    private var documents: [WorkspaceDocument] { documentStore.documents }
+    private var documents: [WorkspaceDocument] { documentStore.visibleDocuments }
     private var activeDocumentID: String? {
         get { documentStore.activeID }
         nonmutating set { documentStore.activeID = newValue }
@@ -77,6 +77,10 @@ struct ContentView: View {
         }
         .onChange(of: herdr.selectedPaneID) { _, paneID in notifier.acknowledge(paneID: paneID) }
         .onChange(of: herdr.sessionName) { _, _ in notifier.reset() }
+        // Documents belong to the Space they were opened in.
+        .onChange(of: herdr.selectedWorkspaceID.map { "\(herdr.sessionName)|\($0)" }, initial: true) { _, space in
+            documentStore.showSpace(space)
+        }
         // Editing a preview keeps it open, so later previews never replace unsaved work.
         .onChange(of: documents.contains { $0.isPreview && $0.isDirty }) { _, edited in
             if edited { documentStore.keepEditedPreviewsOpen() }
@@ -651,10 +655,10 @@ struct ContentView: View {
                                      reveal: WorkspaceDocumentReveal(line: line, range: range))
                     }
                 } else if let activeDocumentID,
-                   let index = documents.firstIndex(where: { $0.id == activeDocumentID }) {
+                   let index = documentStore.documents.firstIndex(where: { $0.id == activeDocumentID }) {
                     WorkspaceDocumentView(document: $documentStore.documents[index], onSave: {
                         saveDocument(activeDocumentID)
-                    }, onOpenFile: { [location = documents[index].location] path in
+                    }, onOpenFile: { [location = documentStore.documents[index].location] path in
                         openDocument(.file, path: path, at: location)
                     })
                     .id(activeDocumentID)

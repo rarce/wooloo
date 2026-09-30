@@ -109,6 +109,29 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertEqual(store.documents[0].text, "edited\n")
     }
 
+    /// Each Space shows only the tabs opened in it, with its own preview.
+    func testDocumentsStayInTheirSpace() async throws {
+        _ = await open("a.txt")
+        store.showSpace("one")
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["a.txt"], "Tabs opened before a Space join the first one")
+        let first = try XCTUnwrap(store.activeID)
+        _ = await open("b.txt", preview: true)
+
+        store.showSpace("two")
+        XCTAssertTrue(store.visibleDocuments.isEmpty)
+        XCTAssertNil(store.activeID, "Another Space's document is not left active")
+        _ = await open("c.txt", preview: true)
+        _ = await open("a.txt")
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["c.txt", "a.txt"])
+
+        store.showSpace("one")
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["a.txt", "b.txt"], "A Space's preview is not replaced from another")
+        XCTAssertEqual(store.visibleDocuments.map(\.isPreview), [false, true])
+        XCTAssertTrue(store.close(first))
+        store.showSpace("two")
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["c.txt", "a.txt"])
+    }
+
     func testSaveWritesTheFileAndReportsIt() async throws {
         _ = await open("a.txt")
         edit("a.txt", "changed\n")

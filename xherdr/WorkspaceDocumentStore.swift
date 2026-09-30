@@ -1,15 +1,40 @@
 import Foundation
 
 /// The documents open as tabs in the main area: which one is active, the single preview tab,
-/// and loading, saving and closing them.
+/// and loading, saving and closing them. Each Space has its own tabs.
 @MainActor
 final class WorkspaceDocumentStore: ObservableObject {
+    /// Every Space's documents; `visibleDocuments` are the shown Space's.
     @Published var documents: [WorkspaceDocument] = []
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
     @Published var activeID: String?
+    /// The Space whose documents are shown and where new ones open.
+    @Published private(set) var space: String?
+
+    var visibleDocuments: [WorkspaceDocument] {
+        documents.filter { $0.space == space }
+    }
 
     func document(_ id: String) -> WorkspaceDocument? {
         documents.first { $0.id == id }
+    }
+
+    /// Shows another Space's tabs; the previous Space's stay open, hidden, until it is shown
+    /// again. Documents opened before any Space was known join the first one shown.
+    func showSpace(_ space: String?) {
+        guard space != self.space else { return }
+        if self.space == nil, space != nil {
+            for index in documents.indices where documents[index].space == nil {
+                let previousID = documents[index].id
+                documents[index].space = space
+                if activeID == previousID { activeID = documents[index].id }
+            }
+        }
+        self.space = space
+        if let activeID, activeID != WorkspaceSearchModel.tabID,
+           document(activeID)?.space != space {
+            self.activeID = nil
+        }
     }
 
     /// Opens a document, or activates it when it is already open. A preview replaces the
@@ -17,7 +42,7 @@ final class WorkspaceDocumentStore: ObservableObject {
     func open(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
               reveal: WorkspaceDocumentReveal? = nil, commit: String? = nil, originalPath: String? = nil,
               preview: Bool = false) {
-        var document = WorkspaceDocument(location: location, path: path, kind: kind)
+        var document = WorkspaceDocument(space: space, location: location, path: path, kind: kind)
         document.reveal = reveal
         document.commit = commit
         document.originalPath = originalPath
@@ -28,7 +53,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             activeID = document.id
             return
         }
-        if preview, let index = documents.firstIndex(where: \.isPreview) {
+        if preview, let index = documents.firstIndex(where: { $0.isPreview && $0.space == space }) {
             if documents[index].isDirty {
                 documents[index].isPreview = false
             } else {

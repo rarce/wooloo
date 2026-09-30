@@ -27,6 +27,8 @@ struct WorkspaceDocumentReveal: Equatable {
 }
 
 struct WorkspaceDocument: Identifiable {
+    /// The Space whose tab row shows this document; see `WorkspaceDocumentStore.showSpace`.
+    var space: String?
     let location: WorkspaceFileLocation
     let path: String
     let kind: WorkspaceDocumentKind
@@ -52,7 +54,7 @@ struct WorkspaceDocument: Identifiable {
     /// kept open by a double click or an edit.
     var isPreview = false
 
-    var id: String { "\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)" }
+    var id: String { "\(space ?? "")|\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)" }
     var isDirty: Bool { kind == .file && text != savedText }
     /// The patch a diff document shows.
     var patch: String { diffPatches[diffScope] ?? text }
