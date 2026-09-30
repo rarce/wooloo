@@ -1,3 +1,4 @@
+import UserNotifications
 import XCTest
 @testable import xherdr
 
@@ -203,6 +204,86 @@ final class HerdrNotifierTests: XCTestCase {
         XCTAssertEqual(notifier.attention, ["w1:p1": .done])
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertTrue(notifier.toasts.isEmpty)
+    }
+
+    /// A notifier whose system notifications are recorded instead of shown.
+    private func systemNotifier(status: UNAuthorizationStatus, fails: Bool = false)
+        -> (HerdrNotifier, () -> [UNNotificationRequest]) {
+        let notifier = HerdrNotifier()
+        var requests: [UNNotificationRequest] = []
+        notifier.notificationStatus = { status }
+        notifier.addNotification = { request in
+            if fails { throw CocoaError(.featureUnsupported) }
+            requests.append(request)
+        }
+        return (notifier, { requests })
+    }
+
+    func testSystemDeliveryPostsANotificationForThePane() async throws {
+        for delivery in ["system", "terminal"] {
+            try config.write("[ui.toast]\ndelivery = \"\(delivery)\"\ndelay_seconds = 0\n")
+            let (notifier, requests) = systemNotifier(status: .authorized)
+            defer { notifier.reset() }
+            notifier.process(try snapshot(["w1:p1": "working"]), selectedPaneID: nil)
+            notifier.process(try snapshot(["w1:p1": "done"]), selectedPaneID: nil)
+            await waitUntil { requests().count == 1 }
+            let content = try XCTUnwrap(requests().first?.content)
+            XCTAssertEqual(content.title, "Claude finished", delivery)
+            XCTAssertEqual(content.body, "project · Tab 1", delivery)
+            XCTAssertEqual(content.userInfo["paneID"] as? String, "w1:p1", delivery)
+            XCTAssertTrue(notifier.toasts.isEmpty, delivery)
+        }
+    }
+
+    /// macOS drops notifications it may not show, so they become toasts instead.
+    func testSystemDeliveryFallsBackToToasts() async throws {
+        try config.write("[ui.toast]\ndelivery = \"system\"\ndelay_seconds = 0\n")
+        for (status, fails) in [(UNAuthorizationStatus.denied, false), (.notDetermined, false), (.authorized, true)] {
+            let (notifier, requests) = systemNotifier(status: status, fails: fails)
+            defer { notifier.reset() }
+            notifier.process(try snapshot(["w1:p1": "working"]), selectedPaneID: nil)
+            notifier.process(try snapshot(["w1:p1": "blocked"]), selectedPaneID: nil)
+            await waitUntil { notifier.toasts.count == 1 }
+            XCTAssertTrue(requests().isEmpty)
+        }
+    }
+
+    /// Alerts from panes out of view play Herdr's sounds, loaded once per kind.
+    func testBackgroundAlertsPlayTheirSound() throws {
+        unsetenv("HERDR_DISABLE_SOUND")
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        var played: [NSSound] = []
+        notifier.play = { played.append($0) }
+        notifier.process(try snapshot(["w1:p1": "working", "w1:p2": "working"]), selectedPaneID: nil)
+        notifier.process(try snapshot(["w1:p1": "done", "w1:p2": "blocked"]), selectedPaneID: nil)
+        XCTAssertEqual(played.map(\.name), ["Glass", "Ping"])
+        notifier.process(try snapshot(["w1:p1": "working", "w1:p2": "working"]), selectedPaneID: nil)
+        notifier.process(try snapshot(["w1:p1": "done", "w1:p2": "working"]), selectedPaneID: nil)
+        XCTAssertEqual(played.count, 3)
+        XCTAssertTrue(played[2] === played[0], "The sound is reused")
+    }
+
+    func testSoundsFollowTheConfig() throws {
+        unsetenv("HERDR_DISABLE_SOUND")
+        try config.write("[ui.sound]\nenabled = false\n[ui.toast]\ndelivery = \"off\"\n")
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        var played: [NSSound] = []
+        notifier.play = { played.append($0) }
+        notifier.process(try snapshot(["w1:p1": "working"]), selectedPaneID: nil)
+        notifier.process(try snapshot(["w1:p1": "done"]), selectedPaneID: nil)
+        XCTAssertTrue(played.isEmpty)
+        XCTAssertEqual(notifier.attention, ["w1:p1": .done], "The mark stays without a sound")
+    }
+
+    func testClickingANotificationOpensItsPane() {
+        let notifier = HerdrNotifier()
+        var opened: [String] = []
+        notifier.onOpenPane = { opened.append($0) }
+        notifier.openNotification(paneID: "w1:p2")
+        notifier.openNotification(paneID: nil)
+        XCTAssertEqual(opened, ["w1:p2"])
     }
 }
 

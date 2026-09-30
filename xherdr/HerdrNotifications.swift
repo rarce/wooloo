@@ -99,6 +99,18 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     /// Focuses a pane when a toast or system notification is clicked.
     var onOpenPane: (String) -> Void = { _ in }
 
+    /// System notifications and sounds; tests replace them.
+    var notificationStatus: () async -> UNAuthorizationStatus = {
+        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
+    var addNotification: (UNNotificationRequest) async throws -> Void = {
+        try await UNUserNotificationCenter.current().add($0)
+    }
+    var play: (NSSound) -> Void = { sound in
+        sound.stop()
+        sound.play()
+    }
+
     private var statuses: [String: String] = [:]
     private var hasBaseline = false
     private var sounds: [String: NSSound] = [:]
@@ -236,12 +248,11 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
             content.body = toast.body
             content.userInfo = ["paneID": toast.paneID]
             let request = UNNotificationRequest(identifier: toast.id.uuidString, content: content, trigger: nil)
-            let center = UNUserNotificationCenter.current()
             Task {
                 // Without permission macOS drops the alert silently, so show it in the app instead.
-                let status = await center.notificationSettings().authorizationStatus
+                let status = await notificationStatus()
                 guard status == .authorized || status == .provisional else { showToast(toast); return }
-                do { try await center.add(request) } catch { showToast(toast) }
+                do { try await addNotification(request) } catch { showToast(toast) }
             }
         }
     }
@@ -263,8 +274,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
                 ?? NSSound(named: kind == .done ? "Glass" : "Ping")
         }
         guard let sound = sounds[key] else { return }
-        sound.stop()
-        sound.play()
+        play(sound)
     }
 
     private func updateDockBadge() {
@@ -290,10 +300,15 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let paneID = response.notification.request.content.userInfo["paneID"] as? String
         Task { @MainActor in
-            NSApp.activate(ignoringOtherApps: true)
-            if let paneID { self.onOpenPane(paneID) }
+            self.openNotification(paneID: paneID)
             completionHandler()
         }
+    }
+
+    /// Brings xherdr forward on the pane a clicked system notification is about.
+    func openNotification(paneID: String?) {
+        NSApp.activate(ignoringOtherApps: true)
+        if let paneID { onOpenPane(paneID) }
     }
 }
 
