@@ -13,7 +13,8 @@ struct WorkspaceGitBar: View {
     let onOpenWorktree: ((String, String) -> Void)?
     let onError: (String) -> Void
 
-    @StateObject private var model = WorkspaceGitBarModel()
+    /// Injectable so tests can wait for its load.
+    @StateObject var model = WorkspaceGitBarModel()
     @State private var confirmsForcePush = false
     @State private var expandsEditor = false
 

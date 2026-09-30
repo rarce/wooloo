@@ -169,9 +169,13 @@ final class ViewSnapshotTests: XCTestCase {
         let repo = try sandbox.repository("repo", files: ["README.md": "one\n"])
         try sandbox.write(["README.md": "two\n"], in: "repo")
         let changes = [WorkspaceFileChange(path: "README.md", indexStatus: " ", worktreeStatus: "M", originalPath: nil)]
+        let model = WorkspaceGitBarModel()
         let bar = WorkspaceGitBar(location: repo, reloadToken: 0, changes: changes, onChange: {},
-                                  onOpenWorktree: nil, onError: { XCTFail($0) })
-        try assertSnapshot(render(bar, size: NSSize(width: 300, height: 150)), named: "git-bar")
+                                  onOpenWorktree: nil, onError: { XCTFail($0) }, model: model)
+        let bitmap = render(bar, size: NSSize(width: 300, height: 150), settle: 2) {
+            model.status != nil && model.repository != nil
+        }
+        try assertSnapshot(bitmap, named: "git-bar")
         try skipIfRecorded()
     }
 
