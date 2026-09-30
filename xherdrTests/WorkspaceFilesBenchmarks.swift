@@ -108,8 +108,14 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
         guard target == "local" else { return }
         let patch = try XCTUnwrap(WorkspaceFiles.diff(Self.bigPath, at: location)[.all])
         let sides = WorkspaceFiles.diffSides(Self.bigPath, originalPath: nil, commit: nil, scope: .all, at: location)
+        // The explorer builds the Files tree once per listing, then walks it on every render.
+        let files = try WorkspaceFiles.listing(at: location).files
+        let tree = WorkspaceTree(paths: files)
+        let expanded = Set(tree.nodes.prefix(3).map { "bench|" + $0.path })
         for (name, parse) in [("parse-big-diff", { _ = ParsedDiff(patch) }),
-                              ("parse-big-diff-highlighted", { _ = ParsedDiff(patch, old: sides.old, new: sides.new) })] {
+                              ("parse-big-diff-highlighted", { _ = ParsedDiff(patch, old: sides.old, new: sides.new) }),
+                              ("file-tree", { _ = WorkspaceTree(paths: files) }),
+                              ("file-tree-rows", { _ = tree.visibleRows(expanded: expanded, identity: "bench") })] {
             parse()
             var nanos: [UInt64] = []
             for _ in 0..<repetitions {

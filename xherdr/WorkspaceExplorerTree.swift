@@ -121,8 +121,8 @@ enum WorkspaceExplorer {
     }
 
     /// Whether `path` is a folder: the root, a folder created empty, or one with listed files.
-    static func isDirectory(_ path: String, files: [String], created: Set<String>) -> Bool {
-        path.isEmpty || created.contains(path) || files.contains { $0.hasPrefix(path + "/") }
+    static func isDirectory(_ path: String, directories: Set<String>, created: Set<String>) -> Bool {
+        path.isEmpty || created.contains(path) || directories.contains(path)
     }
 
     /// The folder new items go in for a selected item: the item itself when it is a folder.

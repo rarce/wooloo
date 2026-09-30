@@ -8,7 +8,7 @@ final class WorkspaceTreeTests: XCTestCase {
                          "file10.txt", "file2.txt", "/etc/passwd", "../outside", "a/./b", "a/../b"]
 
     private func rows(expanded: Set<String> = []) -> [(path: String, name: String, depth: Int, folder: Bool)] {
-        WorkspaceTreeNode.visibleRows(paths: paths, expanded: expanded, identity: "space")
+        WorkspaceTree(paths: paths).visibleRows(expanded: expanded, identity: "space")
             .map { ($0.node.path, $0.node.displayName, $0.depth, $0.node.isDirectory) }
     }
 
@@ -34,6 +34,20 @@ final class WorkspaceTreeTests: XCTestCase {
 
         // Expansion is remembered per Space.
         XCTAssertEqual(rows(expanded: ["other|src/app"]).count, 6)
+    }
+
+    /// Folders inside a chain shown on one row are still folders, for the file shortcuts.
+    func testDirectoriesIncludeEveryFolder() {
+        let tree = WorkspaceTree(paths: paths, directories: ["empty"])
+        XCTAssertEqual(tree.directories, ["docs", "src", "src/app", "empty"])
+    }
+
+    /// The tree is built once; walking it with more folders open does not change it.
+    func testRowsComeFromTheBuiltTree() {
+        let tree = WorkspaceTree(paths: paths)
+        XCTAssertEqual(tree.visibleRows(expanded: [], identity: "space").count, 6)
+        XCTAssertEqual(tree.visibleRows(expanded: ["space|src/app", "space|docs"], identity: "space").count, 9)
+        XCTAssertTrue(WorkspaceTree(paths: []).isEmpty)
     }
 
     func testPathsOutsideTheSpaceAreIgnored() {

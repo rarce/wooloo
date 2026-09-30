@@ -121,12 +121,12 @@ final class WorkspaceExplorerTests: XCTestCase {
 
     /// A shortcut on a file acts in its folder; on a folder, in the folder itself.
     func testShortcutTargets() {
-        let files = ["src/a.swift", "src/lib/b.swift", "README.md"]
-        XCTAssertTrue(WorkspaceExplorer.isDirectory("", files: files, created: []))
-        XCTAssertTrue(WorkspaceExplorer.isDirectory("src/lib", files: files, created: []))
-        XCTAssertFalse(WorkspaceExplorer.isDirectory("src/a.swift", files: files, created: []))
-        XCTAssertFalse(WorkspaceExplorer.isDirectory("sr", files: files, created: []))
-        XCTAssertTrue(WorkspaceExplorer.isDirectory("empty", files: files, created: ["empty"]))
+        let folders = WorkspaceTree(paths: ["src/a.swift", "src/lib/b.swift", "README.md"]).directories
+        XCTAssertTrue(WorkspaceExplorer.isDirectory("", directories: folders, created: []))
+        XCTAssertTrue(WorkspaceExplorer.isDirectory("src/lib", directories: folders, created: []))
+        XCTAssertFalse(WorkspaceExplorer.isDirectory("src/a.swift", directories: folders, created: []))
+        XCTAssertFalse(WorkspaceExplorer.isDirectory("sr", directories: folders, created: []))
+        XCTAssertTrue(WorkspaceExplorer.isDirectory("empty", directories: folders, created: ["empty"]))
 
         XCTAssertEqual(WorkspaceExplorer.folder(for: "src/a.swift", isDirectory: false), "src")
         XCTAssertEqual(WorkspaceExplorer.folder(for: "src/lib", isDirectory: true), "src/lib")

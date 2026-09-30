@@ -76,7 +76,7 @@ struct WorkspaceFileListing {
     let files: [String]
     let changes: [WorkspaceFileChange]
     let hasGit: Bool
-    /// Files found before the listing was cut to `maximumEntries`.
+    /// Files found before the listing was cut to `maximumFiles`.
     let totalFiles: Int
 }
 
@@ -231,6 +231,11 @@ enum WorkspaceFileError: LocalizedError {
 enum WorkspaceFiles {
     static let maximumFileBytes = 1_000_000
     static let maximumDiffBytes = 2_000_000
+    /// Files the explorer lists; it builds their tree once per listing, so this bounds memory and load time only.
+    static let maximumFiles = 200_000
+    /// Output read for a file listing: `maximumFiles` paths of about 150 bytes.
+    static let maximumListingBytes = 32_000_000
+    /// Changes listed by `parseStatus`.
     static let maximumEntries = 2_000
 
     /// Where the Herdr command is looked for, in order; tests replace it.
@@ -274,10 +279,10 @@ enum WorkspaceFiles {
         var totalFiles: Int?
         if hasGit {
             let fileData = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."],
-                                   limit: 4_000_000)
+                                   limit: maximumListingBytes)
             let (tracked, untracked) = trackedFirst(nulStrings(fileData))
             totalFiles = tracked.count + untracked.count
-            files = (tracked + untracked).prefix(maximumEntries).sorted()
+            files = (tracked + untracked).prefix(maximumFiles).sorted()
             let status = try git(location, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
             changes = parseStatus(status)
         } else if location.machine == nil {
@@ -285,15 +290,15 @@ enum WorkspaceFiles {
             changes = []
         } else {
             let script = "cd \(quote(location.root)) && find . -type f -not -path './.git/*' -print0"
-            files = nulStrings(try ssh(location.machine!, script, limit: 4_000_000))
+            files = nulStrings(try ssh(location.machine!, script, limit: maximumListingBytes))
                 .map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }
-                .sorted().prefix(maximumEntries).map { $0 }
+                .sorted().prefix(maximumFiles).map { $0 }
             changes = []
         }
         return WorkspaceFileListing(files: files, changes: changes, hasGit: hasGit, totalFiles: totalFiles ?? files.count)
     }
 
-    /// Splits `git ls-files -t` entries so that a listing cut to `maximumEntries` keeps every tracked file
+    /// Splits `git ls-files -t` entries so that a listing cut to `maximumFiles` keeps every tracked file
     /// before untracked ones, such as a build cache missing from `.gitignore`.
     static func trackedFirst(_ entries: [String]) -> (tracked: [String], untracked: [String]) {
         var tracked = Set<String>()
@@ -742,7 +747,7 @@ enum WorkspaceFiles {
                 guard resolved.hasPrefix(rootURL.path + "/") else { continue }
                 let path = String(resolved.dropFirst(rootURL.path.count + 1))
                 files.append(path)
-                if files.count >= maximumEntries { break }
+                if files.count >= maximumFiles { break }
             }
         }
         return files.sorted()

@@ -27,6 +27,7 @@ struct WorkspaceBrowserView: View {
     @State private var showsChanges = false
     @State private var modifiedOnly = false
     @State private var tree = WorkspaceExplorerTree()
+    @State private var treeCache = WorkspaceTreeCache()
     @State private var operationError: String?
     @State private var clipboard: WorkspaceFileClipboard?
     /// A file or folder being named in place in the tree, before it is created.
@@ -178,19 +179,12 @@ struct WorkspaceBrowserView: View {
                     .padding(11)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if let listing, let location {
-                let changedPaths = Set(listing.changes.map(\.path))
-                let paths = showsChanges ? listing.changes.map(\.path)
-                    : (modifiedOnly ? listing.files.filter { changedPaths.contains($0) } : listing.files)
+                let shownTree = shownTree(listing, location: location)
                 let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
                                                uniquingKeysWith: { first, _ in first })
                 let directoryKinds = WorkspaceExplorer.directoryKinds(listing.changes)
                 let stageStates = showsChanges ? WorkspaceExplorer.stageStates(listing.changes) : [:]
-                let rows = WorkspaceTreeNode.visibleRows(
-                    paths: paths,
-                    directories: showsChanges || modifiedOnly ? [] : tree.createdDirectories[location.identity] ?? [],
-                    expanded: tree.expanded,
-                    identity: treeIdentity(location)
-                )
+                let rows = shownTree.visibleRows(expanded: tree.expanded, identity: treeIdentity(location))
                 let shownDraft = !showsChanges && draft?.location.identity == location.identity ? draft : nil
                 let draftFolder = shownDraft?.renaming == nil ? shownDraft?.folder : nil
                 GeometryReader { viewport in
@@ -201,7 +195,7 @@ struct WorkspaceBrowserView: View {
                                 if draftFolder == "" { draftRow(depth: 1) }
                                 if (showsChanges || isFilteredFiles) && !listing.hasGit {
                                     hint("No Git repository in this Space")
-                                } else if paths.isEmpty {
+                                } else if shownTree.isEmpty {
                                     hint(showsChanges ? "No changes" : (modifiedOnly ? "No modified files" : "No files"))
                                 }
                                 if !showsChanges && listing.totalFiles > listing.files.count {
@@ -293,6 +287,29 @@ struct WorkspaceBrowserView: View {
     /// The modified-only filter shares the file tree's expanded folders, so switching keeps the layout.
     private func treeIdentity(_ location: WorkspaceFileLocation) -> String {
         "\(location.identity)|\(showsChanges ? "changes" : "files")"
+    }
+
+    /// The tree the explorer shows: every file, the modified ones, or the changes.
+    private func shownTree(_ listing: WorkspaceFileListing, location: WorkspaceFileLocation) -> WorkspaceTree {
+        if showsChanges {
+            return treeCache.tree(.changes, listing: listingVersion) { WorkspaceTree(paths: listing.changes.map(\.path)) }
+        }
+        if modifiedOnly {
+            return treeCache.tree(.modified, listing: listingVersion) {
+                let changed = Set(listing.changes.map(\.path))
+                return WorkspaceTree(paths: listing.files.filter { changed.contains($0) })
+            }
+        }
+        return filesTree(listing, location: location)
+    }
+
+    /// Every listed file with the folders created empty. `loadListing` builds it with the listing,
+    /// so it is built here only after a folder is created, renamed or deleted.
+    private func filesTree(_ listing: WorkspaceFileListing, location: WorkspaceFileLocation) -> WorkspaceTree {
+        let created = tree.createdDirectories[location.identity] ?? []
+        return treeCache.tree(.files, listing: listingVersion, directories: created) {
+            WorkspaceTree(paths: listing.files, directories: created)
+        }
     }
 
     private func treeRoot(_ location: WorkspaceFileLocation,
@@ -680,7 +697,8 @@ struct WorkspaceBrowserView: View {
               let command = ExplorerFileCommand.allCases.first(where: { $0.matches(event) }) else { return false }
         let path = tree.selectedPath(in: treeIdentity(location)) ?? ""
         guard !path.isEmpty || command.appliesToRoot else { return false }
-        let isDirectory = WorkspaceExplorer.isDirectory(path, files: listing?.files ?? [],
+        let directories = listing.map { filesTree($0, location: location).directories } ?? []
+        let isDirectory = WorkspaceExplorer.isDirectory(path, directories: directories,
                                                         created: tree.createdDirectories[location.identity] ?? [])
         let folder = WorkspaceExplorer.folder(for: path, isDirectory: isDirectory)
         let absolute = location.absolutePath(path)
@@ -861,23 +879,36 @@ struct WorkspaceBrowserView: View {
         isLoading = !quietly
         error = nil
         let start = TerminalPipelineMetrics.now()
+        let created = tree.createdDirectories[location.identity] ?? []
+        func exists(_ path: String) -> Bool {
+            guard location.isLocal else { return true }
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: location.absolutePath(path), isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
         Task {
-            let result = await Task.detached { Result { try WorkspaceFiles.listing(at: location) } }.value
-            guard self.location?.identity == location.identity else { return }
-            switch result {
-            case .success(let value):
-                listing = value
-                if location.isLocal {
-                    tree.pruneCreated(location: location.identity) { path in
-                        var isDirectory: ObjCBool = false
-                        return FileManager.default.fileExists(atPath: location.absolutePath(path), isDirectory: &isDirectory)
-                            && isDirectory.boolValue
-                    }
+            // The Files tree is built here too, so a large Space is not sorted on the main thread.
+            let result = await Task.detached {
+                Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>) in
+                    let listing = try WorkspaceFiles.listing(at: location)
+                    let kept = created.filter(exists)
+                    return (listing, WorkspaceTree(paths: listing.files, directories: kept), kept)
                 }
+            }.value
+            guard self.location?.identity == location.identity else { return }
+            var filesTree: (tree: WorkspaceTree, directories: Set<String>)?
+            switch result {
+            case .success(let (value, builtTree, kept)):
+                listing = value
+                tree.pruneCreated(location: location.identity, exists: exists)
+                filesTree = (builtTree, kept)
             case .failure(let failure): error = failure.localizedDescription
             }
             isLoading = false
             listingVersion += 1
+            if let filesTree {
+                treeCache.store(filesTree.tree, .files, listing: listingVersion, directories: filesTree.directories)
+            }
             TerminalPipelineMetrics.spanShown("file-list", start: start, detail: location.isLocal ? "local" : "ssh")
         }
     }
@@ -888,10 +919,20 @@ struct WorkspaceTreeNode {
     let path: String
     let isDirectory: Bool
     let children: [WorkspaceTreeNode]
+}
+
+/// A folder tree built once from a listing, off the main thread for the Files tree: folders
+/// first, names in natural order, a chain of single folders on one row. `visibleRows` walks only
+/// expanded folders, so a render costs the rows shown rather than the files listed.
+struct WorkspaceTree {
+    let nodes: [WorkspaceTreeNode]
+    /// Every folder, including those inside a chain shown on one row.
+    let directories: Set<String>
+
+    var isEmpty: Bool { nodes.isEmpty }
 
     /// `directories` adds folders that hold no listed file, such as one just created in the explorer.
-    static func visibleRows(paths: [String], directories: Set<String> = [], expanded: Set<String>,
-                            identity: String) -> [WorkspaceTreeRow] {
+    init(paths: [String], directories: Set<String> = []) {
         let root = WorkspaceTreeBuilderNode(name: "", path: "")
         func insert(_ path: String, isDirectory: Bool) {
             let components = path.split(separator: "/").map(String.init)
@@ -913,37 +954,74 @@ struct WorkspaceTreeNode {
         for path in paths { insert(path, isDirectory: false) }
         for path in directories { insert(path, isDirectory: true) }
 
+        var folders = Set<String>()
+        func compact(_ source: WorkspaceTreeBuilderNode) -> WorkspaceTreeNode {
+            var node = source
+            var names = [node.name]
+            while node.children.count == 1,
+                  let child = node.children.values.first,
+                  !child.children.isEmpty {
+                folders.insert(node.path)
+                node = child
+                names.append(node.name)
+            }
+            let children = node.children.values.map(compact).sorted(by: Self.ordered)
+            let isDirectory = node.isDirectory || !children.isEmpty
+            if isDirectory { folders.insert(node.path) }
+            return WorkspaceTreeNode(displayName: names.joined(separator: " / "), path: node.path,
+                                     isDirectory: isDirectory, children: children)
+        }
+        nodes = root.children.values.map(compact).sorted(by: Self.ordered)
+        self.directories = folders
+    }
+
+    /// The rows shown when the folders keyed "<identity>|<path>" in `expanded` are open.
+    func visibleRows(expanded: Set<String>, identity: String) -> [WorkspaceTreeRow] {
         var rows: [WorkspaceTreeRow] = []
         func append(_ nodes: [WorkspaceTreeNode], depth: Int) {
             for node in nodes {
                 rows.append(WorkspaceTreeRow(node: node, depth: depth))
-                let key = identity + "|" + node.path
-                if node.isDirectory && expanded.contains(key) {
+                if node.isDirectory && expanded.contains(identity + "|" + node.path) {
                     append(node.children, depth: depth + 1)
                 }
             }
         }
-        append(root.children.values.map(compact).sorted(by: ordered), depth: 1)
+        append(nodes, depth: 1)
         return rows
-    }
-
-    private static func compact(_ source: WorkspaceTreeBuilderNode) -> WorkspaceTreeNode {
-        var node = source
-        var names = [node.name]
-        while node.children.count == 1,
-              let child = node.children.values.first,
-              !child.children.isEmpty {
-            node = child
-            names.append(node.name)
-        }
-        let children = node.children.values.map(compact).sorted(by: ordered)
-        return WorkspaceTreeNode(displayName: names.joined(separator: " / "), path: node.path,
-                                 isDirectory: node.isDirectory || !children.isEmpty, children: children)
     }
 
     private static func ordered(_ lhs: WorkspaceTreeNode, _ rhs: WorkspaceTreeNode) -> Bool {
         if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
         return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+    }
+}
+
+/// The trees the explorer shows, kept until the listing or the created folders they were
+/// built from change, so rendering a large Space does not rebuild its tree.
+@MainActor
+final class WorkspaceTreeCache {
+    enum Kind { case files, modified, changes }
+
+    private struct Key: Equatable {
+        let listing: Int
+        let directories: Set<String>
+    }
+
+    private var trees: [Kind: (key: Key, tree: WorkspaceTree)] = [:]
+
+    /// The tree of `kind` for listing version `listing`, built with `build` when none is kept.
+    func tree(_ kind: Kind, listing: Int, directories: Set<String> = [],
+              build: () -> WorkspaceTree) -> WorkspaceTree {
+        let key = Key(listing: listing, directories: directories)
+        if let kept = trees[kind], kept.key == key { return kept.tree }
+        let tree = build()
+        trees[kind] = (key, tree)
+        return tree
+    }
+
+    /// Keeps a tree built elsewhere, such as the Files tree built with its listing.
+    func store(_ tree: WorkspaceTree, _ kind: Kind, listing: Int, directories: Set<String> = []) {
+        trees[kind] = (Key(listing: listing, directories: directories), tree)
     }
 }
 

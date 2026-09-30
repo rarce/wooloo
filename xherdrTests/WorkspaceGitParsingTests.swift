@@ -209,8 +209,8 @@ final class WorkspaceFileOperationHelperTests: XCTestCase {
     }
 
     func testEmptyFoldersAppearInTheTree() {
-        let rows = WorkspaceTreeNode.visibleRows(paths: ["a.txt", "src/main.swift"], directories: ["empty", "src/new"],
-                                                 expanded: ["s|src"], identity: "s")
+        let rows = WorkspaceTree(paths: ["a.txt", "src/main.swift"], directories: ["empty", "src/new"])
+            .visibleRows(expanded: ["s|src"], identity: "s")
         XCTAssertEqual(rows.map(\.node.path), ["empty", "src", "src/new", "src/main.swift", "a.txt"])
         XCTAssertEqual(rows.map(\.node.isDirectory), [true, true, true, false, false])
     }
