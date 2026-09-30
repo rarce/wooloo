@@ -78,7 +78,8 @@ struct WorkspaceDocumentView: View {
     /// Bumped when the repository may have changed, to reload the change bars' Git bases.
     @State private var gitBasesVersion = 0
     @State private var gitDirectoryWatcher: GitDirectoryWatcher?
-    @StateObject private var find = DocumentFindModel()
+    /// Not private so snapshot tests can open the find bar with a query.
+    @StateObject var find = DocumentFindModel()
     @State private var previewFocus: MarkdownFindFocus?
     /// Set by Replace so the next match is selected once the edited text comes back.
     @State private var revealsAfterEdit = false

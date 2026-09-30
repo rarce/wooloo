@@ -1,4 +1,5 @@
 import AppKit
+import CodeEditTextView
 import SwiftUI
 import XCTest
 @testable import xherdr
@@ -13,6 +14,8 @@ final class ViewSnapshotTests: XCTestCase {
         .deletingLastPathComponent().appendingPathComponent("Snapshots/Views")
     private static let theme = XherdrTheme.named(XherdrTheme.fallbackID)!
     private var recorded: [String] = []
+    /// The view `render` is drawing, for `ready` conditions that look inside AppKit views.
+    private var rendered: NSView?
 
     private static var systemVersion: String {
         let version = ProcessInfo.processInfo.operatingSystemVersion
@@ -37,7 +40,8 @@ final class ViewSnapshotTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: Self.theme.isDark ? .darkAqua : .aqua)
         window.contentView = host
-        defer { window.close() }
+        rendered = host
+        defer { window.close(); rendered = nil }
 
         func capture() -> NSBitmapImageRep {
             host.layoutSubtreeIfNeeded()
@@ -291,6 +295,167 @@ final class ViewSnapshotTests: XCTestCase {
         try assertSnapshot(snapshot(), named: "repository-history")
         try assertSnapshot(snapshot(commit: head), named: "repository-commit")
         try assertSnapshot(snapshot(tab: 1, height: 420), named: "repository-branches")
+        try skipIfRecorded()
+    }
+
+    /// A committed repository with a few Swift sources and a README, at a fixed path, for the
+    /// search results and the document editor.
+    private func snapshotSources() throws -> (sandbox: WorkspaceGitSandbox, location: WorkspaceFileLocation) {
+        let sandbox = try WorkspaceGitSandbox(name: "view-snapshots")
+        let location = try sandbox.repository("repo", files: [
+            "Sources/App/Greeter.swift": """
+                import Foundation
+
+                /// Greets people by name, politely or with some excitement.
+                struct Greeter {
+                    enum Tone: String, CaseIterable {
+                        case polite, excited
+                    }
+
+                    let tone: Tone
+                    var greetings = 0
+
+                    init(tone: Tone = .polite) {
+                        self.tone = tone
+                    }
+
+                    mutating func greet(_ name: String) -> String {
+                        greetings += 1
+                        switch tone {
+                        case .polite: return "Hello, \\(name)."
+                        case .excited: return "Hi \\(name)!" + String(repeating: "!", count: 2)
+                        }
+                    }
+
+                    // Everyone in the list, one line each.
+                    mutating func greetAll(_ names: [String]) -> [String] {
+                        names.map { greet($0) }
+                    }
+                }
+
+                """,
+            "Sources/App/main.swift": """
+                var greeter = Greeter(tone: .excited)
+                for name in CommandLine.arguments.dropFirst() {
+                    print(greeter.greet(name))
+                }
+
+                """,
+            "Sources/Core/Person.swift": """
+                struct Person: Hashable {
+                    let name: String
+                    var nickname: String?
+
+                    var displayName: String { nickname ?? name }
+                }
+
+                """,
+            "README.md": """
+                # Greeter
+
+                A tiny command line tool that **greets people** by name. See `Sources/App` for the code.
+
+                ## Usage
+
+                1. Build it with `swift build`.
+                2. Run it with the names to greet:
+
+                ```sh
+                swift run greeter Ada Grace
+                ```
+
+                | Tone | Output |
+                | --- | --- |
+                | polite | Hello, Ada. |
+                | excited | Hi Ada!!! |
+
+                > Greetings are counted, so a greeter knows how many people it met.
+
+                """,
+        ])
+        return (sandbox, location)
+    }
+
+    /// Project search results for a query in three files, and the same with the replace field.
+    func testSearch() throws {
+        let (sandbox, repo) = try snapshotSources()
+        defer { sandbox.tearDown() }
+        for (name, replace) in [("search-results", false), ("search-replace", true)] {
+            let model = WorkspaceSearchModel()
+            model.options.query = "name"
+            model.showsReplace = replace
+            model.replacement = replace ? "fullName" : ""
+            model.setLocation(repo)
+            let view = WorkspaceSearchView(model: model, onOpen: { _, _, _, _ in })
+            try assertSnapshot(render(view, size: NSSize(width: 820, height: 480), settle: 2) {
+                model.result != nil && !model.isSearching
+            }, named: name)
+            XCTAssertNil(model.error)
+            XCTAssertEqual(model.matches.count, 15)
+        }
+        try skipIfRecorded()
+    }
+
+    /// A loaded document as ContentView shows it, with its text already read.
+    private func loadedDocument(_ path: String, at location: WorkspaceFileLocation) throws -> Binding<WorkspaceDocument> {
+        let contents = try WorkspaceFiles.read(path, at: location)
+        var document = WorkspaceDocument(location: location, path: path, kind: .file)
+        document.text = contents.text
+        document.savedText = contents.text
+        document.version = contents.version
+        document.isLoading = false
+        return Binding(get: { document }, set: { document = $0 })
+    }
+
+    /// The editor's text view once tree-sitter has colored it: its text has several colors.
+    /// Its caret, the system insertion indicator, fades in and out on its own even offscreen,
+    /// so it is hidden.
+    private func highlightedEditor() -> TextView? {
+        func find(_ view: NSView) -> TextView? {
+            if let textView = view as? TextView { return textView }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        guard let host = rendered, let textView = find(host) else { return nil }
+        for case let caret as NSTextInsertionIndicator in textView.subviews { caret.displayMode = .hidden }
+        let storage = textView.textStorage!
+        var colors = Set<NSColor>()
+        storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            if let color = value as? NSColor { colors.insert(color) }
+        }
+        return colors.count >= 4 ? textView : nil
+    }
+
+    /// A Swift file in the editor, highlighted, then with the find bar open on a query.
+    func testDocumentEditor() throws {
+        let (sandbox, repo) = try snapshotSources()
+        defer { sandbox.tearDown() }
+        let size = NSSize(width: 820, height: 560)
+        let path = "Sources/App/Greeter.swift"
+
+        let plain = WorkspaceDocumentView(document: try loadedDocument(path, at: repo), onSave: {})
+        try assertSnapshot(render(plain, size: size, settle: 3) { highlightedEditor() != nil },
+                           named: "editor-swift")
+
+        // The find bar is opened once the view is up, as ⌘F does, so it searches the loaded text.
+        let find = DocumentFindModel()
+        find.options.query = "greet"
+        let searching = WorkspaceDocumentView(document: try loadedDocument(path, at: repo), onSave: {}, find: find)
+        DispatchQueue.main.async { find.open(replace: false, query: nil) }
+        try assertSnapshot(render(searching, size: size, settle: 3) {
+            guard let textView = highlightedEditor(), find.current == 0 else { return false }
+            let layers = textView.layer?.sublayers?.filter { $0.cornerRadius == 2 && $0.backgroundColor != nil }
+            return layers?.count == find.count
+        }, named: "editor-find")
+        XCTAssertEqual(find.count, 7)
+        try skipIfRecorded()
+    }
+
+    /// A README in the document's rendered Markdown preview.
+    func testMarkdownPreview() throws {
+        let (sandbox, repo) = try snapshotSources()
+        defer { sandbox.tearDown() }
+        let view = WorkspaceDocumentView(document: try loadedDocument("README.md", at: repo), onSave: {})
+        try assertSnapshot(render(view, size: NSSize(width: 820, height: 560), settle: 3), named: "markdown-preview")
         try skipIfRecorded()
     }
 }
