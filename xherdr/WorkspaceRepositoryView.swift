@@ -10,21 +10,21 @@ struct WorkspaceRepositoryView: View {
     let onNewSpace: ((String, String) -> Void)?
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
 
-    @State private var listing: WorkspaceRepositoryListing?
-    @State private var error: String?
-    @State private var isLoading = false
+    @StateObject private var model = WorkspaceRepositoryModel()
     @State private var selectedTab = 0
-    @State private var reloadVersion = 0
     @State private var addRequest: AddWorktreeRequest?
     @State private var removing: WorkspaceWorktree?
-    @State private var operationError: String?
     @State private var selectedCommit: WorkspaceCommit?
-    @State private var commitFiles: [WorkspaceCommitFile]?
-    @State private var commitFilesError: String?
     @State private var selectedCommitFile: String?
 
+    private var listing: WorkspaceRepositoryListing? { model.listing }
+    private var error: String? { model.error }
+    private var isLoading: Bool { model.isLoading }
+    private var commitFiles: [WorkspaceCommitFile]? { model.commitFiles }
+    private var commitFilesError: String? { model.commitFilesError }
+
     private var identity: String {
-        "\(location?.identity ?? "none")|\(refreshVersion)|\(reloadVersion)"
+        "\(location?.identity ?? "none")|\(refreshVersion)|\(model.reloadVersion)"
     }
 
     var body: some View {
@@ -103,12 +103,14 @@ struct WorkspaceRepositoryView: View {
         }
         .background(theme.sidebarBackground)
         // A collapsed repository loads when it is opened again.
-        .task(id: "\(identity)|\(isCollapsed)") { if !isCollapsed { load() } }
-        .task(id: "\(location?.identity ?? "")|\(selectedCommit?.id ?? "")") { await loadCommitFiles() }
+        .task(id: "\(identity)|\(isCollapsed)") { if !isCollapsed { await model.load(location) } }
+        .task(id: "\(location?.identity ?? "")|\(selectedCommit?.id ?? "")") {
+            await model.loadCommitFiles(selectedCommit?.id, at: location)
+        }
         .onChange(of: location?.identity) { _, _ in selectedCommit = nil }
         .sheet(item: $addRequest) { request in
             AddWorktreeSheet(request: request) { branch, path, newBranch in
-                add(branch: branch, path: path, newBranch: newBranch)
+                if let location { model.addWorktree(at: location, branch: branch, path: path, newBranch: newBranch) }
             }
         }
         .confirmationDialog("Remove worktree?", isPresented: Binding(
@@ -116,18 +118,19 @@ struct WorkspaceRepositoryView: View {
         )) {
             if let removing {
                 Button("Remove \((removing.path as NSString).lastPathComponent)", role: .destructive) {
-                    remove(removing)
+                    self.removing = nil
+                    if let location { model.removeWorktree(removing, at: location) }
                 }
             }
         } message: {
             Text("Git will remove this worktree only if it has no uncommitted changes.")
         }
         .alert("Repository operation failed", isPresented: Binding(
-            get: { operationError != nil }, set: { if !$0 { operationError = nil } }
+            get: { model.operationError != nil }, set: { if !$0 { model.clearOperationError() } }
         )) {
-            Button("OK") { operationError = nil }
+            Button("OK") { model.clearOperationError() }
         } message: {
-            Text(operationError ?? "")
+            Text(model.operationError ?? "")
         }
     }
 
@@ -320,22 +323,6 @@ struct WorkspaceRepositoryView: View {
         }
     }
 
-    private func loadCommitFiles() async {
-        commitFiles = nil
-        commitFilesError = nil
-        guard let location, let hash = selectedCommit?.id else { return }
-        let start = TerminalPipelineMetrics.now()
-        defer { TerminalPipelineMetrics.spanShown("commit-files", start: start, detail: location.isLocal ? "local" : "ssh") }
-        let result = await Task.detached(priority: .userInitiated) {
-            Result { try WorkspaceFiles.commitFiles(hash, at: location) }
-        }.value
-        guard selectedCommit?.id == hash, self.location?.identity == location.identity else { return }
-        switch result {
-        case .success(let files): commitFiles = files
-        case .failure(let failure): commitFilesError = failure.localizedDescription
-        }
-    }
-
     private func branches(_ listing: WorkspaceRepositoryListing) -> some View {
         Group {
             heading("Local")
@@ -429,7 +416,9 @@ struct WorkspaceRepositoryView: View {
         .help(branch.upstream.isEmpty ? branch.id : "Tracks \(branch.upstream)")
         .contextMenu {
             if !branch.isRemote && !branch.isCurrent {
-                Button("Switch to Branch", systemImage: "arrow.triangle.swap") { switchTo(branch) }
+                Button("Switch to Branch", systemImage: "arrow.triangle.swap") {
+                    if let location { model.switchBranch(branch, at: location, onSwitched: onChange) }
+                }
             }
             Button("Add Worktree from Branch…", systemImage: "plus") { prepareAdd(listing, from: branch) }
             Divider()
@@ -441,93 +430,120 @@ struct WorkspaceRepositoryView: View {
     }
 
     private func prepareAdd(_ listing: WorkspaceRepositoryListing, from preferred: WorkspaceBranch? = nil) {
-        guard let branch = preferred ?? listing.branches.first(where: { !$0.isRemote && !$0.isCurrent })
-            ?? listing.branches.first else { return }
-        let newBranch = (branch.isCurrent || branch.isRemote)
-            ? branch.name.split(separator: "/").last.map(String.init).map { $0 + "-worktree" } ?? "worktree"
-            : ""
-        let parent = (listing.root as NSString).deletingLastPathComponent
-        let name = (listing.root as NSString).lastPathComponent
-        let path = parent + "/" + name + "-" + branch.name.replacingOccurrences(of: "/", with: "-")
-        addRequest = AddWorktreeRequest(branches: listing.branches, branchID: branch.id,
-                                        path: path, newBranch: newBranch)
+        addRequest = AddWorktreeRequest.suggested(for: listing, from: preferred)
     }
 
     /// An explicit refresh reads the repository again, even if it was just loaded.
     private func reload() {
         WorkspaceFiles.forgetRecentResults()
-        reloadVersion += 1
+        model.reload()
     }
+}
 
-    private func load() {
+/// The repository panel's listing, a selected commit's files, and worktree and branch operations.
+@MainActor
+final class WorkspaceRepositoryModel: ObservableObject {
+    @Published private(set) var listing: WorkspaceRepositoryListing?
+    @Published private(set) var error: String?
+    @Published private(set) var isLoading = false
+    /// Bumped after an operation changes the repository, so the panel loads it again.
+    @Published private(set) var reloadVersion = 0
+    @Published private(set) var operationError: String?
+    @Published private(set) var commitFiles: [WorkspaceCommitFile]?
+    @Published private(set) var commitFilesError: String?
+    private var location: WorkspaceFileLocation?
+    /// The commit whose files are wanted, with its location.
+    private var commitKey: String?
+
+    func reload() { reloadVersion += 1 }
+
+    func clearOperationError() { operationError = nil }
+
+    func load(_ location: WorkspaceFileLocation?) async {
+        self.location = location
         guard let location else { listing = nil; error = nil; return }
         isLoading = true
         error = nil
         let start = TerminalPipelineMetrics.now()
-        Task {
-            let result = await Task.detached { Result { try WorkspaceFiles.repository(at: location) } }.value
-            guard self.location?.identity == location.identity else { return }
-            switch result {
-            case .success(let value): listing = value
-            case .failure(let failure): error = failure.localizedDescription
-            }
-            isLoading = false
-            TerminalPipelineMetrics.spanShown("repository", start: start, detail: location.isLocal ? "local" : "ssh")
+        let result = await Task.detached { Result { try WorkspaceFiles.repository(at: location) } }.value
+        guard self.location?.identity == location.identity else { return }
+        switch result {
+        case .success(let value): listing = value
+        case .failure(let failure): error = failure.localizedDescription
+        }
+        isLoading = false
+        TerminalPipelineMetrics.spanShown("repository", start: start, detail: location.isLocal ? "local" : "ssh")
+    }
+
+    /// Loads the files of the selected commit; nil clears them.
+    func loadCommitFiles(_ hash: String?, at location: WorkspaceFileLocation?) async {
+        commitKey = hash.map { "\(location?.identity ?? "")|\($0)" }
+        commitFiles = nil
+        commitFilesError = nil
+        guard let location, let hash, let key = commitKey else { return }
+        let start = TerminalPipelineMetrics.now()
+        defer { TerminalPipelineMetrics.spanShown("commit-files", start: start, detail: location.isLocal ? "local" : "ssh") }
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try WorkspaceFiles.commitFiles(hash, at: location) }
+        }.value
+        guard commitKey == key else { return }
+        switch result {
+        case .success(let files): commitFiles = files
+        case .failure(let failure): commitFilesError = failure.localizedDescription
         }
     }
 
-    private func add(branch: WorkspaceBranch, path: String, newBranch: String) {
-        guard let location else { return }
+    func addWorktree(at location: WorkspaceFileLocation, branch: WorkspaceBranch, path: String, newBranch: String) {
         let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = newBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task {
-            let result = await Task.detached {
-                Result { try WorkspaceFiles.addWorktree(at: location, path: path, branch: branch,
-                                                        newBranch: name.isEmpty ? nil : name) }
-            }.value
-            switch result {
-            case .success: reloadVersion += 1
-            case .failure(let failure): operationError = failure.localizedDescription
-            }
+        run {
+            try WorkspaceFiles.addWorktree(at: location, path: path, branch: branch, newBranch: name.isEmpty ? nil : name)
         }
     }
 
-    private func switchTo(_ branch: WorkspaceBranch) {
-        guard let location else { return }
+    func switchBranch(_ branch: WorkspaceBranch, at location: WorkspaceFileLocation, onSwitched: @escaping () -> Void) {
+        run(onSuccess: onSwitched) { try WorkspaceFiles.switchBranch(branch, at: location) }
+    }
+
+    /// Git refuses to remove a worktree with uncommitted changes; that refusal is reported.
+    func removeWorktree(_ tree: WorkspaceWorktree, at location: WorkspaceFileLocation) {
+        run { try WorkspaceFiles.removeWorktree(at: location, path: tree.path) }
+    }
+
+    private func run(onSuccess: @escaping () -> Void = {}, _ operation: @escaping @Sendable () throws -> Void) {
         Task {
-            let result = await Task.detached {
-                Result { try WorkspaceFiles.switchBranch(branch, at: location) }
-            }.value
+            let result = await Task.detached { Result { try operation() } }.value
             switch result {
             case .success:
                 reloadVersion += 1
-                onChange()
-            case .failure(let failure): operationError = failure.localizedDescription
-            }
-        }
-    }
-
-    private func remove(_ tree: WorkspaceWorktree) {
-        guard let location else { return }
-        removing = nil
-        Task {
-            let result = await Task.detached {
-                Result { try WorkspaceFiles.removeWorktree(at: location, path: tree.path) }
-            }.value
-            switch result {
-            case .success: reloadVersion += 1
+                onSuccess()
             case .failure(let failure): operationError = failure.localizedDescription
             }
         }
     }
 }
 
-private struct AddWorktreeRequest: Identifiable {
+struct AddWorktreeRequest: Identifiable {
     let id = UUID()
     let branches: [WorkspaceBranch]
     let branchID: String
     let path: String
     let newBranch: String
+
+    /// Starts from `preferred`, or the first local branch not checked out. A branch that is
+    /// already checked out or remote needs a new local branch, named after it. The worktree
+    /// goes beside the repository, named after the repository and the branch.
+    static func suggested(for listing: WorkspaceRepositoryListing, from preferred: WorkspaceBranch? = nil) -> AddWorktreeRequest? {
+        guard let branch = preferred ?? listing.branches.first(where: { !$0.isRemote && !$0.isCurrent })
+            ?? listing.branches.first else { return nil }
+        let newBranch = (branch.isCurrent || branch.isRemote)
+            ? branch.name.split(separator: "/").last.map(String.init).map { $0 + "-worktree" } ?? "worktree"
+            : ""
+        let parent = (listing.root as NSString).deletingLastPathComponent
+        let name = (listing.root as NSString).lastPathComponent
+        let path = parent + "/" + name + "-" + branch.name.replacingOccurrences(of: "/", with: "-")
+        return AddWorktreeRequest(branches: listing.branches, branchID: branch.id, path: path, newBranch: newBranch)
+    }
 }
 
 private struct AddWorktreeSheet: View {
