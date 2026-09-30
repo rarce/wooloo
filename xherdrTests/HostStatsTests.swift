@@ -134,4 +134,199 @@ final class HostStatsTests: XCTestCase {
         XCTAssertGreaterThan(try XCTUnwrap(sample.uptime), 0)
         XCTAssertNotNil(sample.diskFree)
     }
+
+    func testMemoryAndDiskFractions() {
+        var sample = HostSample(hostname: "h", memoryUsed: 4, memoryTotal: 16, diskFree: 30, diskTotal: 120)
+        XCTAssertEqual(HostStats(sample: sample).memoryFraction, 0.25)
+        XCTAssertEqual(HostStats(sample: sample).diskUsedFraction, 0.75)
+
+        sample.memoryUsed = 20
+        sample.diskFree = 200
+        XCTAssertEqual(HostStats(sample: sample).memoryFraction, 1, "clamped when used exceeds total")
+        XCTAssertEqual(HostStats(sample: sample).diskUsedFraction, 0, "free beyond total counts as empty")
+
+        sample.memoryTotal = 0
+        sample.diskTotal = 0
+        XCTAssertNil(HostStats(sample: sample).memoryFraction, "zero total")
+        XCTAssertNil(HostStats(sample: sample).diskUsedFraction, "zero total")
+
+        let empty = HostStats(sample: HostSample(hostname: "h"))
+        XCTAssertNil(empty.memoryFraction)
+        XCTAssertNil(empty.diskUsedFraction)
+        XCTAssertNil(HostStats(sample: HostSample(hostname: "h", memoryUsed: 1)).memoryFraction, "no total")
+        XCTAssertNil(HostStats(sample: HostSample(hostname: "h", diskTotal: 10)).diskUsedFraction, "no free")
+    }
+
+    // MARK: - Monitor sampling loop
+
+    /// A fake ssh answering for `alpha.test` and `beta.test` with a host named after the target
+    /// and the call number, and CPU ticks growing by 10 busy out of 110 per call. Any other
+    /// target prints output without a host. Each call is logged under `calls/`.
+    private func makeFakeSSH() throws -> WorkspaceGitSandbox {
+        let sandbox = try WorkspaceGitSandbox()
+        try sandbox.write(["bin/ssh": """
+            #!/bin/sh
+            calls=\(sandbox.path("calls"))
+            case "$*" in
+              *alpha.test*) name=alpha ;;
+              *beta.test*) name=beta ;;
+              *) name=broken ;;
+            esac
+            echo start >> "$calls/$name.start"
+            n=$(wc -l < "$calls/$name.start" | tr -d ' ')
+            if [ "$name" = broken ]; then
+              echo "load=1 2 3"
+            else
+              echo "host=$name-$n"
+              echo "stat=cpu  $((n * 10)) 0 0 $((n * 100)) 0"
+            fi
+            echo end >> "$calls/$name.end"
+            """], in: ".")
+        try sandbox.sh("mkdir -p calls && chmod 755 bin/ssh")
+        WorkspaceFiles.sshExecutable = sandbox.path("bin/ssh")
+        return sandbox
+    }
+
+    private func machine(_ id: String) -> HerdrMachineProfile {
+        HerdrMachineProfile(id: id, label: id, target: "\(id).test", session: "default", enabled: true)
+    }
+
+    private func calls(_ sandbox: WorkspaceGitSandbox, _ name: String, _ kind: String = "start") -> Int {
+        let text = (try? String(contentsOfFile: sandbox.path("calls/\(name).\(kind)"), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").count
+    }
+
+    @MainActor
+    private func waitUntil(_ what: String, timeout: TimeInterval = 20,
+                           _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("timed out waiting until \(what)") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// Stops the monitor and waits for a probe still running to finish, so no call reaches the
+    /// real ssh once the fake is removed.
+    @MainActor
+    private func stopAndSettle(_ monitor: HostStatsMonitor, _ sandbox: WorkspaceGitSandbox) async throws {
+        monitor.stop()
+        for _ in 0..<3 {
+            try await Task.sleep(for: .milliseconds(100))
+            for name in ["alpha", "beta", "broken"] {
+                try await waitUntil("\(name) probes finish") {
+                    calls(sandbox, name, "end") == calls(sandbox, name)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testMonitorPublishesSamplesEveryIntervalUntilStopped() async throws {
+        let sandbox = try makeFakeSSH()
+        defer {
+            WorkspaceFiles.sshExecutable = "/usr/bin/ssh"
+            sandbox.tearDown()
+        }
+        let monitor = HostStatsMonitor(interval: .milliseconds(20))
+        XCTAssertEqual(HostStatsMonitor().interval, .seconds(5))
+        let target = HostStatsMonitor.Target(machine: machine("alpha"), directory: sandbox.base)
+        monitor.start(target)
+        XCTAssertEqual(monitor.target, target)
+
+        try await waitUntil("three samples arrive") {
+            (monitor.stats?.sample.hostname).flatMap { Int($0.dropFirst("alpha-".count)) } ?? 0 >= 3
+        }
+        XCTAssertEqual(try XCTUnwrap(monitor.stats?.cpuUsage), 10.0 / 110, accuracy: 1e-9,
+                       "usage from the ticks of consecutive samples")
+        XCTAssertNil(monitor.failure)
+
+        // Starting the same target again keeps the running loop and its readings.
+        let before = monitor.stats
+        monitor.start(target)
+        XCTAssertEqual(monitor.stats, before)
+
+        try await stopAndSettle(monitor, sandbox)
+        let stopped = monitor.stats
+        let count = calls(sandbox, "alpha")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(calls(sandbox, "alpha"), count, "no probes after stop")
+        XCTAssertEqual(monitor.stats, stopped, "nothing published after stop")
+        XCTAssertEqual(monitor.target, target, "stop keeps the target")
+    }
+
+    @MainActor
+    func testMonitorStartReplacesTheTargetAndItsLoop() async throws {
+        let sandbox = try makeFakeSSH()
+        defer {
+            WorkspaceFiles.sshExecutable = "/usr/bin/ssh"
+            sandbox.tearDown()
+        }
+        let monitor = HostStatsMonitor(interval: .milliseconds(20))
+        monitor.start(.init(machine: machine("alpha"), directory: sandbox.base))
+        try await waitUntil("alpha is sampled twice") { monitor.stats?.cpuUsage != nil }
+
+        // Another directory on the same machine restarts the loop but keeps the readings.
+        let other = HostStatsMonitor.Target(machine: machine("alpha"), directory: "/")
+        monitor.start(other)
+        XCTAssertEqual(monitor.target, other)
+        XCTAssertNotNil(monitor.stats, "same machine keeps the last reading")
+
+        // Another machine clears them, and its first sample has no usage yet.
+        let beta = HostStatsMonitor.Target(machine: machine("beta"), directory: sandbox.base)
+        monitor.start(beta)
+        XCTAssertEqual(monitor.target, beta)
+        XCTAssertNil(monitor.stats, "a new machine starts empty")
+        XCTAssertNil(monitor.failure)
+        try await waitUntil("beta is sampled") { monitor.stats?.sample.hostname.hasPrefix("beta-") == true }
+        XCTAssertEqual(monitor.stats?.sample.hostname, "beta-1")
+        XCTAssertNil(monitor.stats?.cpuUsage, "ticks from the previous target are not reused")
+
+        // The alpha loop is gone: its calls stop while beta keeps being sampled.
+        try await waitUntil("beta is sampled again") { monitor.stats?.cpuUsage != nil }
+        let alphaCalls = calls(sandbox, "alpha")
+        let betaCalls = calls(sandbox, "beta")
+        try await waitUntil("beta is sampled twice more") { calls(sandbox, "beta") >= betaCalls + 2 }
+        XCTAssertEqual(calls(sandbox, "alpha"), alphaCalls, "the replaced loop no longer samples")
+        XCTAssertTrue(monitor.stats?.sample.hostname.hasPrefix("beta-") == true)
+
+        try await stopAndSettle(monitor, sandbox)
+    }
+
+    @MainActor
+    func testMonitorReportsUnreadableSamplesAndRecovers() async throws {
+        let sandbox = try makeFakeSSH()
+        defer {
+            WorkspaceFiles.sshExecutable = "/usr/bin/ssh"
+            sandbox.tearDown()
+        }
+        let monitor = HostStatsMonitor(interval: .milliseconds(20))
+        monitor.start(.init(machine: machine("broken"), directory: sandbox.base))
+        try await waitUntil("the failure is published") { monitor.failure != nil }
+        XCTAssertEqual(monitor.failure, "Unreadable host stats")
+        XCTAssertNil(monitor.stats)
+        try await waitUntil("the loop keeps probing after a failure") { calls(sandbox, "broken") >= 3 }
+        XCTAssertEqual(monitor.failure, "Unreadable host stats")
+
+        // A machine that answers clears the failure.
+        monitor.start(.init(machine: machine("alpha"), directory: sandbox.base))
+        XCTAssertNil(monitor.failure, "a new machine starts without the old failure")
+        try await waitUntil("alpha is sampled") { monitor.stats != nil }
+        XCTAssertNil(monitor.failure)
+
+        try await stopAndSettle(monitor, sandbox)
+    }
+
+    @MainActor
+    func testMonitorSamplesThisMacWithoutAMachine() async throws {
+        let monitor = HostStatsMonitor(interval: .milliseconds(20))
+        monitor.start(.init(machine: nil, directory: NSTemporaryDirectory()))
+        try await waitUntil("the local sample arrives") { monitor.stats != nil }
+        let stats = try XCTUnwrap(monitor.stats)
+        XCTAssertFalse(stats.sample.hostname.isEmpty)
+        XCTAssertNotNil(stats.memoryFraction)
+        XCTAssertNotNil(stats.diskUsedFraction)
+        XCTAssertNil(monitor.failure)
+        monitor.stop()
+    }
 }
