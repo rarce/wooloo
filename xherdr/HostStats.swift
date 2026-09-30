@@ -184,8 +184,11 @@ enum HostProbe {
         return sample
     }
 
+    /// Samples this Mac; tests replace it, since real stats change on every run.
+    static var localSample: (_ directory: String?) -> HostSample = { local(directory: $0) }
+
     static func sample(machine: HerdrMachineProfile?, directory: String?) throws -> HostSample {
-        guard let machine else { return local(directory: directory) }
+        guard let machine else { return localSample(directory) }
         let data = try WorkspaceFiles.remoteOutput(machine, script: script(directory: directory), label: "host-stats")
         guard let sample = parse(String(decoding: data, as: UTF8.self)) else {
             throw WorkspaceFileError.message("Unreadable host stats")

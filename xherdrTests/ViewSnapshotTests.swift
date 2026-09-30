@@ -458,4 +458,262 @@ final class ViewSnapshotTests: XCTestCase {
         try assertSnapshot(render(view, size: NSSize(width: 820, height: 560), settle: 3), named: "markdown-preview")
         try skipIfRecorded()
     }
+
+    /// The terminal font of the saved window snapshots; with the fallback font every glyph differs.
+    private func skipWithoutTerminalFont() throws {
+        guard ProcessInfo.processInfo.environment["XHERDR_RECORD_SNAPSHOTS"] == "1"
+                || NSFont(name: "FiraCodeNFM-Reg", size: 12) != nil else {
+            throw XCTSkip("Snapshots with a terminal are compared only where FiraCode Nerd Font Mono is installed")
+        }
+    }
+
+    /// A fixed reading of this Mac for the sidebar's HOST section.
+    private static let hostSample: HostSample = {
+        var sample = HostSample(hostname: "studio")
+        sample.cpuUsage = 0.23
+        sample.loadAverage = [1.52, 1.31, 1.07]
+        sample.cpuCount = 12
+        sample.memoryUsed = 19_750_000_000
+        sample.memoryTotal = 34_359_738_368
+        sample.uptime = 273_900
+        sample.diskFree = 312_000_000_000
+        sample.diskTotal = 994_000_000_000
+        return sample
+    }()
+
+    /// Two Spaces over the snapshot repository and its worktree, four agents in different
+    /// states, and a first tab split in two panes.
+    private static func herdrSnapshot(repo: String, docs: String) -> [String: Any] {
+        [
+            "workspaces": [
+                ["workspace_id": "w1", "label": "greeter", "agent_status": "working", "active_tab_id": "w1:t1"],
+                ["workspace_id": "w2", "label": "docs", "agent_status": "done", "active_tab_id": "w2:t1"],
+            ],
+            "tabs": [
+                ["tab_id": "w1:t1", "workspace_id": "w1", "label": "build"],
+                ["tab_id": "w1:t2", "workspace_id": "w1", "label": "review"],
+                ["tab_id": "w2:t1", "workspace_id": "w2", "label": "1"],
+            ],
+            "panes": [
+                ["pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1", "cwd": repo],
+                ["pane_id": "w1:p2", "workspace_id": "w1", "tab_id": "w1:t1", "cwd": repo, "agent_status": "working"],
+                ["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t2", "cwd": repo, "agent_status": "blocked"],
+                ["pane_id": "w1:p4", "workspace_id": "w1", "tab_id": "w1:t2", "cwd": repo, "agent_status": "idle"],
+                ["pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w2:t1", "cwd": docs, "agent_status": "done"],
+            ],
+            "agents": [
+                ["pane_id": "w1:p2", "workspace_id": "w1", "tab_id": "w1:t1", "agent": "claude",
+                 "agent_status": "working", "title": "Greet people by nickname"],
+                ["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t2", "agent": "codex",
+                 "agent_status": "blocked", "title": "Allow running swift test?"],
+                ["pane_id": "w1:p4", "workspace_id": "w1", "tab_id": "w1:t2", "agent": "opencode", "agent_status": "idle"],
+                ["pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w2:t1", "agent": "claude",
+                 "agent_status": "done", "title": "Document the greeter"],
+            ],
+            "layouts": [
+                ["tab_id": "w1:t1", "area": ["x": 0, "y": 0, "width": 100, "height": 40],
+                 "panes": [["pane_id": "w1:p1", "rect": ["x": 0, "y": 0, "width": 50, "height": 40]],
+                           ["pane_id": "w1:p2", "rect": ["x": 50, "y": 0, "width": 50, "height": 40]]]],
+            ],
+            "focused_workspace_id": "w1", "focused_tab_id": "w1:t1", "focused_pane_id": "w1:p1",
+        ]
+    }
+
+    /// A surface frame of the first tab: a shell on the left, an agent on the right and Herdr's
+    /// border between them, filling `width` × `height` cells.
+    private static func terminalFrame(width: Int, height: Int) -> Data {
+        let split = width / 2
+        var rows = Array(repeating: RowBuilder(width: split), count: height)
+        var agent = Array(repeating: RowBuilder(width: width - split - 1), count: height)
+        let prompt = Color.ansi(3), path = Color.ansi(5), dim = Color.palette(244)
+        func shell(_ y: Int, _ command: String) {
+            rows[y].put("~/greeter", foreground: path, modifier: 1)
+            rows[y].put(" main ", foreground: Color.ansi(6))
+            rows[y].put("$ ", foreground: prompt, modifier: 1)
+            rows[y].put(command)
+        }
+        shell(0, "git status --short")
+        rows[1].put("M  ", foreground: Color.ansi(3)); rows[1].put("README.md")
+        rows[2].put(" M ", foreground: Color.ansi(2)); rows[2].put("Sources/App/Greeting.swift")
+        rows[3].put("A  ", foreground: Color.ansi(3)); rows[3].put("Sources/Core/Store.swift")
+        rows[4].put("?? ", foreground: dim); rows[4].put("docs/notes.md")
+        shell(6, "swift build")
+        rows[7].put("Building for debugging...", foreground: dim)
+        rows[8].put("[1/4] ", foreground: dim); rows[8].put("Compiling Core Person.swift")
+        rows[9].put("[2/4] ", foreground: dim); rows[9].put("Compiling App Greeting.swift")
+        rows[10].put("Greeting.swift:2:5: ", modifier: 1)
+        rows[10].put("warning: ", foreground: Color.ansi(4), modifier: 1)
+        rows[10].put("unused result")
+        rows[11].put("[4/4] ", foreground: dim); rows[11].put("Linking greeter")
+        rows[12].put("Build complete! ", foreground: Color.ansi(3), modifier: 1)
+        rows[12].put("(1.84s)", foreground: dim)
+        shell(14, "swift run greeter Ada Grace")
+        rows[15].put("Hello, Ada!")
+        rows[16].put("Hello, Grace!")
+        shell(18, "")
+
+        agent[0].put("\u{256D}" + String(repeating: "\u{2500}", count: 30) + "\u{256E}", foreground: Color.rgb(0xD97757))
+        agent[1].put("\u{2502} ", foreground: Color.rgb(0xD97757)); agent[1].put("Claude Code", modifier: 1)
+        agent[2].put("\u{2502} ", foreground: Color.rgb(0xD97757)); agent[2].put("cwd: ~/greeter", foreground: dim)
+        for y in 1...2 { agent[y].put(String(repeating: " ", count: 31 - agent[y].column) + "\u{2502}", foreground: Color.rgb(0xD97757)) }
+        agent[3].put("\u{2570}" + String(repeating: "\u{2500}", count: 30) + "\u{256F}", foreground: Color.rgb(0xD97757))
+        agent[5].put("> ", foreground: dim); agent[5].put("Greet people by their nickname when they have one")
+        agent[7].put("\u{25CF} ", foreground: Color.ansi(3)); agent[7].put("Read(Sources/Core/Person.swift)", modifier: 1)
+        agent[8].put("  \u{23BF} Read 4 lines", foreground: dim)
+        agent[10].put("\u{25CF} ", foreground: Color.ansi(3)); agent[10].put("Update(Sources/App/Greeting.swift)", modifier: 1)
+        agent[11].put("  \u{23BF} Updated with 2 additions and 1 removal", foreground: dim)
+        agent[12].put("    2 ", foreground: dim)
+        agent[12].put("-    \"Hello, \\(name)!\"", foreground: Color.rgb(0xF7768E))
+        agent[13].put("    2 ", foreground: dim)
+        agent[13].put("+    \"Hello, \\(person.displayName)!\"", foreground: Color.rgb(0x9ECE6A))
+        agent[15].put("\u{273B} ", foreground: Color.rgb(0xD97757))
+        agent[15].put("Running tests\u{2026} ", foreground: Color.rgb(0xD97757))
+        agent[15].put("(esc to interrupt)", foreground: dim)
+
+        var model = SurfaceModel(width: width, height: height)
+        for y in 0..<height {
+            var row = rows[y].cells + [HerdrCell(symbol: "\u{2502}", foreground: dim, background: 0, modifier: 0, skip: false)]
+            row += agent[y].cells
+            model.setRow(y, row)
+        }
+        model.cursor = HerdrCursor(x: 17, y: 18, visible: true, shape: 0)
+        // The same full frame as `SurfaceModel.surfaceFrame`, with two panes.
+        var writer = SurfaceWireWriter()
+        writer.number(13)
+        writer.string(model.bootID)
+        writer.number(model.projectionRevision)
+        writer.number(model.revision)
+        writer.number(model.cells.count)
+        for cell in model.cells { writer.cell(cell) }
+        writer.number(width)
+        writer.number(height)
+        writer.cursor(model.cursor)
+        writer.number(0) // hyperlinks
+        writer.number(0) // legacy graphics bytes
+        writer.number(2)
+        for (index, (id, rect)) in [("w1:p1", HerdrRect(x: 0, y: 0, width: split, height: height)),
+                                    ("w1:p2", HerdrRect(x: split + 1, y: 0, width: width - split - 1, height: height))]
+            .enumerated() {
+            writer.string(id)
+            writer.number(1) // content revision
+            writer.rect(rect)
+            writer.rect(rect)
+            writer.byte(0) // scroll region: None
+            writer.byte(0) // scrollbar: None
+            writer.byte(index == 0 ? 1 : 0) // focused
+            writer.byte(0) // mouse reporting
+            writer.byte(0) // sgr pixel mouse
+            writer.byte(0) // alternate screen
+            writer.number(0); writer.number(0)
+        }
+        writer.number(0) // splits
+        writer.byte(0) // popup: None
+        writer.number(0) // graphics assets
+        writer.number(0) // graphics placements
+        writer.number(0) // retained graphics keys
+        return writer.data
+    }
+
+    /// Hides text carets, which fade in and out on their own even offscreen.
+    private func hideCarets(in view: NSView) {
+        if let caret = view as? NSTextInsertionIndicator { caret.displayMode = .hidden }
+        view.subviews.forEach(hideCarets)
+    }
+
+    private func containsProgressIndicator(_ view: NSView) -> Bool {
+        view is NSProgressIndicator || view.subviews.contains(where: containsProgressIndicator)
+    }
+
+    /// Renders the whole window against a fake Herdr session "work": two Spaces over the
+    /// snapshot repository and its worktree, agents in four states, a tab split between a shell
+    /// and an agent from the binary client endpoint, the explorer and repository panel, and fixed
+    /// host stats. `documents` opens editor tabs at the selected Space's location beforehand.
+    private func renderMainWindow(documents: ((WorkspaceFileLocation) -> WorkspaceDocumentStore)? = nil,
+                                  ready: @escaping () -> Bool = { true }) throws -> NSBitmapImageRep {
+        let (sandbox, repo) = try snapshotRepository()
+        defer { sandbox.tearDown() }
+        let restoreClock = fixClock()
+        defer { restoreClock() }
+        let config = try TemporaryHerdrConfig("""
+            [ui.toast]
+            delivery = "off"
+            """)
+        defer { config.restore() }
+        let savedSample = HostProbe.localSample
+        HostProbe.localSample = { _ in Self.hostSample }
+        defer { HostProbe.localSample = savedSample }
+
+        let defaults = UserDefaults.standard
+        let values: [String: Any] = [
+            "HerdrLastSession": "work", "SidebarWidth": 206.0, "FilesSidebarWidth": 244.0,
+            "AgentsInSelectedSpaceOnly": false, "HostStatsCollapsed": false, "RepositoryCollapsed": false,
+            XherdrTypography.baseKey: XherdrTypography.defaultBase, XherdrTypography.codeKey: XherdrTypography.defaultCode,
+            HerdrNotifier.dockBadgeKey: false, DiffDisplayMode.storageKey: DiffDisplayMode.unified.rawValue,
+        ]
+        let saved = values.keys.map { ($0, defaults.object(forKey: $0)) }
+        defer { for (key, value) in saved { defaults.set(value, forKey: key) } }
+        for (key, value) in values { defaults.set(value, forKey: key) }
+
+        // A fixed root, never the user's sessions; short, for the 104-byte socket path limit.
+        let root = URL(fileURLWithPath: "/private/tmp/xherdr-tests/main-window")
+        try? FileManager.default.removeItem(at: root)
+        let savedRoot = HerdrStore.sessionRoot
+        HerdrStore.sessionRoot = root
+        defer {
+            HerdrStore.sessionRoot = savedRoot
+            try? FileManager.default.removeItem(at: root)
+        }
+        let store = HerdrStore()
+        XCTAssertEqual(store.sessionName, "work")
+        let snapshot = Self.herdrSnapshot(repo: repo.root, docs: sandbox.path("repo-docs"))
+        let server = try FakeHerdrServer(path: store.socketPath) { method, _ in
+            switch method {
+            case "session.snapshot": return ["result": ["snapshot": snapshot]]
+            case "pane.read": return ["result": ["read": ["text": ""]]]
+            default: return ["error": ["message": "\(method) is not allowed here"]]
+            }
+        }
+        defer { server.stop() }
+        // The terminal area of a 1280-point window with both sidebars at their default widths.
+        let columns = Int((1280 - 206 - 244 - 2 - 20) / TerminalPaneView.cellWidth)
+        let lines = Int((800 - 35 - 31 - 2 - 18) / TerminalPaneView.cellHeight)
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [Self.terminalFrame(width: columns, height: lines)])
+        defer { endpoint.stop() }
+        defer { store.stop() }
+
+        let decoded = try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: snapshot))
+        let location = try XCTUnwrap(WorkspaceFiles.location(snapshot: decoded, workspaceID: "w1",
+                                                             session: "work", machine: nil))
+        let window = ContentView(herdr: store, documents: documents?(location))
+            // Offscreen windows are never key; the HOST section samples only in an active window.
+            .environment(\.controlActiveState, .key)
+        let bitmap = render(window, size: NSSize(width: 1280, height: 800), settle: 5) {
+            guard let host = rendered else { return false }
+            hideCarets(in: host)
+            return store.isConnected && store.surfaceLayout?.paneIDs.count == 2
+                && !containsProgressIndicator(host) && ready()
+        }
+        XCTAssertEqual(store.selectedTabID, "w1:t1")
+        return bitmap
+    }
+
+    func testMainWindow() throws {
+        try skipWithoutTerminalFont()
+        try assertSnapshot(renderMainWindow(), named: "main-window")
+        try skipIfRecorded()
+    }
+
+    /// The same window with two files open and a changed Swift file active in the editor.
+    func testMainWindowEditing() throws {
+        try skipWithoutTerminalFont()
+        let bitmap = try renderMainWindow(documents: { location in
+            let documents = WorkspaceDocumentStore()
+            documents.open(.file, path: "README.md", at: location)
+            documents.open(.file, path: "Sources/App/Greeting.swift", at: location)
+            return documents
+        }, ready: { [unowned self] in highlightedEditor() != nil })
+        try assertSnapshot(bitmap, named: "main-window-editor")
+        try skipIfRecorded()
+    }
 }

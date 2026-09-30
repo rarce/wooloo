@@ -39,6 +39,14 @@ struct ContentView: View {
     private var selectedTabs: [HerdrTab] { herdr.selectedTabs }
     private var selectedPanes: [HerdrPane] { herdr.selectedPanes }
 
+    init() {}
+
+    /// Tests pass a store for a fake Herdr session and documents opened beforehand.
+    init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil) {
+        _herdr = StateObject(wrappedValue: herdr)
+        if let documents { _documentStore = StateObject(wrappedValue: documents) }
+    }
+
     var body: some View {
         GeometryReader { geometry in
             content(totalWidth: geometry.size.width)
