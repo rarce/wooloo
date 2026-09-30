@@ -74,6 +74,10 @@ struct WorkspaceDocumentView: View {
     var onOpenFile: (String) -> Void = { _ in }
     @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
     @State private var revealCoordinator = EditorRevealCoordinator()
+    @State private var lineChangeCoordinator = EditorLineChangeCoordinator()
+    /// Bumped when the repository may have changed, to reload the change bars' Git bases.
+    @State private var gitBasesVersion = 0
+    @State private var gitDirectoryWatcher: GitDirectoryWatcher?
     @StateObject private var find = DocumentFindModel()
     @State private var previewFocus: MarkdownFindFocus?
     /// Set by Replace so the next match is selected once the edited text comes back.
@@ -253,10 +257,17 @@ struct WorkspaceDocumentView: View {
             lineHeight: 1.15,
             wrapLines: false,
             cursorPositions: $cursorPositions,
-            coordinators: [revealCoordinator]
+            coordinators: [revealCoordinator, lineChangeCoordinator]
         )
         .onAppear { applyReveal() }
         .onChange(of: document.reveal) { _, _ in applyReveal() }
+        .onAppear { updateLineChangeColors() }
+        .onChange(of: theme.id) { _, _ in updateLineChangeColors() }
+        .task(id: "\(document.version ?? "")|\(gitBasesVersion)") { await loadGitBases() }
+        .task(id: document.location.identity) { await watchGitDirectory() }
+        .onReceive(NotificationCenter.default.publisher(for: WorkspaceFiles.repositoryDidChange)
+            .merge(with: NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
+            .receive(on: DispatchQueue.main)) { _ in gitBasesVersion += 1 }
         .frame(minWidth: 200)
     }
 
@@ -264,6 +275,34 @@ struct WorkspaceDocumentView: View {
         MarkdownPreviewView(text: document.text, path: document.path, location: document.location,
                             onOpenFile: onOpenFile, highlight: previewHighlight, focus: previewFocus)
             .frame(minWidth: 200)
+    }
+
+    // MARK: Change bars
+
+    private func updateLineChangeColors() {
+        lineChangeCoordinator.setColors(added: NSColor(theme.vcs(.added)), modified: NSColor(theme.vcs(.modified)),
+                                        deleted: NSColor(theme.vcs(.deleted)))
+    }
+
+    private func loadGitBases() async {
+        guard document.version != nil else { return }
+        let (path, location) = (document.path, document.location)
+        let bases = await Task.detached(priority: .utility) {
+            WorkspaceFiles.gitBases(path, at: location)
+        }.value
+        guard !Task.isCancelled else { return }
+        lineChangeCoordinator.setBases(head: bases.head, index: bases.index)
+    }
+
+    /// Reloads the Git bases when the index or HEAD changes, e.g. after staging or committing in
+    /// a terminal. Local repositories only; over SSH the bases reload on refresh or reactivation.
+    private func watchGitDirectory() async {
+        let location = document.location
+        let directory = await Task.detached(priority: .utility) {
+            WorkspaceFiles.localGitDirectory(at: location)
+        }.value
+        guard !Task.isCancelled else { return }
+        gitDirectoryWatcher = directory.flatMap { GitDirectoryWatcher(directory: $0) { gitBasesVersion += 1 } }
     }
 
     // MARK: Find

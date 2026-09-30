@@ -7,7 +7,12 @@ These packages are copies of the upstream `Sources/` trees, with their MIT licen
 | [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor) | 0.9.1 | `b0688fa59fb8060840fb013afb4d6e6a96000f14` |
 | [CodeEditTextView](https://github.com/CodeEditApp/CodeEditTextView) | 0.7.7 | `509d7b2e86460e8ec15b0dd5410cbc8e8c05940f` |
 
-Their source files are unchanged except for one change, marked "xherdr patch": `styleScrollView()` in CodeEditSourceEditor clips the scroll view, because `GutterView` turns off clipping on its floating container and its background otherwise covers the tabs and header above the editor when the text scrolls. The local `Package.swift` files keep the runtime dependencies and omit test targets and SwiftLint build plugins. Those plugins download a separate binary and are unnecessary when building xherdr. Update the versions together after checking the editor API and running an xherdr build.
+Their source files are unchanged except for these changes in CodeEditSourceEditor, marked "xherdr patch":
+
+- `styleScrollView()` clips the scroll view, because `GutterView` turns off clipping on its floating container and its background otherwise covers the tabs and header above the editor when the text scrolls.
+- `GutterView.lineChanges` draws Git change bars (added, modified, deleted, staged as outlines) at the gutter's leading edge, and `TextViewController.gutterView` is public so the app can set them.
+
+The local `Package.swift` files keep the runtime dependencies and omit test targets and SwiftLint build plugins. Those plugins download a separate binary and are unnecessary when building xherdr. Update the versions together after checking the editor API and running an xherdr build.
 
 # Markdown preview packages
 

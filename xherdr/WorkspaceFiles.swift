@@ -529,6 +529,29 @@ enum WorkspaceFiles {
     /// elsewhere, such as in a terminal.
     static func forgetRecentResults() {
         repositoryLoads.forget()
+        NotificationCenter.default.post(name: repositoryDidChange, object: nil)
+    }
+
+    /// Posted, on any thread, after a Git or file operation here or an explicit refresh; open
+    /// editors reload their change bars' Git bases.
+    static let repositoryDidChange = Notification.Name("WorkspaceFiles.repositoryDidChange")
+
+    /// A file's text at HEAD and in the index, for the editor's change bars. Nil when that version
+    /// doesn't exist or isn't UTF-8 text.
+    static func gitBases(_ path: String, at location: WorkspaceFileLocation) -> (head: String?, index: String?) {
+        guard (try? validateRelativePath(path)) != nil else { return (nil, nil) }
+        guard let index = blob(":./\(path)", at: location) else { return (nil, nil) }
+        return (blob("HEAD:./\(path)", at: location), index)
+    }
+
+    /// The Git directory of a local repository, e.g. `.git` or `.git/worktrees/<name>`, which an
+    /// editor watches for index and HEAD changes. Nil for SSH locations and outside a repository.
+    static func localGitDirectory(at location: WorkspaceFileLocation) -> String? {
+        guard location.isLocal,
+              let data = try? git(location, ["rev-parse", "--absolute-git-dir"], limit: 4096),
+              let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              path.hasPrefix("/") else { return nil }
+        return path
     }
 
     static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {

@@ -32,6 +32,40 @@ public protocol GutterViewDelegate: AnyObject {
 /// off the leading edge of the editor.
 ///
 public class GutterView: NSView {
+    // xherdr patch: Git change bars at the leading edge of the gutter, as in VS Code and Zed.
+    public struct LineChange: Equatable {
+        public enum Kind: Equatable {
+            case added, modified
+            /// Lines removed above `line`, drawn as a wedge on that line's top edge.
+            case deleted
+        }
+
+        /// Zero-based index of the first changed line.
+        public var line: Int
+        /// Changed lines; zero for `.deleted`.
+        public var count: Int
+        public var kind: Kind
+        /// Staged in the Git index: drawn as an outline instead of a filled bar.
+        public var isStaged: Bool
+
+        public init(line: Int, count: Int, kind: Kind, isStaged: Bool) {
+            self.line = line
+            self.count = count
+            self.kind = kind
+            self.isStaged = isStaged
+        }
+    }
+
+    /// Sorted by `line`.
+    public var lineChanges: [LineChange] = [] {
+        didSet { if lineChanges != oldValue { needsDisplay = true } }
+    }
+    public var lineChangeColors: (added: NSColor, modified: NSColor, deleted: NSColor)
+        = (.systemGreen, .systemYellow, .systemRed) {
+        didSet { needsDisplay = true }
+    }
+    public var lineChangeWidth: CGFloat = 3
+
     struct EdgeInsets: Equatable, Hashable {
         let leading: CGFloat
         let trailing: CGFloat
@@ -235,6 +269,67 @@ public class GutterView: NSView {
         context.restoreGState()
     }
 
+    // xherdr patch
+    private func drawLineChanges(_ context: CGContext) {
+        guard let textView, !lineChanges.isEmpty else { return }
+        let visible = Array(textView.layoutManager.visibleLines())
+        guard let firstLine = visible.first?.index, let lastLine = visible.last?.index else { return }
+        let lineCount = textView.layoutManager.lineCount
+        // Changes are sorted and don't overlap, so the first visible one is found by binary search.
+        var low = 0, high = lineChanges.count
+        while low < high {
+            let middle = (low + high) / 2
+            let change = lineChanges[middle]
+            if change.line + max(change.count, 1) <= firstLine { low = middle + 1 } else { high = middle }
+        }
+        let xPos = backgroundEdgeInsets.leading
+        context.saveGState()
+        for change in lineChanges[low...] {
+            guard change.line <= lastLine + 1 else { break }
+            let color: NSColor
+            switch change.kind {
+            case .added: color = lineChangeColors.added
+            case .modified: color = lineChangeColors.modified
+            case .deleted: color = lineChangeColors.deleted
+            }
+            if change.kind == .deleted {
+                // A deletion at the end of the text sits on the last line's bottom edge.
+                let edge: CGFloat
+                if change.line < lineCount, let line = textView.layoutManager.textLineForIndex(change.line) {
+                    edge = line.yPos
+                } else if let line = textView.layoutManager.textLineForIndex(min(change.line, lineCount) - 1) {
+                    edge = line.yPos + line.height
+                } else {
+                    continue
+                }
+                let size = lineChangeWidth * 2
+                context.beginPath()
+                context.move(to: CGPoint(x: xPos, y: edge - size))
+                context.addLine(to: CGPoint(x: xPos + size, y: edge))
+                context.addLine(to: CGPoint(x: xPos, y: edge + size))
+                context.closePath()
+                context.setFillColor(color.withAlphaComponent(change.isStaged ? 0.5 : 1).cgColor)
+                context.fillPath()
+                continue
+            }
+            let first = max(change.line, firstLine)
+            let last = min(change.line + change.count - 1, lastLine, lineCount - 1)
+            guard first <= last,
+                  let top = textView.layoutManager.textLineForIndex(first),
+                  let bottom = textView.layoutManager.textLineForIndex(last) else { continue }
+            let rect = CGRect(x: xPos, y: top.yPos, width: lineChangeWidth, height: bottom.yPos + bottom.height - top.yPos)
+            if change.isStaged {
+                context.setStrokeColor(color.cgColor)
+                context.setLineWidth(1)
+                context.stroke(rect.insetBy(dx: 0.5, dy: 0.5))
+            } else {
+                context.setFillColor(color.cgColor)
+                context.fill(rect)
+            }
+        }
+        context.restoreGState()
+    }
+
     override public func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else {
             return
@@ -245,6 +340,7 @@ public class GutterView: NSView {
         updateWidthIfNeeded()
         drawBackground(context)
         drawSelectedLines(context)
+        drawLineChanges(context)
         drawLineNumbers(context)
         CATransaction.commit()
     }
