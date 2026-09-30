@@ -66,6 +66,10 @@ final class TerminalRenderingTests: XCTestCase {
     /// on the installed terminal font, so record them on the machine that compares them.
     func testSnapshotsMatch() throws {
         let record = ProcessInfo.processInfo.environment["XHERDR_RECORD_SNAPSHOTS"] == "1"
+        // The saved snapshots use FiraCode Nerd Font Mono; with the fallback font every glyph differs.
+        guard record || NSFont(name: "FiraCodeNFM-Reg", size: 12) != nil else {
+            throw XCTSkip("Snapshots are compared only where FiraCode Nerd Font Mono is installed")
+        }
         var recorded: [String] = []
         for workload in TerminalWorkload.all(width: 100, height: 30, frames: 12) {
             let bitmap = TerminalRenderHarness.render(workload.final.surface)
