@@ -116,6 +116,20 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertEqual(model.listingVersion, 2)
     }
 
+    /// Reloading the location already shown, as after a save, keeps the tree instead of a spinner.
+    func testReloadingTheSameLocationKeepsTheTreeShown() async throws {
+        await load()
+        let task = model.loadListing(at: repo)
+        XCTAssertFalse(model.isLoading)
+        XCTAssertNotNil(model.listing)
+        await task?.value
+
+        try sandbox.write(["notes.md": "x\n"], in: "plain")
+        let other = model.loadListing(at: sandbox.location("plain"))
+        XCTAssertTrue(model.isLoading, "Another location shows a spinner")
+        await other?.value
+    }
+
     /// A repository Git cannot read shows its error in place of the tree.
     func testARepositoryThatCannotBeListedReportsAnError() async throws {
         try sandbox.sh("printf garbage > .git/index", in: "repo")

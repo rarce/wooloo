@@ -81,12 +81,14 @@ final class WorkspaceExplorerModel: ObservableObject {
         error = nil
     }
 
-    /// Loads the files and changes of `location`; `quietly` keeps the tree shown instead of a spinner.
+    /// Loads the files and changes of `location`; `quietly` keeps the tree shown instead of a spinner,
+    /// as does reloading the location already shown (e.g. after a save).
     @discardableResult
     func loadListing(at location: WorkspaceFileLocation?, quietly: Bool = false) -> Task<Void, Never>? {
+        let isReload = listing != nil && self.location?.identity == location?.identity
         self.location = location
         guard let location else { listing = nil; return nil }
-        isLoading = !quietly
+        isLoading = !quietly && !isReload
         error = nil
         let start = TerminalPipelineMetrics.now()
         let created = tree.createdDirectories[location.identity] ?? []

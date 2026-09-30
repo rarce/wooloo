@@ -80,6 +80,15 @@ final class WorkspaceRepositoryModelTests: XCTestCase {
         XCTAssertEqual(worktrees, ["repo"])
     }
 
+    /// Reloading the repository already shown, as after a save, keeps it instead of a spinner.
+    func testReloadKeepsTheListingShown() async {
+        let reload = Task { await model.load(repo) }
+        await Task.yield()
+        XCTAssertFalse(model.isLoading)
+        XCTAssertNotNil(model.listing)
+        await reload.value
+    }
+
     func testFolderWithoutGitReportsAnError() async throws {
         try sandbox.write(["plain/x.txt": "x\n"], in: ".")
         await model.load(sandbox.location("plain"))

@@ -460,10 +460,12 @@ final class WorkspaceRepositoryModel: ObservableObject {
 
     func clearOperationError() { operationError = nil }
 
+    /// Loads the repository of `location`; reloading the one already shown keeps it on screen.
     func load(_ location: WorkspaceFileLocation?) async {
+        let isReload = listing != nil && self.location?.identity == location?.identity
         self.location = location
         guard let location else { listing = nil; error = nil; return }
-        isLoading = true
+        isLoading = !isReload
         error = nil
         let start = TerminalPipelineMetrics.now()
         let result = await Task.detached { Result { try WorkspaceFiles.repository(at: location) } }.value
