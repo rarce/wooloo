@@ -270,10 +270,12 @@ final class WorkspaceExplorerModel: ObservableObject {
         }
     }
 
-    /// Runs a file shortcut on the Files tree's selected row, or on the Space root when nothing
+    /// Runs a file shortcut on the selected row, or on the Space root when nothing
     /// is selected. Returns whether the key was used.
     func perform(_ command: ExplorerFileCommand) -> Bool {
-        guard !showsChanges, draft == nil, pendingDelete == nil, let listing, let location else { return false }
+        // The Changes tree offers only copying paths.
+        guard !showsChanges || command == .copyPath || command == .copyRelativePath,
+              draft == nil, pendingDelete == nil, let listing, let location else { return false }
         let path = tree.selectedPath(in: treeIdentity(location)) ?? ""
         guard !path.isEmpty || command.appliesToRoot else { return false }
         let isDirectory = WorkspaceExplorer.isDirectory(path, directories: filesTree(listing, location: location).directories,

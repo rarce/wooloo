@@ -180,6 +180,9 @@ struct ContentView: View {
                                      onOpenCommitFile: { location, commit, file in
                                          openDocument(.commit, path: file.path, at: location,
                                                       commit: commit.id, originalPath: file.originalPath)
+                                     },
+                                     onOpenScopedDiff: { location, path, scope in
+                                         openDocument(.change, path: path, at: location, scope: scope)
                                      })
                     .frame(width: filesSidebarWidth)
             }
@@ -790,9 +793,10 @@ struct ContentView: View {
 
     private func openDocument(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
                               reveal: WorkspaceDocumentReveal? = nil,
-                              commit: String? = nil, originalPath: String? = nil, preview: Bool = false) {
+                              commit: String? = nil, originalPath: String? = nil,
+                              scope: WorkspaceDiffScope? = nil, preview: Bool = false) {
         documentStore.open(kind, path: path, at: location, reveal: reveal, commit: commit,
-                           originalPath: originalPath, preview: preview)
+                           originalPath: originalPath, scope: scope, preview: preview)
     }
 
     private func keepDocumentOpen(_ id: String) {

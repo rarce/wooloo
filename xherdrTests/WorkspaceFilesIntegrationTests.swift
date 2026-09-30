@@ -93,6 +93,32 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.stage("/etc", at: repo))
     }
 
+    func testDiscardRestoresHeadAndDeletesNewFiles() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "b.txt": "b\n", "old.txt": "o\n", "gone.txt": "g\n"])
+        try sandbox.sh("echo x >> a.txt && git add a.txt && echo y >> a.txt && echo new > new.txt && echo added > added.txt"
+                       + " && git add added.txt && git mv old.txt renamed.txt && rm gone.txt", in: "repo")
+        for change in try WorkspaceFiles.listing(at: repo).changes {
+            try WorkspaceFiles.discard(change, at: repo)
+        }
+        XCTAssertEqual(try changes(repo), [:])
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "a\n")
+        XCTAssertEqual(try sandbox.read("old.txt", in: "repo"), "o\n")
+        XCTAssertEqual(try sandbox.read("gone.txt", in: "repo"), "g\n")
+        XCTAssertThrowsError(try sandbox.read("new.txt", in: "repo"))
+        XCTAssertThrowsError(try sandbox.read("added.txt", in: "repo"))
+        XCTAssertThrowsError(try sandbox.read("renamed.txt", in: "repo"))
+    }
+
+    func testFileHistoryFollowsRenames() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "b.txt": "b\n"])
+        try sandbox.sh("echo x >> b.txt && git commit -qam 'Touch b' && git mv a.txt c.txt && git commit -qm 'Rename a'"
+                       + " && echo y >> c.txt && git commit -qam 'Edit c'", in: "repo")
+        let subjects = try WorkspaceFiles.fileHistory("c.txt", at: repo).map(\.subject)
+        XCTAssertEqual(subjects.count, 3)
+        XCTAssertEqual(Array(subjects.prefix(2)), ["Edit c", "Rename a"])
+        XCTAssertThrowsError(try WorkspaceFiles.fileHistory("../x", at: repo))
+    }
+
     func testCommitModesChooseWhatIsCommitted() throws {
         let repo = try sandbox.repository("repo")
         try sandbox.sh("echo more >> a.txt && echo new > new.txt", in: "repo")

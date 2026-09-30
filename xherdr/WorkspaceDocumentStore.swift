@@ -41,14 +41,18 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// previous preview unless that one has unsaved edits.
     func open(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
               reveal: WorkspaceDocumentReveal? = nil, commit: String? = nil, originalPath: String? = nil,
-              preview: Bool = false) {
+              scope: WorkspaceDiffScope? = nil, preview: Bool = false) {
         var document = WorkspaceDocument(space: space, location: location, path: path, kind: kind)
         document.reveal = reveal
+        if let scope { document.diffScope = scope }
         document.commit = commit
         document.originalPath = originalPath
         document.isPreview = preview
         if let index = documents.firstIndex(where: { $0.id == document.id }) {
             if let reveal { documents[index].reveal = reveal }
+            if let scope, documents[index].diffPatches.isEmpty || documents[index].diffPatches[scope] != nil {
+                documents[index].diffScope = scope
+            }
             if !preview { documents[index].isPreview = false }
             activeID = document.id
             return

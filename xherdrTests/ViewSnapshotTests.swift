@@ -290,7 +290,7 @@ final class ViewSnapshotTests: XCTestCase {
         func snapshot(tab: Int = 0, commit: WorkspaceCommit? = nil, height: CGFloat = 340) -> NSBitmapImageRep {
             let model = WorkspaceRepositoryModel()
             let panel = WorkspaceRepositoryView(location: repo, refreshVersion: 0, isCollapsed: .constant(false),
-                                                onChange: {}, onNewSpace: nil, onOpenCommitFile: { _, _, _ in },
+                                                onChange: {}, onNewSpace: nil, onOpenCommitFile: { _, _, _ in }, historyPath: .constant(nil),
                                                 model: model, selectedTab: tab, selectedCommit: commit)
             return render(panel, size: NSSize(width: 300, height: height), settle: 2) {
                 model.listing != nil && !model.isLoading && (commit == nil || model.commitFiles != nil)

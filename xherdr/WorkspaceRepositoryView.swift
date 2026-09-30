@@ -9,6 +9,8 @@ struct WorkspaceRepositoryView: View {
     let onChange: () -> Void
     let onNewSpace: ((String, String) -> Void)?
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
+    /// A Space-relative file whose history the History tab shows instead of the branch's.
+    @Binding var historyPath: String?
 
     /// The model, tab and commit shown first are not private so snapshot tests can set them.
     @StateObject var model = WorkspaceRepositoryModel()
@@ -89,7 +91,9 @@ struct WorkspaceRepositoryView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             if selectedTab == 0 {
-                                if let selectedCommit { commitDetail(selectedCommit) } else { history(listing) }
+                                if let selectedCommit { commitDetail(selectedCommit) }
+                                else if let historyPath { fileHistory(historyPath) }
+                                else { history(listing) }
                             }
                             else { branches(listing) }
                         }
@@ -108,7 +112,17 @@ struct WorkspaceRepositoryView: View {
         .task(id: "\(location?.identity ?? "")|\(selectedCommit?.id ?? "")") {
             await model.loadCommitFiles(selectedCommit?.id, at: location)
         }
-        .onChange(of: location?.identity) { _, _ in selectedCommit = nil }
+        .task(id: "\(identity)|\(historyPath ?? "")") { await model.loadFileHistory(historyPath, at: location) }
+        .onChange(of: location?.identity) { _, _ in
+            selectedCommit = nil
+            historyPath = nil
+        }
+        .onChange(of: historyPath) { _, path in
+            guard path != nil else { return }
+            selectedCommit = nil
+            selectedTab = 0
+            isCollapsed = false
+        }
         .sheet(item: $addRequest) { request in
             AddWorktreeSheet(request: request) { branch, path, newBranch in
                 if let location { model.addWorktree(at: location, branch: branch, path: path, newBranch: newBranch) }
@@ -166,9 +180,46 @@ struct WorkspaceRepositoryView: View {
     }
 
     private func history(_ listing: WorkspaceRepositoryListing) -> some View {
+        commitList(listing.commits)
+    }
+
+    /// The commits that changed one file, under a header that goes back to the whole history.
+    private func fileHistory(_ path: String) -> some View {
         Group {
-            if listing.commits.isEmpty { hint("No commits") }
-            ForEach(listing.commits) { commit in
+            HStack(spacing: 5) {
+                Image(systemName: "doc.text").font(.system(size: typography.caption))
+                Text((path as NSString).lastPathComponent)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                Button { historyPath = nil } label: {
+                    Image(systemName: "xmark").font(.system(size: typography.caption, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Show the whole history")
+            }
+            .font(.system(size: typography.secondary))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 11)
+            .frame(height: typography.metric(22))
+            .help("History of \(path)")
+            if let error = model.fileHistoryError {
+                hint(error).foregroundStyle(theme.warning)
+            } else if let commits = model.fileHistory {
+                commitList(commits)
+            } else {
+                ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity)
+                    .padding(10)
+            }
+        }
+    }
+
+    private func commitList(_ commits: [WorkspaceCommit]) -> some View {
+        Group {
+            if commits.isEmpty { hint("No commits") }
+            ForEach(commits) { commit in
                 Button {
                     selectedCommitFile = nil
                     selectedCommit = commit
@@ -219,7 +270,8 @@ struct WorkspaceRepositoryView: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "chevron.left").font(.system(size: typography.caption, weight: .semibold))
-                    Text("History")
+                    Text(historyPath.map { "History of \(($0 as NSString).lastPathComponent)" } ?? "History")
+                        .lineLimit(1)
                     Spacer(minLength: 0)
                 }
                 .font(.system(size: typography.secondary))
@@ -452,6 +504,10 @@ final class WorkspaceRepositoryModel: ObservableObject {
     @Published private(set) var operationError: String?
     @Published private(set) var commitFiles: [WorkspaceCommitFile]?
     @Published private(set) var commitFilesError: String?
+    /// Commits of the file whose history is shown; nil while it loads or when none is.
+    @Published private(set) var fileHistory: [WorkspaceCommit]?
+    @Published private(set) var fileHistoryError: String?
+    private var fileHistoryKey: String?
     private var location: WorkspaceFileLocation?
     /// The commit whose files are wanted, with its location.
     private var commitKey: String?
@@ -493,6 +549,24 @@ final class WorkspaceRepositoryModel: ObservableObject {
         switch result {
         case .success(let files): commitFiles = files
         case .failure(let failure): commitFilesError = failure.localizedDescription
+        }
+    }
+
+    /// Loads the commits that changed `path`; nil clears them.
+    func loadFileHistory(_ path: String?, at location: WorkspaceFileLocation?) async {
+        let key = path.map { "\(location?.identity ?? "")|\($0)" }
+        // A reload of the file shown keeps its commits on screen.
+        if key != fileHistoryKey { fileHistory = nil }
+        fileHistoryKey = key
+        fileHistoryError = nil
+        guard let location, let path, let key else { fileHistory = nil; return }
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try WorkspaceFiles.fileHistory(path, at: location) }
+        }.value
+        guard fileHistoryKey == key else { return }
+        switch result {
+        case .success(let commits): fileHistory = commits
+        case .failure(let failure): fileHistoryError = failure.localizedDescription
         }
     }
 

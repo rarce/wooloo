@@ -748,6 +748,29 @@ enum WorkspaceFiles {
         _ = try git(location, ["restore", "--staged", "--", try pathspec(path)], limit: 20_000)
     }
 
+    /// Discards a file's staged and unstaged changes, as Zed's Discard Changes does: a path in
+    /// HEAD goes back to its committed version, and one that is not (untracked or newly added) is
+    /// deleted. A rename also restores its source.
+    static func discard(_ change: WorkspaceFileChange, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        let paths = [change.path] + (change.originalPath.map { [$0] } ?? [])
+        for path in paths { try validateRelativePath(path) }
+        for path in paths {
+            if (try? git(location, ["cat-file", "-e", "HEAD:./\(path)"], limit: 1_000)) != nil {
+                _ = try git(location, ["restore", "--source=HEAD", "--staged", "--worktree", "--", path], limit: 20_000)
+            } else {
+                _ = try git(location, ["rm", "--cached", "--force", "--quiet", "--ignore-unmatch", "--", path], limit: 20_000)
+                _ = try shell("rm -f \(quote("./" + path))", at: location, limit: 4_000)
+            }
+        }
+    }
+
+    /// The latest commits that changed a file, following it across renames.
+    static func fileHistory(_ path: String, at location: WorkspaceFileLocation) throws -> [WorkspaceCommit] {
+        try validateRelativePath(path)
+        return parseLog(try git(location, ["log", "-n", "100", "--follow", "--format=\(logFormat)", "--", path], limit: 400_000))
+    }
+
     private static func pathspec(_ path: String) throws -> String {
         if path.isEmpty { return "." }
         try validateRelativePath(path)

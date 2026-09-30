@@ -18,6 +18,8 @@ struct WorkspaceBrowserView: View {
     let onFindInFolder: (WorkspaceFileLocation, String) -> Void
     let onOpenWorktree: (String, String) -> Void
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
+    /// Opens only a file's staged or unstaged changes.
+    var onOpenScopedDiff: (_ location: WorkspaceFileLocation, _ path: String, _ scope: WorkspaceDiffScope) -> Void = { _, _, _ in }
 
     @State private var remoteSnapshot: HerdrSnapshot?
     @State private var remoteWorkspaceID: String?
@@ -31,6 +33,10 @@ struct WorkspaceBrowserView: View {
     /// Bumped by Git bar operations so the repository panel refreshes too.
     @State private var gitVersion = 0
     @AppStorage("RepositoryCollapsed") private var repositoryCollapsed = false
+    /// A file whose history the repository panel shows.
+    @State private var historyPath: String?
+    /// Changes waiting for confirmation before they are discarded.
+    @State private var pendingDiscard: PendingDiscard?
 
     private var snapshot: HerdrSnapshot? {
         machine == nil ? localSnapshot : remoteSnapshot
@@ -96,7 +102,8 @@ struct WorkspaceBrowserView: View {
                                 isCollapsed: $repositoryCollapsed,
                                 onChange: { loadListing() },
                                 onNewSpace: location?.isLocal == true ? onNewSpace : nil,
-                                onOpenCommitFile: onOpenCommitFile)
+                                onOpenCommitFile: onOpenCommitFile,
+                                historyPath: $historyPath)
     }
 
     private var explorer: some View {
@@ -243,6 +250,19 @@ struct WorkspaceBrowserView: View {
         } message: { target in
             Text(target.isDirectory ? "The folder and everything in it are deleted permanently."
                                     : "The file is deleted permanently.")
+        }
+        .confirmationDialog(pendingDiscard.map { "Discard changes to “\($0.name)”?" } ?? "",
+                            isPresented: Binding(get: { pendingDiscard != nil }, set: { if !$0 { pendingDiscard = nil } }),
+                            presenting: pendingDiscard) { target in
+            Button("Discard Changes", role: .destructive) {
+                model.runOperation(target.location) {
+                    for change in target.changes { try WorkspaceFiles.discard(change, at: target.location) }
+                }
+            }
+        } message: { target in
+            Text(target.changes.contains { $0.kind == .untracked || $0.kind == .added }
+                 ? "Files are restored to their last commit, and new files are deleted. This cannot be undone."
+                 : "Files are restored to their last commit. This cannot be undone.")
         }
     }
 
@@ -483,11 +503,25 @@ struct WorkspaceBrowserView: View {
                         }
                     }
                 }
-                if !model.showsChanges && !isIgnored { gitFileActions(location, node: node, change: change) }
+                if model.showsChanges {
+                    changeActions(location, node: node, change: change)
+                } else if !isIgnored {
+                    gitFileActions(location, node: node, change: change)
+                }
                 Divider()
             }
             if model.showsChanges {
                 pathActions(location, path: node.path)
+                if hasGit {
+                    Divider()
+                    ignoreActions(location, node: node, enabled: node.isDirectory ? kind == .untracked
+                                                                                   : change?.kind == .untracked)
+                    if !node.isDirectory {
+                        Divider()
+                        Button("View File History", systemImage: "clock.arrow.circlepath") { historyPath = node.path }
+                            .disabled(change?.kind == .untracked || change?.kind == .added)
+                    }
+                }
             } else {
                 Button("Rename…", systemImage: "pencil") { model.startRename(node.path, isDirectory: node.isDirectory, at: location) }
                     .keyboardShortcut(ExplorerFileCommand.rename.shortcut)
@@ -538,22 +572,14 @@ struct WorkspaceBrowserView: View {
         Divider()
     }
 
-    /// Ignore rules and hosting-site links for a row of the Files tree in a Git repository.
+    /// Ignore rules, history and hosting-site links for a row of the Files tree in a Git repository.
     @ViewBuilder
     private func gitFileActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode,
                                 change: WorkspaceFileChange?) -> some View {
-        Button("Add to .gitignore", systemImage: "eye.slash") {
-            model.runOperation(location) {
-                try WorkspaceFiles.ignore(node.path, isDirectory: node.isDirectory, inExclude: false, at: location)
-            }
-        }
-        Button("Add to .git/info/exclude") {
-            model.runOperation(location) {
-                try WorkspaceFiles.ignore(node.path, isDirectory: node.isDirectory, inExclude: true, at: location)
-            }
-        }
-        // A permalink points at a commit, so only files it contains have one.
+        ignoreActions(location, node: node, enabled: true)
+        // History and permalinks come from commits, so only files they contain have them.
         if !node.isDirectory, change?.kind != .untracked, change?.kind != .added {
+            Button("View File History", systemImage: "clock.arrow.circlepath") { historyPath = node.path }
             Button("Open File Permalink", systemImage: "link") {
                 model.runOperation(location, reloads: false, { try WorkspaceFiles.permalink(node.path, at: location) }) {
                     NSWorkspace.shared.open($0)
@@ -568,10 +594,53 @@ struct WorkspaceBrowserView: View {
     }
 
     @ViewBuilder
+    private func ignoreActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode, enabled: Bool) -> some View {
+        Button("Add to .gitignore", systemImage: "eye.slash") {
+            model.runOperation(location) {
+                try WorkspaceFiles.ignore(node.path, isDirectory: node.isDirectory, inExclude: false, at: location)
+            }
+        }
+        .disabled(!enabled)
+        Button("Add to .git/info/exclude") {
+            model.runOperation(location) {
+                try WorkspaceFiles.ignore(node.path, isDirectory: node.isDirectory, inExclude: true, at: location)
+            }
+        }
+        .disabled(!enabled)
+    }
+
+    /// Discarding a row's changes and opening only its staged or unstaged changes, as in Zed's
+    /// Changes panel.
+    @ViewBuilder
+    private func changeActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode,
+                               change: WorkspaceFileChange?) -> some View {
+        let changes = node.isDirectory
+            ? (model.listing?.changes ?? []).filter { $0.path.hasPrefix(node.path + "/") }
+            : change.map { [$0] } ?? []
+        Button("Discard Changes…", systemImage: "arrow.uturn.backward", role: .destructive) {
+            pendingDiscard = PendingDiscard(location: location, name: node.displayName, changes: changes)
+        }
+        .disabled(changes.isEmpty)
+        if let change, !node.isDirectory {
+            Divider()
+            Button("Unstaged Changes", systemImage: "pencil.line") {
+                onOpenScopedDiff(location, node.path, .unstaged)
+            }
+            .disabled(change.worktreeStatus == " ")
+            Button("Staged Changes", systemImage: "tray.full") {
+                onOpenScopedDiff(location, node.path, .staged)
+            }
+            .disabled(change.indexStatus == " " || change.indexStatus == "?")
+        }
+    }
+
+    @ViewBuilder
     private func pathActions(_ location: WorkspaceFileLocation, path: String) -> some View {
         Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(location.absolutePath(path)) }
+            .keyboardShortcut(ExplorerFileCommand.copyPath.shortcut)
         if !path.isEmpty {
             Button("Copy Relative Path") { AppActions.copy(path) }
+                .keyboardShortcut(ExplorerFileCommand.copyRelativePath.shortcut)
         }
         if location.isLocal {
             Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.absolutePath(path)) }
@@ -673,6 +742,13 @@ struct WorkspaceBrowserView: View {
     private func loadListing(quietly: Bool = false) {
         model.loadListing(at: location, quietly: quietly)
     }
+}
+
+/// Changes to discard once the user confirms.
+private struct PendingDiscard {
+    let location: WorkspaceFileLocation
+    let name: String
+    let changes: [WorkspaceFileChange]
 }
 
 struct WorkspaceTreeNode {
