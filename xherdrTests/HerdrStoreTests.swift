@@ -16,6 +16,8 @@ final class HerdrStoreTests: XCTestCase {
                                       ["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t2"]]
         var focus = ("w1", "w1:t1", "w1:p1")
         var reload: [String: Any] = ["status": "applied"]
+        /// When set, `pane.send_input` waits for it before answering, keeping the request in flight.
+        var inputGate: DispatchSemaphore?
 
         /// Changes the state from a test, which may be async.
         func update(_ change: (State) -> Void) {
@@ -43,6 +45,7 @@ final class HerdrStoreTests: XCTestCase {
         HerdrStore.sessionRoot = root
         store = HerdrStore()
         server = try FakeHerdrServer(path: store.socketPath) { [state] method, params in
+            if method == "pane.send_input", let gate = state.lock.withLock({ state.inputGate }) { gate.wait() }
             state.lock.lock()
             defer { state.lock.unlock() }
             switch method {
@@ -57,7 +60,10 @@ final class HerdrStoreTests: XCTestCase {
                 state.panes.append(["pane_id": "w1:p9", "workspace_id": "w1", "tab_id": "w1:t1"])
                 state.focus = ("w1", "w1:t1", "w1:p9")
                 return ["result": [:]]
-            case "pane.send_input": return ["result": [:]]
+            case "pane.send_input":
+                if params["text"] as? String == "bad" { return ["error": ["message": "input rejected"]] }
+                return ["result": [:]]
+            case "pane.zoom", "workspace.close", "agent.rename": return ["result": [:]]
             case "tab.create":
                 state.tabs.append(["tab_id": "w1:t3", "workspace_id": "w1", "label": "3"])
                 state.panes.append(["pane_id": "w1:p4", "workspace_id": "w1", "tab_id": "w1:t3"])
@@ -264,6 +270,128 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(ratio.params["ratio"] as? Double, 0.25)
         XCTAssertNil(store.surfaceError)
         XCTAssertFalse(server.requests.contains { $0.method == "pane.send_input" }, "Input skipped the JSON fallback")
+    }
+
+    func testZoomTargetsTheSelectedPane() async {
+        store.zoomPane()
+        await connect()
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.zoom" }, "Nothing is zoomed without a selected pane")
+        store.select(paneID: "w1:p2")
+        store.zoomPane()
+        await waitUntil("zoom requested") { server.requests.contains { $0.method == "pane.zoom" } }
+        let requests = server.requests.filter { $0.method == "pane.zoom" }
+        XCTAssertEqual(requests.map { $0.params["pane_id"] as? String }, ["w1:p2"])
+        XCTAssertEqual(requests.first?.params.count, 1)
+        XCTAssertNil(store.actionError)
+    }
+
+    func testClosingASpaceSendsItsID() async {
+        await connect()
+        store.closeWorkspace("w1")
+        await waitUntil("close requested") { server.requests.contains { $0.method == "workspace.close" } }
+        let request = server.requests.first { $0.method == "workspace.close" }
+        XCTAssertEqual(request?.params["workspace_id"] as? String, "w1")
+        XCTAssertEqual(request?.params.count, 1)
+        XCTAssertNil(store.actionError)
+    }
+
+    /// A name renames the pane's agent; nil sends a JSON null, which restores the detected name.
+    func testRenamingAnAgentSendsTheNameOrNull() async {
+        await connect()
+        store.renameAgent("w1:p2", to: "reviewer")
+        await waitUntil("rename requested") { server.requests.contains { $0.method == "agent.rename" } }
+        store.renameAgent("w1:p2", to: nil)
+        await waitUntil("reset requested") { server.requests.filter { $0.method == "agent.rename" }.count == 2 }
+        let requests = server.requests.filter { $0.method == "agent.rename" }
+        XCTAssertEqual(requests.map { $0.params["target"] as? String }, ["w1:p2", "w1:p2"])
+        XCTAssertEqual(requests[0].params["name"] as? String, "reviewer")
+        XCTAssertTrue(requests[1].params["name"] is NSNull, "A nil name is sent as null, not omitted")
+        XCTAssertNil(store.actionError)
+    }
+
+    /// Input sent while a JSON request is in flight waits in the queue and follows in order;
+    /// once the queue drains, later input starts a new send.
+    func testInputQueuedWhileSendingFollowsInOrder() async {
+        await connect()
+        let gate = DispatchSemaphore(value: 0)
+        state.update { $0.inputGate = gate }
+        store.sendText("first", to: "w1:p1")
+        await waitUntil("first input in flight") { server.requests.contains { $0.method == "pane.send_input" } }
+        store.sendKey("enter", to: "w1:p1")
+        store.sendPaste("third", to: "w1:p2")
+        store.sendText("", to: "w1:p1")
+        store.sendPaste("", to: "w1:p1")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(server.requests.filter { $0.method == "pane.send_input" }.count, 1, "Queued input waits for the request")
+        state.update { $0.inputGate = nil }
+        gate.signal()
+        await waitUntil("queued inputs sent") { server.requests.filter { $0.method == "pane.send_input" }.count == 3 }
+
+        store.sendText("later", to: "w1:p1")
+        await waitUntil("later input sent") { server.requests.filter { $0.method == "pane.send_input" }.count == 4 }
+        let inputs = server.requests.filter { $0.method == "pane.send_input" }
+        XCTAssertEqual(inputs.map { $0.params["text"] as? String }, ["first", nil, "third", "later"])
+        XCTAssertEqual(inputs.map { $0.params["keys"] as? [String] }, [nil, ["enter"], nil, nil])
+        XCTAssertEqual(inputs.map { $0.params["pane_id"] as? String }, ["w1:p1", "w1:p1", "w1:p2", "w1:p1"])
+        await waitUntil("last reply handled") { store.inputError == nil }
+    }
+
+    /// A rejected JSON input reports Herdr's message; the next accepted one clears it.
+    func testRejectedJSONInputReportsTheErrorUntilInputSucceeds() async {
+        await connect()
+        store.sendText("bad", to: "w1:p1")
+        await waitUntil("input error") { store.inputError == "input rejected" }
+        store.sendText("good", to: "w1:p1")
+        await waitUntil("input error cleared") { store.inputError == nil }
+        XCTAssertEqual(server.requests.filter { $0.method == "pane.send_input" }.map { $0.params["text"] as? String },
+                       ["bad", "good"])
+    }
+
+    /// Input the endpoint cannot encode reports a failure; the next input sent through it clears it.
+    func testEndpointInputFailureIsReportedUntilInputSucceeds() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        store.sendKey("ctrl+", to: "w1:p1")
+        await waitUntil("input error") { store.inputError == "Herdr endpoint input failed; reconnecting" }
+        store.sendText("ls", to: "w1:p1")
+        await waitUntil("input error cleared") { store.inputError == nil }
+        XCTAssertTrue(endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .text("ls"))!))
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.send_input" }, "Input skipped the JSON fallback")
+    }
+
+    /// When the endpoint becomes ready while no tab is selected, the store focuses the selected space.
+    func testEndpointFocusesTheSpaceWhenNoTabIsSelected() async throws {
+        state.update {
+            $0.workspaces = [["workspace_id": "w1", "label": "project"]]
+            $0.tabs = []
+            $0.panes = []
+        }
+        await connect()
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+        XCTAssertNil(store.selectedTabID)
+        // The endpoint appears after the snapshot, so the store's next attempt finds the selection in place.
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath, afterHello: [])
+        defer { endpoint.stop() }
+        for _ in 0..<500 where !Self.requests(in: endpoint).contains(where: { $0.method == "workspace.focus" }) {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let requests = Self.requests(in: endpoint)
+        let focus = try XCTUnwrap(requests.first { $0.method == "workspace.focus" })
+        XCTAssertEqual(focus.params["workspace_id"] as? String, "w1")
+        XCTAssertFalse(requests.contains { $0.method == "tab.focus" || $0.method == "pane.focus" })
+    }
+
+    /// An event line over the size limit drops the subscription with an error, and the store reconnects.
+    func testOversizedEventReconnects() async {
+        await connect()
+        server.emit(["event": String(repeating: "x", count: 1_000_001)])
+        await waitUntil("size error") { store.errorMessage == "Herdr event exceeded size limit" }
+        for _ in 0..<500 where !store.isConnected { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(store.isConnected, "reconnected")
+        XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 2)
     }
 
     /// The JSON requests (tag 15) the store sent through the endpoint.
