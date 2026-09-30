@@ -97,11 +97,12 @@ final class WorkspaceGitBarModelTests: XCTestCase {
         sandbox.tearDown()
     }
 
-    /// Waits until the running operation and the reload after it are done.
-    private func settle() async {
+    /// Waits until the running operation is done and `reloaded` holds after the reload that follows.
+    private func settle(until reloaded: () -> Bool = { true }) async {
         for _ in 0..<500 where model.running != nil { try? await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertNil(model.running, "The operation did not finish")
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        for _ in 0..<500 where !reloaded() { try? await Task.sleep(nanoseconds: 10_000_000) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
     }
 
     /// Runs one operation and returns what it reported: nil inside for success, else the error.
@@ -145,9 +146,11 @@ final class WorkspaceGitBarModelTests: XCTestCase {
 
     func testSwitchingBranchReloadsTheStatus() async throws {
         let other = try XCTUnwrap(model.localBranches.first { $0.name == "other" })
-        let outcome = await run { model.switchBranch(other, finished: $0) }
+        var outcome: String??
+        model.switchBranch(other) { outcome = .some($0) }
+        await settle { model.status?.branch == "other" }
         XCTAssertEqual(outcome, .some(nil))
-        XCTAssertEqual(model.status?.branch, "other")
+        XCTAssertEqual(model.status?.branch, "other", "The bar reloads after switching")
     }
 
     /// One operation runs at a time; another started meanwhile is ignored.
