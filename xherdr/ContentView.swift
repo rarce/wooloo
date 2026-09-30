@@ -16,9 +16,13 @@ struct ContentView: View {
     @State private var machines: [HerdrMachineProfile] = []
     /// The SSH machine whose files and repository the explorer shows; nil is this Mac.
     @State private var explorerMachine: HerdrMachineProfile?
-    @State private var documents: [WorkspaceDocument] = []
-    @State private var activeDocumentID: String?
+    @StateObject private var documentStore = WorkspaceDocumentStore()
     @State private var pendingCloseDocumentID: String?
+    private var documents: [WorkspaceDocument] { documentStore.documents }
+    private var activeDocumentID: String? {
+        get { documentStore.activeID }
+        nonmutating set { documentStore.activeID = newValue }
+    }
     @State private var fileRefreshVersion = 0
     @StateObject private var search = WorkspaceSearchModel()
     @State private var showsSearchTab = false
@@ -86,8 +90,7 @@ struct ContentView: View {
         .onChange(of: herdr.sessionName) { _, _ in notifier.reset() }
         // Editing a preview keeps it open, so later previews never replace unsaved work.
         .onChange(of: documents.contains { $0.isPreview && $0.isDirty }) { _, edited in
-            guard edited else { return }
-            for index in documents.indices where documents[index].isDirty { documents[index].isPreview = false }
+            if edited { documentStore.keepEditedPreviewsOpen() }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             notifier.acknowledge(paneID: herdr.selectedPaneID)
@@ -676,7 +679,7 @@ struct ContentView: View {
                     }
                 } else if let activeDocumentID,
                    let index = documents.firstIndex(where: { $0.id == activeDocumentID }) {
-                    WorkspaceDocumentView(document: $documents[index], onSave: {
+                    WorkspaceDocumentView(document: $documentStore.documents[index], onSave: {
                         saveDocument(activeDocumentID)
                     }, onOpenFile: { [location = documents[index].location] path in
                         openDocument(.file, path: path, at: location)
@@ -808,112 +811,25 @@ struct ContentView: View {
     private func openDocument(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
                               reveal: WorkspaceDocumentReveal? = nil,
                               commit: String? = nil, originalPath: String? = nil, preview: Bool = false) {
-        var document = WorkspaceDocument(location: location, path: path, kind: kind)
-        document.reveal = reveal
-        document.commit = commit
-        document.originalPath = originalPath
-        document.isPreview = preview
-        if let index = documents.firstIndex(where: { $0.id == document.id }) {
-            if let reveal { documents[index].reveal = reveal }
-            if !preview { documents[index].isPreview = false }
-            activeDocumentID = document.id
-            return
-        }
-        // A new preview takes the place of the previous one, unless that one has unsaved edits.
-        if preview, let index = documents.firstIndex(where: \.isPreview) {
-            if documents[index].isDirty {
-                documents[index].isPreview = false
-            } else {
-                documents[index] = document
-                activeDocumentID = document.id
-                loadDocument(document.id)
-                return
-            }
-        }
-        documents.append(document)
-        activeDocumentID = document.id
-        loadDocument(document.id)
+        documentStore.open(kind, path: path, at: location, reveal: reveal, commit: commit,
+                           originalPath: originalPath, preview: preview)
     }
 
     private func keepDocumentOpen(_ id: String) {
-        guard let index = documents.firstIndex(where: { $0.id == id }), documents[index].isPreview else { return }
-        documents[index].isPreview = false
-    }
-
-    private func loadDocument(_ id: String) {
-        guard let document = documents.first(where: { $0.id == id }) else { return }
-        let (kind, path, location) = (document.kind, document.path, document.location)
-        let (commit, originalPath) = (document.commit, document.originalPath)
-        let start = TerminalPipelineMetrics.now()
-        Task {
-            defer {
-                TerminalPipelineMetrics.spanShown("open-\(kind)", start: start, detail: location.isLocal ? "local" : "ssh")
-            }
-            let result = await Task.detached(priority: .userInitiated) {
-                Result { () throws -> WorkspaceFileContents in
-                    if kind == .commit, let commit {
-                        return WorkspaceFileContents(text: try WorkspaceFiles.commitDiff(
-                            commit, path: path, originalPath: originalPath, at: location), version: "")
-                    }
-                    if kind == .change {
-                        let patches = try WorkspaceFiles.diff(path, at: location)
-                        return WorkspaceFileContents(text: patches[.all] ?? "", version: "", patches: patches)
-                    }
-                    return try WorkspaceFiles.read(path, at: location)
-                }
-            }.value
-            guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
-            documents[index].isLoading = false
-            switch result {
-            case .success(let content):
-                documents[index].text = content.text
-                documents[index].savedText = content.text
-                documents[index].version = content.version
-                documents[index].diffPatches = content.patches
-                if content.patches[documents[index].diffScope] == nil { documents[index].diffScope = .all }
-            case .failure(let failure):
-                documents[index].error = failure.localizedDescription
-            }
-        }
+        documentStore.keepOpen(id)
     }
 
     private func saveDocument(_ id: String) {
-        guard let index = documents.firstIndex(where: { $0.id == id }),
-              let version = documents[index].version,
-              documents[index].isDirty else { return }
-        let document = documents[index]
-        documents[index].isSaving = true
-        Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                Result { try WorkspaceFiles.save(document.text, path: document.path,
-                                                 expectedVersion: version, at: document.location) }
-            }.value
-            guard let currentIndex = documents.firstIndex(where: { $0.id == id }) else { return }
-            documents[currentIndex].isSaving = false
-            switch result {
-            case .success(let nextVersion):
-                documents[currentIndex].version = nextVersion
-                documents[currentIndex].savedText = document.text
-                documents[currentIndex].error = nil
-                fileRefreshVersion += 1
-            case .failure(let failure):
-                documents[currentIndex].error = failure.localizedDescription
-            }
-        }
+        documentStore.save(id) { fileRefreshVersion += 1 }
     }
 
     private func openSearch(replace: Bool) {
         if !showsSearchTab {
-            search.hasUnsavedEdits = { [documents = $documents] location, path in
-                documents.wrappedValue.contains {
-                    $0.kind == .file && $0.isDirty && $0.path == path && $0.location.identity == location.identity
-                }
+            search.hasUnsavedEdits = { [documentStore] location, path in
+                documentStore.hasUnsavedEdits(at: location, path: path)
             }
-            search.didModifyFiles = { location, paths in
-                for document in documents where document.kind == .file && !document.isDirty
-                    && document.location.identity == location.identity && paths.contains(document.path) {
-                    loadDocument(document.id)
-                }
+            search.didModifyFiles = { [documentStore] location, paths in
+                documentStore.reloadUnedited(paths, at: location)
                 fileRefreshVersion += 1
             }
         }
@@ -930,13 +846,7 @@ struct ContentView: View {
     }
 
     private func closeDocument(_ id: String, force: Bool = false) {
-        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
-        if documents[index].isDirty && !force {
-            pendingCloseDocumentID = id
-            return
-        }
-        documents.remove(at: index)
-        if activeDocumentID == id { activeDocumentID = nil }
+        if !documentStore.close(id, force: force) { pendingCloseDocumentID = id }
     }
 
     @ViewBuilder
