@@ -21,35 +21,15 @@ struct WorkspaceBrowserView: View {
 
     @State private var remoteSnapshot: HerdrSnapshot?
     @State private var remoteWorkspaceID: String?
-    @State private var listing: WorkspaceFileListing?
-    @State private var error: String?
-    @State private var isLoading = false
-    @State private var showsChanges = false
-    @State private var modifiedOnly = false
-    @State private var tree = WorkspaceExplorerTree()
-    @State private var treeCache = WorkspaceTreeCache()
-    @State private var operationError: String?
-    @State private var clipboard: WorkspaceFileClipboard?
-    /// A file or folder being named in place in the tree, before it is created.
-    @State private var draft: WorkspaceFileDraft?
-    @State private var draftName = ""
+    @StateObject private var model = WorkspaceExplorerModel()
     @FocusState private var draftFocused: Bool
     /// Whether the Files tree has keyboard focus, so file shortcuts apply to its selection.
     @FocusState private var treeFocused: Bool
     @State private var keyMonitor: Any?
     @State private var windowBox = WindowBox()
-    @State private var pendingDelete: WorkspaceFileTarget?
-    /// Bumped on every listing load so the Git bar refreshes with the explorer.
-    @State private var listingVersion = 0
-    /// What was read of expanded ignored folders, by folder path, for the current listing.
-    @State private var ignoredContents: [String: WorkspaceFolderContents] = [:]
-    /// Bumped when `ignoredContents` changes, so the Files tree is rebuilt.
-    @State private var ignoredContentsVersion = 0
     /// Bumped by Git bar operations so the repository panel refreshes too.
     @State private var gitVersion = 0
     @AppStorage("RepositoryCollapsed") private var repositoryCollapsed = false
-
-    private var isFilteredFiles: Bool { !showsChanges && modifiedOnly }
 
     private var snapshot: HerdrSnapshot? {
         machine == nil ? localSnapshot : remoteSnapshot
@@ -102,11 +82,11 @@ struct WorkspaceBrowserView: View {
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { onLocationChange(location) }
         .alert("Operation failed", isPresented: Binding(
-            get: { operationError != nil }, set: { if !$0 { operationError = nil } }
+            get: { model.operationError != nil }, set: { if !$0 { model.operationError = nil } }
         )) {
-            Button("OK") { operationError = nil }
+            Button("OK") { model.operationError = nil }
         } message: {
-            Text(operationError ?? "")
+            Text(model.operationError ?? "")
         }
     }
 
@@ -127,19 +107,19 @@ struct WorkspaceBrowserView: View {
                     .tracking(0.7)
                 machineIcon
                 Spacer()
-                if !showsChanges {
+                if !model.showsChanges {
                     // A plain button, because a borderless Menu ignores its label's color and weight.
-                    Button { modifiedOnly.toggle() } label: {
+                    Button { model.modifiedOnly.toggle() } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: modifiedOnly ? "line.3.horizontal.decrease.circle.fill"
+                            Image(systemName: model.modifiedOnly ? "line.3.horizontal.decrease.circle.fill"
                                                            : "line.3.horizontal.decrease.circle")
-                            if modifiedOnly { Text("Modified") }
+                            if model.modifiedOnly { Text("Modified") }
                         }
-                        .font(.system(size: typography.secondary, weight: modifiedOnly ? .semibold : .regular))
-                        .foregroundStyle(modifiedOnly ? theme.accent : Color.secondary)
+                        .font(.system(size: typography.secondary, weight: model.modifiedOnly ? .semibold : .regular))
+                        .foregroundStyle(model.modifiedOnly ? theme.accent : Color.secondary)
                     }
                     .buttonStyle(.plain)
-                    .help(modifiedOnly ? "Showing modified files; click to show all" : "Show modified files only")
+                    .help(model.modifiedOnly ? "Showing modified files; click to show all" : "Show modified files only")
                 }
                 Button { refresh() } label: {
                     Image(systemName: "arrow.clockwise")
@@ -168,41 +148,41 @@ struct WorkspaceBrowserView: View {
             }
 
             HStack(spacing: 0) {
-                segment("Files", icon: "doc.text", selected: !showsChanges) { showsChanges = false }
-                segment("Changes", icon: "arrow.left.arrow.right", selected: showsChanges) { showsChanges = true }
+                segment("Files", icon: "doc.text", selected: !model.showsChanges) { model.showsChanges = false }
+                segment("Changes", icon: "arrow.left.arrow.right", selected: model.showsChanges) { model.showsChanges = true }
             }
             .padding(.horizontal, 3)
             Divider()
 
-            if isLoading {
+            if model.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error {
+            } else if let error = model.error {
                 Text(error)
                     .font(.system(size: typography.body))
                     .foregroundStyle(theme.warning)
                     .padding(11)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else if let listing, let location {
-                let shownTree = shownTree(listing, location: location)
+            } else if let listing = model.listing, let location {
+                let shownTree = model.shownTree(listing, location: location)
                 let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
                                                uniquingKeysWith: { first, _ in first })
                 let directoryKinds = WorkspaceExplorer.directoryKinds(listing.changes)
-                let stageStates = showsChanges ? WorkspaceExplorer.stageStates(listing.changes) : [:]
-                let rows = shownTree.visibleRows(expanded: tree.expanded, identity: treeIdentity(location))
-                let shownDraft = !showsChanges && draft?.location.identity == location.identity ? draft : nil
+                let stageStates = model.showsChanges ? WorkspaceExplorer.stageStates(listing.changes) : [:]
+                let rows = shownTree.visibleRows(expanded: model.tree.expanded, identity: model.treeIdentity(location))
+                let shownDraft = !model.showsChanges && model.draft?.location.identity == location.identity ? model.draft : nil
                 let draftFolder = shownDraft?.renaming == nil ? shownDraft?.folder : nil
                 GeometryReader { viewport in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             treeRoot(location, stageState: listing.hasGit ? stageStates[""] : nil)
-                            if !tree.collapsedRoots.contains(treeIdentity(location)) {
+                            if !model.tree.collapsedRoots.contains(model.treeIdentity(location)) {
                                 if draftFolder == "" { draftRow(depth: 1) }
-                                if (showsChanges || isFilteredFiles) && !listing.hasGit {
+                                if (model.showsChanges || model.isFilteredFiles) && !listing.hasGit {
                                     hint("No Git repository in this Space")
                                 } else if shownTree.isEmpty {
-                                    hint(showsChanges ? "No changes" : (modifiedOnly ? "No modified files" : "No files"))
+                                    hint(model.showsChanges ? "No changes" : (model.modifiedOnly ? "No modified files" : "No files"))
                                 }
-                                if !showsChanges && listing.totalFiles > listing.files.count {
+                                if !model.showsChanges && listing.totalFiles > listing.files.count {
                                     hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
                                 }
                                 ForEach(rows) { row in
@@ -226,7 +206,7 @@ struct WorkspaceBrowserView: View {
                             Color.clear
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    tree.selected = nil
+                                    model.tree.selected = nil
                                     treeFocused = true
                                 }
                                 .contextMenu { rootMenu(location) }
@@ -236,29 +216,29 @@ struct WorkspaceBrowserView: View {
                 .focusable()
                 .focusEffectDisabled()
                 .focused($treeFocused)
-                .id(treeIdentity(location))
+                .id(model.treeIdentity(location))
             } else {
                 hint("Select a Space to browse")
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            if let location, listing?.hasGit == true {
+            if let location, model.listing?.hasGit == true {
                 Divider()
-                WorkspaceGitBar(location: location, reloadToken: listingVersion,
-                                changes: showsChanges ? listing?.changes ?? [] : nil,
+                WorkspaceGitBar(location: location, reloadToken: model.listingVersion,
+                                changes: model.showsChanges ? model.listing?.changes ?? [] : nil,
                                 onChange: {
                                     gitVersion += 1
                                     loadListing(quietly: true)
                                 },
                                 onOpenWorktree: location.isLocal ? onOpenWorktree : nil,
-                                onError: { operationError = $0 })
+                                onError: { model.operationError = $0 })
             }
         }
         .background(theme.sidebarBackground)
-        .confirmationDialog(pendingDelete.map { "Delete “\(($0.path as NSString).lastPathComponent)”?" } ?? "",
-                            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-                            presenting: pendingDelete) { target in
-            Button("Delete", role: .destructive) { delete(target) }
+        .confirmationDialog(model.pendingDelete.map { "Delete “\(($0.path as NSString).lastPathComponent)”?" } ?? "",
+                            isPresented: Binding(get: { model.pendingDelete != nil }, set: { if !$0 { model.pendingDelete = nil } }),
+                            presenting: model.pendingDelete) { target in
+            Button("Delete", role: .destructive) { model.delete(target) }
         } message: { target in
             Text(target.isDirectory ? "The folder and everything in it are deleted permanently."
                                     : "The file is deleted permanently.")
@@ -288,42 +268,13 @@ struct WorkspaceBrowserView: View {
             .padding(10)
     }
 
-    /// The modified-only filter shares the file tree's expanded folders, so switching keeps the layout.
-    private func treeIdentity(_ location: WorkspaceFileLocation) -> String {
-        "\(location.identity)|\(showsChanges ? "changes" : "files")"
-    }
-
-    /// The tree the explorer shows: every file, the modified ones, or the changes.
-    private func shownTree(_ listing: WorkspaceFileListing, location: WorkspaceFileLocation) -> WorkspaceTree {
-        if showsChanges {
-            return treeCache.tree(.changes, listing: listingVersion) { WorkspaceTree(paths: listing.changes.map(\.path)) }
-        }
-        if modifiedOnly {
-            return treeCache.tree(.modified, listing: listingVersion) {
-                let changed = Set(listing.changes.map(\.path))
-                return WorkspaceTree(paths: listing.files.filter { changed.contains($0) })
-            }
-        }
-        return filesTree(listing, location: location)
-    }
-
-    /// Every listed file with the folders created empty. `loadListing` builds it with the listing,
-    /// so it is built here only after a folder is created, renamed or deleted.
-    private func filesTree(_ listing: WorkspaceFileListing, location: WorkspaceFileLocation) -> WorkspaceTree {
-        let created = tree.createdDirectories[location.identity] ?? []
-        return treeCache.tree(.files, listing: listingVersion, contents: ignoredContentsVersion, directories: created) {
-            let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: ignoredContents, created: created)
-            return WorkspaceTree(paths: entries.paths, directories: entries.directories)
-        }
-    }
-
     private func treeRoot(_ location: WorkspaceFileLocation,
                           stageState: WorkspaceFileChange.StageState?) -> some View {
-        let identity = treeIdentity(location)
-        let isExpanded = !tree.collapsedRoots.contains(identity)
+        let identity = model.treeIdentity(location)
+        let isExpanded = !model.tree.collapsedRoots.contains(identity)
         return Button {
-            if isExpanded { tree.collapsedRoots.insert(identity) }
-            else { tree.collapsedRoots.remove(identity) }
+            if isExpanded { model.tree.collapsedRoots.insert(identity) }
+            else { model.tree.collapsedRoots.remove(identity) }
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: isExpanded ? "folder.fill" : "folder")
@@ -352,12 +303,12 @@ struct WorkspaceBrowserView: View {
 
     @ViewBuilder
     private func rootMenu(_ location: WorkspaceFileLocation) -> some View {
-        if !showsChanges {
-            Button("New File…", systemImage: "doc.badge.plus") { startDraft(in: "", isFolder: false, at: location) }
+        if !model.showsChanges {
+            Button("New File…", systemImage: "doc.badge.plus") { model.startDraft(in: "", isFolder: false, at: location) }
                 .keyboardShortcut(ExplorerFileCommand.newFile.shortcut)
-            Button("New Folder…", systemImage: "folder.badge.plus") { startDraft(in: "", isFolder: true, at: location) }
+            Button("New Folder…", systemImage: "folder.badge.plus") { model.startDraft(in: "", isFolder: true, at: location) }
                 .keyboardShortcut(ExplorerFileCommand.newFolder.shortcut)
-            Button("Paste", systemImage: "doc.on.clipboard") { paste(into: "", in: location) }
+            Button("Paste", systemImage: "doc.on.clipboard") { model.paste(into: "", in: location) }
                 .keyboardShortcut(ExplorerFileCommand.paste.shortcut)
             Divider()
         }
@@ -365,11 +316,11 @@ struct WorkspaceBrowserView: View {
             Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
         }
         Button("Find in Space…", systemImage: "magnifyingglass") { onFindInFolder(location, "") }
-        Button("Collapse All Folders", systemImage: "rectangle.compress.vertical") { collapseAll(location) }
+        Button("Collapse All Folders", systemImage: "rectangle.compress.vertical") { model.collapseAll(location) }
         Divider()
-        if !showsChanges {
-            Button(modifiedOnly ? "Show All Files" : "Show Modified Only",
-                   systemImage: "line.3.horizontal.decrease") { modifiedOnly.toggle() }
+        if !model.showsChanges {
+            Button(model.modifiedOnly ? "Show All Files" : "Show Modified Only",
+                   systemImage: "line.3.horizontal.decrease") { model.modifiedOnly.toggle() }
         }
         Button("Refresh", systemImage: "arrow.clockwise") { refresh() }
         Divider()
@@ -379,13 +330,13 @@ struct WorkspaceBrowserView: View {
     /// The name field of a file or folder being created, indented as its first child, or of
     /// one being renamed, in place of its row.
     private func draftRow(depth: Int) -> some View {
-        let isFolder = draft?.isFolder == true
+        let isFolder = model.draft?.isFolder == true
         return HStack(spacing: 6) {
-            Image(systemName: isFolder ? "folder" : draft?.renaming.map(WorkspaceExplorer.fileIcon) ?? "doc.text")
+            Image(systemName: isFolder ? "folder" : model.draft?.renaming.map(WorkspaceExplorer.fileIcon) ?? "doc.text")
                 .font(.system(size: typography.body))
                 .frame(width: 17)
                 .foregroundStyle(.secondary)
-            TextField(isFolder ? "Folder name" : "File name", text: $draftName)
+            TextField(isFolder ? "Folder name" : "File name", text: $model.draftName)
                 .textFieldStyle(.plain)
                 .font(.system(size: typography.body))
                 .focused($draftFocused)
@@ -409,9 +360,9 @@ struct WorkspaceBrowserView: View {
         // lost before the field ever had it is the previous field's, arriving late, and is ignored.
         .onChange(of: draftFocused) { _, focused in
             if focused {
-                if draft?.hasHadFocus == false, draft?.renaming != nil { selectNameStem() }
-                draft?.hasHadFocus = true
-            } else if draft?.hasHadFocus == true {
+                if model.draft?.hasHadFocus == false, model.draft?.renaming != nil { selectNameStem() }
+                model.draft?.hasHadFocus = true
+            } else if model.draft?.hasHadFocus == true {
                 commitDraft()
             }
         }
@@ -423,27 +374,27 @@ struct WorkspaceBrowserView: View {
                          stageState: WorkspaceFileChange.StageState?, hasGit: Bool) -> some View {
         let node = row.node
         let kind = node.isDirectory ? directoryKind : change?.kind
-        let isIgnored = !showsChanges && listing?.ignored.contains(node.path) == true
-        let identity = treeIdentity(location) + "|" + node.path
-        let isExpanded = tree.expanded.contains(identity)
-        let isSelected = tree.selected == identity
+        let isIgnored = !model.showsChanges && model.listing?.ignored.contains(node.path) == true
+        let identity = model.treeIdentity(location) + "|" + node.path
+        let isExpanded = model.tree.expanded.contains(identity)
+        let isSelected = model.tree.selected == identity
         return Button {
-            tree.selected = identity
+            model.tree.selected = identity
             treeFocused = true
             if node.isDirectory {
-                toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
+                model.toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
             } else {
-                if showsChanges { onOpenDiff(location, node.path, true) }
+                if model.showsChanges { onOpenDiff(location, node.path, true) }
                 else { onOpenFile(location, node.path, true) }
             }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: node.isDirectory
                       ? (isExpanded ? "folder.fill" : "folder")
-                      : (showsChanges ? "arrow.left.arrow.right" : WorkspaceExplorer.fileIcon(node.path)))
+                      : (model.showsChanges ? "arrow.left.arrow.right" : WorkspaceExplorer.fileIcon(node.path)))
                     .font(.system(size: typography.body))
                     .frame(width: 17)
-                    .foregroundStyle(node.isDirectory ? Color.secondary : (showsChanges ? theme.accent : .secondary))
+                    .foregroundStyle(node.isDirectory ? Color.secondary : (model.showsChanges ? theme.accent : .secondary))
                 Text(node.displayName)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -482,7 +433,7 @@ struct WorkspaceBrowserView: View {
         // A click opens a file in the preview tab; a double click keeps it open.
         .simultaneousGesture(TapGesture(count: 2).onEnded {
             guard !node.isDirectory else { return }
-            if showsChanges { onOpenDiff(location, node.path, false) }
+            if model.showsChanges { onOpenDiff(location, node.path, false) }
             else { onOpenFile(location, node.path, false) }
         })
         .overlay(alignment: .trailing) {
@@ -494,57 +445,57 @@ struct WorkspaceBrowserView: View {
             if node.isDirectory {
                 Button(isExpanded ? "Collapse" : "Expand",
                        systemImage: isExpanded ? "chevron.up" : "chevron.down") {
-                    toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
+                    model.toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
                 }
                 Button("Find in Folder…", systemImage: "magnifyingglass") { onFindInFolder(location, node.path) }
-                if showsChanges && location.isLocal {
+                if model.showsChanges && location.isLocal {
                     Button("Open in New Tab", systemImage: "terminal") {
                         onNewTab(location.absolutePath(node.path))
                     }
                 }
             } else {
                 Button("Open", systemImage: "doc.text") {
-                    tree.selected = identity
+                    model.tree.selected = identity
                     onOpenFile(location, node.path, false)
                 }
                 .disabled(change?.kind == .deleted)
                 if change != nil {
                     Button("Open Changes", systemImage: "arrow.left.arrow.right") {
-                        tree.selected = identity
+                        model.tree.selected = identity
                         onOpenDiff(location, node.path, false)
                     }
                 }
             }
             Divider()
-            if !showsChanges { fileActions(location, node: node) }
+            if !model.showsChanges { fileActions(location, node: node) }
             if hasGit {
                 if let kind {
                     if node.isDirectory || change?.worktreeStatus != " " {
                         Button(node.isDirectory ? "Stage Folder" : "Stage Changes", systemImage: "plus.circle") {
-                            runOperation(location) { try WorkspaceFiles.stage(node.path, at: location) }
+                            model.runOperation(location) { try WorkspaceFiles.stage(node.path, at: location) }
                         }
                     }
                     if node.isDirectory ? kind != .untracked
                         : (change?.indexStatus != " " && change?.indexStatus != "?") {
                         Button(node.isDirectory ? "Unstage Folder" : "Unstage Changes", systemImage: "minus.circle") {
-                            runOperation(location) { try WorkspaceFiles.unstage(node.path, at: location) }
+                            model.runOperation(location) { try WorkspaceFiles.unstage(node.path, at: location) }
                         }
                     }
                 }
-                if !showsChanges && !isIgnored { gitFileActions(location, node: node, change: change) }
+                if !model.showsChanges && !isIgnored { gitFileActions(location, node: node, change: change) }
                 Divider()
             }
-            if showsChanges {
+            if model.showsChanges {
                 pathActions(location, path: node.path)
             } else {
-                Button("Rename…", systemImage: "pencil") { startRename(node.path, isDirectory: node.isDirectory, at: location) }
+                Button("Rename…", systemImage: "pencil") { model.startRename(node.path, isDirectory: node.isDirectory, at: location) }
                     .keyboardShortcut(ExplorerFileCommand.rename.shortcut)
                 if location.isLocal {
-                    Button("Move to Trash", systemImage: "trash") { trash(node.path, in: location) }
+                    Button("Move to Trash", systemImage: "trash") { model.trash(node.path, in: location) }
                         .keyboardShortcut(ExplorerFileCommand.trash.shortcut)
                 }
                 Button("Delete…", systemImage: "xmark.bin", role: .destructive) {
-                    pendingDelete = WorkspaceFileTarget(location: location, path: node.path, isDirectory: node.isDirectory)
+                    model.pendingDelete = WorkspaceFileTarget(location: location, path: node.path, isDirectory: node.isDirectory)
                 }
                 .keyboardShortcut(ExplorerFileCommand.delete.shortcut)
             }
@@ -555,9 +506,9 @@ struct WorkspaceBrowserView: View {
     @ViewBuilder
     private func fileActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode) -> some View {
         let folder = node.isDirectory ? node.path : (node.path as NSString).deletingLastPathComponent
-        Button("New File…", systemImage: "doc.badge.plus") { startDraft(in: folder, isFolder: false, at: location) }
+        Button("New File…", systemImage: "doc.badge.plus") { model.startDraft(in: folder, isFolder: false, at: location) }
             .keyboardShortcut(ExplorerFileCommand.newFile.shortcut)
-        Button("New Folder…", systemImage: "folder.badge.plus") { startDraft(in: folder, isFolder: true, at: location) }
+        Button("New Folder…", systemImage: "folder.badge.plus") { model.startDraft(in: folder, isFolder: true, at: location) }
             .keyboardShortcut(ExplorerFileCommand.newFolder.shortcut)
         Divider()
         if location.isLocal {
@@ -570,13 +521,13 @@ struct WorkspaceBrowserView: View {
             Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.absolutePath(folder)) }
             Divider()
         }
-        Button("Cut", systemImage: "scissors") { copyItem(node.path, in: location, cut: true) }
+        Button("Cut", systemImage: "scissors") { model.copyItem(node.path, in: location, cut: true) }
             .keyboardShortcut(ExplorerFileCommand.cut.shortcut)
-        Button("Copy", systemImage: "doc.on.doc") { copyItem(node.path, in: location, cut: false) }
+        Button("Copy", systemImage: "doc.on.doc") { model.copyItem(node.path, in: location, cut: false) }
             .keyboardShortcut(ExplorerFileCommand.copy.shortcut)
-        Button("Duplicate", systemImage: "plus.square.on.square") { duplicate(node.path, in: location) }
+        Button("Duplicate", systemImage: "plus.square.on.square") { model.duplicate(node.path, in: location) }
             .keyboardShortcut(ExplorerFileCommand.duplicate.shortcut)
-        Button("Paste", systemImage: "doc.on.clipboard") { paste(into: folder, in: location) }
+        Button("Paste", systemImage: "doc.on.clipboard") { model.paste(into: folder, in: location) }
             .keyboardShortcut(ExplorerFileCommand.paste.shortcut)
         Divider()
         Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(location.absolutePath(node.path)) }
@@ -591,24 +542,24 @@ struct WorkspaceBrowserView: View {
     private func gitFileActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode,
                                 change: WorkspaceFileChange?) -> some View {
         Button("Add to .gitignore", systemImage: "eye.slash") {
-            runOperation(location) {
+            model.runOperation(location) {
                 try WorkspaceFiles.ignore(node.path, isDirectory: node.isDirectory, inExclude: false, at: location)
             }
         }
         Button("Add to .git/info/exclude") {
-            runOperation(location) {
+            model.runOperation(location) {
                 try WorkspaceFiles.ignore(node.path, isDirectory: node.isDirectory, inExclude: true, at: location)
             }
         }
         // A permalink points at a commit, so only files it contains have one.
         if !node.isDirectory, change?.kind != .untracked, change?.kind != .added {
             Button("Open File Permalink", systemImage: "link") {
-                runOperation(location, reloads: false, { try WorkspaceFiles.permalink(node.path, at: location) }) {
+                model.runOperation(location, reloads: false, { try WorkspaceFiles.permalink(node.path, at: location) }) {
                     NSWorkspace.shared.open($0)
                 }
             }
             Button("Copy File Permalink") {
-                runOperation(location, reloads: false, { try WorkspaceFiles.permalink(node.path, at: location) }) {
+                model.runOperation(location, reloads: false, { try WorkspaceFiles.permalink(node.path, at: location) }) {
                     AppActions.copy($0.absoluteString)
                 }
             }
@@ -626,49 +577,12 @@ struct WorkspaceBrowserView: View {
         }
     }
 
-    private func toggleDirectory(_ identity: String, path: String, isExpanded: Bool, location: WorkspaceFileLocation) {
-        tree.toggle(identity, isExpanded: isExpanded)
-        if !isExpanded, !showsChanges { readIgnoredFolders([path], at: location) }
-    }
-
-    /// Reads the contents of expanded ignored folders, which the listing leaves out.
-    private func readIgnoredFolders(_ folders: [String], at location: WorkspaceFileLocation) {
-        guard let listing else { return }
-        let toRead = WorkspaceExplorer.ignoredFoldersToRead(expanded: folders, ignored: listing.ignored,
-                                                           read: Set(ignoredContents.keys))
-        guard !toRead.isEmpty else { return }
-        let version = listingVersion
-        Task {
-            let read = await Task.detached { Self.readFolders(toRead, at: location) }.value
-            guard self.location?.identity == location.identity, listingVersion == version else { return }
-            ignoredContents.merge(read) { _, new in new }
-            ignoredContentsVersion += 1
-        }
-    }
-
-    /// Folders that cannot be read, such as one deleted since, are left out.
-    nonisolated private static func readFolders(_ folders: [String],
-                                                at location: WorkspaceFileLocation) -> [String: WorkspaceFolderContents] {
-        var read: [String: WorkspaceFolderContents] = [:]
-        for folder in folders {
-            if let contents = try? WorkspaceFiles.folderContents(folder, at: location) { read[folder] = contents }
-        }
-        return read
-    }
-
-    private func collapseAll(_ location: WorkspaceFileLocation) {
-        tree.collapseAll(treeIdentity(location))
-    }
-
     /// A checkbox that stages the file or everything under the folder, or unstages it when all of it is staged.
     private func stageToggle(_ state: WorkspaceFileChange.StageState, path: String,
                              location: WorkspaceFileLocation) -> some View {
         let name = path.isEmpty ? "all changes" : (path as NSString).lastPathComponent
         return Button {
-            runOperation(location) {
-                if state == .all { try WorkspaceFiles.unstage(path, at: location) }
-                else { try WorkspaceFiles.stage(path, at: location) }
-            }
+            model.stageToggle(state, path: path, location: location)
         } label: {
             Image(systemName: state == .all ? "checkmark.square.fill"
                   : (state == .partial ? "minus.square.fill" : "square"))
@@ -682,185 +596,35 @@ struct WorkspaceBrowserView: View {
         .help(state == .all ? "Unstage \(name)" : "Stage \(name)")
     }
 
-    /// Runs a Git or file operation off the main thread, then reloads the listing unless told not to.
-    private func runOperation<Value>(_ location: WorkspaceFileLocation, reloads: Bool = true,
-                                     _ operation: @escaping () throws -> Value,
-                                     completion: @escaping (Value) -> Void = { _ in }) {
-        Task {
-            let result = await Task.detached(priority: .userInitiated) { Result { try operation() } }.value
-            switch result {
-            case .success(let value): completion(value)
-            case .failure(let failure): operationError = failure.localizedDescription
-            }
-            // Reload in place, so staging does not blank the tree behind a spinner.
-            if reloads, self.location?.identity == location.identity { loadListing(quietly: true) }
-        }
-    }
-
     // MARK: File operations
-
-    /// Shows a name field in the tree, under `folder` ("" is the Space root), for a new item or
-    /// for renaming the item at `renaming`.
-    private func startDraft(in folder: String, isFolder: Bool, at location: WorkspaceFileLocation,
-                            renaming: String? = nil) {
-        tree.expand(folder, in: treeIdentity(location))
-        draftName = renaming.map { ($0 as NSString).lastPathComponent } ?? ""
-        draft = WorkspaceFileDraft(location: location, folder: folder, isFolder: isFolder, renaming: renaming)
-    }
 
     /// Selects the name without its extension, as Finder and Zed do, so typing replaces only it.
     private func selectNameStem() {
-        let stem = draft?.isFolder == true ? draftName : (draftName as NSString).deletingPathExtension
+        let stem = model.draft?.isFolder == true ? model.draftName : (model.draftName as NSString).deletingPathExtension
         DispatchQueue.main.async {
             guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
             editor.setSelectedRange(NSRange(location: 0, length: (stem as NSString).length))
         }
     }
 
-    private func startRename(_ path: String, isDirectory: Bool, at location: WorkspaceFileLocation) {
-        startDraft(in: (path as NSString).deletingLastPathComponent, isFolder: isDirectory, at: location, renaming: path)
-    }
-
     /// Runs a file shortcut on the selected row, or on the Space root when nothing is selected,
     /// while the Files tree of this window has focus. Returns whether the key was used.
     private func handleFileShortcut(_ event: NSEvent) -> Bool {
-        guard treeFocused, !showsChanges, draft == nil, pendingDelete == nil, listing != nil, let location,
-              event.window != nil, event.window === windowBox.window,
+        guard treeFocused, event.window != nil, event.window === windowBox.window,
               let command = ExplorerFileCommand.allCases.first(where: { $0.matches(event) }) else { return false }
-        let path = tree.selectedPath(in: treeIdentity(location)) ?? ""
-        guard !path.isEmpty || command.appliesToRoot else { return false }
-        let directories = listing.map { filesTree($0, location: location).directories } ?? []
-        let isDirectory = WorkspaceExplorer.isDirectory(path, directories: directories,
-                                                        created: tree.createdDirectories[location.identity] ?? [])
-        let folder = WorkspaceExplorer.folder(for: path, isDirectory: isDirectory)
-        let absolute = location.absolutePath(path)
-        switch command {
-        case .newFile: startDraft(in: folder, isFolder: false, at: location)
-        case .newFolder: startDraft(in: folder, isFolder: true, at: location)
-        case .reveal, .openInDefaultApp, .trash:
-            guard location.isLocal else { return false }
-            if command == .reveal { AppActions.reveal(absolute) }
-            else if command == .trash { trash(path, in: location) }
-            else { NSWorkspace.shared.open(URL(fileURLWithPath: absolute)) }
-        case .cut, .copy: copyItem(path, in: location, cut: command == .cut)
-        case .duplicate: duplicate(path, in: location)
-        case .paste: paste(into: folder, in: location)
-        case .copyPath: AppActions.copy(absolute)
-        case .copyRelativePath: AppActions.copy(path)
-        case .rename: startRename(path, isDirectory: isDirectory, at: location)
-        case .delete: pendingDelete = WorkspaceFileTarget(location: location, path: path, isDirectory: isDirectory)
-        }
-        return true
+        return model.perform(command)
     }
 
     /// Removes the name field, dropping its focus first so a later field does not inherit it.
     private func endDraft() {
         draftFocused = false
-        draft = nil
+        model.draft = nil
     }
 
     private func commitDraft() {
-        guard let draft else { return }
-        endDraft()
-        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        let location = draft.location
-        if let original = draft.renaming {
-            guard name != (original as NSString).lastPathComponent else { return }
-            runOperation(location) { try WorkspaceFiles.renameItem(original, to: name, at: location) } completion: {
-                movePathState(from: original, to: $0, in: location)
-            }
-            return
-        }
-        let path = WorkspaceExplorer.path(of: name, in: draft.folder)
-        runOperation(location) {
-            if draft.isFolder { try WorkspaceFiles.createFolder(path, at: location) }
-            else { try WorkspaceFiles.createFile(path, at: location) }
-        } completion: {
-            if draft.isFolder { tree.createdDirectories[location.identity, default: []].insert(path) }
-            reveal(path, in: location)
-            if !draft.isFolder { onOpenFile(location, path, false) }
-        }
-    }
-
-    private func copyItem(_ path: String, in location: WorkspaceFileLocation, cut: Bool) {
-        let absolute = location.absolutePath(path)
-        var changeCount = 0
-        // Local items also go on the general pasteboard, so Finder can paste them.
-        if location.isLocal {
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.writeObjects([URL(fileURLWithPath: absolute) as NSURL])
-            changeCount = pasteboard.changeCount
-        }
-        clipboard = WorkspaceFileClipboard(machineID: location.machine?.id, paths: [absolute],
-                                           isCut: cut, changeCount: changeCount)
-    }
-
-    /// Pastes what the explorer copied or cut on this machine, or, in a local Space, files
-    /// copied in Finder since then.
-    private func paste(into directory: String, in location: WorkspaceFileLocation) {
-        let pasteboard = NSPasteboard.general
-        let (sources, move) = WorkspaceExplorer.pasteSources(
-            clipboard: clipboard, location: location, pasteboardChangeCount: pasteboard.changeCount
-        ) {
-            (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?
-                .map(\.path) ?? []
-        }
-        guard !sources.isEmpty else {
-            operationError = "Nothing to paste. Copy or cut a file on \(location.machineLabel) first."
-            return
-        }
-        runOperation(location) { try WorkspaceFiles.paste(sources, into: directory, move: move, at: location) } completion: {
-            if move { clipboard = nil }
-            placePasted($0, in: location)
-        }
-    }
-
-    private func duplicate(_ path: String, in location: WorkspaceFileLocation) {
-        let source = location.absolutePath(path)
-        let folder = (path as NSString).deletingLastPathComponent
-        runOperation(location) { try WorkspaceFiles.paste([source], into: folder, move: false, at: location) } completion: {
-            placePasted($0, in: location)
-        }
-    }
-
-    /// Keeps pasted empty folders visible and selects the last pasted item.
-    private func placePasted(_ paths: [String], in location: WorkspaceFileLocation) {
-        if location.isLocal {
-            var isDirectory: ObjCBool = false
-            for path in paths where FileManager.default.fileExists(atPath: location.absolutePath(path),
-                                                                   isDirectory: &isDirectory) && isDirectory.boolValue {
-                tree.createdDirectories[location.identity, default: []].insert(path)
-            }
-        }
-        if let last = paths.last { reveal(last, in: location) }
-    }
-
-    private func trash(_ path: String, in location: WorkspaceFileLocation) {
-        runOperation(location) { try WorkspaceFiles.trash(path, at: location) } completion: {
-            forgetPathState(path, in: location)
-        }
-    }
-
-    private func delete(_ target: WorkspaceFileTarget) {
-        let location = target.location
-        runOperation(location) { try WorkspaceFiles.delete(target.path, at: location) } completion: {
-            forgetPathState(target.path, in: location)
-        }
-    }
-
-    /// Expands the folders above `path` and selects it.
-    private func reveal(_ path: String, in location: WorkspaceFileLocation) {
-        tree.reveal(path, in: treeIdentity(location))
-    }
-
-    private func movePathState(from original: String, to renamed: String, in location: WorkspaceFileLocation) {
-        tree.move(from: original, to: renamed, in: treeIdentity(location), location: location.identity)
-    }
-
-    private func forgetPathState(_ path: String, in location: WorkspaceFileLocation) {
-        tree.forget(path, location: location.identity)
+        guard model.draft != nil else { return }
+        draftFocused = false
+        model.commitDraft(openFile: onOpenFile)
     }
 
     private func statusColor(_ kind: WorkspaceFileChange.Kind) -> Color {
@@ -878,8 +642,7 @@ struct WorkspaceBrowserView: View {
     private func machineChanged() {
         remoteSnapshot = nil
         remoteWorkspaceID = nil
-        listing = nil
-        error = nil
+        model.clearListing()
         if let machine { loadRemote(machine) }
     }
 
@@ -890,8 +653,8 @@ struct WorkspaceBrowserView: View {
     }
 
     private func loadRemote(_ profile: HerdrMachineProfile) {
-        isLoading = true
-        error = nil
+        model.isLoading = true
+        model.error = nil
         Task {
             let result = await Task.detached { Result { try WorkspaceFiles.remoteSnapshot(profile) } }.value
             guard machine?.id == profile.id else { return }
@@ -900,57 +663,14 @@ struct WorkspaceBrowserView: View {
                 remoteSnapshot = snapshot
                 remoteWorkspaceID = snapshot.focusedWorkspaceID ?? snapshot.workspaces.first?.workspaceID
             case .failure(let failure):
-                error = failure.localizedDescription
-                isLoading = false
+                model.error = failure.localizedDescription
+                model.isLoading = false
             }
         }
     }
 
     private func loadListing(quietly: Bool = false) {
-        guard let location else { listing = nil; return }
-        isLoading = !quietly
-        error = nil
-        let start = TerminalPipelineMetrics.now()
-        let created = tree.createdDirectories[location.identity] ?? []
-        let expanded = tree.expandedFolders(in: "\(location.identity)|files")
-        func exists(_ path: String) -> Bool {
-            guard location.isLocal else { return true }
-            var isDirectory: ObjCBool = false
-            return FileManager.default.fileExists(atPath: location.absolutePath(path), isDirectory: &isDirectory)
-                && isDirectory.boolValue
-        }
-        Task {
-            // The Files tree is built here too, so a large Space is not sorted on the main thread.
-            let result = await Task.detached {
-                Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>, [String: WorkspaceFolderContents]) in
-                    let listing = try WorkspaceFiles.listing(at: location)
-                    let kept = created.filter(exists)
-                    // Expanded ignored folders are read again, so they stay open across reloads.
-                    let folders = WorkspaceExplorer.ignoredFoldersToRead(expanded: expanded, ignored: listing.ignored, read: [])
-                    let contents = Self.readFolders(folders, at: location)
-                    let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: contents, created: kept)
-                    return (listing, WorkspaceTree(paths: entries.paths, directories: entries.directories), kept, contents)
-                }
-            }.value
-            guard self.location?.identity == location.identity else { return }
-            var filesTree: (tree: WorkspaceTree, directories: Set<String>)?
-            switch result {
-            case .success(let (value, builtTree, kept, contents)):
-                listing = value
-                ignoredContents = contents
-                tree.pruneCreated(location: location.identity, exists: exists)
-                filesTree = (builtTree, kept)
-            case .failure(let failure): error = failure.localizedDescription
-            }
-            isLoading = false
-            listingVersion += 1
-            ignoredContentsVersion += 1
-            if let filesTree {
-                treeCache.store(filesTree.tree, .files, listing: listingVersion, contents: ignoredContentsVersion,
-                                directories: filesTree.directories)
-            }
-            TerminalPipelineMetrics.spanShown("file-list", start: start, detail: location.isLocal ? "local" : "ssh")
-        }
+        model.loadListing(at: location, quietly: quietly)
     }
 }
 
@@ -1083,24 +803,6 @@ final class WorkspaceTreeBuilderNode {
         self.name = name
         self.path = path
     }
-}
-
-/// Files and folders copied or cut in the explorer, waiting to be pasted.
-private struct WorkspaceFileTarget {
-    let location: WorkspaceFileLocation
-    let path: String
-    let isDirectory: Bool
-}
-
-/// A file or folder being named in the tree: a new one, or one being renamed.
-private struct WorkspaceFileDraft {
-    let location: WorkspaceFileLocation
-    /// The folder it is created in; "" is the Space root.
-    let folder: String
-    let isFolder: Bool
-    /// The item being renamed; nil for a new one.
-    let renaming: String?
-    var hasHadFocus = false
 }
 
 /// File shortcuts of the Files tree, with Zed's bindings. They act only while the tree has
