@@ -54,12 +54,15 @@ The focused terminal text view handles Herdr's prefix sequence and direct chords
 
 Bindings come from the same local `[keys]` table as the Herdr TUI, including multiline arrays of alternatives. The settings section writes the Herdr syntax and validates through `herdr config check` before saving. Custom bindings become active in xherdr after saving. The remaining Herdr TUI actions are preserved in config.toml but are not intercepted by xherdr. Shortcut handling currently applies while the terminal has keyboard focus; settings fields and other native controls keep their usual keyboard behavior.
 
+## Links
+
+Holding Command underlines the link under the pointer and shows a pointing hand; Command-click opens it with the default browser, as in iTerm2. A complete surface carries the OSC 8 hyperlink URIs and each cell their index; Herdr sends a complete surface instead of a patch whenever changed cells touch a hyperlink, so patches keep the indices valid. Cells with the same destination form one link, across rows. Without OSC 8, `http` and `https` URLs are found in the text, dropping trailing punctuation and unbalanced closers, and a row whose last cell is filled continues on the next one so wrapped URLs open whole. Only web links open, like Herdr's own client: a `file:` hyperlink could otherwise launch an application.
+
 The surface decoder follows the frozen generation-1 field order in Herdr 0.9.1. It should be checked against a new release's frozen fixtures before changing the parser. Unsupported optional messages are ignored without dropping the JSON connection.
 
 ## Implementation order
 
 1. Render popup layers and their graphics.
-2. Add hyperlink actions.
-3. Add optional remote sessions after local behavior is stable.
+2. Add optional remote sessions after local behavior is stable.
 
 Validate against a running Herdr server with `herdr status`, `herdr api schema --json`, and `herdr api snapshot`. These commands should be used as local diagnostics; no server state needs to be changed for the initial connection.

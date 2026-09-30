@@ -84,8 +84,9 @@ struct ReferenceSurfaceDecoder {
             let background = UInt32(try number())
             let modifier = UInt16(try number())
             let skip = try byte() != 0
-            if try flag() { _ = try number() } // hyperlink index
-            return HerdrCell(symbol: symbol, foreground: foreground, background: background, modifier: modifier, skip: skip)
+            let hyperlink = try flag() ? UInt32(try number()) : nil
+            return HerdrCell(symbol: symbol, foreground: foreground, background: background, modifier: modifier, skip: skip,
+                             hyperlink: hyperlink)
         }
 
         mutating func cursor() throws -> HerdrCursor? {
@@ -156,7 +157,8 @@ struct ReferenceSurfaceDecoder {
         let width = try input.int(), height = try input.int()
         guard width * height == cellCount else { throw Failure.invalid("cell count") }
         let cursor = try input.cursor()
-        for _ in 0..<(try input.int()) { _ = try input.text() } // hyperlinks
+        var hyperlinks: [String] = []
+        for _ in 0..<(try input.int()) { hyperlinks.append(try input.text()) }
         _ = try input.raw() // legacy graphics bytes
         var paneIDs: [String] = []
         var rects: [String: HerdrRect] = [:], inner: [String: HerdrRect] = [:]
@@ -206,7 +208,7 @@ struct ReferenceSurfaceDecoder {
         return HerdrSurface(bootID: bootID, projectionRevision: projectionRevision, revision: revision,
                             width: width, height: height, cells: cells, cursor: cursor, paneIDs: paneIDs,
                             paneRects: rects, paneInnerRects: inner, mouseReportingPaneIDs: mouse,
-                            splits: splits, graphics: graphics)
+                            splits: splits, graphics: graphics, hyperlinks: hyperlinks)
     }
 
     private func readPatch(_ input: inout Input, into surface: inout HerdrSurface) throws {

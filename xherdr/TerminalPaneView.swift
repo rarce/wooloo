@@ -531,6 +531,125 @@ enum TerminalPointer {
     }
 }
 
+/// A link in a pane: where it goes and the surface cells showing it, which may wrap across rows.
+struct TerminalLink: Equatable {
+    struct Span: Equatable {
+        let row: Int
+        let columns: Range<Int>
+    }
+
+    let url: URL
+    let spans: [Span]
+}
+
+/// Finds the link under a surface cell for Command-click: an OSC 8 hyperlink, as Claude Code
+/// prints, or a URL in plain text, as iTerm2 detects. Only web links open.
+enum TerminalLinks {
+    static func link(atColumn x: Int, row y: Int, in surface: HerdrSurface) -> TerminalLink? {
+        guard let id = TerminalPointer.paneID(atColumn: x, row: y, in: surface),
+              let inner = surface.paneInnerRects[id],
+              x >= inner.x, x < inner.x + inner.width, y >= inner.y, y < inner.y + inner.height,
+              inner.x + inner.width <= surface.width, inner.y + inner.height <= surface.height else { return nil }
+        let clicked = (y - inner.y) * inner.width + (x - inner.x)
+        return explicitLink(at: clicked, inside: inner, in: surface)
+            ?? plainLink(at: clicked, inside: inner, in: surface)
+    }
+
+    static func webURL(_ text: String) -> URL? {
+        guard let url = URL(string: text), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https", url.host?.isEmpty == false else { return nil }
+        return url
+    }
+
+    /// The cell at `index`, counted row by row across the pane's content.
+    private static func cell(_ index: Int, inside inner: HerdrRect, in surface: HerdrSurface) -> HerdrCell {
+        surface.cells[(inner.y + index / inner.width) * surface.width + inner.x + index % inner.width]
+    }
+
+    private static func hyperlink(_ index: Int, inside inner: HerdrRect, in surface: HerdrSurface) -> UInt32? {
+        let current = cell(index, inside: inner, in: surface)
+        if let hyperlink = current.hyperlink { return hyperlink }
+        // A wide character's continuation cell may not carry the link itself.
+        guard current.skip, index % inner.width > 0 else { return nil }
+        return cell(index - 1, inside: inner, in: surface).hyperlink
+    }
+
+    /// Adjacent cells with the clicked cell's OSC 8 destination, across wrapped rows too.
+    private static func explicitLink(at clicked: Int, inside inner: HerdrRect, in surface: HerdrSurface) -> TerminalLink? {
+        guard let id = hyperlink(clicked, inside: inner, in: surface), Int(id) < surface.hyperlinks.count,
+              let url = webURL(surface.hyperlinks[Int(id)]) else { return nil }
+        var start = clicked
+        var end = clicked
+        while start > 0, hyperlink(start - 1, inside: inner, in: surface) == id { start -= 1 }
+        while end + 1 < inner.width * inner.height, hyperlink(end + 1, inside: inner, in: surface) == id { end += 1 }
+        return TerminalLink(url: url, spans: spans(start...end, inside: inner))
+    }
+
+    private static let plainURL = try! NSRegularExpression(pattern: #"https?://[^\s<>"'`]+"#, options: [.caseInsensitive])
+
+    /// A URL in the text around the clicked cell. Rows whose last cell is filled continue on
+    /// the next row, so a long URL the terminal wrapped is found whole.
+    private static func plainLink(at clicked: Int, inside inner: HerdrRect, in surface: HerdrSurface) -> TerminalLink? {
+        let width = inner.width
+        func wraps(_ row: Int) -> Bool {
+            let last = cell(row * width + width - 1, inside: inner, in: surface)
+            return last.skip || !(last.symbol.isEmpty || last.symbol == " ")
+        }
+        var first = clicked / width
+        var last = first
+        while first > 0, wraps(first - 1) { first -= 1 }
+        while last < inner.height - 1, wraps(last) { last += 1 }
+        var text = ""
+        /// The pane cell of every UTF-16 unit in `text`.
+        var cellAt: [Int] = []
+        for index in (first * width)..<((last + 1) * width) {
+            let current = cell(index, inside: inner, in: surface)
+            guard !current.skip else { continue }
+            let symbol = current.symbol.isEmpty ? " " : current.symbol
+            text += symbol
+            cellAt.append(contentsOf: repeatElement(index, count: symbol.utf16.count))
+        }
+        let string = text as NSString
+        for match in plainURL.matches(in: text, range: NSRange(location: 0, length: string.length)) {
+            var range = match.range
+            // Punctuation after a URL ends the sentence around it, and closers belong to the
+            // URL only when it opened them, as in Wikipedia links.
+            while range.length > 0 {
+                let candidate = string.substring(with: range)
+                let lastCharacter = candidate.last!
+                let openers: [Character: Character] = [")": "(", "]": "[", "}": "{"]
+                if ".,:;!?".contains(lastCharacter)
+                    || openers[lastCharacter].map({ opener in
+                        candidate.filter { $0 == lastCharacter }.count > candidate.filter { $0 == opener }.count
+                    }) == true {
+                    range.length -= 1
+                } else {
+                    break
+                }
+            }
+            guard range.length > 0 else { continue }
+            let start = cellAt[range.location]
+            var end = cellAt[NSMaxRange(range) - 1]
+            // A wide last character also covers its continuation cell.
+            if end + 1 < inner.width * inner.height, end % width < width - 1,
+               cell(end + 1, inside: inner, in: surface).skip { end += 1 }
+            guard (start...end).contains(clicked), let url = webURL(string.substring(with: range)) else { continue }
+            return TerminalLink(url: url, spans: spans(start...end, inside: inner))
+        }
+        return nil
+    }
+
+    /// Surface rows and columns covering pane cells `indices`.
+    private static func spans(_ indices: ClosedRange<Int>, inside inner: HerdrRect) -> [TerminalLink.Span] {
+        let width = inner.width
+        return (indices.lowerBound / width...indices.upperBound / width).map { row in
+            let lower = row == indices.lowerBound / width ? indices.lowerBound % width : 0
+            let upper = row == indices.upperBound / width ? indices.upperBound % width + 1 : width
+            return TerminalLink.Span(row: inner.y + row, columns: (inner.x + lower)..<(inner.x + upper))
+        }
+    }
+}
+
 /// Turns scroll deltas into whole lines for mouse-reporting programs. Trackpads report small
 /// precise deltas that add up across events; wheels report lines.
 struct TerminalScrollAccumulator {
@@ -580,6 +699,9 @@ final class HerdrTerminalTextView: NSTextView {
     private var selectionAnchor: GridPoint?
     private var selectionHead: GridPoint?
     private var isSelectingCells = false
+    /// The link under the pointer while Command is held, underlined until either changes.
+    private var hoveredLink: TerminalLink?
+    private var linkTrackingArea: NSTrackingArea?
 
     /// Herdr's cursor is drawn in the grid; a caret at the end of the text would be a second one.
     override var shouldDrawInsertionPoint: Bool { false }
@@ -730,6 +852,16 @@ final class HerdrTerminalTextView: NSTextView {
                 context.fill(fill.rect.offsetBy(dx: origin.x, dy: top))
             }
         }
+        if let hoveredLink {
+            let thickness = max(1, TerminalPaneView.terminalFont.underlineThickness)
+            let lineY = TerminalPaneView.baseline - TerminalPaneView.terminalFont.underlinePosition - thickness / 2
+            context.setFillColor(theme.terminalForeground.cgColor)
+            for span in hoveredLink.spans where span.row < grid.height {
+                context.fill(CGRect(x: origin.x + CGFloat(span.columns.lowerBound) * cellWidth,
+                                    y: origin.y + CGFloat(span.row) * cellHeight + lineY,
+                                    width: CGFloat(span.columns.count) * cellWidth, height: thickness))
+            }
+        }
         drawGraphics(in: dirtyRect, behindText: false)
     }
 
@@ -786,6 +918,7 @@ final class HerdrTerminalTextView: NSTextView {
         }
         let layoutNanos = TerminalPipelineMetrics.now() - layoutStart
         applySurfaceGrid(grid)
+        if hoveredLink != nil { updateHoveredLink() }
         TerminalPipelineMetrics.shared?.updated(revision: surface.revision, start: start, layoutNanos: layoutNanos)
     }
 
@@ -928,6 +1061,61 @@ final class HerdrTerminalTextView: NSTextView {
         captureSelectionIfChanged()
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let linkTrackingArea { removeTrackingArea(linkTrackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        linkTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHoveredLink(at: event.locationInWindow, modifiers: event.modifierFlags)
+        if hoveredLink != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            super.mouseMoved(with: event)
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        setHoveredLink(nil)
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        updateHoveredLink(modifiers: event.modifierFlags)
+    }
+
+    /// The live surface's link at a window location.
+    private func link(at windowPoint: NSPoint) -> TerminalLink? {
+        guard let surface, terminalGrid != nil else { return nil }
+        let point = convert(windowPoint, from: nil)
+        guard visibleRect.contains(point) else { return nil }
+        let x = Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth))
+        let y = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
+        guard x >= 0, y >= 0, x < surface.width, y < surface.height else { return nil }
+        return TerminalLinks.link(atColumn: x, row: y, in: surface)
+    }
+
+    /// Underlines the link under the pointer while Command is held, as iTerm2 does.
+    private func updateHoveredLink(at windowPoint: NSPoint? = nil, modifiers: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+        guard modifiers.contains(.command), let window else { return setHoveredLink(nil) }
+        setHoveredLink(link(at: windowPoint ?? window.mouseLocationOutsideOfEventStream))
+    }
+
+    private func setHoveredLink(_ link: TerminalLink?) {
+        guard link != hoveredLink else { return }
+        for span in (hoveredLink?.spans ?? []) + (link?.spans ?? []) {
+            setNeedsDisplay(NSRect(x: 0, y: textContainerInset.height + CGFloat(span.row) * TerminalPaneView.cellHeight,
+                                   width: bounds.width, height: TerminalPaneView.cellHeight))
+        }
+        hoveredLink = link
+        (link == nil ? NSCursor.iBeam : NSCursor.pointingHand).set()
+    }
+
     override func resetCursorRects() {
         super.resetCursorRects()
         guard let surface else { return }
@@ -943,6 +1131,10 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), let link = link(at: event.locationInWindow) {
+            NSWorkspace.shared.open(link.url)
+            return
+        }
         if let surface {
             if let split = splitHit(event, in: surface) {
                 let (x, y) = surfacePoint(event)

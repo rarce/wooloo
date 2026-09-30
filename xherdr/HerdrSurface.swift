@@ -8,6 +8,8 @@ struct HerdrCell: Hashable {
     let background: UInt32
     let modifier: UInt16
     let skip: Bool
+    /// Index into the surface's `hyperlinks`, for text an OSC 8 hyperlink covers.
+    var hyperlink: UInt32? = nil
 }
 
 struct HerdrCursor: Equatable {
@@ -97,6 +99,9 @@ struct HerdrSurface: Equatable {
     var mouseReportingPaneIDs: Set<String>
     let splits: [HerdrSplit]
     var graphics: [HerdrGraphic]
+    /// OSC 8 hyperlink URIs of a complete surface. Herdr sends a complete surface instead of a
+    /// patch whenever changed cells touch a hyperlink, so patches keep these indices valid.
+    var hyperlinks: [String] = []
 }
 
 private enum SurfaceProtocolError: Error {
@@ -190,8 +195,9 @@ private struct SurfaceReader {
         let background = try UInt32(number())
         let modifier = try UInt16(number())
         let skip = try byte() != 0
-        _ = try optional { reader in try reader.number() } // hyperlink index
-        return HerdrCell(symbol: symbol, foreground: foreground, background: background, modifier: modifier, skip: skip)
+        let hyperlink = try optional { reader in try reader.number() }
+        return HerdrCell(symbol: symbol, foreground: foreground, background: background, modifier: modifier, skip: skip,
+                         hyperlink: hyperlink.map { UInt32(clamping: $0) })
     }
 
     mutating func cursor() throws -> HerdrCursor {
@@ -333,7 +339,8 @@ private struct SurfaceReader {
         let height = try Int(number())
         guard width > 0, height > 0, width * height == cellCount else { throw SurfaceProtocolError.invalidFrame }
         let cursor = try optional { reader in try reader.cursor() }
-        for _ in 0..<(try count()) { _ = try string() } // hyperlinks
+        var hyperlinks: [String] = []
+        for _ in 0..<(try count()) { hyperlinks.append(try string()) }
         for _ in 0..<(try count()) { _ = try byte() } // legacy graphics bytes
         var paneIDs: [String] = []
         var paneRects: [String: HerdrRect] = [:]
@@ -371,7 +378,7 @@ private struct SurfaceReader {
                             revision: revision, width: width, height: height,
                             cells: cells, cursor: cursor, paneIDs: paneIDs, paneRects: paneRects,
                             paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs,
-                            splits: splits, graphics: graphics)
+                            splits: splits, graphics: graphics, hyperlinks: hyperlinks)
     }
 
     mutating func applyPatch(to surface: inout HerdrSurface) throws {

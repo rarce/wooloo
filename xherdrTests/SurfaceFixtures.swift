@@ -38,7 +38,12 @@ struct SurfaceWireWriter {
         number(UInt64(cell.background))
         number(UInt64(cell.modifier))
         byte(cell.skip ? 1 : 0)
-        byte(0) // hyperlink: None
+        if let hyperlink = cell.hyperlink {
+            byte(1)
+            number(UInt64(hyperlink))
+        } else {
+            byte(0)
+        }
     }
 
     mutating func cursor(_ cursor: HerdrCursor?) {
@@ -77,6 +82,7 @@ struct SurfaceModel {
     var cursor: HerdrCursor? = HerdrCursor(x: 0, y: 0, visible: true, shape: 0)
     var paneID = "w1:p1"
     var mouseReporting = false
+    var hyperlinks: [String] = []
 
     init(width: Int, height: Int) {
         self.width = width
@@ -90,7 +96,7 @@ struct SurfaceModel {
         HerdrSurface(bootID: bootID, projectionRevision: projectionRevision, revision: revision,
                      width: width, height: height, cells: cells, cursor: cursor, paneIDs: [paneID],
                      paneRects: [paneID: paneRect], paneInnerRects: [paneID: paneRect],
-                     mouseReportingPaneIDs: mouseReporting ? [paneID] : [], splits: [], graphics: [])
+                     mouseReportingPaneIDs: mouseReporting ? [paneID] : [], splits: [], graphics: [], hyperlinks: hyperlinks)
     }
 
     func row(_ y: Int) -> ArraySlice<HerdrCell> { cells[(y * width)..<((y + 1) * width)] }
@@ -119,7 +125,8 @@ struct SurfaceModel {
         writer.number(width)
         writer.number(height)
         writer.cursor(cursor)
-        writer.number(0) // hyperlinks
+        writer.number(hyperlinks.count)
+        for hyperlink in hyperlinks { writer.string(hyperlink) }
         writer.number(0) // legacy graphics bytes
         writer.number(1)
         writer.pane(self)
@@ -324,10 +331,11 @@ struct RowBuilder {
     private(set) var column = 0
 
     /// Writes one cell per character (grapheme cluster), clipped at the row's end.
-    mutating func put(_ text: String, foreground: UInt32 = 0, background: UInt32 = 0, modifier: UInt16 = 0) {
+    mutating func put(_ text: String, foreground: UInt32 = 0, background: UInt32 = 0, modifier: UInt16 = 0,
+                      hyperlink: UInt32? = nil) {
         for character in text where column < width {
             cells[column] = HerdrCell(symbol: String(character), foreground: foreground,
-                                      background: background, modifier: modifier, skip: false)
+                                      background: background, modifier: modifier, skip: false, hyperlink: hyperlink)
             column += 1
         }
     }

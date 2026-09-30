@@ -149,3 +149,79 @@ final class SurfaceDeliveryTests: XCTestCase {
         XCTAssertEqual(feed.surface?.revision, 2)
     }
 }
+
+/// OSC 8 hyperlinks survive decoding and patches, and links are found for Command-click.
+final class TerminalLinkTests: XCTestCase {
+    private func model(_ rows: [RowBuilder], width: Int) -> SurfaceModel {
+        var model = SurfaceModel(width: width, height: rows.count)
+        for (y, row) in rows.enumerated() { model.setRow(y, row.cells) }
+        return model
+    }
+
+    func testHyperlinksDecodeAndSurvivePatches() throws {
+        var row = RowBuilder(width: 20)
+        row.put("see ")
+        row.put("docs", hyperlink: 0)
+        var model = model([row, RowBuilder(width: 20)], width: 20)
+        model.hyperlinks = ["https://herdr.dev/docs"]
+        var decoder = HerdrSurfaceDecoder()
+        var reference = ReferenceSurfaceDecoder()
+        let full = model.surfaceFrame()
+        let surface = try XCTUnwrap(decoder.apply(frame: full))
+        XCTAssertEqual(surface, model.surface)
+        XCTAssertEqual(try reference.apply(full), model.surface)
+
+        var typed = RowBuilder(width: 20)
+        typed.put("$ ls")
+        model.setRow(1, typed.cells)
+        model.revision = 2
+        let patched = try XCTUnwrap(decoder.apply(frame: model.patchFrame(baseRevision: 1, rows: [1])))
+        XCTAssertEqual(patched.hyperlinks, ["https://herdr.dev/docs"])
+        XCTAssertEqual(patched.cells[4].hyperlink, 0)
+    }
+
+    func testExplicitLinksCoverTheirCellsAcrossRows() throws {
+        var first = RowBuilder(width: 10)
+        first.put("go ")
+        first.put("somewhere", hyperlink: 1)
+        var second = RowBuilder(width: 10)
+        second.put("else", hyperlink: 1)
+        second.put(" ok")
+        var model = model([first, second], width: 10)
+        model.hyperlinks = ["https://a.example", "https://b.example/path"]
+        let link = try XCTUnwrap(TerminalLinks.link(atColumn: 1, row: 1, in: model.surface))
+        XCTAssertEqual(link.url.absoluteString, "https://b.example/path")
+        XCTAssertEqual(link.spans, [.init(row: 0, columns: 3..<10), .init(row: 1, columns: 0..<4)])
+        XCTAssertNil(TerminalLinks.link(atColumn: 1, row: 0, in: model.surface))
+    }
+
+    func testOnlyWebHyperlinksOpen() {
+        var row = RowBuilder(width: 20)
+        row.put("run me", hyperlink: 0)
+        var model = model([row], width: 20)
+        model.hyperlinks = ["file:///Applications/Calculator.app"]
+        XCTAssertNil(TerminalLinks.link(atColumn: 2, row: 0, in: model.surface))
+    }
+
+    func testPlainURLsAreFoundWithoutTrailingPunctuation() throws {
+        var row = RowBuilder(width: 60)
+        row.put("Read (https://en.wikipedia.org/wiki/Foo_(bar)), then.")
+        let surface = model([row], width: 60).surface
+        let link = try XCTUnwrap(TerminalLinks.link(atColumn: 10, row: 0, in: surface))
+        XCTAssertEqual(link.url.absoluteString, "https://en.wikipedia.org/wiki/Foo_(bar)")
+        XCTAssertEqual(link.spans, [.init(row: 0, columns: 6..<45)])
+        XCTAssertNil(TerminalLinks.link(atColumn: 2, row: 0, in: surface))
+        XCTAssertNil(TerminalLinks.link(atColumn: 46, row: 0, in: surface))
+    }
+
+    func testWrappedPlainURLsAreFoundWhole() throws {
+        var first = RowBuilder(width: 12)
+        first.put("x https://ex")
+        var second = RowBuilder(width: 12)
+        second.put("ample.com/a b")
+        let surface = model([first, second], width: 12).surface
+        let link = try XCTUnwrap(TerminalLinks.link(atColumn: 3, row: 1, in: surface))
+        XCTAssertEqual(link.url.absoluteString, "https://example.com/a")
+        XCTAssertEqual(link.spans, [.init(row: 0, columns: 2..<12), .init(row: 1, columns: 0..<11)])
+    }
+}
