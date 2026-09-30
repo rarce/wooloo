@@ -61,6 +61,7 @@
 		C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */; };
 		C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000047 /* HerdrNotificationTests.swift */; };
 		C30000000000000000000048 /* HerdrStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000049 /* HerdrStoreTests.swift */; };
+		C3000000000000000000004A /* SurfaceLayersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004B /* SurfaceLayersTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -126,6 +127,7 @@
 		C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSurfaceStreamTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000047 /* HerdrNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrNotificationTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000049 /* HerdrStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrStoreTests.swift; sourceTree = "<group>"; };
+		C3000000000000000000004B /* SurfaceLayersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceLayersTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -207,6 +209,7 @@
 				C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */,
 				C30000000000000000000047 /* HerdrNotificationTests.swift */,
 				C30000000000000000000049 /* HerdrStoreTests.swift */,
+				C3000000000000000000004B /* SurfaceLayersTests.swift */,
 			);
 			path = xherdrTests;
 			sourceTree = "<group>";
@@ -377,6 +380,7 @@
 				C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */,
 				C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */,
 				C30000000000000000000048 /* HerdrStoreTests.swift in Sources */,
+				C3000000000000000000004A /* SurfaceLayersTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

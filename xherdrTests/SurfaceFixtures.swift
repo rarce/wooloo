@@ -106,8 +106,9 @@ struct SurfaceModel {
         cells.append(contentsOf: row)
     }
 
-    /// A complete surface frame (tag 13).
-    func surfaceFrame() -> Data {
+    /// A complete surface frame (tag 13). `tail` writes what follows the panes: splits,
+    /// popup and graphics, which are empty by default.
+    func surfaceFrame(tail: ((inout SurfaceWireWriter) -> Void)? = nil) -> Data {
         var writer = SurfaceWireWriter()
         writer.number(13)
         writer.string(bootID)
@@ -122,6 +123,7 @@ struct SurfaceModel {
         writer.number(0) // legacy graphics bytes
         writer.number(1)
         writer.pane(self)
+        if let tail { tail(&writer); return writer.data }
         writer.number(0) // splits
         writer.byte(0) // popup: None
         writer.number(0) // graphics assets
