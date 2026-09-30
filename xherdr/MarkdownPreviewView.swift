@@ -86,9 +86,11 @@ enum MarkdownSpaceLinks {
 
     /// A Space-relative path for a link or image target, or nil for anchors and paths leaving the Space.
     static func resolve(_ target: String, documentPath: String) -> String? {
-        var raw = target.removingPercentEncoding ?? target
+        // Fragment and query come off before decoding: an encoded `#` or `?` is part of the name.
+        var raw = target
         if let hash = raw.firstIndex(of: "#") { raw = String(raw[..<hash]) }
         if let query = raw.firstIndex(of: "?") { raw = String(raw[..<query]) }
+        raw = raw.removingPercentEncoding ?? raw
         guard !raw.isEmpty else { return nil }
         let base = raw.hasPrefix("/") ? [] : (documentPath as NSString).deletingLastPathComponent
             .split(separator: "/").map(String.init)
@@ -109,7 +111,8 @@ enum MarkdownSpaceLinks {
     /// through WorkspaceFiles; fenced code is left untouched.
     static func rewritingImages(in markdown: String, documentPath: String) -> String {
         guard markdown.contains("![") else { return markdown }
-        let pattern = try! NSRegularExpression(pattern: #"(!\[[^\]]*\]\()\s*<?([^)\s>]+)>?"#)
+        // A destination is either `<any text>`, which may hold spaces, or a run without spaces.
+        let pattern = try! NSRegularExpression(pattern: #"(!\[[^\]]*\]\()\s*(?:<([^>\n]+)>|([^)\s]+))"#)
         var inFence = false
         return markdown.components(separatedBy: "\n").map { line -> String in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -118,7 +121,8 @@ enum MarkdownSpaceLinks {
             let ns = line as NSString
             var output = line
             for match in pattern.matches(in: line, range: NSRange(location: 0, length: ns.length)).reversed() {
-                let source = ns.substring(with: match.range(at: 2))
+                let group = match.range(at: 2).location != NSNotFound ? 2 : 3
+                let source = ns.substring(with: match.range(at: group))
                 guard !source.contains(":"), let resolved = resolve(source, documentPath: documentPath),
                       let encoded = resolved.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { continue }
                 output = (output as NSString).replacingCharacters(
