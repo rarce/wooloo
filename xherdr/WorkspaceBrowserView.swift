@@ -30,7 +30,11 @@ struct WorkspaceBrowserView: View {
     @State private var selectedItem: String?
     @State private var operationError: String?
     @State private var clipboard: WorkspaceFileClipboard?
-    @State private var namePrompt: WorkspaceNamePrompt?
+    @State private var renamePrompt: WorkspaceRenamePrompt?
+    /// A file or folder being named in place in the tree, before it is created.
+    @State private var draft: WorkspaceFileDraft?
+    @State private var draftName = ""
+    @FocusState private var draftFocused: Bool
     @State private var nameInput = ""
     @State private var pendingDelete: WorkspaceFileTarget?
     /// Folders created in the explorer, by location, shown while they hold no listed file.
@@ -178,28 +182,40 @@ struct WorkspaceBrowserView: View {
                     expanded: expandedDirectories,
                     identity: treeIdentity(location)
                 )
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        treeRoot(location, stageState: listing.hasGit ? stageStates[""] : nil)
-                        if !collapsedRoots.contains(treeIdentity(location)) {
-                            if (showsChanges || isFilteredFiles) && !listing.hasGit {
-                                hint("No Git repository in this Space")
-                            } else if paths.isEmpty {
-                                hint(showsChanges ? "No changes" : (modifiedOnly ? "No modified files" : "No files"))
-                            }
-                            if !showsChanges && listing.totalFiles > listing.files.count {
-                                hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
-                            }
-                            ForEach(rows) { row in
-                                treeRow(row, location: location,
-                                        change: changesByPath[row.node.path],
-                                        directoryKind: directoryKinds[row.node.path],
-                                        stageState: listing.hasGit ? stageStates[row.node.path] : nil,
-                                        hasGit: listing.hasGit)
+                let draftFolder = !showsChanges && draft?.location.identity == location.identity ? draft?.folder : nil
+                GeometryReader { viewport in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            treeRoot(location, stageState: listing.hasGit ? stageStates[""] : nil)
+                            if !collapsedRoots.contains(treeIdentity(location)) {
+                                if draftFolder == "" { draftRow(depth: 1) }
+                                if (showsChanges || isFilteredFiles) && !listing.hasGit {
+                                    hint("No Git repository in this Space")
+                                } else if paths.isEmpty {
+                                    hint(showsChanges ? "No changes" : (modifiedOnly ? "No modified files" : "No files"))
+                                }
+                                if !showsChanges && listing.totalFiles > listing.files.count {
+                                    hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
+                                }
+                                ForEach(rows) { row in
+                                    treeRow(row, location: location,
+                                            change: changesByPath[row.node.path],
+                                            directoryKind: directoryKinds[row.node.path],
+                                            stageState: listing.hasGit ? stageStates[row.node.path] : nil,
+                                            hasGit: listing.hasGit)
+                                    if row.node.isDirectory, draftFolder == row.node.path { draftRow(depth: row.depth + 1) }
+                                }
                             }
                         }
+                        .padding(.vertical, 3)
+                        // The space under the last row opens the Space's menu too.
+                        .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
+                        .background {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .contextMenu { rootMenu(location) }
+                        }
                     }
-                    .padding(.vertical, 3)
                 }
                 .id(treeIdentity(location))
             } else {
@@ -220,11 +236,11 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
-        .alert(namePrompt?.title ?? "", isPresented: Binding(
-            get: { namePrompt != nil }, set: { if !$0 { namePrompt = nil } }
-        ), presenting: namePrompt) { prompt in
+        .alert(renamePrompt?.title ?? "", isPresented: Binding(
+            get: { renamePrompt != nil }, set: { if !$0 { renamePrompt = nil } }
+        ), presenting: renamePrompt) { prompt in
             TextField("Name", text: $nameInput)
-            Button(prompt.kind == .rename ? "Rename" : "Create") { submitName(prompt) }
+            Button("Rename") { submitRename(prompt) }
                 .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {}
         } message: { prompt in
@@ -298,26 +314,57 @@ struct WorkspaceBrowserView: View {
         }
         .help(location.root)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-        .contextMenu {
-            if !showsChanges {
-                Button("New File…", systemImage: "doc.badge.plus") { promptName(.newFile, location, path: "") }
-                Button("New Folder…", systemImage: "folder.badge.plus") { promptName(.newFolder, location, path: "") }
-                Button("Paste", systemImage: "doc.on.clipboard") { paste(into: "", in: location) }
-                Divider()
-            }
-            if location.isLocal {
-                Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
-            }
-            Button("Find in Space…", systemImage: "magnifyingglass") { onFindInFolder(location, "") }
-            Button("Collapse All Folders", systemImage: "rectangle.compress.vertical") { collapseAll(location) }
+        .contextMenu { rootMenu(location) }
+    }
+
+    @ViewBuilder
+    private func rootMenu(_ location: WorkspaceFileLocation) -> some View {
+        if !showsChanges {
+            Button("New File…", systemImage: "doc.badge.plus") { startDraft(in: "", isFolder: false, at: location) }
+            Button("New Folder…", systemImage: "folder.badge.plus") { startDraft(in: "", isFolder: true, at: location) }
+            Button("Paste", systemImage: "doc.on.clipboard") { paste(into: "", in: location) }
             Divider()
-            if !showsChanges {
-                Button(modifiedOnly ? "Show All Files" : "Show Modified Only",
-                       systemImage: "line.3.horizontal.decrease") { modifiedOnly.toggle() }
-            }
-            Button("Refresh", systemImage: "arrow.clockwise") { refresh() }
-            Divider()
-            pathActions(location, path: "")
+        }
+        if location.isLocal {
+            Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
+        }
+        Button("Find in Space…", systemImage: "magnifyingglass") { onFindInFolder(location, "") }
+        Button("Collapse All Folders", systemImage: "rectangle.compress.vertical") { collapseAll(location) }
+        Divider()
+        if !showsChanges {
+            Button(modifiedOnly ? "Show All Files" : "Show Modified Only",
+                   systemImage: "line.3.horizontal.decrease") { modifiedOnly.toggle() }
+        }
+        Button("Refresh", systemImage: "arrow.clockwise") { refresh() }
+        Divider()
+        pathActions(location, path: "")
+    }
+
+    /// The name field of a file or folder being created, indented as its first child.
+    private func draftRow(depth: Int) -> some View {
+        let isFolder = draft?.isFolder == true
+        return HStack(spacing: 6) {
+            Image(systemName: isFolder ? "folder" : "doc.text")
+                .font(.system(size: typography.body))
+                .frame(width: 17)
+                .foregroundStyle(.secondary)
+            TextField(isFolder ? "Folder name" : "File name", text: $draftName)
+                .textFieldStyle(.plain)
+                .font(.system(size: typography.body))
+                .focused($draftFocused)
+                .onSubmit { commitDraft() }
+                .onExitCommand { draft = nil }
+                .padding(.horizontal, 4)
+                .frame(height: typography.metric(20))
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(theme.accent, lineWidth: 1))
+        }
+        .padding(.leading, CGFloat(depth) * 19 + 11)
+        .padding(.trailing, 8)
+        .frame(height: typography.metric(23))
+        .onAppear { DispatchQueue.main.async { draftFocused = true } }
+        // Clicking elsewhere creates what was typed, as in Zed; an empty name is dropped.
+        .onChange(of: draftFocused) { _, focused in
+            if !focused { commitDraft() }
         }
     }
 
@@ -434,7 +481,8 @@ struct WorkspaceBrowserView: View {
                 pathActions(location, path: node.path)
             } else {
                 Button("Rename…", systemImage: "pencil") {
-                    promptName(.rename, location, path: node.path, isDirectory: node.isDirectory)
+                    nameInput = (node.path as NSString).lastPathComponent
+                    renamePrompt = WorkspaceRenamePrompt(location: location, path: node.path, isDirectory: node.isDirectory)
                 }
                 if location.isLocal {
                     Button("Move to Trash", systemImage: "trash") { trash(node.path, in: location) }
@@ -450,8 +498,8 @@ struct WorkspaceBrowserView: View {
     @ViewBuilder
     private func fileActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode) -> some View {
         let folder = node.isDirectory ? node.path : (node.path as NSString).deletingLastPathComponent
-        Button("New File…", systemImage: "doc.badge.plus") { promptName(.newFile, location, path: folder) }
-        Button("New Folder…", systemImage: "folder.badge.plus") { promptName(.newFolder, location, path: folder) }
+        Button("New File…", systemImage: "doc.badge.plus") { startDraft(in: folder, isFolder: false, at: location) }
+        Button("New Folder…", systemImage: "folder.badge.plus") { startDraft(in: folder, isFolder: true, at: location) }
         Divider()
         if location.isLocal {
             Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.absolutePath(node.path)) }
@@ -579,33 +627,44 @@ struct WorkspaceBrowserView: View {
 
     // MARK: File operations
 
-    private func promptName(_ kind: WorkspaceNamePrompt.Kind, _ location: WorkspaceFileLocation,
-                            path: String, isDirectory: Bool = true) {
-        nameInput = kind == .rename ? (path as NSString).lastPathComponent : ""
-        namePrompt = WorkspaceNamePrompt(kind: kind, location: location, path: path, isDirectory: isDirectory)
+    /// Shows a name field in the tree, under `folder` ("" is the Space root), for a new item.
+    private func startDraft(in folder: String, isFolder: Bool, at location: WorkspaceFileLocation) {
+        let identity = treeIdentity(location)
+        collapsedRoots.remove(identity)
+        var parent = folder
+        while !parent.isEmpty {
+            expandedDirectories.insert(identity + "|" + parent)
+            parent = (parent as NSString).deletingLastPathComponent
+        }
+        draftName = ""
+        draft = WorkspaceFileDraft(location: location, folder: folder, isFolder: isFolder)
+        draftFocused = true
     }
 
-    private func submitName(_ prompt: WorkspaceNamePrompt) {
+    private func commitDraft() {
+        guard let draft else { return }
+        self.draft = nil
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let location = draft.location
+        let path = draft.folder.isEmpty ? name : draft.folder + "/" + name
+        runOperation(location) {
+            if draft.isFolder { try WorkspaceFiles.createFolder(path, at: location) }
+            else { try WorkspaceFiles.createFile(path, at: location) }
+        } completion: {
+            if draft.isFolder { createdDirectories[location.identity, default: []].insert(path) }
+            reveal(path, in: location)
+            if !draft.isFolder { onOpenFile(location, path) }
+        }
+    }
+
+    private func submitRename(_ prompt: WorkspaceRenamePrompt) {
         let name = nameInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         let location = prompt.location
-        switch prompt.kind {
-        case .newFile, .newFolder:
-            let path = prompt.path.isEmpty ? name : prompt.path + "/" + name
-            let isFolder = prompt.kind == .newFolder
-            runOperation(location) {
-                if isFolder { try WorkspaceFiles.createFolder(path, at: location) }
-                else { try WorkspaceFiles.createFile(path, at: location) }
-            } completion: {
-                if isFolder { createdDirectories[location.identity, default: []].insert(path) }
-                reveal(path, in: location)
-                if !isFolder { onOpenFile(location, path) }
-            }
-        case .rename:
-            let original = prompt.path
-            runOperation(location) { try WorkspaceFiles.renameItem(original, to: name, at: location) } completion: {
-                movePathState(from: original, to: $0, in: location)
-            }
+        let original = prompt.path
+        runOperation(location) { try WorkspaceFiles.renameItem(original, to: name, at: location) } completion: {
+            movePathState(from: original, to: $0, in: location)
         }
     }
 
@@ -906,29 +965,19 @@ private struct WorkspaceFileTarget {
     let isDirectory: Bool
 }
 
-private struct WorkspaceNamePrompt {
-    enum Kind { case newFile, newFolder, rename }
-    let kind: Kind
+/// A file or folder being named in the tree before it exists.
+private struct WorkspaceFileDraft {
     let location: WorkspaceFileLocation
-    /// The folder to create in ("" is the Space root), or the item to rename.
+    /// The folder it is created in; "" is the Space root.
+    let folder: String
+    let isFolder: Bool
+}
+
+private struct WorkspaceRenamePrompt {
+    let location: WorkspaceFileLocation
     let path: String
     let isDirectory: Bool
 
-    var title: String {
-        switch kind {
-        case .newFile: return "New File"
-        case .newFolder: return "New Folder"
-        case .rename: return isDirectory ? "Rename Folder" : "Rename File"
-        }
-    }
-
-    var message: String {
-        switch kind {
-        case .newFile, .newFolder:
-            let folder = path.isEmpty ? (location.root as NSString).lastPathComponent : path
-            return "In \(folder). Use / to create it inside new subfolders."
-        case .rename:
-            return "Enter a new name for “\((path as NSString).lastPathComponent)”."
-        }
-    }
+    var title: String { isDirectory ? "Rename Folder" : "Rename File" }
+    var message: String { "Enter a new name for “\((path as NSString).lastPathComponent)”." }
 }
