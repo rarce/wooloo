@@ -15,6 +15,7 @@ final class HerdrStoreTests: XCTestCase {
                                       ["pane_id": "w1:p2", "workspace_id": "w1", "tab_id": "w1:t1"],
                                       ["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t2"]]
         var focus = ("w1", "w1:t1", "w1:p1")
+        var reload: [String: Any] = ["status": "applied"]
 
         func snapshot() -> [String: Any] {
             ["result": ["snapshot": [
@@ -52,6 +53,14 @@ final class HerdrStoreTests: XCTestCase {
                 state.focus = ("w1", "w1:t1", "w1:p9")
                 return ["result": [:]]
             case "pane.send_input": return ["result": [:]]
+            case "tab.create":
+                state.tabs.append(["tab_id": "w1:t3", "workspace_id": "w1", "label": "3"])
+                state.panes.append(["pane_id": "w1:p4", "workspace_id": "w1", "tab_id": "w1:t3"])
+                return ["result": ["tab": ["tab_id": "w1:t3"]]]
+            case "pane.focus_direction":
+                state.focus = ("w1", "w1:t1", "w1:p2")
+                return ["result": [:]]
+            case "server.reload_config": return ["result": state.reload]
             default: return ["error": ["message": "\(method) is not allowed here"]]
             }
         }
@@ -161,5 +170,110 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(sessions.first, HerdrStore.defaultSessionName)
         XCTAssertFalse(sessions.contains("empty"))
         if let named, store.sessionName != HerdrStore.defaultSessionName { XCTAssertTrue(sessions.contains(named)) }
+    }
+
+    func testNewTabIsCreatedInTheSelectedSpaceAndSelected() async {
+        await connect()
+        store.createTab(cwd: "/private/tmp")
+        await waitUntil("new tab selected") { store.selectedTabID == "w1:t3" }
+        XCTAssertEqual(store.selectedPaneID, "w1:p4")
+        let request = server.requests.first { $0.method == "tab.create" }
+        XCTAssertEqual(request?.params["workspace_id"] as? String, "w1")
+        XCTAssertEqual(request?.params["cwd"] as? String, "/private/tmp")
+    }
+
+    func testFocusMovesFollowTheServer() async {
+        await connect()
+        store.focusPane("right")
+        await waitUntil("focused pane") { store.selectedPaneID == "w1:p2" }
+        let request = server.requests.first { $0.method == "pane.focus_direction" }
+        XCTAssertEqual(request?.params["pane_id"] as? String, "w1:p1")
+        XCTAssertEqual(request?.params["direction"] as? String, "right")
+    }
+
+    /// A reload that Herdr does not apply reports its status and diagnostics.
+    func testConfigReloadReportsRejections() async {
+        await connect()
+        store.reloadConfig()
+        await waitUntil("reload requested") { server.requests.contains { $0.method == "server.reload_config" } }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(store.actionError)
+
+        state.lock.lock()
+        state.reload = ["status": "rejected", "diagnostics": ["unknown key `foo`", "line 3"]]
+        state.lock.unlock()
+        store.reloadConfig()
+        await waitUntil("reload error") { store.actionError == "Herdr reload: rejected. unknown key `foo`\nline 3" }
+    }
+
+    /// Switching session resets the selection, remembers the name and connects to the new socket.
+    func testConnectingToAnotherSessionStartsOver() async throws {
+        let key = "HerdrLastSession"
+        let saved = UserDefaults.standard.string(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        await connect()
+        let other = try FakeHerdrServer(path: root.appendingPathComponent("sessions/other/herdr.sock").path) { [state] method, _ in
+            state.lock.lock()
+            defer { state.lock.unlock() }
+            return method == "session.snapshot" ? state.snapshot() : ["result": [:]]
+        }
+        defer { other.stop() }
+        store.connect(to: " other ")
+        XCTAssertEqual(store.sessionName, "other")
+        XCTAssertNil(store.snapshot)
+        XCTAssertNil(store.selectedPaneID)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: key), "other")
+        await waitUntil("connected to other") { store.isConnected }
+        XCTAssertTrue(other.requests.contains { $0.method == "session.snapshot" })
+    }
+
+    func testSplitResizeNeedsTheEndpoint() async {
+        await connect()
+        store.setSplitRatio(path: [true], ratio: 0.5)
+        XCTAssertEqual(store.surfaceError, "Herdr split resize is unavailable")
+    }
+
+    /// With the binary endpoint, the store shows its surfaces and sends input, focus, resize
+    /// and split ratios through it instead of JSON requests.
+    func testEndpointCarriesSurfacesAndClientMessages() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        XCTAssertEqual(store.surface?.width, 4)
+
+        store.sendText("ls", to: "w1:p1")
+        await waitUntil("input sent") { endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .text("ls"))!) }
+        store.resizeSurface(cols: 100, rows: 30, cellWidth: 8, cellHeight: 16)
+        store.resizeSurface(cols: 100, rows: 30, cellWidth: 8, cellHeight: 16)
+        store.resizeSurface(cols: 2000, rows: 30, cellWidth: 8, cellHeight: 16)
+        store.select(tabID: "w1:t2")
+        store.setSplitRatio(path: [false, true], ratio: 0.25)
+        await waitUntil("split ratio sent") { Self.requests(in: endpoint).contains { $0.method == "layout.set_split_ratio" } }
+
+        XCTAssertEqual(endpoint.received.filter { $0.first == 12 }.map(Array.init), [[12, 8, 16, 100, 30, 0]],
+                       "Repeated and invalid sizes are not sent")
+        let requests = Self.requests(in: endpoint)
+        XCTAssertTrue(requests.contains { $0.method == "tab.focus" && $0.params["tab_id"] as? String == "w1:t2" })
+        XCTAssertTrue(requests.contains { $0.method == "pane.focus" && $0.params["pane_id"] as? String == "w1:p3" })
+        let ratio = try XCTUnwrap(requests.first { $0.method == "layout.set_split_ratio" })
+        XCTAssertEqual(ratio.params["tab_id"] as? String, "w1:t2")
+        XCTAssertEqual(ratio.params["path"] as? [Bool], [false, true])
+        XCTAssertEqual(ratio.params["ratio"] as? Double, 0.25)
+        XCTAssertNil(store.surfaceError)
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.send_input" }, "Input skipped the JSON fallback")
+    }
+
+    /// The JSON requests (tag 15) the store sent through the endpoint.
+    private static func requests(in endpoint: FakeSurfaceEndpoint) -> [(method: String, params: [String: Any])] {
+        endpoint.received.filter { $0.first == 15 }.compactMap { frame in
+            var probe = SurfaceReaderProbe(frame)
+            _ = probe.number()
+            _ = probe.string() // boot ID
+            guard let json = try? JSONSerialization.jsonObject(with: Data(probe.string().utf8)) as? [String: Any],
+                  let method = json["method"] as? String else { return nil }
+            return (method, json["params"] as? [String: Any] ?? [:])
+        }
     }
 }
