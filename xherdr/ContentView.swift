@@ -373,6 +373,9 @@ struct ContentView: View {
                                  ? explorerLocation?.root : nil)
                 .padding(7)
             Divider()
+            AgentQuotaSection(machine: explorerMachine)
+                .padding(7)
+            Divider()
             HStack(spacing: 0) {
                 Button {
                     window.requestedSessionName = herdr.sessionName

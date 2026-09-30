@@ -38,6 +38,9 @@
 		A10000000000000000000042 /* WorkspaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000043 /* WorkspaceSearch.swift */; };
 		A1000000000000000000005C /* HostStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005D /* HostStats.swift */; };
 		A1000000000000000000005E /* HostStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005F /* HostStatsView.swift */; };
+		A10000000000000000000F01 /* AgentQuota.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F02 /* AgentQuota.swift */; };
+		A10000000000000000000F03 /* AgentQuotaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F04 /* AgentQuotaView.swift */; };
+		C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F06 /* AgentQuotaTests.swift */; };
 		C30000000000000000000060 /* HostStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000061 /* HostStatsTests.swift */; };
 		C30000000000000000000064 /* ContentCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000065 /* ContentCommandsTests.swift */; };
 		C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */; };
@@ -130,6 +133,9 @@
 		A10000000000000000000043 /* WorkspaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearch.swift; sourceTree = "<group>"; };
 		A1000000000000000000005D /* HostStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStats.swift; sourceTree = "<group>"; };
 		A1000000000000000000005F /* HostStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsView.swift; sourceTree = "<group>"; };
+		A10000000000000000000F02 /* AgentQuota.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuota.swift; sourceTree = "<group>"; };
+		A10000000000000000000F04 /* AgentQuotaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaView.swift; sourceTree = "<group>"; };
+		C30000000000000000000F06 /* AgentQuotaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000061 /* HostStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000065 /* ContentCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCommandsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerModelTests.swift; sourceTree = "<group>"; };
@@ -224,6 +230,8 @@
 				A10000000000000000000043 /* WorkspaceSearch.swift */,
 				A1000000000000000000005D /* HostStats.swift */,
 				A1000000000000000000005F /* HostStatsView.swift */,
+				A10000000000000000000F02 /* AgentQuota.swift */,
+				A10000000000000000000F04 /* AgentQuotaView.swift */,
 				A10000000000000000000041 /* Assets.xcassets */,
 			);
 			path = xherdr;
@@ -262,6 +270,7 @@
 				C30000000000000000000033 /* HerdrSocketTests.swift */,
 				C30000000000000000000035 /* WorkspaceFilesRemoteTests.swift */,
 				C30000000000000000000061 /* HostStatsTests.swift */,
+				C30000000000000000000F06 /* AgentQuotaTests.swift */,
 				C30000000000000000000065 /* ContentCommandsTests.swift */,
 				C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */,
 				C30000000000000000000073 /* HerdrSettingsModelTests.swift */,
@@ -429,6 +438,8 @@
 				A10000000000000000000042 /* WorkspaceSearch.swift in Sources */,
 				A1000000000000000000005C /* HostStats.swift in Sources */,
 				A1000000000000000000005E /* HostStatsView.swift in Sources */,
+				A10000000000000000000F01 /* AgentQuota.swift in Sources */,
+				A10000000000000000000F03 /* AgentQuotaView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -457,6 +468,7 @@
 				C30000000000000000000032 /* HerdrSocketTests.swift in Sources */,
 				C30000000000000000000034 /* WorkspaceFilesRemoteTests.swift in Sources */,
 				C30000000000000000000060 /* HostStatsTests.swift in Sources */,
+				C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */,
 				C30000000000000000000064 /* ContentCommandsTests.swift in Sources */,
 				C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */,
 				C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */,

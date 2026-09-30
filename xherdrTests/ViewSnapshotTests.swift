@@ -646,11 +646,25 @@ final class ViewSnapshotTests: XCTestCase {
         let savedSample = HostProbe.localSample
         HostProbe.localSample = { _ in Self.hostSample }
         defer { HostProbe.localSample = savedSample }
+        AgentQuotaMonitor.isPollingEnabled = false
+        let quotas = AgentQuotaMonitor.shared(for: nil)
+        quotas.apply(.claude, .success(AgentQuota(windows: [
+            QuotaWindow(id: "five_hour", label: "5H", usedFraction: 0.12, resetsAt: nil),
+            QuotaWindow(id: "seven_day", label: "7D", usedFraction: 0.31, resetsAt: nil),
+        ], plan: "max", capturedAt: Date())))
+        quotas.apply(.codex, .success(AgentQuota(windows: [
+            QuotaWindow(id: "codex-primary", label: "7D", usedFraction: 0.78, resetsAt: nil),
+        ], plan: "plus", capturedAt: Date())))
+        defer {
+            AgentQuotaMonitor.isPollingEnabled = true
+            for provider in AgentProvider.allCases { quotas.apply(provider, .success(nil)) }
+        }
 
         let defaults = UserDefaults.standard
         let values: [String: Any] = [
             "HerdrLastSession": "work", "SidebarWidth": 206.0, "FilesSidebarWidth": 244.0,
             "AgentsInSelectedSpaceOnly": false, "HostStatsCollapsed": false, "RepositoryCollapsed": false,
+            "AgentQuotasCollapsed": true,
             XherdrTypography.baseKey: XherdrTypography.defaultBase, XherdrTypography.codeKey: XherdrTypography.defaultCode,
             HerdrNotifier.dockBadgeKey: false, DiffDisplayMode.storageKey: DiffDisplayMode.unified.rawValue,
         ]

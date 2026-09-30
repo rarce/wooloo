@@ -972,8 +972,9 @@ enum WorkspaceFiles {
     }
 
     /// Output of a short read-only script on an SSH machine, e.g. the sidebar's host stats probe.
-    static func remoteOutput(_ machine: HerdrMachineProfile, script: String, label: String) throws -> Data {
-        try ssh(machine, script, limit: 64_000, timeout: 10, label: label)
+    static func remoteOutput(_ machine: HerdrMachineProfile, script: String, label: String,
+                             limit: Int = 64_000) throws -> Data {
+        try ssh(machine, script, limit: limit, timeout: 10, label: label)
     }
 
     /// Tests replace it with a script that runs the remote command locally.
@@ -992,7 +993,7 @@ enum WorkspaceFiles {
 
     /// Runs a process and returns its output. `label` names it in the process log, for
     /// example `git status`, and `remote` marks commands sent over SSH.
-    private static func run(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
+    static func run(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
                             input: Data? = nil, limit: Int, timeout: TimeInterval = 15,
                             label: String? = nil, remote: Bool = false) throws -> Data {
         let start = TerminalPipelineMetrics.now()
