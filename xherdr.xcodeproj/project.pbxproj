@@ -40,6 +40,7 @@
 		C30000000000000000000064 /* ContentCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000065 /* ContentCommandsTests.swift */; };
 		C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */; };
 		C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000073 /* HerdrSettingsModelTests.swift */; };
+		C30000000000000000000074 /* EditorFindHighlightTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000075 /* EditorFindHighlightTests.swift */; };
 		C30000000000000000000001 /* THIRD_PARTY_NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */; };
 		A10000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000041 /* Assets.xcassets */; };
 		A10000000000000000000032 /* CodeEditSourceEditor in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000034 /* CodeEditSourceEditor */; };
@@ -127,6 +128,7 @@
 		C30000000000000000000065 /* ContentCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCommandsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerModelTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000073 /* HerdrSettingsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModelTests.swift; sourceTree = "<group>"; };
+		C30000000000000000000075 /* EditorFindHighlightTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorFindHighlightTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = THIRD_PARTY_NOTICES.txt; sourceTree = "<group>"; };
 		A10000000000000000000041 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000000000000000000005 /* xherdr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xherdr.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -253,6 +255,7 @@
 				C30000000000000000000065 /* ContentCommandsTests.swift */,
 				C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */,
 				C30000000000000000000073 /* HerdrSettingsModelTests.swift */,
+				C30000000000000000000075 /* EditorFindHighlightTests.swift */,
 				C30000000000000000000041 /* WorkspaceTreeTests.swift */,
 				C30000000000000000000043 /* DocumentFindTests.swift */,
 				C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */,
@@ -443,6 +446,7 @@
 				C30000000000000000000064 /* ContentCommandsTests.swift in Sources */,
 				C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */,
 				C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */,
+				C30000000000000000000074 /* EditorFindHighlightTests.swift in Sources */,
 				C30000000000000000000040 /* WorkspaceTreeTests.swift in Sources */,
 				C30000000000000000000042 /* DocumentFindTests.swift in Sources */,
 				C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */,
