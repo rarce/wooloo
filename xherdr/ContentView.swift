@@ -391,14 +391,15 @@ struct ContentView: View {
                             }
                         }
                     }
-
-                    HostStatsSection(machine: explorerMachine,
-                                     directory: explorerLocation?.machine?.id == explorerMachine?.id
-                                         ? explorerLocation?.root : nil)
                 }
                 .padding(7)
             }
 
+            Divider()
+            HostStatsSection(machine: explorerMachine,
+                             directory: explorerLocation?.machine?.id == explorerMachine?.id
+                                 ? explorerLocation?.root : nil)
+                .padding(7)
             Divider()
             HStack(spacing: 0) {
                 Button {
