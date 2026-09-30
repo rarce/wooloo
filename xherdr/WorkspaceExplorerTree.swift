@@ -109,7 +109,7 @@ enum WorkspaceExplorer {
         for change in changes {
             var directory = (change.path as NSString).deletingLastPathComponent
             while !directory.isEmpty {
-                if let existing = kinds[directory], existing.rawValue >= change.kind.rawValue { break }
+                if let existing = kinds[directory], existing.folderPriority >= change.kind.folderPriority { break }
                 kinds[directory] = change.kind
                 directory = (directory as NSString).deletingLastPathComponent
             }

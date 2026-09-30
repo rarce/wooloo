@@ -191,8 +191,8 @@ extension XherdrTheme {
     func vcs(_ kind: WorkspaceFileChange.Kind) -> Color {
         switch kind {
         case .modified: return Self.color(herdr.yellow)
-        case .untracked: return muted
-        case .added: return Self.color(herdr.green)
+        // New files are green whether staged or not, as in VS Code and Zed; gray is for ignored ones.
+        case .untracked, .added: return Self.color(herdr.green)
         case .deleted: return Self.color(herdr.red)
         case .renamed: return Self.color(herdr.blue)
         case .conflicted: return Self.color(herdr.red)

@@ -110,6 +110,13 @@ final class WorkspaceExplorerTests: XCTestCase {
         XCTAssertEqual(kinds["src"], .conflicted)
         XCTAssertEqual(kinds["docs"], .untracked)
         XCTAssertNil(kinds[""], "The root has no color")
+
+        let mixed = WorkspaceExplorer.directoryKinds([
+            change("a/new.swift", "A", " "), change("a/old.swift", " ", "M"), change("a/gone.swift", " ", "D"),
+            change("b/new.swift", "?", "?"), change("b/moved.swift", "R", " "),
+        ])
+        XCTAssertEqual(mixed["a"], .deleted, "Deletions outrank modifications, which outrank new files")
+        XCTAssertEqual(mixed["b"], .untracked, "New files outrank renames")
     }
 
     func testFileIcons() {

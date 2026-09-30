@@ -69,6 +69,18 @@ struct WorkspaceFileChange: Identifiable {
             case .conflicted: return "!"
             }
         }
+
+        /// Which change colors a folder holding several: conflicts, then deletions, then
+        /// modifications, then new files, as in Zed.
+        var folderPriority: Int {
+            switch self {
+            case .renamed: return 0
+            case .untracked, .added: return 1
+            case .modified: return 2
+            case .deleted: return 3
+            case .conflicted: return 4
+            }
+        }
     }
 }
 

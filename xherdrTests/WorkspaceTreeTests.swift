@@ -142,7 +142,7 @@ final class XherdrThemeTests: XCTestCase {
             XCTAssertEqual(theme.vcs(.added), theme.success, theme.id)
             XCTAssertEqual(theme.vcs(.deleted), theme.error, theme.id)
             XCTAssertEqual(theme.vcs(.conflicted), theme.error, theme.id)
-            XCTAssertEqual(theme.vcs(.untracked), theme.muted, theme.id)
+            XCTAssertEqual(theme.vcs(.untracked), theme.success, "\(theme.id): new files are green, like staged ones")
             XCTAssertEqual(theme.vcs(.modified), XherdrTheme.color(theme.herdr.yellow), theme.id)
             XCTAssertEqual(theme.vcs(.renamed), XherdrTheme.color(theme.herdr.blue), theme.id)
         }
