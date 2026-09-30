@@ -26,9 +26,7 @@ struct WorkspaceBrowserView: View {
     @State private var isLoading = false
     @State private var showsChanges = false
     @State private var modifiedOnly = false
-    @State private var expandedDirectories: Set<String> = []
-    @State private var collapsedRoots: Set<String> = []
-    @State private var selectedItem: String?
+    @State private var tree = WorkspaceExplorerTree()
     @State private var operationError: String?
     @State private var clipboard: WorkspaceFileClipboard?
     /// A file or folder being named in place in the tree, before it is created.
@@ -40,8 +38,6 @@ struct WorkspaceBrowserView: View {
     @State private var keyMonitor: Any?
     @State private var windowBox = WindowBox()
     @State private var pendingDelete: WorkspaceFileTarget?
-    /// Folders created in the explorer, by location, shown while they hold no listed file.
-    @State private var createdDirectories: [String: Set<String>] = [:]
     /// Bumped on every listing load so the Git bar refreshes with the explorer.
     @State private var listingVersion = 0
     /// Bumped by Git bar operations so the repository panel refreshes too.
@@ -187,12 +183,12 @@ struct WorkspaceBrowserView: View {
                     : (modifiedOnly ? listing.files.filter { changedPaths.contains($0) } : listing.files)
                 let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
                                                uniquingKeysWith: { first, _ in first })
-                let directoryKinds = directoryKinds(listing.changes)
-                let stageStates = showsChanges ? stageStates(listing.changes) : [:]
+                let directoryKinds = WorkspaceExplorer.directoryKinds(listing.changes)
+                let stageStates = showsChanges ? WorkspaceExplorer.stageStates(listing.changes) : [:]
                 let rows = WorkspaceTreeNode.visibleRows(
                     paths: paths,
-                    directories: showsChanges || modifiedOnly ? [] : createdDirectories[location.identity] ?? [],
-                    expanded: expandedDirectories,
+                    directories: showsChanges || modifiedOnly ? [] : tree.createdDirectories[location.identity] ?? [],
+                    expanded: tree.expanded,
                     identity: treeIdentity(location)
                 )
                 let shownDraft = !showsChanges && draft?.location.identity == location.identity ? draft : nil
@@ -201,7 +197,7 @@ struct WorkspaceBrowserView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             treeRoot(location, stageState: listing.hasGit ? stageStates[""] : nil)
-                            if !collapsedRoots.contains(treeIdentity(location)) {
+                            if !tree.collapsedRoots.contains(treeIdentity(location)) {
                                 if draftFolder == "" { draftRow(depth: 1) }
                                 if (showsChanges || isFilteredFiles) && !listing.hasGit {
                                     hint("No Git repository in this Space")
@@ -232,7 +228,7 @@ struct WorkspaceBrowserView: View {
                             Color.clear
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    selectedItem = nil
+                                    tree.selected = nil
                                     treeFocused = true
                                 }
                                 .contextMenu { rootMenu(location) }
@@ -302,10 +298,10 @@ struct WorkspaceBrowserView: View {
     private func treeRoot(_ location: WorkspaceFileLocation,
                           stageState: WorkspaceFileChange.StageState?) -> some View {
         let identity = treeIdentity(location)
-        let isExpanded = !collapsedRoots.contains(identity)
+        let isExpanded = !tree.collapsedRoots.contains(identity)
         return Button {
-            if isExpanded { collapsedRoots.insert(identity) }
-            else { collapsedRoots.remove(identity) }
+            if isExpanded { tree.collapsedRoots.insert(identity) }
+            else { tree.collapsedRoots.remove(identity) }
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: isExpanded ? "folder.fill" : "folder")
@@ -363,7 +359,7 @@ struct WorkspaceBrowserView: View {
     private func draftRow(depth: Int) -> some View {
         let isFolder = draft?.isFolder == true
         return HStack(spacing: 6) {
-            Image(systemName: isFolder ? "folder" : draft?.renaming.map(fileIcon) ?? "doc.text")
+            Image(systemName: isFolder ? "folder" : draft?.renaming.map(WorkspaceExplorer.fileIcon) ?? "doc.text")
                 .font(.system(size: typography.body))
                 .frame(width: 17)
                 .foregroundStyle(.secondary)
@@ -406,10 +402,10 @@ struct WorkspaceBrowserView: View {
         let node = row.node
         let kind = node.isDirectory ? directoryKind : change?.kind
         let identity = treeIdentity(location) + "|" + node.path
-        let isExpanded = expandedDirectories.contains(identity)
-        let isSelected = selectedItem == identity
+        let isExpanded = tree.expanded.contains(identity)
+        let isSelected = tree.selected == identity
         return Button {
-            selectedItem = identity
+            tree.selected = identity
             treeFocused = true
             if node.isDirectory {
                 toggleDirectory(identity, isExpanded: isExpanded)
@@ -421,7 +417,7 @@ struct WorkspaceBrowserView: View {
             HStack(spacing: 6) {
                 Image(systemName: node.isDirectory
                       ? (isExpanded ? "folder.fill" : "folder")
-                      : (showsChanges ? "arrow.left.arrow.right" : fileIcon(node.path)))
+                      : (showsChanges ? "arrow.left.arrow.right" : WorkspaceExplorer.fileIcon(node.path)))
                     .font(.system(size: typography.body))
                     .frame(width: 17)
                     .foregroundStyle(node.isDirectory ? Color.secondary : (showsChanges ? theme.accent : .secondary))
@@ -485,13 +481,13 @@ struct WorkspaceBrowserView: View {
                 }
             } else {
                 Button("Open", systemImage: "doc.text") {
-                    selectedItem = identity
+                    tree.selected = identity
                     onOpenFile(location, node.path, false)
                 }
                 .disabled(change?.kind == .deleted)
                 if change != nil {
                     Button("Open Changes", systemImage: "arrow.left.arrow.right") {
-                        selectedItem = identity
+                        tree.selected = identity
                         onOpenDiff(location, node.path, false)
                     }
                 }
@@ -608,16 +604,11 @@ struct WorkspaceBrowserView: View {
     }
 
     private func toggleDirectory(_ identity: String, isExpanded: Bool) {
-        if isExpanded {
-            expandedDirectories.remove(identity)
-        } else {
-            expandedDirectories.insert(identity)
-        }
+        tree.toggle(identity, isExpanded: isExpanded)
     }
 
     private func collapseAll(_ location: WorkspaceFileLocation) {
-        let prefix = treeIdentity(location) + "|"
-        expandedDirectories = expandedDirectories.filter { !$0.hasPrefix(prefix) }
+        tree.collapseAll(treeIdentity(location))
     }
 
     /// A checkbox that stages the file or everything under the folder, or unstages it when all of it is staged.
@@ -642,22 +633,6 @@ struct WorkspaceBrowserView: View {
         .help(state == .all ? "Unstage \(name)" : "Stage \(name)")
     }
 
-    /// Stage state of every changed file, of each folder above one, and of the root under "".
-    private func stageStates(_ changes: [WorkspaceFileChange]) -> [String: WorkspaceFileChange.StageState] {
-        var states: [String: WorkspaceFileChange.StageState] = [:]
-        for change in changes {
-            let state = change.stageState
-            states[change.path] = state
-            var directory = (change.path as NSString).deletingLastPathComponent
-            while true {
-                states[directory] = states[directory].map { $0.merged(with: state) } ?? state
-                if directory.isEmpty { break }
-                directory = (directory as NSString).deletingLastPathComponent
-            }
-        }
-        return states
-    }
-
     /// Runs a Git or file operation off the main thread, then reloads the listing unless told not to.
     private func runOperation<Value>(_ location: WorkspaceFileLocation, reloads: Bool = true,
                                      _ operation: @escaping () throws -> Value,
@@ -679,13 +654,7 @@ struct WorkspaceBrowserView: View {
     /// for renaming the item at `renaming`.
     private func startDraft(in folder: String, isFolder: Bool, at location: WorkspaceFileLocation,
                             renaming: String? = nil) {
-        let identity = treeIdentity(location)
-        collapsedRoots.remove(identity)
-        var parent = folder
-        while !parent.isEmpty {
-            expandedDirectories.insert(identity + "|" + parent)
-            parent = (parent as NSString).deletingLastPathComponent
-        }
+        tree.expand(folder, in: treeIdentity(location))
         draftName = renaming.map { ($0 as NSString).lastPathComponent } ?? ""
         draft = WorkspaceFileDraft(location: location, folder: folder, isFolder: isFolder, renaming: renaming)
     }
@@ -709,12 +678,11 @@ struct WorkspaceBrowserView: View {
         guard treeFocused, !showsChanges, draft == nil, pendingDelete == nil, listing != nil, let location,
               event.window != nil, event.window === windowBox.window,
               let command = ExplorerFileCommand.allCases.first(where: { $0.matches(event) }) else { return false }
-        let prefix = treeIdentity(location) + "|"
-        let path = selectedItem.flatMap { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : nil } ?? ""
+        let path = tree.selectedPath(in: treeIdentity(location)) ?? ""
         guard !path.isEmpty || command.appliesToRoot else { return false }
-        let isDirectory = path.isEmpty || createdDirectories[location.identity]?.contains(path) == true
-            || listing?.files.contains { $0.hasPrefix(path + "/") } == true
-        let folder = isDirectory ? path : (path as NSString).deletingLastPathComponent
+        let isDirectory = WorkspaceExplorer.isDirectory(path, files: listing?.files ?? [],
+                                                        created: tree.createdDirectories[location.identity] ?? [])
+        let folder = WorkspaceExplorer.folder(for: path, isDirectory: isDirectory)
         let absolute = location.absolutePath(path)
         switch command {
         case .newFile: startDraft(in: folder, isFolder: false, at: location)
@@ -754,12 +722,12 @@ struct WorkspaceBrowserView: View {
             }
             return
         }
-        let path = draft.folder.isEmpty ? name : draft.folder + "/" + name
+        let path = WorkspaceExplorer.path(of: name, in: draft.folder)
         runOperation(location) {
             if draft.isFolder { try WorkspaceFiles.createFolder(path, at: location) }
             else { try WorkspaceFiles.createFile(path, at: location) }
         } completion: {
-            if draft.isFolder { createdDirectories[location.identity, default: []].insert(path) }
+            if draft.isFolder { tree.createdDirectories[location.identity, default: []].insert(path) }
             reveal(path, in: location)
             if !draft.isFolder { onOpenFile(location, path, false) }
         }
@@ -783,16 +751,11 @@ struct WorkspaceBrowserView: View {
     /// copied in Finder since then.
     private func paste(into directory: String, in location: WorkspaceFileLocation) {
         let pasteboard = NSPasteboard.general
-        var sources: [String] = []
-        var move = false
-        if let clipboard, clipboard.machineID == location.machine?.id,
-           !location.isLocal || clipboard.changeCount == pasteboard.changeCount {
-            sources = clipboard.paths
-            move = clipboard.isCut
-        } else if location.isLocal,
-                  let urls = pasteboard.readObjects(forClasses: [NSURL.self],
-                                                    options: [.urlReadingFileURLsOnly: true]) as? [URL] {
-            sources = urls.map(\.path)
+        let (sources, move) = WorkspaceExplorer.pasteSources(
+            clipboard: clipboard, location: location, pasteboardChangeCount: pasteboard.changeCount
+        ) {
+            (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?
+                .map(\.path) ?? []
         }
         guard !sources.isEmpty else {
             operationError = "Nothing to paste. Copy or cut a file on \(location.machineLabel) first."
@@ -818,7 +781,7 @@ struct WorkspaceBrowserView: View {
             var isDirectory: ObjCBool = false
             for path in paths where FileManager.default.fileExists(atPath: location.absolutePath(path),
                                                                    isDirectory: &isDirectory) && isDirectory.boolValue {
-                createdDirectories[location.identity, default: []].insert(path)
+                tree.createdDirectories[location.identity, default: []].insert(path)
             }
         }
         if let last = paths.last { reveal(last, in: location) }
@@ -839,63 +802,19 @@ struct WorkspaceBrowserView: View {
 
     /// Expands the folders above `path` and selects it.
     private func reveal(_ path: String, in location: WorkspaceFileLocation) {
-        let identity = treeIdentity(location)
-        collapsedRoots.remove(identity)
-        var parent = (path as NSString).deletingLastPathComponent
-        while !parent.isEmpty {
-            expandedDirectories.insert(identity + "|" + parent)
-            parent = (parent as NSString).deletingLastPathComponent
-        }
-        selectedItem = identity + "|" + path
+        tree.reveal(path, in: treeIdentity(location))
     }
 
-    /// Carries expanded folders, the selection and created folders over to a renamed item.
     private func movePathState(from original: String, to renamed: String, in location: WorkspaceFileLocation) {
-        let identity = treeIdentity(location) + "|"
-        func moved(_ key: String, prefix: String) -> String? {
-            guard key.hasPrefix(prefix) else { return nil }
-            let rest = key.dropFirst(prefix.count)
-            if rest == original { return prefix + renamed }
-            if rest.hasPrefix(original + "/") { return prefix + renamed + rest.dropFirst(original.count) }
-            return nil
-        }
-        expandedDirectories = Set(expandedDirectories.map { moved($0, prefix: identity) ?? $0 })
-        if let selectedItem { self.selectedItem = moved(selectedItem, prefix: identity) ?? selectedItem }
-        if let created = createdDirectories[location.identity] {
-            createdDirectories[location.identity] = Set(created.map { moved($0, prefix: "") ?? $0 })
-        }
+        tree.move(from: original, to: renamed, in: treeIdentity(location), location: location.identity)
     }
 
     private func forgetPathState(_ path: String, in location: WorkspaceFileLocation) {
-        createdDirectories[location.identity]?.remove(path)
-        createdDirectories[location.identity] = createdDirectories[location.identity]?.filter { !$0.hasPrefix(path + "/") }
+        tree.forget(path, location: location.identity)
     }
 
     private func statusColor(_ kind: WorkspaceFileChange.Kind) -> Color {
         theme.vcs(kind)
-    }
-
-    /// Strongest change kind under each directory, keyed by directory path.
-    private func directoryKinds(_ changes: [WorkspaceFileChange]) -> [String: WorkspaceFileChange.Kind] {
-        var kinds: [String: WorkspaceFileChange.Kind] = [:]
-        for change in changes {
-            var directory = (change.path as NSString).deletingLastPathComponent
-            while !directory.isEmpty {
-                if let existing = kinds[directory], existing.rawValue >= change.kind.rawValue { break }
-                kinds[directory] = change.kind
-                directory = (directory as NSString).deletingLastPathComponent
-            }
-        }
-        return kinds
-    }
-
-    private func fileIcon(_ path: String) -> String {
-        switch (path as NSString).pathExtension.lowercased() {
-        case "swift": return "swift"
-        case "md", "markdown": return "doc.richtext"
-        case "png", "jpg", "jpeg", "gif", "webp": return "photo"
-        default: return "doc.text"
-        }
     }
 
     /// Shows whether the explorer browses this Mac or an SSH machine.
@@ -948,8 +867,8 @@ struct WorkspaceBrowserView: View {
             switch result {
             case .success(let value):
                 listing = value
-                if location.isLocal, let created = createdDirectories[location.identity] {
-                    createdDirectories[location.identity] = created.filter { path in
+                if location.isLocal {
+                    tree.pruneCreated(location: location.identity) { path in
                         var isDirectory: ObjCBool = false
                         return FileManager.default.fileExists(atPath: location.absolutePath(path), isDirectory: &isDirectory)
                             && isDirectory.boolValue
@@ -1047,15 +966,6 @@ final class WorkspaceTreeBuilderNode {
 }
 
 /// Files and folders copied or cut in the explorer, waiting to be pasted.
-private struct WorkspaceFileClipboard {
-    /// nil for this Mac.
-    let machineID: String?
-    let paths: [String]
-    let isCut: Bool
-    /// The general pasteboard's change count after a local copy; copying anything else later replaces this.
-    let changeCount: Int
-}
-
 private struct WorkspaceFileTarget {
     let location: WorkspaceFileLocation
     let path: String
