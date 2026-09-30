@@ -155,3 +155,95 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(result.matchCount, 1)
     }
 }
+
+/// The Herdr command that lists SSH machines and reads their snapshots, replaced by a script
+/// that logs its arguments and prints canned JSON.
+final class WorkspaceHerdrCommandTests: XCTestCase {
+    private var sandbox: WorkspaceGitSandbox!
+    private var savedCandidates: [String] = []
+
+    override func setUpWithError() throws {
+        sandbox = try WorkspaceGitSandbox()
+        let snapshot = try JSONSerialization.data(withJSONObject: fakeSnapshot(label: "remote project"))
+        try sandbox.write([
+            "bin/herdr": """
+                #!/bin/sh
+                echo "$@" > '\(sandbox.path("herdr.log"))'
+                case "$1" in
+                machine) cat '\(sandbox.path("machines.json"))' ;;
+                --machine) cat '\(sandbox.path("snapshot.json"))' ;;
+                *) echo "unknown command" >&2; exit 2 ;;
+                esac
+                """,
+            "machines.json": """
+                [{"id": "dev", "label": "Dev box", "target": "dev@example.test", "session": "default", "enabled": true},
+                 {"id": "old", "label": "Old box", "target": "old.test", "session": "default", "enabled": false}]
+                """,
+            "snapshot.json": String(decoding: snapshot, as: UTF8.self),
+        ], in: ".")
+        try sandbox.sh("chmod 755 bin/herdr")
+        savedCandidates = WorkspaceFiles.herdrCandidates
+        WorkspaceFiles.herdrCandidates = [sandbox.path("missing/herdr"), sandbox.path("bin/herdr")]
+    }
+
+    override func tearDown() {
+        WorkspaceFiles.herdrCandidates = savedCandidates
+        sandbox.tearDown()
+    }
+
+    private func loggedArguments() throws -> String {
+        try sandbox.read("herdr.log", in: ".").trimmingCharacters(in: .newlines)
+    }
+
+    func testMachinesListsOnlyEnabledProfiles() throws {
+        XCTAssertEqual(try WorkspaceFiles.machines().map(\.id), ["dev"])
+        XCTAssertEqual(try loggedArguments(), "machine list --json")
+    }
+
+    func testRemoteSnapshotAsksTheMachinesHerdr() throws {
+        let machine = HerdrMachineProfile(id: "dev", label: "Dev box", target: "dev@example.test",
+                                          session: "default", enabled: true)
+        let snapshot = try WorkspaceFiles.remoteSnapshot(machine)
+        XCTAssertEqual(snapshot.workspaces.map(\.label), ["remote project"])
+        XCTAssertEqual(try loggedArguments(), "--machine dev api snapshot")
+    }
+
+    func testMissingOrFailingHerdrIsReported() throws {
+        try sandbox.write(["machines.json": "not json"], in: ".")
+        XCTAssertThrowsError(try WorkspaceFiles.machines())
+
+        WorkspaceFiles.herdrCandidates = [sandbox.path("missing/herdr")]
+        XCTAssertThrowsError(try WorkspaceFiles.machines()) { error in
+            XCTAssertEqual(error.localizedDescription, "Herdr executable was not found")
+        }
+    }
+
+    /// Processes started inside `collect` are returned with their outcome; others are not kept.
+    func testProcessLogCollectsOnlyDuringTheBody() throws {
+        _ = try WorkspaceFiles.machines()
+        let (ids, processes) = try WorkspaceProcessLog.collect {
+            let ids = try WorkspaceFiles.machines().map(\.id)
+            WorkspaceFiles.herdrCandidates = [sandbox.path("missing/herdr")]
+            return ids
+        }
+        XCTAssertEqual(ids, ["dev"])
+        XCTAssertEqual(processes.map(\.label), ["herdr"])
+        XCTAssertEqual(processes.map(\.succeeded), [true])
+        XCTAssertEqual(processes.map(\.remote), [false])
+        XCTAssertGreaterThan(processes[0].bytes, 0)
+    }
+
+    func testChangeKindsAndGitActionsHaveLabels() {
+        let kinds: [WorkspaceFileChange.Kind] = [.untracked, .renamed, .modified, .added, .deleted, .conflicted]
+        XCTAssertEqual(kinds.map(\.label), ["U", "R", "M", "A", "D", "!"])
+
+        let syncs: [WorkspaceGitSync] = [.fetch, .pull, .pullRebase, .push, .forcePush, .publish(remote: "origin", branch: "main")]
+        XCTAssertEqual(syncs.map(\.title), ["Fetch", "Pull", "Pull (Rebase)", "Push", "Force Push", "Publish"])
+        XCTAssertEqual(syncs.map(\.icon), ["arrow.triangle.2.circlepath", "arrow.down", "arrow.down",
+                                           "arrow.up", "arrow.up", "icloud.and.arrow.up"])
+        XCTAssertTrue(syncs.allSatisfy { NSImage(systemSymbolName: $0.icon, accessibilityDescription: nil) != nil })
+
+        let modes: [WorkspaceCommitMode] = [.staged, .tracked, .all, .amend]
+        XCTAssertEqual(modes.map(\.title), ["Commit", "Commit Tracked", "Commit All", "Amend"])
+    }
+}

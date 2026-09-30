@@ -233,22 +233,25 @@ enum WorkspaceFiles {
     static let maximumDiffBytes = 2_000_000
     static let maximumEntries = 2_000
 
-    static func machines() throws -> [HerdrMachineProfile] {
-        let candidates = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/herdr").path,
-                          "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
-        guard let executable = candidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
+    /// Where the Herdr command is looked for, in order; tests replace it.
+    static var herdrCandidates = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/herdr").path,
+                                  "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
+
+    private static func herdrExecutable() throws -> String {
+        guard let executable = herdrCandidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
             throw WorkspaceFileError.message("Herdr executable was not found")
         }
+        return executable
+    }
+
+    static func machines() throws -> [HerdrMachineProfile] {
+        let executable = try herdrExecutable()
         let data = try run(executable, ["machine", "list", "--json"], limit: 200_000)
         return try JSONDecoder().decode([HerdrMachineProfile].self, from: data).filter(\.enabled)
     }
 
     static func remoteSnapshot(_ machine: HerdrMachineProfile) throws -> HerdrSnapshot {
-        let candidates = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/herdr").path,
-                          "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
-        guard let executable = candidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
-            throw WorkspaceFileError.message("Herdr executable was not found")
-        }
+        let executable = try herdrExecutable()
         let data = try run(executable, ["--machine", machine.id, "api", "snapshot"], limit: 8_000_000)
         return try JSONDecoder().decode(RemoteSnapshotResponse.self, from: data).result.snapshot
     }
