@@ -5,8 +5,8 @@ import XCTest
 
 /// Pixel snapshots of a few key screens, to catch layout regressions. Rendering depends on the
 /// macOS version and its fonts, so each snapshot is saved per macOS version: a missing one is
-/// recorded and the test skipped, as on a CI runner with another version. Set
-/// `XHERDR_RECORD_SNAPSHOTS=1` to record them again after an intended change.
+/// recorded and the test skipped. CI does not run these. Set `XHERDR_RECORD_SNAPSHOTS=1` to
+/// record them again after an intended change.
 @MainActor
 final class ViewSnapshotTests: XCTestCase {
     private static let directory = URL(fileURLWithPath: #filePath)

@@ -33,13 +33,16 @@ jobs:
           path: build/DerivedData/SourcePackages
           key: spm-${{ runner.os }}-${{ hashFiles('xherdr.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
-      # Snapshot comparison is skipped here: the runner lacks FiraCode Nerd Font Mono.
+      # CI runs the fast suite: pixel snapshots are compared locally only, since their
+      # rendering depends on the macOS version and fonts.
       - name: Test
         run: |
           xcodebuild test \
             -project xherdr.xcodeproj -scheme xherdr -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath build/DerivedData \
             -resultBundlePath build/xherdr.xcresult \
+            -skip-testing:xherdrTests/ViewSnapshotTests \
+            -skip-testing:xherdrTests/TerminalRenderingTests/testSnapshotsMatch \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
 
       - name: Upload test results
