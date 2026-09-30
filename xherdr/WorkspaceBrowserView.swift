@@ -353,7 +353,7 @@ struct WorkspaceBrowserView: View {
                 .font(.system(size: typography.body))
                 .focused($draftFocused)
                 .onSubmit { commitDraft() }
-                .onExitCommand { draft = nil }
+                .onExitCommand { endDraft() }
                 .padding(.horizontal, 4)
                 .frame(height: typography.metric(20))
                 .overlay(RoundedRectangle(cornerRadius: 3).stroke(theme.accent, lineWidth: 1))
@@ -362,9 +362,11 @@ struct WorkspaceBrowserView: View {
         .padding(.trailing, 8)
         .frame(height: typography.metric(23))
         .onAppear { DispatchQueue.main.async { draftFocused = true } }
-        // Clicking elsewhere creates what was typed, as in Zed; an empty name is dropped.
+        // Clicking elsewhere creates what was typed, as in Zed; an empty name is dropped. Focus
+        // lost before the field ever had it is the previous field's, arriving late, and is ignored.
         .onChange(of: draftFocused) { _, focused in
-            if !focused { commitDraft() }
+            if focused { draft?.hasHadFocus = true }
+            else if draft?.hasHadFocus == true { commitDraft() }
         }
     }
 
@@ -638,12 +640,17 @@ struct WorkspaceBrowserView: View {
         }
         draftName = ""
         draft = WorkspaceFileDraft(location: location, folder: folder, isFolder: isFolder)
-        draftFocused = true
+    }
+
+    /// Removes the name field, dropping its focus first so a later field does not inherit it.
+    private func endDraft() {
+        draftFocused = false
+        draft = nil
     }
 
     private func commitDraft() {
         guard let draft else { return }
-        self.draft = nil
+        endDraft()
         let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         let location = draft.location
@@ -971,6 +978,7 @@ private struct WorkspaceFileDraft {
     /// The folder it is created in; "" is the Space root.
     let folder: String
     let isFolder: Bool
+    var hasHadFocus = false
 }
 
 private struct WorkspaceRenamePrompt {
