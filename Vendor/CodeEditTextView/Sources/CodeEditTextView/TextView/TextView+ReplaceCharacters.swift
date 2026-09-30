@@ -19,6 +19,11 @@ extension TextView {
         layoutManager.beginTransaction()
         textStorage.beginEditing()
 
+        // xherdr patch: one edit at several cursors is one undo step. The first mutation starts or continues a group
+        // as usual, and the others join it.
+        var groupsRanges = false
+        defer { if groupsRanges { _undoManager?.endGrouping() } }
+
         // Can't insert an empty string into an empty range. One must be not empty
         for range in ranges.sorted(by: { $0.location > $1.location }) where
         (!range.isEmpty || !string.isEmpty) &&
@@ -29,6 +34,10 @@ extension TextView {
             _undoManager?.registerMutation(
                 TextMutation(string: string as String, range: range, limit: textStorage.length)
             )
+            if ranges.count > 1, !groupsRanges, let undoManager = _undoManager, !undoManager.isGrouping {
+                undoManager.beginGrouping()
+                groupsRanges = true
+            }
             textStorage.replaceCharacters(
                 in: range,
                 with: NSAttributedString(string: string, attributes: typingAttributes)

@@ -9,22 +9,19 @@ import Foundation
 
 extension TextSelectionManager {
     public func didReplaceCharacters(in range: NSRange, replacementLength: Int) {
-        let delta = replacementLength == 0 ? -range.length : replacementLength
+        // xherdr patch: shift later selections by the change in length, and keep the length of selections the edit
+        // does not touch. Upstream shifted by the replacement length alone and collapsed every selection, so typing
+        // over several non-empty selections (edited last to first) left the cursors in the wrong places.
+        let delta = replacementLength - range.length
         for textSelection in self.textSelections {
-            if textSelection.range.location > range.max {
+            if textSelection.range.intersection(range) != nil
+                || textSelection.range == range
+                || (textSelection.range.isEmpty && textSelection.range.location > range.location
+                    && textSelection.range.location <= range.max) {
+                textSelection.range.location = range.location + replacementLength
+                textSelection.range.length = 0
+            } else if textSelection.range.location >= range.max {
                 textSelection.range.location = max(0, textSelection.range.location + delta)
-                textSelection.range.length = 0
-            } else if textSelection.range.intersection(range) != nil
-                        || textSelection.range == range
-                        || (textSelection.range.isEmpty && textSelection.range.location == range.max) {
-                if replacementLength > 0 {
-                    textSelection.range.location = range.location + replacementLength
-                } else {
-                    textSelection.range.location = range.location
-                }
-                textSelection.range.length = 0
-            } else {
-                textSelection.range.length = 0
             }
         }
 

@@ -12,6 +12,13 @@ Their source files are unchanged except for these changes in CodeEditSourceEdito
 - `styleScrollView()` clips the scroll view, because `GutterView` turns off clipping on its floating container and its background otherwise covers the tabs and header above the editor when the text scrolls.
 - `GutterView.lineChanges` draws Git change bars (added, modified, deleted, staged as outlines) at the gutter's leading edge, and `TextViewController.gutterView` is public so the app can set them.
 
+And in CodeEditTextView, for multiple cursors (`xherdr/EditorMultiCursor.swift` adds the commands):
+
+- Option-click adds a cursor, or removes the selection under it when there are several (`TextView+Mouse.swift`).
+- `TextSelectionManager.didReplaceCharacters` shifts later selections by the change in length and keeps untouched selections. Upstream shifted by the replacement length and collapsed every selection, which misplaced cursors when typing over several selections.
+- An edit at several cursors is one undo step (`TextView+ReplaceCharacters.swift`).
+- Copy writes the selections joined by newlines plus a `dev.xherdr.editor.selections` list; paste with as many cursors puts one piece at each (`TextView+CopyPaste.swift`).
+
 The local `Package.swift` files keep the runtime dependencies and omit test targets and SwiftLint build plugins. Those plugins download a separate binary and are unnecessary when building xherdr. Update the versions together after checking the editor API and running an xherdr build.
 
 # Markdown preview packages

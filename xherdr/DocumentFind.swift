@@ -161,6 +161,8 @@ struct DocumentFindBar: View {
     let allowsReplace: Bool
     let onReplace: () -> Void
     let onReplaceAll: () -> Void
+    /// Puts a cursor on every match in the editor.
+    var onSelectAll: (() -> Void)?
 
     @FocusState private var focusedField: Field?
 
@@ -192,6 +194,11 @@ struct DocumentFindBar: View {
                     .disabled(model.count == 0)
                 iconButton("chevron.down", help: "Next Match (⌘G)") { model.move(1) }
                     .disabled(model.count == 0)
+                if let onSelectAll, allowsReplace {
+                    iconButton("character.cursor.ibeam", help: "Select All Matches (⌥↩)", action: onSelectAll)
+                        .keyboardShortcut(.return, modifiers: .option)
+                        .disabled(model.count == 0)
+                }
                 Button("Done") { model.close() }
                     .controlSize(.small)
                     .help("Close the find bar (Esc)")

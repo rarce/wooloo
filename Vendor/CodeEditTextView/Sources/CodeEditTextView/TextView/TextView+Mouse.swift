@@ -46,10 +46,23 @@ extension TextView {
             super.mouseDown(with: event)
             return
         }
-        if event.modifierFlags.intersection(.deviceIndependentFlagsMask).isSuperset(of: [.control, .shift]) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.isSuperset(of: [.control, .shift]) {
             unmarkText()
             selectionManager.addSelectedRange(NSRange(location: offset, length: 0))
-        } else if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift) {
+        } else if flags.intersection([.option, .command, .control, .shift]) == .option {
+            // xherdr patch: Option-click adds a cursor, or removes the selection under it, as in Zed and VS Code.
+            unmarkText()
+            let selections = selectionManager.textSelections
+            if selections.count > 1, let hit = selections.firstIndex(where: {
+                $0.range.isEmpty ? $0.range.location == offset : NSLocationInRange(offset, $0.range)
+            }) {
+                selectionManager.setSelectedRanges(selections.indices.filter { $0 != hit }.map { selections[$0].range })
+            } else {
+                selectionManager.addSelectedRange(NSRange(location: offset, length: 0))
+            }
+            setNeedsDisplay()
+        } else if flags.contains(.shift) {
             unmarkText()
             shiftClickExtendSelection(to: offset)
         } else {

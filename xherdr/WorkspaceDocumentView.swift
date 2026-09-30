@@ -77,6 +77,7 @@ struct WorkspaceDocumentView: View {
     @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
     @State private var revealCoordinator = EditorRevealCoordinator()
     @State private var lineChangeCoordinator = EditorLineChangeCoordinator()
+    @State private var multiCursorCoordinator = EditorMultiCursorCoordinator()
     /// Bumped when the repository may have changed, to reload the change bars' Git bases.
     @State private var gitBasesVersion = 0
     @State private var gitDirectoryWatcher: GitDirectoryWatcher?
@@ -164,7 +165,8 @@ struct WorkspaceDocumentView: View {
             Divider()
             if document.kind == .file && find.isVisible {
                 DocumentFindBar(model: find, allowsReplace: findTarget == .source,
-                                onReplace: replaceCurrentMatch, onReplaceAll: replaceAllMatches)
+                                onReplace: replaceCurrentMatch, onReplaceAll: replaceAllMatches,
+                                onSelectAll: selectAllMatches)
                 Divider()
             }
 
@@ -203,7 +205,9 @@ struct WorkspaceDocumentView: View {
                 Text(document.kind == .file ? (document.isDirty ? "Unsaved changes" : "UTF-8 text")
                      : (document.kind == .commit ? "Commit diff" : "Git diff"))
                 Spacer()
-                if document.kind == .file, let cursor = cursorPositions.first {
+                if document.kind == .file, cursorPositions.count > 1 {
+                    Text("\(cursorPositions.count) cursors")
+                } else if document.kind == .file, let cursor = cursorPositions.first {
                     Text("Ln \(cursor.line), Col \(cursor.column)")
                 }
                 if document.isSaving { ProgressView().controlSize(.small) }
@@ -260,7 +264,7 @@ struct WorkspaceDocumentView: View {
             lineHeight: 1.15,
             wrapLines: false,
             cursorPositions: $cursorPositions,
-            coordinators: [revealCoordinator, lineChangeCoordinator]
+            coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator]
         )
         .onAppear { applyReveal() }
         .onChange(of: document.reveal) { _, _ in applyReveal() }
@@ -368,6 +372,15 @@ struct WorkspaceDocumentView: View {
         guard find.target == .source, !find.sourceMatches.isEmpty else { return }
         let text = document.text
         revealCoordinator.replace(find.sourceMatches.map { ($0.range, find.replacementText(for: $0, in: text)) })
+    }
+
+    /// ⌥↩ in the find bar: a cursor on every match, then back to the editor as in Zed.
+    private func selectAllMatches() {
+        guard find.target == .source, !find.sourceMatches.isEmpty else { return }
+        let ranges = find.sourceMatches.map(\.range)
+        let current = find.current.flatMap { $0 < ranges.count ? ranges[$0] : nil }
+        find.close()
+        multiCursorCoordinator.select(ranges, newest: current)
     }
 
     /// Selects the requested line or match and scrolls it into view.

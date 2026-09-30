@@ -39,3 +39,7 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
   - Already in place: rows are pinned to the cell height, each glyph is kerned to its cell width so fallback-font symbols (⏺ ✻ ⎿, emoji, CJK) stay on Herdr's grid, and surface frames are deferred while `NSTextView` tracks a selection drag.
   - Next: confirm whether Claude Code enables mouse reporting for its pane (`mouseReportingPaneIDs`). If it does, clicks are forwarded to Herdr and selection needs Shift+drag or a Herdr-side selection; if it does not, check how selection behaves when frames resume after the drag and when Claude scrolls content under an existing selection.
   - Capture exactly how it fails (no highlight, wrong range, or highlight lost on release), in both windowed and full-screen modes.
+
+## Editor
+
+- [ ] Multiple cursors: ⌥⌘↑/↓ keeps the goal column in UTF-16 offsets, so tabs and wide characters shift it; use the text's display column instead. Also missing from Zed's set: ⌃⌘D (select previous occurrence, taken by macOS's Look Up unless disabled), Option-drag column selection, and ⌘U for selection changes made by clicks or arrows.
