@@ -24,7 +24,9 @@ scripts/terminal-e2e.sh                       # live run on its own `xherdr-perf
 scripts/workspace-bench.sh                    # WorkspaceFiles ops; XHERDR_BENCH_SSH_TARGET=none skips SSH
 ```
 
-Benchmarks and trace replay are skipped in normal `test` runs unless their env vars are set (the scripts do this). No linter or formatter is configured.
+Benchmarks and trace replay are skipped in normal `test` runs unless their env vars are set (the scripts do this); pixel snapshots are skipped without FiraCode Nerd Font Mono, as on CI (`.github/workflows/ci.yml`, macos-26). No linter or formatter is configured.
+
+Git, SSH and Herdr socket tests use `WorkspaceGitSandbox` (disposable repos under `/private/tmp/xherdr-tests`, global Git config ignored), a fake `ssh` via `WorkspaceFiles.sshExecutable`, and `FakeHerdrServer`. After changing a dependency, run `scripts/third-party-notices.py` to regenerate `THIRD_PARTY_NOTICES.txt`.
 
 Run the app against an isolated Herdr session, never `default` or the primary one (the app rejects `default`):
 

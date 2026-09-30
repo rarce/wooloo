@@ -14,7 +14,7 @@ Use four spaces for Swift indentation. Follow the existing SwiftUI style: `Upper
 
 ## Testing Guidelines
 
-Run the unit tests with the build command above, replacing `build` with `test`. There is no coverage threshold. For terminal rendering or surface changes, also run `scripts/terminal-bench.sh` and `scripts/terminal-e2e.sh`; the second uses its own `xherdr-perf` Herdr session. Build after Swift or project changes, then exercise affected controls in the app against the isolated Herdr session. Test Git worktree operations in a disposable repository under `/private/tmp`; confirm that normal removal rejects dirty worktrees. Name tests for the behavior they verify.
+Run the unit tests with the build command above, replacing `build` with `test`; CI (`.github/workflows/ci.yml`) runs the same command on every push and pull request. There is no coverage threshold. Pixel snapshots are compared only where FiraCode Nerd Font Mono is installed. For terminal rendering or surface changes, also run `scripts/terminal-bench.sh` and `scripts/terminal-e2e.sh`; the second uses its own `xherdr-perf` Herdr session. Build after Swift or project changes, then exercise affected controls in the app against the isolated Herdr session. Test Git worktree operations in a disposable repository under `/private/tmp`; confirm that normal removal rejects dirty worktrees. Name tests for the behavior they verify.
 
 ## Commit & Pull Request Guidelines
 

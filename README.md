@@ -36,4 +36,21 @@ The server integration is documented in [docs/herdr-connection.md](docs/herdr-co
 
 ## Run locally
 
-Start an isolated test server with `herdr --session xherdr-ui-test server`. In another terminal, create a test workspace with `herdr --session xherdr-ui-test workspace create --cwd "$PWD" --label xherdr-test`. Then open `xherdr.xcodeproj` in Xcode, select the `xherdr` scheme and **My Mac**, and run the app. The project targets macOS 14 or later. Stop only the test server with `herdr --session xherdr-ui-test server stop` when finished.
+You need macOS 14 or later, Xcode 26, and [Herdr](https://herdr.dev/) 0.9 or later.
+
+Start an isolated test server with `herdr --session xherdr-ui-test server`. In another terminal, create a test workspace with `herdr --session xherdr-ui-test workspace create --cwd "$PWD" --label xherdr-test`. Then open `xherdr.xcodeproj` in Xcode, select the `xherdr` scheme and **My Mac**, and run the app. Stop only the test server with `herdr --session xherdr-ui-test server stop` when finished.
+
+To build and test from the command line without a developer account:
+
+```sh
+xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' \
+  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= test
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+xherdr is released under the [MIT License](LICENSE). It includes third-party software under their own licenses; see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), also available in the app under xherdr → Third-Party Notices.

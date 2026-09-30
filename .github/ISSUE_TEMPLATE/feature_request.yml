@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest something xherdr could do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The workflow with your agents that this would help.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you imagine it working, and how Herdr's TUI or another tool handles it today, if it does.

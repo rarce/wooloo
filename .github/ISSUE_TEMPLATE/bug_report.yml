@@ -1,0 +1,55 @@
+name: Bug report
+description: Something in xherdr does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a Space on …
+        2. Click …
+    validations:
+      required: true
+  - type: dropdown
+    id: location
+    attributes:
+      label: Where is the Space?
+      options:
+        - Local
+        - SSH machine
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: xherdr-version
+    attributes:
+      label: xherdr commit
+      description: The commit you built, from `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: herdr-version
+    attributes:
+      label: Herdr version
+      description: The output of `herdr --version`.
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or logs
+      description: Remove paths, hostnames and file contents you do not want to share.
