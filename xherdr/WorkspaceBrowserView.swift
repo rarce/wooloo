@@ -34,6 +34,10 @@ struct WorkspaceBrowserView: View {
     @State private var draft: WorkspaceFileDraft?
     @State private var draftName = ""
     @FocusState private var draftFocused: Bool
+    /// Whether the Files tree has keyboard focus, so file shortcuts apply to its selection.
+    @FocusState private var treeFocused: Bool
+    @State private var keyMonitor: Any?
+    @State private var windowBox = WindowBox()
     @State private var pendingDelete: WorkspaceFileTarget?
     /// Folders created in the explorer, by location, shown while they hold no listed file.
     @State private var createdDirectories: [String: Set<String>] = [:]
@@ -82,7 +86,17 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
+        .background(WindowReader(box: windowBox))
         .task(id: machine) { machineChanged() }
+        .onAppear {
+            keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                handleFileShortcut(event) ? nil : event
+            }
+        }
+        .onDisappear {
+            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+            keyMonitor = nil
+        }
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { onLocationChange(location) }
         .alert("Operation failed", isPresented: Binding(
@@ -216,10 +230,17 @@ struct WorkspaceBrowserView: View {
                         .background {
                             Color.clear
                                 .contentShape(Rectangle())
+                                .onTapGesture {
+                                    selectedItem = nil
+                                    treeFocused = true
+                                }
                                 .contextMenu { rootMenu(location) }
                         }
                     }
                 }
+                .focusable()
+                .focusEffectDisabled()
+                .focused($treeFocused)
                 .id(treeIdentity(location))
             } else {
                 hint("Select a Space to browse")
@@ -314,8 +335,11 @@ struct WorkspaceBrowserView: View {
     private func rootMenu(_ location: WorkspaceFileLocation) -> some View {
         if !showsChanges {
             Button("New File…", systemImage: "doc.badge.plus") { startDraft(in: "", isFolder: false, at: location) }
+                .keyboardShortcut(ExplorerFileCommand.newFile.shortcut)
             Button("New Folder…", systemImage: "folder.badge.plus") { startDraft(in: "", isFolder: true, at: location) }
+                .keyboardShortcut(ExplorerFileCommand.newFolder.shortcut)
             Button("Paste", systemImage: "doc.on.clipboard") { paste(into: "", in: location) }
+                .keyboardShortcut(ExplorerFileCommand.paste.shortcut)
             Divider()
         }
         if location.isLocal {
@@ -346,8 +370,14 @@ struct WorkspaceBrowserView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: typography.body))
                 .focused($draftFocused)
-                .onSubmit { commitDraft() }
-                .onExitCommand { endDraft() }
+                .onSubmit {
+                    commitDraft()
+                    treeFocused = true
+                }
+                .onExitCommand {
+                    endDraft()
+                    treeFocused = true
+                }
                 .padding(.horizontal, 4)
                 .frame(height: typography.metric(20))
                 .overlay(RoundedRectangle(cornerRadius: 3).stroke(theme.accent, lineWidth: 1))
@@ -378,10 +408,11 @@ struct WorkspaceBrowserView: View {
         let isExpanded = expandedDirectories.contains(identity)
         let isSelected = selectedItem == identity
         return Button {
+            selectedItem = identity
+            treeFocused = true
             if node.isDirectory {
                 toggleDirectory(identity, isExpanded: isExpanded)
             } else {
-                selectedItem = identity
                 if showsChanges { onOpenDiff(location, node.path) }
                 else { onOpenFile(location, node.path) }
             }
@@ -480,16 +511,16 @@ struct WorkspaceBrowserView: View {
             if showsChanges {
                 pathActions(location, path: node.path)
             } else {
-                Button("Rename…", systemImage: "pencil") {
-                    startDraft(in: (node.path as NSString).deletingLastPathComponent, isFolder: node.isDirectory,
-                               at: location, renaming: node.path)
-                }
+                Button("Rename…", systemImage: "pencil") { startRename(node.path, isDirectory: node.isDirectory, at: location) }
+                    .keyboardShortcut(ExplorerFileCommand.rename.shortcut)
                 if location.isLocal {
                     Button("Move to Trash", systemImage: "trash") { trash(node.path, in: location) }
+                        .keyboardShortcut(ExplorerFileCommand.trash.shortcut)
                 }
                 Button("Delete…", systemImage: "xmark.bin", role: .destructive) {
                     pendingDelete = WorkspaceFileTarget(location: location, path: node.path, isDirectory: node.isDirectory)
                 }
+                .keyboardShortcut(ExplorerFileCommand.delete.shortcut)
             }
         }
     }
@@ -499,23 +530,33 @@ struct WorkspaceBrowserView: View {
     private func fileActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode) -> some View {
         let folder = node.isDirectory ? node.path : (node.path as NSString).deletingLastPathComponent
         Button("New File…", systemImage: "doc.badge.plus") { startDraft(in: folder, isFolder: false, at: location) }
+            .keyboardShortcut(ExplorerFileCommand.newFile.shortcut)
         Button("New Folder…", systemImage: "folder.badge.plus") { startDraft(in: folder, isFolder: true, at: location) }
+            .keyboardShortcut(ExplorerFileCommand.newFolder.shortcut)
         Divider()
         if location.isLocal {
             Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.absolutePath(node.path)) }
+                .keyboardShortcut(ExplorerFileCommand.reveal.shortcut)
             Button("Open in Default App", systemImage: "arrow.up.forward.app") {
                 NSWorkspace.shared.open(URL(fileURLWithPath: location.absolutePath(node.path)))
             }
+            .keyboardShortcut(ExplorerFileCommand.openInDefaultApp.shortcut)
             Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.absolutePath(folder)) }
             Divider()
         }
         Button("Cut", systemImage: "scissors") { copyItem(node.path, in: location, cut: true) }
+            .keyboardShortcut(ExplorerFileCommand.cut.shortcut)
         Button("Copy", systemImage: "doc.on.doc") { copyItem(node.path, in: location, cut: false) }
+            .keyboardShortcut(ExplorerFileCommand.copy.shortcut)
         Button("Duplicate", systemImage: "plus.square.on.square") { duplicate(node.path, in: location) }
+            .keyboardShortcut(ExplorerFileCommand.duplicate.shortcut)
         Button("Paste", systemImage: "doc.on.clipboard") { paste(into: folder, in: location) }
+            .keyboardShortcut(ExplorerFileCommand.paste.shortcut)
         Divider()
         Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(location.absolutePath(node.path)) }
+            .keyboardShortcut(ExplorerFileCommand.copyPath.shortcut)
         Button("Copy Relative Path") { AppActions.copy(node.path) }
+            .keyboardShortcut(ExplorerFileCommand.copyRelativePath.shortcut)
         Divider()
     }
 
@@ -649,6 +690,42 @@ struct WorkspaceBrowserView: View {
             guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
             editor.setSelectedRange(NSRange(location: 0, length: (stem as NSString).length))
         }
+    }
+
+    private func startRename(_ path: String, isDirectory: Bool, at location: WorkspaceFileLocation) {
+        startDraft(in: (path as NSString).deletingLastPathComponent, isFolder: isDirectory, at: location, renaming: path)
+    }
+
+    /// Runs a file shortcut on the selected row, or on the Space root when nothing is selected,
+    /// while the Files tree of this window has focus. Returns whether the key was used.
+    private func handleFileShortcut(_ event: NSEvent) -> Bool {
+        guard treeFocused, !showsChanges, draft == nil, pendingDelete == nil, listing != nil, let location,
+              event.window != nil, event.window === windowBox.window,
+              let command = ExplorerFileCommand.allCases.first(where: { $0.matches(event) }) else { return false }
+        let prefix = treeIdentity(location) + "|"
+        let path = selectedItem.flatMap { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : nil } ?? ""
+        guard !path.isEmpty || command.appliesToRoot else { return false }
+        let isDirectory = path.isEmpty || createdDirectories[location.identity]?.contains(path) == true
+            || listing?.files.contains { $0.hasPrefix(path + "/") } == true
+        let folder = isDirectory ? path : (path as NSString).deletingLastPathComponent
+        let absolute = location.absolutePath(path)
+        switch command {
+        case .newFile: startDraft(in: folder, isFolder: false, at: location)
+        case .newFolder: startDraft(in: folder, isFolder: true, at: location)
+        case .reveal, .openInDefaultApp, .trash:
+            guard location.isLocal else { return false }
+            if command == .reveal { AppActions.reveal(absolute) }
+            else if command == .trash { trash(path, in: location) }
+            else { NSWorkspace.shared.open(URL(fileURLWithPath: absolute)) }
+        case .cut, .copy: copyItem(path, in: location, cut: command == .cut)
+        case .duplicate: duplicate(path, in: location)
+        case .paste: paste(into: folder, in: location)
+        case .copyPath: AppActions.copy(absolute)
+        case .copyRelativePath: AppActions.copy(path)
+        case .rename: startRename(path, isDirectory: isDirectory, at: location)
+        case .delete: pendingDelete = WorkspaceFileTarget(location: location, path: path, isDirectory: isDirectory)
+        }
+        return true
     }
 
     /// Removes the name field, dropping its focus first so a later field does not inherit it.
@@ -987,4 +1064,67 @@ private struct WorkspaceFileDraft {
     /// The item being renamed; nil for a new one.
     let renaming: String?
     var hasHadFocus = false
+}
+
+/// File shortcuts of the Files tree, with Zed's bindings. They act only while the tree has
+/// focus, so Command-C, Command-D and the rest keep their usual meaning in terminals and editors.
+enum ExplorerFileCommand: CaseIterable {
+    case newFile, newFolder, reveal, openInDefaultApp, cut, copy, duplicate, paste
+    case copyPath, copyRelativePath, rename, trash, delete
+
+    var shortcut: KeyboardShortcut {
+        switch self {
+        case .newFile: return KeyboardShortcut("n", modifiers: .command)
+        case .newFolder: return KeyboardShortcut("n", modifiers: [.command, .option])
+        case .reveal: return KeyboardShortcut("r", modifiers: [.command, .option])
+        case .openInDefaultApp: return KeyboardShortcut(.return, modifiers: [.control, .shift])
+        case .cut: return KeyboardShortcut("x", modifiers: .command)
+        case .copy: return KeyboardShortcut("c", modifiers: .command)
+        case .duplicate: return KeyboardShortcut("d", modifiers: .command)
+        case .paste: return KeyboardShortcut("v", modifiers: .command)
+        case .copyPath: return KeyboardShortcut("c", modifiers: [.command, .option])
+        case .copyRelativePath: return KeyboardShortcut("c", modifiers: [.command, .option, .shift])
+        case .rename: return KeyboardShortcut(KeyEquivalent(Character(UnicodeScalar(NSF2FunctionKey)!)), modifiers: [])
+        case .trash: return KeyboardShortcut(.delete, modifiers: [])
+        case .delete: return KeyboardShortcut(.delete, modifiers: [.command, .option])
+        }
+    }
+
+    /// Commands that make sense with nothing selected, on the Space root.
+    var appliesToRoot: Bool {
+        [.newFile, .newFolder, .reveal, .openInDefaultApp, .paste, .copyPath].contains(self)
+    }
+
+    func matches(_ event: NSEvent) -> Bool {
+        var modifiers: NSEvent.ModifierFlags = []
+        if shortcut.modifiers.contains(.command) { modifiers.insert(.command) }
+        if shortcut.modifiers.contains(.option) { modifiers.insert(.option) }
+        if shortcut.modifiers.contains(.control) { modifiers.insert(.control) }
+        if shortcut.modifiers.contains(.shift) { modifiers.insert(.shift) }
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]) == modifiers else { return false }
+        switch shortcut.key.character {
+        case KeyEquivalent.delete.character: return event.keyCode == 51
+        case KeyEquivalent.return.character: return event.keyCode == 36 || event.keyCode == 76
+        default: return event.charactersIgnoringModifiers?.lowercased() == String(shortcut.key.character)
+        }
+    }
+}
+
+/// The window a view is in, for telling apart key events of other windows.
+private final class WindowBox {
+    weak var window: NSWindow?
+}
+
+private struct WindowReader: NSViewRepresentable {
+    let box: WindowBox
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { box.window = view.window }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        if box.window == nil { DispatchQueue.main.async { box.window = view.window } }
+    }
 }

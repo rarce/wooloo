@@ -184,6 +184,30 @@ final class WorkspaceFileOperationHelperTests: XCTestCase {
         XCTAssertEqual(WorkspaceFiles.copyNames(for: "Makefile", includingOriginal: false).first, "Makefile copy")
     }
 
+    func testFileShortcutsMatchTheirKeysOnly() throws {
+        func key(_ characters: String, _ flags: NSEvent.ModifierFlags = [], code: UInt16 = 0) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                                           windowNumber: 0, context: nil, characters: characters,
+                                           charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+        }
+        func commands(_ event: NSEvent) -> [ExplorerFileCommand] {
+            ExplorerFileCommand.allCases.filter { $0.matches(event) }
+        }
+        XCTAssertEqual(commands(try key("c", .command)), [.copy])
+        XCTAssertEqual(commands(try key("c", [.command, .option])), [.copyPath])
+        XCTAssertEqual(commands(try key("C", [.command, .option, .shift])), [.copyRelativePath])
+        XCTAssertEqual(commands(try key("n", [.command, .option])), [.newFolder])
+        XCTAssertEqual(commands(try key("\u{7f}", code: 51)), [.trash])
+        XCTAssertEqual(commands(try key("\u{7f}", [.command, .option], code: 51)), [.delete])
+        XCTAssertEqual(commands(try key("\r", [.control, .shift], code: 36)), [.openInDefaultApp])
+        XCTAssertEqual(commands(try key(String(UnicodeScalar(NSF2FunctionKey)!), .function, code: 120)), [.rename])
+        XCTAssertEqual(commands(try key("c")), [])
+        XCTAssertEqual(commands(try key("c", [.command, .control])), [])
+
+        let shortcuts = ExplorerFileCommand.allCases.map { "\($0.shortcut.key.character)|\($0.shortcut.modifiers.rawValue)" }
+        XCTAssertEqual(Set(shortcuts).count, shortcuts.count)
+    }
+
     func testEmptyFoldersAppearInTheTree() {
         let rows = WorkspaceTreeNode.visibleRows(paths: ["a.txt", "src/main.swift"], directories: ["empty", "src/new"],
                                                  expanded: ["s|src"], identity: "s")
