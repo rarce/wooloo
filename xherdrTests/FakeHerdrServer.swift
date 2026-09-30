@@ -25,26 +25,13 @@ final class FakeHerdrServer {
     private var stopped = false
     private let acceptsSubscriptions: Bool
 
-    init(acceptsSubscriptions: Bool = true, respond: @escaping Responder) throws {
+    /// Listens at `path`, or at a new socket under /private/tmp/xherdr-tests when nil.
+    init(path: String? = nil, acceptsSubscriptions: Bool = true, respond: @escaping Responder) throws {
         self.acceptsSubscriptions = acceptsSubscriptions
-        directory = "/private/tmp/xherdr-tests/\(UUID().uuidString)"
-        path = directory + "/herdr.sock"
+        self.path = path ?? "/private/tmp/xherdr-tests/\(UUID().uuidString)/herdr.sock"
+        directory = (self.path as NSString).deletingLastPathComponent
         responder = respond
-        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-
-        listener = socket(AF_UNIX, SOCK_STREAM, 0)
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8) + [0]
-        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
-        let length = socklen_t(MemoryLayout<sa_family_t>.size + bytes.count)
-        let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listener, $0, length) }
-        }
-        guard bound == 0, listen(listener, 16) == 0 else {
-            close(listener)
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
+        listener = try listenUnixSocket(at: self.path)
         Thread.detachNewThread { [self] in acceptLoop() }
     }
 
@@ -138,6 +125,31 @@ final class FakeHerdrServer {
             }
         }
     }
+}
+
+/// Creates the socket's directory, binds a Unix socket at `path` and listens on it.
+func listenUnixSocket(at path: String) throws -> Int32 {
+    try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                            withIntermediateDirectories: true)
+    let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8) + [0]
+    guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+        close(listener)
+        throw POSIXError(.ENAMETOOLONG)
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
+    let length = socklen_t(MemoryLayout<sa_family_t>.size + bytes.count)
+    let bound = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listener, $0, length) }
+    }
+    guard bound == 0, listen(listener, 16) == 0 else {
+        let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        close(listener)
+        throw error
+    }
+    return listener
 }
 
 /// A `session.snapshot` result with one workspace, one tab and the given panes.

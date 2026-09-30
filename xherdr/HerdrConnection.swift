@@ -496,10 +496,12 @@ final class HerdrStore: ObservableObject {
     private var cellWidth = 8
     private var cellHeight = 16
 
+    /// Herdr's config root. Tests point it at a temporary directory with fake servers.
+    static var sessionRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/herdr")
+
     /// The default session lives at the Herdr config root; named sessions live under `sessions/`.
     private static func sessionDirectory(_ name: String) -> URL {
-        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/herdr")
-        return name == defaultSessionName ? root : root.appendingPathComponent("sessions/\(name)")
+        name == defaultSessionName ? sessionRoot : sessionRoot.appendingPathComponent("sessions/\(name)")
     }
 
     /// Sessions with a server socket on disk, default first.

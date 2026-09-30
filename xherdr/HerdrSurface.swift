@@ -435,7 +435,7 @@ struct HerdrSurfaceDecoder {
     }
 }
 
-private enum SurfaceWriter {
+enum SurfaceWriter {
     static func number(_ value: UInt64) -> Data {
         if value < 251 { return Data([UInt8(value)]) }
         if value <= UInt16.max {

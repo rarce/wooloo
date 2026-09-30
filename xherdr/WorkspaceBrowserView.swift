@@ -555,7 +555,7 @@ struct WorkspaceBrowserView: View {
     }
 }
 
-private struct WorkspaceTreeNode {
+struct WorkspaceTreeNode {
     let displayName: String
     let path: String
     let isDirectory: Bool
@@ -614,13 +614,13 @@ private struct WorkspaceTreeNode {
     }
 }
 
-private struct WorkspaceTreeRow: Identifiable {
+struct WorkspaceTreeRow: Identifiable {
     let node: WorkspaceTreeNode
     let depth: Int
     var id: String { node.path }
 }
 
-private final class WorkspaceTreeBuilderNode {
+final class WorkspaceTreeBuilderNode {
     let name: String
     let path: String
     var children: [String: WorkspaceTreeBuilderNode] = [:]
