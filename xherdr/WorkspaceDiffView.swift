@@ -684,7 +684,7 @@ struct WorkspaceDiffView: View {
 }
 
 /// The editor theme's syntax colors, mapped from captures as `EditorTheme.colorFor` does.
-private struct SyntaxPalette {
+struct SyntaxPalette {
     let keywords, comments, numbers, strings, types, attributes: Color
 
     init(_ theme: EditorTheme) {
