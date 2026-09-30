@@ -17,6 +17,11 @@ final class HerdrStoreTests: XCTestCase {
         var focus = ("w1", "w1:t1", "w1:p1")
         var reload: [String: Any] = ["status": "applied"]
 
+        /// Changes the state from a test, which may be async.
+        func update(_ change: (State) -> Void) {
+            lock.withLock { change(self) }
+        }
+
         func snapshot() -> [String: Any] {
             ["result": ["snapshot": [
                 "workspaces": workspaces, "tabs": tabs, "panes": panes, "agents": [], "layouts": [],
@@ -94,9 +99,7 @@ final class HerdrStoreTests: XCTestCase {
 
     func testEventsRefreshTheSnapshot() async {
         await connect()
-        state.lock.lock()
-        state.workspaces[0]["label"] = "renamed"
-        state.lock.unlock()
+        state.update { $0.workspaces[0]["label"] = "renamed" }
         server.emit(["event": "workspace.renamed"])
         await waitUntil("renamed") { store.snapshot?.workspaces.first?.label == "renamed" }
     }
@@ -199,9 +202,7 @@ final class HerdrStoreTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertNil(store.actionError)
 
-        state.lock.lock()
-        state.reload = ["status": "rejected", "diagnostics": ["unknown key `foo`", "line 3"]]
-        state.lock.unlock()
+        state.update { $0.reload = ["status": "rejected", "diagnostics": ["unknown key `foo`", "line 3"]] }
         store.reloadConfig()
         await waitUntil("reload error") { store.actionError == "Herdr reload: rejected. unknown key `foo`\nline 3" }
     }
