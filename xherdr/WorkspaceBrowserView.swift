@@ -21,7 +21,8 @@ struct WorkspaceBrowserView: View {
 
     @State private var remoteSnapshot: HerdrSnapshot?
     @State private var remoteWorkspaceID: String?
-    @StateObject private var model = WorkspaceExplorerModel()
+    /// Not private so snapshot tests can open folders and select a row before it appears.
+    @StateObject var model = WorkspaceExplorerModel()
     @FocusState private var draftFocused: Bool
     /// Whether the Files tree has keyboard focus, so file shortcuts apply to its selection.
     @FocusState private var treeFocused: Bool

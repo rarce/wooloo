@@ -10,11 +10,12 @@ struct WorkspaceRepositoryView: View {
     let onNewSpace: ((String, String) -> Void)?
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
 
-    @StateObject private var model = WorkspaceRepositoryModel()
-    @State private var selectedTab = 0
+    /// The model, tab and commit shown first are not private so snapshot tests can set them.
+    @StateObject var model = WorkspaceRepositoryModel()
+    @State var selectedTab = 0
+    @State var selectedCommit: WorkspaceCommit? = nil
     @State private var addRequest: AddWorktreeRequest?
     @State private var removing: WorkspaceWorktree?
-    @State private var selectedCommit: WorkspaceCommit?
     @State private var selectedCommitFile: String?
 
     private var listing: WorkspaceRepositoryListing? { model.listing }

@@ -20,9 +20,11 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     /// Renders a view at a fixed size in the theme's appearance, as ContentView sets it, waiting
-    /// until asynchronous loads settle:
-    /// two captures in a row must match.
-    private func render<Content: View>(_ content: Content, size: NSSize) -> NSBitmapImageRep {
+    /// until asynchronous loads settle: once `ready`, `settle` captures in a row, 0.1 s apart,
+    /// must match the one before. A spinner drawn offscreen does not move, so views that show
+    /// one while loading pass a `ready` that checks their model.
+    private func render<Content: View>(_ content: Content, size: NSSize, settle: Int = 1,
+                                       ready: () -> Bool = { true }) -> NSBitmapImageRep {
         let host = NSHostingView(rootView: content
             .environment(\.xherdrTheme, Self.theme)
             .environment(\.xherdrTypography, XherdrTypography())
@@ -44,12 +46,15 @@ final class ViewSnapshotTests: XCTestCase {
             return bitmap
         }
         var previous = capture()
-        for _ in 0..<40 {
+        var matches = 0
+        for _ in 0..<60 {
             RunLoop.main.run(until: Date().addingTimeInterval(0.1))
             let next = capture()
-            if next.tiffRepresentation == previous.tiffRepresentation { return next }
+            matches = ready() && next.tiffRepresentation == previous.tiffRepresentation ? matches + 1 : 0
+            if matches >= settle { return next }
             previous = next
         }
+        XCTAssertTrue(ready(), "The view did not finish loading")
         return previous
     }
 
@@ -163,6 +168,129 @@ final class ViewSnapshotTests: XCTestCase {
         let bar = WorkspaceGitBar(location: repo, reloadToken: 0, changes: changes, onChange: {},
                                   onOpenWorktree: nil, onError: { XCTFail($0) })
         try assertSnapshot(render(bar, size: NSSize(width: 300, height: 150)), named: "git-bar")
+        try skipIfRecorded()
+    }
+
+    /// A repository with three dated commits, a few branches, a worktree and every kind of
+    /// change, in a sandbox with a fixed path so the worktree paths shown do not change.
+    private func snapshotRepository() throws -> (sandbox: WorkspaceGitSandbox, location: WorkspaceFileLocation) {
+        let sandbox = try WorkspaceGitSandbox(name: "view-snapshots")
+        try sandbox.sh("git init -q -b main repo")
+        try sandbox.sh("git config user.name 'Ada Lovelace' && git config user.email ada@example.com", in: "repo")
+        func commit(_ message: String, _ date: String) throws {
+            try sandbox.sh("git add -A && GIT_AUTHOR_DATE='\(date)' GIT_COMMITTER_DATE='\(date)' git commit -q -m '\(message)'",
+                           in: "repo")
+        }
+        try sandbox.write([
+            ".gitignore": "build/\n",
+            "README.md": "# Greeter\n",
+            "Package.swift": "// swift-tools-version:5.9\n",
+            "Sources/App/main.swift": "print(greet())\n",
+            "Sources/App/Greeting.swift": "func greet() -> String { \"Hello\" }\n",
+            "Sources/Core/Model.swift": "struct Model {}\n",
+            "docs/guide.md": "# Guide\n",
+            "docs/old-notes.md": "Notes\n",
+        ], in: "repo")
+        try commit("Initial", "2024-03-01T09:00:00+0000")
+        try sandbox.write(["Tests/AppTests/GreetingTests.swift": "import XCTest\n"], in: "repo")
+        try commit("Add greeting tests", "2024-03-12T14:30:00+0000")
+        try sandbox.write([
+            "Sources/App/Greeting.swift": "func greet(_ name: String) -> String {\n    \"Hello, \\(name)\"\n}\n",
+            "Sources/App/main.swift": "print(greet(\"world\"))\n",
+            "Sources/Core/Person.swift": "struct Person {\n    let name: String\n}\n",
+        ], in: "repo")
+        try sandbox.sh("rm docs/old-notes.md", in: "repo")
+        try commit("Greet people by name", "2024-03-14T16:45:00+0000")
+        try sandbox.sh("""
+            git branch feature/search HEAD~1
+            git branch fix-typo
+            git update-ref refs/remotes/origin/main HEAD~1
+            git worktree add -q ../repo-docs fix-typo
+            """, in: "repo")
+        // One staged change, one staged new file, one unstaged change, one untracked and one ignored file.
+        try sandbox.write([
+            "README.md": "# Greeter\n\nGreets people.\n",
+            "Sources/Core/Store.swift": "final class Store {}\n",
+        ], in: "repo")
+        try sandbox.sh("git add README.md Sources/Core/Store.swift", in: "repo")
+        try sandbox.write([
+            "Sources/App/Greeting.swift": "func greet(_ name: String) -> String {\n    \"Hello, \\(name)!\"\n}\n",
+            "docs/notes.md": "Ideas\n",
+            "build/output.log": "ok\n",
+        ], in: "repo")
+        return (sandbox, sandbox.location("repo"))
+    }
+
+    /// Relative commit ages are measured from a fixed day, a day after the last commit.
+    private func fixClock() -> () -> Void {
+        let saved = WorkspaceCommit.now
+        WorkspaceCommit.now = { Date(timeIntervalSince1970: 1_710_504_000) } // 2024-03-15 12:00 UTC
+        return { WorkspaceCommit.now = saved }
+    }
+
+    /// The explorer's Files and Changes trees with a few folders open and a file selected, over
+    /// staged, unstaged, untracked and ignored files. The repository panel is collapsed here.
+    func testExplorer() throws {
+        let (sandbox, repo) = try snapshotRepository()
+        defer { sandbox.tearDown() }
+        let defaults = UserDefaults.standard
+        let savedCollapsed = defaults.object(forKey: "RepositoryCollapsed")
+        defer { defaults.set(savedCollapsed, forKey: "RepositoryCollapsed") }
+        defaults.set(true, forKey: "RepositoryCollapsed")
+        let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: [
+            "workspaces": [["workspace_id": "repo", "label": "repo"]],
+            "tabs": [["tab_id": "repo:t1", "workspace_id": "repo", "label": "1"]],
+            "panes": [["pane_id": "p1", "workspace_id": "repo", "tab_id": "repo:t1", "cwd": repo.root]],
+            "agents": [], "layouts": [], "focused_pane_id": "p1",
+        ] as [String: Any]))
+        let location = try XCTUnwrap(WorkspaceFiles.location(snapshot: snapshot, workspaceID: "repo",
+                                                             session: "test", machine: nil))
+
+        for (name, changes, folders, selected) in [
+            ("explorer-files", false, ["Sources", "Sources/App", "docs", "build"], "Sources/App/Greeting.swift"),
+            ("explorer-changes", true, ["Sources", "Sources/App", "Sources/Core", "docs"], "Sources/App/Greeting.swift"),
+        ] {
+            let model = WorkspaceExplorerModel()
+            model.showsChanges = changes
+            let identity = model.treeIdentity(location)
+            for folder in folders { model.tree.expand(folder, in: identity) }
+            model.tree.selected = identity + "|" + selected
+            let view = WorkspaceBrowserView(localSnapshot: snapshot, localWorkspaceID: "repo", localSession: "test",
+                                            machine: nil, refreshVersion: 0,
+                                            onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in }, onNewTab: { _ in },
+                                            onNewSpace: { _, _ in }, onLocationChange: { _ in },
+                                            onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in },
+                                            onOpenCommitFile: { _, _, _ in }, model: model)
+            // The Git bar under the tree loads its branch after the listing, out of the model's sight.
+            try assertSnapshot(render(view, size: NSSize(width: 300, height: 600), settle: 5) {
+                model.listing != nil && !model.isLoading
+            }, named: name)
+            XCTAssertNil(model.error)
+        }
+        try skipIfRecorded()
+    }
+
+    /// The repository panel's history, a commit's files, and its branches and worktrees.
+    func testRepository() throws {
+        let (sandbox, repo) = try snapshotRepository()
+        defer { sandbox.tearDown() }
+        let restoreClock = fixClock()
+        defer { restoreClock() }
+        let head = try XCTUnwrap(WorkspaceFiles.repository(at: repo).commits.first)
+        XCTAssertEqual(head.subject, "Greet people by name")
+
+        func snapshot(tab: Int = 0, commit: WorkspaceCommit? = nil, height: CGFloat = 340) -> NSBitmapImageRep {
+            let model = WorkspaceRepositoryModel()
+            let panel = WorkspaceRepositoryView(location: repo, refreshVersion: 0, isCollapsed: .constant(false),
+                                                onChange: {}, onNewSpace: nil, onOpenCommitFile: { _, _, _ in },
+                                                model: model, selectedTab: tab, selectedCommit: commit)
+            return render(panel, size: NSSize(width: 300, height: height), settle: 2) {
+                model.listing != nil && !model.isLoading && (commit == nil || model.commitFiles != nil)
+            }
+        }
+        try assertSnapshot(snapshot(), named: "repository-history")
+        try assertSnapshot(snapshot(commit: head), named: "repository-commit")
+        try assertSnapshot(snapshot(tab: 1, height: 420), named: "repository-branches")
         try skipIfRecorded()
     }
 }

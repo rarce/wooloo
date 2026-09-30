@@ -9,8 +9,10 @@ final class WorkspaceGitSandbox {
     let base: String
     private let savedEnvironment: [String: String?]
 
-    init() throws {
-        base = "/private/tmp/xherdr-tests/\(UUID().uuidString)"
+    /// `name` is the sandbox folder; a fixed one keeps paths shown in snapshots stable.
+    init(name: String = UUID().uuidString) throws {
+        base = "/private/tmp/xherdr-tests/\(name)"
+        try? FileManager.default.removeItem(atPath: base)
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         let isolated = ["GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
         savedEnvironment = isolated.keys.reduce(into: [:]) { $0.updateValue(ProcessInfo.processInfo.environment[$1], forKey: $1) }

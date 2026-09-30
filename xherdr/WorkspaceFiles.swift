@@ -149,8 +149,11 @@ struct WorkspaceCommit: Identifiable {
     let author: String
     let date: Date
 
+    /// The current time for relative ages; snapshot tests fix it.
+    static var now: () -> Date = { Date() }
+
     /// English relative age, e.g. "3 days ago".
-    var relativeDate: String { relativeDate(relativeTo: Date()) }
+    var relativeDate: String { relativeDate(relativeTo: Self.now()) }
 
     func relativeDate(relativeTo now: Date) -> String {
         let seconds = now.timeIntervalSince(date)
