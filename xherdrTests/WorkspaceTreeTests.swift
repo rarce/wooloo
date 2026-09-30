@@ -111,6 +111,42 @@ final class XherdrThemeTests: XCTestCase {
         XCTAssertNil(XherdrTheme.named("no-such-theme"))
     }
 
+    /// Agent states and change kinds use Herdr's palette, and agent states look different
+    /// from each other wherever the palette allows it.
+    func testStatusColorsFollowThePalette() {
+        for theme in XherdrTheme.all {
+            let states = ["working", "blocked", "done", "idle"].map(theme.agentStatus)
+            XCTAssertEqual(states, [theme.herdr.yellow, theme.herdr.red, theme.herdr.blue, theme.herdr.green].map { XherdrTheme.color($0) }, theme.id)
+            // Herdr's Rosé Pine palettes use pine for both green and blue, so done and idle
+            // agents look alike there, as they do in Herdr itself.
+            let expected = theme.id.hasPrefix("rose-pine") ? 3 : 4
+            XCTAssertEqual(Set([theme.herdr.yellow, theme.herdr.red, theme.herdr.blue, theme.herdr.green]).count, expected,
+                           "\(theme.id): agent states share a color")
+            XCTAssertEqual(theme.agentStatus(nil), theme.muted, theme.id)
+            XCTAssertEqual(theme.agentStatus("unknown"), theme.muted, theme.id)
+
+            XCTAssertEqual(theme.vcs(.added), theme.success, theme.id)
+            XCTAssertEqual(theme.vcs(.deleted), theme.error, theme.id)
+            XCTAssertEqual(theme.vcs(.conflicted), theme.error, theme.id)
+            XCTAssertEqual(theme.vcs(.untracked), theme.muted, theme.id)
+            XCTAssertEqual(theme.vcs(.modified), XherdrTheme.color(theme.herdr.yellow), theme.id)
+            XCTAssertEqual(theme.vcs(.renamed), XherdrTheme.color(theme.herdr.blue), theme.id)
+        }
+    }
+
+    /// The editor uses the terminal's colors, and its current-line highlight is visible even
+    /// when Herdr's dim surface is the background itself.
+    func testEditorThemeMatchesTheTerminal() {
+        for theme in XherdrTheme.all {
+            let editor = theme.editorTheme
+            XCTAssertEqual(editor.background, theme.terminalBackground, theme.id)
+            XCTAssertEqual(editor.text, theme.terminalForeground, theme.id)
+            XCTAssertEqual(editor.keywords, XherdrTheme.nsColor(theme.herdr.mauve), theme.id)
+            XCTAssertEqual(editor.comments, XherdrTheme.nsColor(theme.herdr.overlay0), theme.id)
+            XCTAssertNotEqual(editor.lineHighlight.withAlphaComponent(1), editor.background, theme.id)
+        }
+    }
+
     func testLightAndDarkSiblingsPairUp() {
         for theme in XherdrTheme.all {
             guard let sibling = theme.sibling else { continue }
