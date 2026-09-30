@@ -471,6 +471,85 @@ struct TerminalPaneView: NSViewRepresentable {
     }
 }
 
+/// Maps surface cells under the pointer to panes, splits and mouse reports.
+enum TerminalPointer {
+    /// The pane whose rectangle holds a surface cell.
+    static func paneID(atColumn x: Int, row y: Int, in surface: HerdrSurface) -> String? {
+        surface.paneIDs.first { id in
+            guard let rect = surface.paneRects[id] else { return false }
+            return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+        }
+    }
+
+    /// The pane under a surface cell and the cell's position inside its content, for mouse reports.
+    static func pane(atColumn x: Int, row y: Int, in surface: HerdrSurface) -> (id: String, column: UInt16, row: UInt16)? {
+        guard let id = paneID(atColumn: x, row: y, in: surface),
+              let inner = surface.paneInnerRects[id], let cell = cell(column: x, row: y, inside: inner) else { return nil }
+        return (id, cell.column, cell.row)
+    }
+
+    /// A surface cell relative to a pane's content, clamped to it; nil for an empty pane.
+    static func cell(column x: Int, row y: Int, inside inner: HerdrRect) -> (column: UInt16, row: UInt16)? {
+        guard inner.width > 0, inner.height > 0 else { return nil }
+        return (UInt16(clamping: max(0, min(x - inner.x, inner.width - 1))),
+                UInt16(clamping: max(0, min(y - inner.y, inner.height - 1))))
+    }
+
+    /// The split whose divider holds a surface cell.
+    static func split(atColumn x: Int, row y: Int, in surface: HerdrSurface) -> HerdrSplit? {
+        surface.splits.first { split in
+            let rect = split.hitRect
+            return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+        }
+    }
+
+    /// The split ratio for a divider dragged to `pointer`, kept between 10% and 90%.
+    static func splitRatio(_ split: HerdrSplit, pointer: Int, grabOffset: Int) -> Double {
+        let origin = split.direction == .horizontal ? split.area.x : split.area.y
+        let length = max(1, split.direction == .horizontal ? split.area.width : split.area.height)
+        return min(0.9, max(0.1, Double(pointer + grabOffset - origin) / Double(length)))
+    }
+
+    /// Herdr's mouse modifier bits: Shift 1, Control 2, Option 4.
+    static func modifiers(_ flags: NSEvent.ModifierFlags) -> UInt8 {
+        let flags = flags.intersection(.deviceIndependentFlagsMask)
+        var value: UInt8 = 0
+        if flags.contains(.shift) { value |= 1 }
+        if flags.contains(.control) { value |= 2 }
+        if flags.contains(.option) { value |= 4 }
+        return value
+    }
+
+    /// The run of non-blank cells around `column`, for double-click selection; nil on a blank.
+    static func wordRange(in symbols: [String], at column: Int) -> Range<Int>? {
+        guard symbols.indices.contains(column), symbols[column] != " " else { return nil }
+        var lower = column
+        var upper = column + 1
+        while lower > 0, symbols[lower - 1] != " " { lower -= 1 }
+        while upper < symbols.count, symbols[upper] != " " { upper += 1 }
+        return lower..<upper
+    }
+}
+
+/// Turns scroll deltas into whole lines for mouse-reporting programs. Trackpads report small
+/// precise deltas that add up across events; wheels report lines.
+struct TerminalScrollAccumulator {
+    private(set) var remainder: CGFloat = 0
+
+    mutating func reset() { remainder = 0 }
+
+    /// Lines to scroll for one event, at most 20; nil while a trackpad has not moved a whole line.
+    mutating func lines(for delta: CGFloat, precise: Bool, lineHeight: CGFloat) -> UInt16? {
+        guard precise else { return UInt16(max(1, min(Int(abs(delta).rounded()), 20))) }
+        remainder += delta
+        let count = Int(abs(remainder) / lineHeight)
+        guard count > 0 else { return nil }
+        let lines = UInt16(min(count, 20))
+        remainder -= CGFloat(lines) * lineHeight * (remainder > 0 ? 1 : -1)
+        return lines
+    }
+}
+
 final class HerdrTerminalTextView: NSTextView {
     var surfaceRevision: UInt64?
     var themeID: String?
@@ -490,7 +569,7 @@ final class HerdrTerminalTextView: NSTextView {
     var sendMouse: ((HerdrMouseEvent, String) -> Void)?
     var setSplitRatio: (([Bool], Double) -> Void)?
     private var heldMouse: (paneID: String, button: UInt64)?
-    private var scrollRemainder: CGFloat = 0
+    private var scroll = TerminalScrollAccumulator()
     private var splitDrag: (split: HerdrSplit, grabOffset: Int, bootID: String,
                             lastSentAt: Double, lastRatio: Double?)?
     /// The live surface drawn in `draw(_:)`; nil while showing fallback `pane.read` text.
@@ -567,7 +646,7 @@ final class HerdrTerminalTextView: NSTextView {
 
     private var graphicPlacements: [GraphicPlacement] = []
 
-    private static func decodeGraphic(_ graphic: HerdrGraphic) -> NSImage? {
+    static func decodeGraphic(_ graphic: HerdrGraphic) -> NSImage? {
         if graphic.key.format == .png { return NSImage(data: graphic.data) }
         let channels = graphic.key.format == .rgba ? 4 : 3
         let (rowBytes, overflow) = graphic.key.width.multipliedReportingOverflow(by: channels)
@@ -750,7 +829,8 @@ final class HerdrTerminalTextView: NSTextView {
         return lower < upper ? lower..<upper : 0..<0
     }
 
-    private func selectedCellText() -> String? {
+    /// The text of the cells selected in the live grid.
+    func selectedCellText() -> String? {
         guard let grid = terminalGrid, let selection = orderedSelection(in: grid) else { return nil }
         return (selection.start.row...selection.end.row).map { row in
             grid.rows[row].symbols[selectedColumns(row: row, selection: selection, width: grid.width)].joined()
@@ -770,17 +850,12 @@ final class HerdrTerminalTextView: NSTextView {
         guard grid.width > 0, grid.height > 0 else { return }
         let point = gridPoint(event, in: grid)
         selectedSnapshot = nil
-        let symbols = grid.rows[point.row].symbols
         let cell = min(max(0, surfacePoint(event).0), grid.width - 1)
-        let isWord = { (column: Int) in symbols[column] != " " }
+        let word = TerminalPointer.wordRange(in: grid.rows[point.row].symbols, at: cell)
         switch event.clickCount {
-        case 2 where isWord(cell):
-            var lower = cell
-            var upper = cell + 1
-            while lower > 0, isWord(lower - 1) { lower -= 1 }
-            while upper < grid.width, isWord(upper) { upper += 1 }
-            selectionAnchor = GridPoint(row: point.row, column: lower)
-            selectionHead = GridPoint(row: point.row, column: upper)
+        case 2 where word != nil:
+            selectionAnchor = GridPoint(row: point.row, column: word!.lowerBound)
+            selectionHead = GridPoint(row: point.row, column: word!.upperBound)
         case 3...:
             selectionAnchor = GridPoint(row: point.row, column: 0)
             selectionHead = GridPoint(row: point.row, column: grid.width)
@@ -932,10 +1007,7 @@ final class HerdrTerminalTextView: NSTextView {
 
     private func splitHit(_ event: NSEvent, in surface: HerdrSurface) -> HerdrSplit? {
         let (x, y) = surfacePoint(event)
-        return surface.splits.first { split in
-            let rect = split.hitRect
-            return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
-        }
+        return TerminalPointer.split(atColumn: x, row: y, in: surface)
     }
 
     private func updateSplitDrag(with event: NSEvent, finished: Bool) {
@@ -950,9 +1022,7 @@ final class HerdrTerminalTextView: NSTextView {
         let (x, y) = surfacePoint(event)
         let split = drag.split
         let pointer = split.direction == .horizontal ? x : y
-        let origin = split.direction == .horizontal ? split.area.x : split.area.y
-        let length = max(1, split.direction == .horizontal ? split.area.width : split.area.height)
-        let ratio = min(0.9, max(0.1, Double(pointer + drag.grabOffset - origin) / Double(length)))
+        let ratio = TerminalPointer.splitRatio(split, pointer: pointer, grabOffset: drag.grabOffset)
         let now = ProcessInfo.processInfo.systemUptime
         if finished || now - drag.lastSentAt >= 0.033 {
             if drag.lastRatio != ratio {
@@ -1070,22 +1140,14 @@ final class HerdrTerminalTextView: NSTextView {
     override func scrollWheel(with event: NSEvent) {
         guard let surface, let (id, column, row) = mouseHit(event, in: surface),
               surface.mouseReportingPaneIDs.contains(id) else {
-            scrollRemainder = 0
+            scroll.reset()
             super.scrollWheel(with: event)
             return
         }
         let vertical = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
         let delta = vertical ? event.scrollingDeltaY : event.scrollingDeltaX
-        let lines: UInt16
-        if event.hasPreciseScrollingDeltas {
-            scrollRemainder += delta
-            let count = Int(abs(scrollRemainder) / TerminalPaneView.cellHeight)
-            guard count > 0 else { return }
-            lines = UInt16(min(count, 20))
-            scrollRemainder -= CGFloat(lines) * TerminalPaneView.cellHeight * (scrollRemainder > 0 ? 1 : -1)
-        } else {
-            lines = UInt16(max(1, min(Int(abs(delta).rounded()), 20)))
-        }
+        guard let lines = scroll.lines(for: delta, precise: event.hasPreciseScrollingDeltas,
+                                       lineHeight: TerminalPaneView.cellHeight) else { return }
         let kind: HerdrMouseEvent.Kind = vertical
             ? (delta > 0 ? .scrollUp : .scrollDown)
             : (delta > 0 ? .scrollLeft : .scrollRight)
@@ -1095,22 +1157,11 @@ final class HerdrTerminalTextView: NSTextView {
 
     private func mouseHit(_ event: NSEvent, in surface: HerdrSurface) -> (String, UInt16, UInt16)? {
         let (x, y) = surfacePoint(event)
-        guard let id = surface.paneIDs.first(where: { id in
-            guard let rect = surface.paneRects[id] else { return false }
-            return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
-        }), let inner = surface.paneInnerRects[id], inner.width > 0, inner.height > 0 else { return nil }
-        let column = UInt16(clamping: max(0, min(x - inner.x, inner.width - 1)))
-        let row = UInt16(clamping: max(0, min(y - inner.y, inner.height - 1)))
-        return (id, column, row)
+        return TerminalPointer.pane(atColumn: x, row: y, in: surface).map { ($0.id, $0.column, $0.row) }
     }
 
     private func mouseModifiers(_ event: NSEvent) -> UInt8 {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        var value: UInt8 = 0
-        if flags.contains(.shift) { value |= 1 }
-        if flags.contains(.control) { value |= 2 }
-        if flags.contains(.option) { value |= 4 }
-        return value
+        TerminalPointer.modifiers(event.modifierFlags)
     }
 
     private func forwardMouse(_ kind: HerdrMouseEvent.Kind, event: NSEvent, hold: Bool) -> Bool {
@@ -1135,13 +1186,11 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     private func forwardHeldMouse(_ kind: HerdrMouseEvent.Kind, event: NSEvent, to id: String) -> Bool {
-        guard let surface, let inner = surface.paneInnerRects[id], inner.width > 0, inner.height > 0 else { return true }
-        let point = convert(event.locationInWindow, from: nil)
-        let x = Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth))
-        let y = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
-        sendMouse?(HerdrMouseEvent(kind: kind,
-                                   column: UInt16(clamping: max(0, min(x - inner.x, inner.width - 1))),
-                                   row: UInt16(clamping: max(0, min(y - inner.y, inner.height - 1))),
+        let (x, y) = surfacePoint(event)
+        guard let inner = surface?.paneInnerRects[id], let cell = TerminalPointer.cell(column: x, row: y, inside: inner) else {
+            return true
+        }
+        sendMouse?(HerdrMouseEvent(kind: kind, column: cell.column, row: cell.row,
                                    modifiers: mouseModifiers(event), lines: 1), id)
         return true
     }
@@ -1216,10 +1265,7 @@ final class HerdrTerminalTextView: NSTextView {
             let point = convert(sender.draggingLocation, from: nil)
             let x = Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth))
             let y = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
-            if let id = surface.paneIDs.first(where: { id in
-                guard let rect = surface.paneRects[id] else { return false }
-                return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
-            }) {
+            if let id = TerminalPointer.paneID(atColumn: x, row: y, in: surface) {
                 target = id
                 if id != paneID { selectPane?(id) }
             }
@@ -1231,7 +1277,8 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {}
 
-    private func droppedText(_ pasteboard: NSPasteboard) -> String? {
+    /// What a drop pastes: shell-escaped file paths, or text as is.
+    func droppedText(_ pasteboard: NSPasteboard) -> String? {
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self],
                                              options: [.urlReadingFileURLsOnly: true]) as? [URL],
            !urls.isEmpty {

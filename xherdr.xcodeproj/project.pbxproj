@@ -62,6 +62,7 @@
 		C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */; };
 		C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000047 /* HerdrNotificationTests.swift */; };
 		C30000000000000000000048 /* HerdrStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000049 /* HerdrStoreTests.swift */; };
+		C30000000000000000000058 /* TerminalInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000059 /* TerminalInputTests.swift */; };
 		C30000000000000000000056 /* WorkspaceDocumentStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000057 /* WorkspaceDocumentStoreTests.swift */; };
 		C30000000000000000000052 /* WorkspaceRepositoryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */; };
 		C30000000000000000000050 /* WorkspaceGitBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000051 /* WorkspaceGitBarTests.swift */; };
@@ -134,6 +135,7 @@
 		C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSurfaceStreamTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000047 /* HerdrNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrNotificationTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000049 /* HerdrStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrStoreTests.swift; sourceTree = "<group>"; };
+		C30000000000000000000059 /* TerminalInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalInputTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000057 /* WorkspaceDocumentStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDocumentStoreTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRepositoryModelTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000051 /* WorkspaceGitBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitBarTests.swift; sourceTree = "<group>"; };
@@ -222,6 +224,7 @@
 				C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */,
 				C30000000000000000000047 /* HerdrNotificationTests.swift */,
 				C30000000000000000000049 /* HerdrStoreTests.swift */,
+				C30000000000000000000059 /* TerminalInputTests.swift */,
 				C30000000000000000000057 /* WorkspaceDocumentStoreTests.swift */,
 				C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */,
 				C30000000000000000000051 /* WorkspaceGitBarTests.swift */,
@@ -399,6 +402,7 @@
 				C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */,
 				C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */,
 				C30000000000000000000048 /* HerdrStoreTests.swift in Sources */,
+				C30000000000000000000058 /* TerminalInputTests.swift in Sources */,
 				C30000000000000000000056 /* WorkspaceDocumentStoreTests.swift in Sources */,
 				C30000000000000000000052 /* WorkspaceRepositoryModelTests.swift in Sources */,
 				C30000000000000000000050 /* WorkspaceGitBarTests.swift in Sources */,
