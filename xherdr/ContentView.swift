@@ -391,6 +391,10 @@ struct ContentView: View {
                             }
                         }
                     }
+
+                    HostStatsSection(machine: explorerMachine,
+                                     directory: explorerLocation?.machine?.id == explorerMachine?.id
+                                         ? explorerLocation?.root : nil)
                 }
                 .padding(7)
             }

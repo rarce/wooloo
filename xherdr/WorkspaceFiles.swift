@@ -840,6 +840,11 @@ enum WorkspaceFiles {
         return try run(sshExecutable, args, input: input, limit: limit, timeout: timeout, label: label, remote: true)
     }
 
+    /// Output of a short read-only script on an SSH machine, e.g. the sidebar's host stats probe.
+    static func remoteOutput(_ machine: HerdrMachineProfile, script: String, label: String) throws -> Data {
+        try ssh(machine, script, limit: 64_000, timeout: 10, label: label)
+    }
+
     /// Tests replace it with a script that runs the remote command locally.
     static var sshExecutable = "/usr/bin/ssh"
 

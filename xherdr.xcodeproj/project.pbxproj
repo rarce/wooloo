@@ -31,6 +31,9 @@
 		A10000000000000000000058 /* WorkspaceDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000059 /* WorkspaceDiffView.swift */; };
 		A1000000000000000000005A /* DocumentFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005B /* DocumentFind.swift */; };
 		A10000000000000000000042 /* WorkspaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000043 /* WorkspaceSearch.swift */; };
+		A1000000000000000000005C /* HostStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005D /* HostStats.swift */; };
+		A1000000000000000000005E /* HostStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005F /* HostStatsView.swift */; };
+		C30000000000000000000060 /* HostStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000061 /* HostStatsTests.swift */; };
 		C30000000000000000000001 /* THIRD_PARTY_NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */; };
 		A10000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000041 /* Assets.xcassets */; };
 		A10000000000000000000032 /* CodeEditSourceEditor in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000034 /* CodeEditSourceEditor */; };
@@ -109,6 +112,9 @@
 		A10000000000000000000059 /* WorkspaceDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiffView.swift; sourceTree = "<group>"; };
 		A1000000000000000000005B /* DocumentFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentFind.swift; sourceTree = "<group>"; };
 		A10000000000000000000043 /* WorkspaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearch.swift; sourceTree = "<group>"; };
+		A1000000000000000000005D /* HostStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStats.swift; sourceTree = "<group>"; };
+		A1000000000000000000005F /* HostStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsView.swift; sourceTree = "<group>"; };
+		C30000000000000000000061 /* HostStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = THIRD_PARTY_NOTICES.txt; sourceTree = "<group>"; };
 		A10000000000000000000041 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000000000000000000005 /* xherdr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xherdr.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -189,6 +195,8 @@
 				A10000000000000000000059 /* WorkspaceDiffView.swift */,
 				A1000000000000000000005B /* DocumentFind.swift */,
 				A10000000000000000000043 /* WorkspaceSearch.swift */,
+				A1000000000000000000005D /* HostStats.swift */,
+				A1000000000000000000005F /* HostStatsView.swift */,
 				A10000000000000000000041 /* Assets.xcassets */,
 			);
 			path = xherdr;
@@ -226,6 +234,7 @@
 				C30000000000000000000031 /* FakeHerdrServer.swift */,
 				C30000000000000000000033 /* HerdrSocketTests.swift */,
 				C30000000000000000000035 /* WorkspaceFilesRemoteTests.swift */,
+				C30000000000000000000061 /* HostStatsTests.swift */,
 				C30000000000000000000041 /* WorkspaceTreeTests.swift */,
 				C30000000000000000000043 /* DocumentFindTests.swift */,
 				C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */,
@@ -380,6 +389,8 @@
 				A10000000000000000000058 /* WorkspaceDiffView.swift in Sources */,
 				A1000000000000000000005A /* DocumentFind.swift in Sources */,
 				A10000000000000000000042 /* WorkspaceSearch.swift in Sources */,
+				A1000000000000000000005C /* HostStats.swift in Sources */,
+				A1000000000000000000005E /* HostStatsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -407,6 +418,7 @@
 				C30000000000000000000030 /* FakeHerdrServer.swift in Sources */,
 				C30000000000000000000032 /* HerdrSocketTests.swift in Sources */,
 				C30000000000000000000034 /* WorkspaceFilesRemoteTests.swift in Sources */,
+				C30000000000000000000060 /* HostStatsTests.swift in Sources */,
 				C30000000000000000000040 /* WorkspaceTreeTests.swift in Sources */,
 				C30000000000000000000042 /* DocumentFindTests.swift in Sources */,
 				C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */,
