@@ -30,12 +30,10 @@ struct WorkspaceBrowserView: View {
     @State private var selectedItem: String?
     @State private var operationError: String?
     @State private var clipboard: WorkspaceFileClipboard?
-    @State private var renamePrompt: WorkspaceRenamePrompt?
     /// A file or folder being named in place in the tree, before it is created.
     @State private var draft: WorkspaceFileDraft?
     @State private var draftName = ""
     @FocusState private var draftFocused: Bool
-    @State private var nameInput = ""
     @State private var pendingDelete: WorkspaceFileTarget?
     /// Folders created in the explorer, by location, shown while they hold no listed file.
     @State private var createdDirectories: [String: Set<String>] = [:]
@@ -182,7 +180,8 @@ struct WorkspaceBrowserView: View {
                     expanded: expandedDirectories,
                     identity: treeIdentity(location)
                 )
-                let draftFolder = !showsChanges && draft?.location.identity == location.identity ? draft?.folder : nil
+                let shownDraft = !showsChanges && draft?.location.identity == location.identity ? draft : nil
+                let draftFolder = shownDraft?.renaming == nil ? shownDraft?.folder : nil
                 GeometryReader { viewport in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
@@ -198,11 +197,15 @@ struct WorkspaceBrowserView: View {
                                     hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
                                 }
                                 ForEach(rows) { row in
-                                    treeRow(row, location: location,
-                                            change: changesByPath[row.node.path],
-                                            directoryKind: directoryKinds[row.node.path],
-                                            stageState: listing.hasGit ? stageStates[row.node.path] : nil,
-                                            hasGit: listing.hasGit)
+                                    if shownDraft?.renaming == row.node.path {
+                                        draftRow(depth: row.depth)
+                                    } else {
+                                        treeRow(row, location: location,
+                                                change: changesByPath[row.node.path],
+                                                directoryKind: directoryKinds[row.node.path],
+                                                stageState: listing.hasGit ? stageStates[row.node.path] : nil,
+                                                hasGit: listing.hasGit)
+                                    }
                                     if row.node.isDirectory, draftFolder == row.node.path { draftRow(depth: row.depth + 1) }
                                 }
                             }
@@ -236,16 +239,6 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
-        .alert(renamePrompt?.title ?? "", isPresented: Binding(
-            get: { renamePrompt != nil }, set: { if !$0 { renamePrompt = nil } }
-        ), presenting: renamePrompt) { prompt in
-            TextField("Name", text: $nameInput)
-            Button("Rename") { submitRename(prompt) }
-                .keyboardShortcut(.defaultAction)
-            Button("Cancel", role: .cancel) {}
-        } message: { prompt in
-            Text(prompt.message)
-        }
         .confirmationDialog(pendingDelete.map { "Delete “\(($0.path as NSString).lastPathComponent)”?" } ?? "",
                             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                             presenting: pendingDelete) { target in
@@ -340,11 +333,12 @@ struct WorkspaceBrowserView: View {
         pathActions(location, path: "")
     }
 
-    /// The name field of a file or folder being created, indented as its first child.
+    /// The name field of a file or folder being created, indented as its first child, or of
+    /// one being renamed, in place of its row.
     private func draftRow(depth: Int) -> some View {
         let isFolder = draft?.isFolder == true
         return HStack(spacing: 6) {
-            Image(systemName: isFolder ? "folder" : "doc.text")
+            Image(systemName: isFolder ? "folder" : draft?.renaming.map(fileIcon) ?? "doc.text")
                 .font(.system(size: typography.body))
                 .frame(width: 17)
                 .foregroundStyle(.secondary)
@@ -365,8 +359,12 @@ struct WorkspaceBrowserView: View {
         // Clicking elsewhere creates what was typed, as in Zed; an empty name is dropped. Focus
         // lost before the field ever had it is the previous field's, arriving late, and is ignored.
         .onChange(of: draftFocused) { _, focused in
-            if focused { draft?.hasHadFocus = true }
-            else if draft?.hasHadFocus == true { commitDraft() }
+            if focused {
+                if draft?.hasHadFocus == false, draft?.renaming != nil { selectNameStem() }
+                draft?.hasHadFocus = true
+            } else if draft?.hasHadFocus == true {
+                commitDraft()
+            }
         }
     }
 
@@ -483,8 +481,8 @@ struct WorkspaceBrowserView: View {
                 pathActions(location, path: node.path)
             } else {
                 Button("Rename…", systemImage: "pencil") {
-                    nameInput = (node.path as NSString).lastPathComponent
-                    renamePrompt = WorkspaceRenamePrompt(location: location, path: node.path, isDirectory: node.isDirectory)
+                    startDraft(in: (node.path as NSString).deletingLastPathComponent, isFolder: node.isDirectory,
+                               at: location, renaming: node.path)
                 }
                 if location.isLocal {
                     Button("Move to Trash", systemImage: "trash") { trash(node.path, in: location) }
@@ -629,8 +627,10 @@ struct WorkspaceBrowserView: View {
 
     // MARK: File operations
 
-    /// Shows a name field in the tree, under `folder` ("" is the Space root), for a new item.
-    private func startDraft(in folder: String, isFolder: Bool, at location: WorkspaceFileLocation) {
+    /// Shows a name field in the tree, under `folder` ("" is the Space root), for a new item or
+    /// for renaming the item at `renaming`.
+    private func startDraft(in folder: String, isFolder: Bool, at location: WorkspaceFileLocation,
+                            renaming: String? = nil) {
         let identity = treeIdentity(location)
         collapsedRoots.remove(identity)
         var parent = folder
@@ -638,8 +638,17 @@ struct WorkspaceBrowserView: View {
             expandedDirectories.insert(identity + "|" + parent)
             parent = (parent as NSString).deletingLastPathComponent
         }
-        draftName = ""
-        draft = WorkspaceFileDraft(location: location, folder: folder, isFolder: isFolder)
+        draftName = renaming.map { ($0 as NSString).lastPathComponent } ?? ""
+        draft = WorkspaceFileDraft(location: location, folder: folder, isFolder: isFolder, renaming: renaming)
+    }
+
+    /// Selects the name without its extension, as Finder and Zed do, so typing replaces only it.
+    private func selectNameStem() {
+        let stem = draft?.isFolder == true ? draftName : (draftName as NSString).deletingPathExtension
+        DispatchQueue.main.async {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
+            editor.setSelectedRange(NSRange(location: 0, length: (stem as NSString).length))
+        }
     }
 
     /// Removes the name field, dropping its focus first so a later field does not inherit it.
@@ -654,6 +663,13 @@ struct WorkspaceBrowserView: View {
         let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         let location = draft.location
+        if let original = draft.renaming {
+            guard name != (original as NSString).lastPathComponent else { return }
+            runOperation(location) { try WorkspaceFiles.renameItem(original, to: name, at: location) } completion: {
+                movePathState(from: original, to: $0, in: location)
+            }
+            return
+        }
         let path = draft.folder.isEmpty ? name : draft.folder + "/" + name
         runOperation(location) {
             if draft.isFolder { try WorkspaceFiles.createFolder(path, at: location) }
@@ -662,16 +678,6 @@ struct WorkspaceBrowserView: View {
             if draft.isFolder { createdDirectories[location.identity, default: []].insert(path) }
             reveal(path, in: location)
             if !draft.isFolder { onOpenFile(location, path) }
-        }
-    }
-
-    private func submitRename(_ prompt: WorkspaceRenamePrompt) {
-        let name = nameInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        let location = prompt.location
-        let original = prompt.path
-        runOperation(location) { try WorkspaceFiles.renameItem(original, to: name, at: location) } completion: {
-            movePathState(from: original, to: $0, in: location)
         }
     }
 
@@ -972,20 +978,13 @@ private struct WorkspaceFileTarget {
     let isDirectory: Bool
 }
 
-/// A file or folder being named in the tree before it exists.
+/// A file or folder being named in the tree: a new one, or one being renamed.
 private struct WorkspaceFileDraft {
     let location: WorkspaceFileLocation
     /// The folder it is created in; "" is the Space root.
     let folder: String
     let isFolder: Bool
+    /// The item being renamed; nil for a new one.
+    let renaming: String?
     var hasHadFocus = false
-}
-
-private struct WorkspaceRenamePrompt {
-    let location: WorkspaceFileLocation
-    let path: String
-    let isDirectory: Bool
-
-    var title: String { isDirectory ? "Rename Folder" : "Rename File" }
-    var message: String { "Enter a new name for “\((path as NSString).lastPathComponent)”." }
 }
