@@ -916,6 +916,206 @@ enum WorkspaceFiles {
     }
 }
 
+// MARK: File operations
+
+/// Explorer file operations. They run as POSIX shell scripts in the Space root, so local and SSH
+/// Spaces share one implementation; every path is Space-relative and prefixed with `./`, so
+/// names starting with `-` cannot be read as options.
+extension WorkspaceFiles {
+    /// Checks one file or folder name typed in the explorer.
+    static func validateName(_ name: String) throws {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0"),
+              !name.contains("\n") else {
+            throw WorkspaceFileError.message("Invalid name")
+        }
+    }
+
+    /// Creates an empty file, and any missing folders above it; `path` may name a subfolder.
+    static func createFile(_ path: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        try validateRelativePath(path)
+        _ = try shell("p=\(quote("./" + path)); " + refuseExisting("p")
+                      + "mkdir -p \"$(dirname \"$p\")\" && : > \"$p\"", at: location, limit: 4_000)
+    }
+
+    static func createFolder(_ path: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        try validateRelativePath(path)
+        _ = try shell("p=\(quote("./" + path)); " + refuseExisting("p") + "mkdir -p \"$p\"", at: location, limit: 4_000)
+    }
+
+    /// Renames a file or folder in place and returns its new path.
+    static func renameItem(_ path: String, to name: String, at location: WorkspaceFileLocation) throws -> String {
+        defer { forgetRecentResults() }
+        try validateRelativePath(path)
+        try validateName(name)
+        let parent = (path as NSString).deletingLastPathComponent
+        let destination = parent.isEmpty ? name : parent + "/" + name
+        guard destination != path else { return path }
+        // A case-only rename finds the file itself on a case-insensitive disk.
+        let check = destination.lowercased() == path.lowercased() ? "" : refuseExisting("d")
+        _ = try shell("p=\(quote("./" + path)); d=\(quote("./" + destination)); " + check + "mv \"$p\" \"$d\"",
+                      at: location, limit: 4_000)
+        return destination
+    }
+
+    /// Deletes a file or folder permanently.
+    static func delete(_ path: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        try validateRelativePath(path)
+        _ = try shell("rm -rf \(quote("./" + path))", at: location, limit: 4_000)
+    }
+
+    /// Moves a file or folder of a local Space to the Trash.
+    static func trash(_ path: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        try validateRelativePath(path)
+        guard location.isLocal else { throw WorkspaceFileError.message("The Trash is only available on this Mac") }
+        try FileManager.default.trashItem(at: URL(fileURLWithPath: location.absolutePath(path)), resultingItemURL: nil)
+    }
+
+    /// Copies or moves files and folders, given by absolute paths on the Space's machine, into
+    /// `directory` ("" is the Space root) and returns their new Space-relative paths. A copy that
+    /// would land on an existing name gets a free "name copy" one instead, as in Finder.
+    static func paste(_ sources: [String], into directory: String, move: Bool,
+                      at location: WorkspaceFileLocation) throws -> [String] {
+        defer { forgetRecentResults() }
+        if !directory.isEmpty { try validateRelativePath(directory) }
+        let target = location.absolutePath(directory)
+        let prefix = directory.isEmpty ? "./" : "./" + directory + "/"
+        var results: [String] = []
+        for source in sources {
+            guard source.hasPrefix("/"), source != "/", !source.contains("\0"), !source.contains("\n") else {
+                throw WorkspaceFileError.message("Invalid source path")
+            }
+            let source = source.count > 1 && source.hasSuffix("/") ? String(source.dropLast()) : source
+            let name = (source as NSString).lastPathComponent
+            try validateName(name)
+            let sameFolder = (source as NSString).deletingLastPathComponent == target
+            if move {
+                guard target != source, !target.hasPrefix(source + "/") else {
+                    throw WorkspaceFileError.message("Cannot move \(name) into itself")
+                }
+                if sameFolder { results.append(String(prefix.dropFirst(2)) + name); continue }
+                _ = try shell("s=\(quote(source)); d=\(quote(prefix + name)); " + refuseExisting("d") + "mv \"$s\" \"$d\"",
+                              at: location, limit: 4_000)
+                results.append(String(prefix.dropFirst(2)) + name)
+            } else {
+                let candidates = copyNames(for: name, includingOriginal: !sameFolder).map(quote).joined(separator: " ")
+                let output = try shell("s=\(quote(source)); for c in \(candidates); do d=\(quote(prefix))\"$c\"; "
+                                       + "if [ ! -e \"$d\" ] && [ ! -L \"$d\" ]; then cp -R \"$s\" \"$d\" && printf '%s' \"$c\"; exit; fi; "
+                                       + "done; echo 'No free name for the copy' >&2; exit 1",
+                                       at: location, limit: 4_000)
+                results.append(String(prefix.dropFirst(2)) + String(decoding: output, as: UTF8.self))
+            }
+        }
+        return results
+    }
+
+    /// Names tried for a copy: "a.txt", then "a copy.txt", "a copy 2.txt" and so on.
+    static func copyNames(for name: String, includingOriginal: Bool) -> [String] {
+        let ext = (name as NSString).pathExtension
+        let stem = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+        let suffix = ext.isEmpty ? "" : "." + ext
+        let copies = [stem + " copy" + suffix] + (2...99).map { "\(stem) copy \($0)\(suffix)" }
+        return (includingOriginal ? [name] : []) + copies
+    }
+
+    /// Appends a pattern matching exactly this file or folder to the Space's `.gitignore`, or to
+    /// the repository's `.git/info/exclude`, unless it is already there.
+    static func ignore(_ path: String, isDirectory: Bool, inExclude: Bool, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        try validateRelativePath(path)
+        var file = "./.gitignore"
+        var pattern = ignorePattern(path, isDirectory: isDirectory)
+        if inExclude {
+            // Exclude patterns are relative to the repository root, not the Space root.
+            let lines = String(decoding: try git(location, ["rev-parse", "--show-prefix", "--git-path", "info/exclude"],
+                                                 limit: 8_000), as: UTF8.self)
+                .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            guard lines.count >= 2, !lines[1].isEmpty else { throw WorkspaceFileError.message("No Git repository") }
+            file = lines[1].hasPrefix("/") ? lines[1] : "./" + lines[1]
+            pattern = ignorePattern(lines[0] + path, isDirectory: isDirectory)
+        }
+        _ = try shell("f=\(quote(file)); p=\(quote(pattern)); mkdir -p \"$(dirname \"$f\")\" || exit 1; "
+                      + "if [ -f \"$f\" ] && grep -qxF -e \"$p\" \"$f\"; then exit 0; fi; "
+                      + "if [ -s \"$f\" ] && [ -n \"$(tail -c 1 \"$f\")\" ]; then printf '\\n' >> \"$f\"; fi; "
+                      + "printf '%s\\n' \"$p\" >> \"$f\"", at: location, limit: 4_000)
+    }
+
+    /// A gitignore pattern anchored at its file's folder that matches only `path`.
+    static func ignorePattern(_ path: String, isDirectory: Bool) -> String {
+        var escaped = ""
+        for character in path {
+            if "\\*?[".contains(character) { escaped.append("\\") }
+            escaped.append(character)
+        }
+        if isDirectory { return "/" + escaped + "/" }
+        // Git drops trailing spaces unless they are escaped.
+        let trailing = escaped.reversed().prefix { $0 == " " }.count
+        return "/" + escaped.dropLast(trailing) + String(repeating: "\\ ", count: trailing)
+    }
+
+    /// A link to the file at the checked-out commit on the hosting site of the upstream remote
+    /// (or `origin`, or the only remote).
+    static func permalink(_ path: String, at location: WorkspaceFileLocation) throws -> URL {
+        try validateRelativePath(path)
+        let lines = String(decoding: try git(location, ["rev-parse", "HEAD", "--show-prefix"], limit: 8_000), as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard lines.count >= 2 else { throw WorkspaceFileError.message("No commit checked out") }
+        let remotes = String(decoding: (try? git(location, ["remote"], limit: 20_000)) ?? Data(), as: UTF8.self)
+            .split(separator: "\n").map(String.init)
+        let upstream = (try? git(location, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], limit: 4_000))
+            .map { String(decoding: $0, as: UTF8.self) }
+            .flatMap { value in remotes.first { value.hasPrefix($0 + "/") } }
+        guard let remote = upstream ?? (remotes.contains("origin") ? "origin" : remotes.first) else {
+            throw WorkspaceFileError.message("The repository has no remote")
+        }
+        let remoteURL = String(decoding: try git(location, ["remote", "get-url", remote], limit: 8_000), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = permalinkURL(remote: remoteURL, commit: lines[0], path: lines[1] + path) else {
+            throw WorkspaceFileError.message("Unsupported remote URL: \(remoteURL)")
+        }
+        return url
+    }
+
+    /// Maps SSH (`git@host:owner/repo.git`, `ssh://…`) and HTTPS remotes to the hosting site's
+    /// blob URL: GitLab and Bitbucket have their own layouts, anything else uses GitHub's.
+    static func permalinkURL(remote: String, commit: String, path: String) -> URL? {
+        guard commit.count >= 7, commit.allSatisfy(\.isHexDigit) else { return nil }
+        var host: String
+        var repository: String
+        if let components = URLComponents(string: remote), let scheme = components.scheme,
+           ["http", "https", "ssh", "git"].contains(scheme), let value = components.host {
+            host = value
+            repository = components.path
+        } else if let colon = remote.firstIndex(of: ":"), !remote.contains("://") {
+            host = String(remote[..<colon])
+            if let at = host.lastIndex(of: "@") { host = String(host[host.index(after: at)...]) }
+            repository = String(remote[remote.index(after: colon)...])
+        } else {
+            return nil
+        }
+        repository = repository.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if repository.hasSuffix(".git") { repository.removeLast(4) }
+        guard !host.isEmpty, repository.contains("/") else { return nil }
+        let encodedPath = path.split(separator: "/")
+            .map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(["/", "?", "#"])) ?? String($0) }
+            .joined(separator: "/")
+        let layout: String
+        if host.contains("gitlab") { layout = "-/blob" }
+        else if host.contains("bitbucket") { layout = "src" }
+        else if host.contains("codeberg") || host.contains("gitea") { layout = "src/commit" }
+        else { layout = "blob" }
+        return URL(string: "https://\(host)/\(repository)/\(layout)/\(commit)/\(encodedPath)")
+    }
+
+    /// Stops a script when the path in `variable` exists, even as a broken link.
+    private static func refuseExisting(_ variable: String) -> String {
+        "if [ -e \"$\(variable)\" ] || [ -L \"$\(variable)\" ]; then echo \"${\(variable)##*/} already exists\" >&2; exit 1; fi; "
+    }
+}
+
 private struct RemoteSnapshotResponse: Decodable {
     let result: RemoteSnapshotResult
 }

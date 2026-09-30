@@ -135,6 +135,19 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertFalse(patches[.all]!.contains("WARNING"))
     }
 
+    func testRemoteFileOperationsRunOverSSH() throws {
+        try sandbox.repository("repo")
+        let repo = remote("repo")
+        try WorkspaceFiles.createFile("it's/new.txt", at: repo)
+        XCTAssertEqual(try WorkspaceFiles.renameItem("it's/new.txt", to: "-renamed.txt", at: repo), "it's/-renamed.txt")
+        XCTAssertEqual(try WorkspaceFiles.paste([sandbox.path("repo/a.txt")], into: "it's", move: false, at: repo),
+                       ["it's/a.txt"])
+        XCTAssertEqual(try sandbox.read("it's/a.txt", in: "repo"), "one\n")
+        try WorkspaceFiles.delete("it's", at: repo)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("repo/it's")))
+        XCTAssertThrowsError(try WorkspaceFiles.trash("a.txt", at: repo))
+    }
+
     func testRemoteSearch() throws {
         try sandbox.repository("repo", files: ["src/a.swift": "let foo = 1\n", "b.txt": "no match\n"])
         let result = try WorkspaceSearch.search(WorkspaceSearchOptions(query: "foo"), at: remote("repo"))

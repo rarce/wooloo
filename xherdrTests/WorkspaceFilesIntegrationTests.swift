@@ -300,4 +300,74 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).behind, 0)
         XCTAssertEqual(try sandbox.read("b.txt", in: "repo"), "other\n")
     }
+
+    // MARK: Explorer file operations
+
+    func testCreateRenameAndDeleteFilesAndFolders() throws {
+        let repo = try sandbox.repository("repo")
+        try WorkspaceFiles.createFile("docs/new/-note.md", at: repo)
+        XCTAssertEqual(try sandbox.read("docs/new/-note.md", in: "repo"), "")
+        XCTAssertThrowsError(try WorkspaceFiles.createFile("a.txt", at: repo)) {
+            XCTAssertEqual($0.localizedDescription, "a.txt already exists")
+        }
+        try WorkspaceFiles.createFolder("empty", at: repo)
+        XCTAssertThrowsError(try WorkspaceFiles.createFolder("empty", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.createFile("../outside.txt", at: repo))
+
+        XCTAssertEqual(try WorkspaceFiles.renameItem("docs/new", to: "old", at: repo), "docs/old")
+        XCTAssertEqual(try sandbox.read("docs/old/-note.md", in: "repo"), "")
+        XCTAssertThrowsError(try WorkspaceFiles.renameItem("docs", to: "a.txt", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.renameItem("docs", to: "x/y", at: repo))
+        XCTAssertEqual(try WorkspaceFiles.renameItem("a.txt", to: "A.txt", at: repo), "A.txt")
+        XCTAssertEqual(try sandbox.read("A.txt", in: "repo"), "one\n")
+
+        try WorkspaceFiles.delete("docs", at: repo)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("repo/docs")))
+        XCTAssertThrowsError(try WorkspaceFiles.delete("", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.delete("..", at: repo))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sandbox.path("repo")))
+    }
+
+    func testPasteCopiesWithFreeNamesAndMoves() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "dir/b.txt": "b\n", "out/c.txt": "c\n"])
+        let a = sandbox.path("repo/a.txt")
+        XCTAssertEqual(try WorkspaceFiles.paste([a], into: "", move: false, at: repo), ["a copy.txt"])
+        XCTAssertEqual(try WorkspaceFiles.paste([a], into: "", move: false, at: repo), ["a copy 2.txt"])
+        XCTAssertEqual(try WorkspaceFiles.paste([a, sandbox.path("repo/dir")], into: "out", move: false, at: repo),
+                       ["out/a.txt", "out/dir"])
+        XCTAssertEqual(try sandbox.read("out/dir/b.txt", in: "repo"), "b\n")
+        XCTAssertEqual(try WorkspaceFiles.paste([sandbox.path("repo/dir")], into: "", move: false, at: repo), ["dir copy"])
+    }
+
+    func testMoveRefusesExistingNamesAndItsOwnSubfolders() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "dir/sub/b.txt": "b\n", "out/a.txt": "x\n"])
+        XCTAssertThrowsError(try WorkspaceFiles.paste([sandbox.path("repo/a.txt")], into: "out", move: true, at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.paste([sandbox.path("repo/dir")], into: "dir/sub", move: true, at: repo))
+        XCTAssertEqual(try WorkspaceFiles.paste([sandbox.path("repo/dir")], into: "out", move: true, at: repo), ["out/dir"])
+        XCTAssertEqual(try sandbox.read("out/dir/sub/b.txt", in: "repo"), "b\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("repo/dir")))
+        XCTAssertThrowsError(try WorkspaceFiles.paste(["relative"], into: "", move: false, at: repo))
+    }
+
+    func testIgnoreAppendsAnchoredPatternsOnce() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "sub/.gitignore": "*.log", "sub/b[1].txt": "b\n"])
+        let space = sandbox.location("repo/sub")
+        try WorkspaceFiles.ignore("b[1].txt", isDirectory: false, inExclude: false, at: space)
+        try WorkspaceFiles.ignore("b[1].txt", isDirectory: false, inExclude: false, at: space)
+        XCTAssertEqual(try sandbox.read("sub/.gitignore", in: "repo"), "*.log\n/b\\[1].txt\n")
+
+        try WorkspaceFiles.ignore("cache", isDirectory: true, inExclude: true, at: space)
+        XCTAssertTrue(try sandbox.read(".git/info/exclude", in: "repo").hasSuffix("\n/sub/cache/\n"))
+        try sandbox.write(["sub/cache/x.bin": "x"], in: "repo")
+        XCTAssertEqual(try changes(repo), ["sub/.gitignore": " M"])
+    }
+
+    func testPermalinkUsesTheUpstreamRemoteAndHead() throws {
+        let repo = try sandbox.repository("repo", files: ["src/a b.swift": "a\n"])
+        XCTAssertThrowsError(try WorkspaceFiles.permalink("src/a b.swift", at: repo))
+        try sandbox.sh("git remote add origin git@github.com:owner/repo.git && git remote add fork https://gitlab.com/me/repo", in: "repo")
+        let head = try sandbox.sh("git rev-parse HEAD", in: "repo").trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(try WorkspaceFiles.permalink("a b.swift", at: sandbox.location("repo/src")).absoluteString,
+                       "https://github.com/owner/repo/blob/\(head)/src/a%20b.swift")
+    }
 }

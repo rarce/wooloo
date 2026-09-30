@@ -29,6 +29,12 @@ struct WorkspaceBrowserView: View {
     @State private var collapsedRoots: Set<String> = []
     @State private var selectedItem: String?
     @State private var operationError: String?
+    @State private var clipboard: WorkspaceFileClipboard?
+    @State private var namePrompt: WorkspaceNamePrompt?
+    @State private var nameInput = ""
+    @State private var pendingDelete: WorkspaceFileTarget?
+    /// Folders created in the explorer, by location, shown while they hold no listed file.
+    @State private var createdDirectories: [String: Set<String>] = [:]
     /// Bumped on every listing load so the Git bar refreshes with the explorer.
     @State private var listingVersion = 0
     /// Bumped by Git bar operations so the repository panel refreshes too.
@@ -77,7 +83,7 @@ struct WorkspaceBrowserView: View {
         .task(id: machine) { machineChanged() }
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { onLocationChange(location) }
-        .alert("Git operation failed", isPresented: Binding(
+        .alert("Operation failed", isPresented: Binding(
             get: { operationError != nil }, set: { if !$0 { operationError = nil } }
         )) {
             Button("OK") { operationError = nil }
@@ -168,6 +174,7 @@ struct WorkspaceBrowserView: View {
                 let stageStates = showsChanges ? stageStates(listing.changes) : [:]
                 let rows = WorkspaceTreeNode.visibleRows(
                     paths: paths,
+                    directories: showsChanges || modifiedOnly ? [] : createdDirectories[location.identity] ?? [],
                     expanded: expandedDirectories,
                     identity: treeIdentity(location)
                 )
@@ -213,6 +220,24 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
+        .alert(namePrompt?.title ?? "", isPresented: Binding(
+            get: { namePrompt != nil }, set: { if !$0 { namePrompt = nil } }
+        ), presenting: namePrompt) { prompt in
+            TextField("Name", text: $nameInput)
+            Button(prompt.kind == .rename ? "Rename" : "Create") { submitName(prompt) }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) {}
+        } message: { prompt in
+            Text(prompt.message)
+        }
+        .confirmationDialog(pendingDelete.map { "Delete “\(($0.path as NSString).lastPathComponent)”?" } ?? "",
+                            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                            presenting: pendingDelete) { target in
+            Button("Delete", role: .destructive) { delete(target) }
+        } message: { target in
+            Text(target.isDirectory ? "The folder and everything in it are deleted permanently."
+                                    : "The file is deleted permanently.")
+        }
     }
 
     private func segment(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -274,6 +299,12 @@ struct WorkspaceBrowserView: View {
         .help(location.root)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         .contextMenu {
+            if !showsChanges {
+                Button("New File…", systemImage: "doc.badge.plus") { promptName(.newFile, location, path: "") }
+                Button("New Folder…", systemImage: "folder.badge.plus") { promptName(.newFolder, location, path: "") }
+                Button("Paste", systemImage: "doc.on.clipboard") { paste(into: "", in: location) }
+                Divider()
+            }
             if location.isLocal {
                 Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
             }
@@ -362,7 +393,7 @@ struct WorkspaceBrowserView: View {
                     toggleDirectory(identity, isExpanded: isExpanded)
                 }
                 Button("Find in Folder…", systemImage: "magnifyingglass") { onFindInFolder(location, node.path) }
-                if location.isLocal {
+                if showsChanges && location.isLocal {
                     Button("Open in New Tab", systemImage: "terminal") {
                         onNewTab(location.absolutePath(node.path))
                     }
@@ -380,22 +411,92 @@ struct WorkspaceBrowserView: View {
                     }
                 }
             }
-            if hasGit, let kind = node.isDirectory ? directoryKind : change?.kind {
-                Divider()
-                if node.isDirectory || change?.worktreeStatus != " " {
-                    Button(node.isDirectory ? "Stage Folder" : "Stage Changes", systemImage: "plus.circle") {
-                        runGit(location) { try WorkspaceFiles.stage(node.path, at: location) }
+            Divider()
+            if !showsChanges { fileActions(location, node: node) }
+            if hasGit {
+                if let kind {
+                    if node.isDirectory || change?.worktreeStatus != " " {
+                        Button(node.isDirectory ? "Stage Folder" : "Stage Changes", systemImage: "plus.circle") {
+                            runOperation(location) { try WorkspaceFiles.stage(node.path, at: location) }
+                        }
+                    }
+                    if node.isDirectory ? kind != .untracked
+                        : (change?.indexStatus != " " && change?.indexStatus != "?") {
+                        Button(node.isDirectory ? "Unstage Folder" : "Unstage Changes", systemImage: "minus.circle") {
+                            runOperation(location) { try WorkspaceFiles.unstage(node.path, at: location) }
+                        }
                     }
                 }
-                if node.isDirectory ? kind != .untracked
-                    : (change?.indexStatus != " " && change?.indexStatus != "?") {
-                    Button(node.isDirectory ? "Unstage Folder" : "Unstage Changes", systemImage: "minus.circle") {
-                        runGit(location) { try WorkspaceFiles.unstage(node.path, at: location) }
-                    }
+                if !showsChanges { gitFileActions(location, node: node, change: change) }
+                Divider()
+            }
+            if showsChanges {
+                pathActions(location, path: node.path)
+            } else {
+                Button("Rename…", systemImage: "pencil") {
+                    promptName(.rename, location, path: node.path, isDirectory: node.isDirectory)
+                }
+                if location.isLocal {
+                    Button("Move to Trash", systemImage: "trash") { trash(node.path, in: location) }
+                }
+                Button("Delete…", systemImage: "xmark.bin", role: .destructive) {
+                    pendingDelete = WorkspaceFileTarget(location: location, path: node.path, isDirectory: node.isDirectory)
                 }
             }
+        }
+    }
+
+    /// Creating, opening, copying and pasting around a row of the Files tree, in Zed's order.
+    @ViewBuilder
+    private func fileActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode) -> some View {
+        let folder = node.isDirectory ? node.path : (node.path as NSString).deletingLastPathComponent
+        Button("New File…", systemImage: "doc.badge.plus") { promptName(.newFile, location, path: folder) }
+        Button("New Folder…", systemImage: "folder.badge.plus") { promptName(.newFolder, location, path: folder) }
+        Divider()
+        if location.isLocal {
+            Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.absolutePath(node.path)) }
+            Button("Open in Default App", systemImage: "arrow.up.forward.app") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: location.absolutePath(node.path)))
+            }
+            Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.absolutePath(folder)) }
             Divider()
-            pathActions(location, path: node.path)
+        }
+        Button("Cut", systemImage: "scissors") { copyItem(node.path, in: location, cut: true) }
+        Button("Copy", systemImage: "doc.on.doc") { copyItem(node.path, in: location, cut: false) }
+        Button("Duplicate", systemImage: "plus.square.on.square") { duplicate(node.path, in: location) }
+        Button("Paste", systemImage: "doc.on.clipboard") { paste(into: folder, in: location) }
+        Divider()
+        Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(location.absolutePath(node.path)) }
+        Button("Copy Relative Path") { AppActions.copy(node.path) }
+        Divider()
+    }
+
+    /// Ignore rules and hosting-site links for a row of the Files tree in a Git repository.
+    @ViewBuilder
+    private func gitFileActions(_ location: WorkspaceFileLocation, node: WorkspaceTreeNode,
+                                change: WorkspaceFileChange?) -> some View {
+        Button("Add to .gitignore", systemImage: "eye.slash") {
+            runOperation(location) {
+                try WorkspaceFiles.ignore(node.path, isDirectory: node.isDirectory, inExclude: false, at: location)
+            }
+        }
+        Button("Add to .git/info/exclude") {
+            runOperation(location) {
+                try WorkspaceFiles.ignore(node.path, isDirectory: node.isDirectory, inExclude: true, at: location)
+            }
+        }
+        // A permalink points at a commit, so only files it contains have one.
+        if !node.isDirectory, change?.kind != .untracked, change?.kind != .added {
+            Button("Open File Permalink", systemImage: "link") {
+                runOperation(location, reloads: false, { try WorkspaceFiles.permalink(node.path, at: location) }) {
+                    NSWorkspace.shared.open($0)
+                }
+            }
+            Button("Copy File Permalink") {
+                runOperation(location, reloads: false, { try WorkspaceFiles.permalink(node.path, at: location) }) {
+                    AppActions.copy($0.absoluteString)
+                }
+            }
         }
     }
 
@@ -428,7 +529,7 @@ struct WorkspaceBrowserView: View {
                              location: WorkspaceFileLocation) -> some View {
         let name = path.isEmpty ? "all changes" : (path as NSString).lastPathComponent
         return Button {
-            runGit(location) {
+            runOperation(location) {
                 if state == .all { try WorkspaceFiles.unstage(path, at: location) }
                 else { try WorkspaceFiles.stage(path, at: location) }
             }
@@ -461,13 +562,157 @@ struct WorkspaceBrowserView: View {
         return states
     }
 
-    private func runGit(_ location: WorkspaceFileLocation, _ operation: @escaping () throws -> Void) {
+    /// Runs a Git or file operation off the main thread, then reloads the listing unless told not to.
+    private func runOperation<Value>(_ location: WorkspaceFileLocation, reloads: Bool = true,
+                                     _ operation: @escaping () throws -> Value,
+                                     completion: @escaping (Value) -> Void = { _ in }) {
         Task {
             let result = await Task.detached(priority: .userInitiated) { Result { try operation() } }.value
-            if case .failure(let failure) = result { operationError = failure.localizedDescription }
+            switch result {
+            case .success(let value): completion(value)
+            case .failure(let failure): operationError = failure.localizedDescription
+            }
             // Reload in place, so staging does not blank the tree behind a spinner.
-            if self.location?.identity == location.identity { loadListing(quietly: true) }
+            if reloads, self.location?.identity == location.identity { loadListing(quietly: true) }
         }
+    }
+
+    // MARK: File operations
+
+    private func promptName(_ kind: WorkspaceNamePrompt.Kind, _ location: WorkspaceFileLocation,
+                            path: String, isDirectory: Bool = true) {
+        nameInput = kind == .rename ? (path as NSString).lastPathComponent : ""
+        namePrompt = WorkspaceNamePrompt(kind: kind, location: location, path: path, isDirectory: isDirectory)
+    }
+
+    private func submitName(_ prompt: WorkspaceNamePrompt) {
+        let name = nameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let location = prompt.location
+        switch prompt.kind {
+        case .newFile, .newFolder:
+            let path = prompt.path.isEmpty ? name : prompt.path + "/" + name
+            let isFolder = prompt.kind == .newFolder
+            runOperation(location) {
+                if isFolder { try WorkspaceFiles.createFolder(path, at: location) }
+                else { try WorkspaceFiles.createFile(path, at: location) }
+            } completion: {
+                if isFolder { createdDirectories[location.identity, default: []].insert(path) }
+                reveal(path, in: location)
+                if !isFolder { onOpenFile(location, path) }
+            }
+        case .rename:
+            let original = prompt.path
+            runOperation(location) { try WorkspaceFiles.renameItem(original, to: name, at: location) } completion: {
+                movePathState(from: original, to: $0, in: location)
+            }
+        }
+    }
+
+    private func copyItem(_ path: String, in location: WorkspaceFileLocation, cut: Bool) {
+        let absolute = location.absolutePath(path)
+        var changeCount = 0
+        // Local items also go on the general pasteboard, so Finder can paste them.
+        if location.isLocal {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([URL(fileURLWithPath: absolute) as NSURL])
+            changeCount = pasteboard.changeCount
+        }
+        clipboard = WorkspaceFileClipboard(machineID: location.machine?.id, paths: [absolute],
+                                           isCut: cut, changeCount: changeCount)
+    }
+
+    /// Pastes what the explorer copied or cut on this machine, or, in a local Space, files
+    /// copied in Finder since then.
+    private func paste(into directory: String, in location: WorkspaceFileLocation) {
+        let pasteboard = NSPasteboard.general
+        var sources: [String] = []
+        var move = false
+        if let clipboard, clipboard.machineID == location.machine?.id,
+           !location.isLocal || clipboard.changeCount == pasteboard.changeCount {
+            sources = clipboard.paths
+            move = clipboard.isCut
+        } else if location.isLocal,
+                  let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                                    options: [.urlReadingFileURLsOnly: true]) as? [URL] {
+            sources = urls.map(\.path)
+        }
+        guard !sources.isEmpty else {
+            operationError = "Nothing to paste. Copy or cut a file on \(location.machineLabel) first."
+            return
+        }
+        runOperation(location) { try WorkspaceFiles.paste(sources, into: directory, move: move, at: location) } completion: {
+            if move { clipboard = nil }
+            placePasted($0, in: location)
+        }
+    }
+
+    private func duplicate(_ path: String, in location: WorkspaceFileLocation) {
+        let source = location.absolutePath(path)
+        let folder = (path as NSString).deletingLastPathComponent
+        runOperation(location) { try WorkspaceFiles.paste([source], into: folder, move: false, at: location) } completion: {
+            placePasted($0, in: location)
+        }
+    }
+
+    /// Keeps pasted empty folders visible and selects the last pasted item.
+    private func placePasted(_ paths: [String], in location: WorkspaceFileLocation) {
+        if location.isLocal {
+            var isDirectory: ObjCBool = false
+            for path in paths where FileManager.default.fileExists(atPath: location.absolutePath(path),
+                                                                   isDirectory: &isDirectory) && isDirectory.boolValue {
+                createdDirectories[location.identity, default: []].insert(path)
+            }
+        }
+        if let last = paths.last { reveal(last, in: location) }
+    }
+
+    private func trash(_ path: String, in location: WorkspaceFileLocation) {
+        runOperation(location) { try WorkspaceFiles.trash(path, at: location) } completion: {
+            forgetPathState(path, in: location)
+        }
+    }
+
+    private func delete(_ target: WorkspaceFileTarget) {
+        let location = target.location
+        runOperation(location) { try WorkspaceFiles.delete(target.path, at: location) } completion: {
+            forgetPathState(target.path, in: location)
+        }
+    }
+
+    /// Expands the folders above `path` and selects it.
+    private func reveal(_ path: String, in location: WorkspaceFileLocation) {
+        let identity = treeIdentity(location)
+        collapsedRoots.remove(identity)
+        var parent = (path as NSString).deletingLastPathComponent
+        while !parent.isEmpty {
+            expandedDirectories.insert(identity + "|" + parent)
+            parent = (parent as NSString).deletingLastPathComponent
+        }
+        selectedItem = identity + "|" + path
+    }
+
+    /// Carries expanded folders, the selection and created folders over to a renamed item.
+    private func movePathState(from original: String, to renamed: String, in location: WorkspaceFileLocation) {
+        let identity = treeIdentity(location) + "|"
+        func moved(_ key: String, prefix: String) -> String? {
+            guard key.hasPrefix(prefix) else { return nil }
+            let rest = key.dropFirst(prefix.count)
+            if rest == original { return prefix + renamed }
+            if rest.hasPrefix(original + "/") { return prefix + renamed + rest.dropFirst(original.count) }
+            return nil
+        }
+        expandedDirectories = Set(expandedDirectories.map { moved($0, prefix: identity) ?? $0 })
+        if let selectedItem { self.selectedItem = moved(selectedItem, prefix: identity) ?? selectedItem }
+        if let created = createdDirectories[location.identity] {
+            createdDirectories[location.identity] = Set(created.map { moved($0, prefix: "") ?? $0 })
+        }
+    }
+
+    private func forgetPathState(_ path: String, in location: WorkspaceFileLocation) {
+        createdDirectories[location.identity]?.remove(path)
+        createdDirectories[location.identity] = createdDirectories[location.identity]?.filter { !$0.hasPrefix(path + "/") }
     }
 
     private func statusColor(_ kind: WorkspaceFileChange.Kind) -> Color {
@@ -545,7 +790,15 @@ struct WorkspaceBrowserView: View {
             let result = await Task.detached { Result { try WorkspaceFiles.listing(at: location) } }.value
             guard self.location?.identity == location.identity else { return }
             switch result {
-            case .success(let value): listing = value
+            case .success(let value):
+                listing = value
+                if location.isLocal, let created = createdDirectories[location.identity] {
+                    createdDirectories[location.identity] = created.filter { path in
+                        var isDirectory: ObjCBool = false
+                        return FileManager.default.fileExists(atPath: location.absolutePath(path), isDirectory: &isDirectory)
+                            && isDirectory.boolValue
+                    }
+                }
             case .failure(let failure): error = failure.localizedDescription
             }
             isLoading = false
@@ -561,12 +814,14 @@ struct WorkspaceTreeNode {
     let isDirectory: Bool
     let children: [WorkspaceTreeNode]
 
-    static func visibleRows(paths: [String], expanded: Set<String>, identity: String) -> [WorkspaceTreeRow] {
+    /// `directories` adds folders that hold no listed file, such as one just created in the explorer.
+    static func visibleRows(paths: [String], directories: Set<String> = [], expanded: Set<String>,
+                            identity: String) -> [WorkspaceTreeRow] {
         let root = WorkspaceTreeBuilderNode(name: "", path: "")
-        for path in paths {
+        func insert(_ path: String, isDirectory: Bool) {
             let components = path.split(separator: "/").map(String.init)
             guard !path.hasPrefix("/"), !components.isEmpty,
-                  !components.contains("."), !components.contains("..") else { continue }
+                  !components.contains("."), !components.contains("..") else { return }
             var current = root
             for component in components {
                 if let existing = current.children[component] {
@@ -578,7 +833,10 @@ struct WorkspaceTreeNode {
                     current = child
                 }
             }
+            if isDirectory { current.isDirectory = true }
         }
+        for path in paths { insert(path, isDirectory: false) }
+        for path in directories { insert(path, isDirectory: true) }
 
         var rows: [WorkspaceTreeRow] = []
         func append(_ nodes: [WorkspaceTreeNode], depth: Int) {
@@ -605,7 +863,7 @@ struct WorkspaceTreeNode {
         }
         let children = node.children.values.map(compact).sorted(by: ordered)
         return WorkspaceTreeNode(displayName: names.joined(separator: " / "), path: node.path,
-                                 isDirectory: !children.isEmpty, children: children)
+                                 isDirectory: node.isDirectory || !children.isEmpty, children: children)
     }
 
     private static func ordered(_ lhs: WorkspaceTreeNode, _ rhs: WorkspaceTreeNode) -> Bool {
@@ -624,9 +882,53 @@ final class WorkspaceTreeBuilderNode {
     let name: String
     let path: String
     var children: [String: WorkspaceTreeBuilderNode] = [:]
+    var isDirectory = false
 
     init(name: String, path: String) {
         self.name = name
         self.path = path
+    }
+}
+
+/// Files and folders copied or cut in the explorer, waiting to be pasted.
+private struct WorkspaceFileClipboard {
+    /// nil for this Mac.
+    let machineID: String?
+    let paths: [String]
+    let isCut: Bool
+    /// The general pasteboard's change count after a local copy; copying anything else later replaces this.
+    let changeCount: Int
+}
+
+private struct WorkspaceFileTarget {
+    let location: WorkspaceFileLocation
+    let path: String
+    let isDirectory: Bool
+}
+
+private struct WorkspaceNamePrompt {
+    enum Kind { case newFile, newFolder, rename }
+    let kind: Kind
+    let location: WorkspaceFileLocation
+    /// The folder to create in ("" is the Space root), or the item to rename.
+    let path: String
+    let isDirectory: Bool
+
+    var title: String {
+        switch kind {
+        case .newFile: return "New File"
+        case .newFolder: return "New Folder"
+        case .rename: return isDirectory ? "Rename Folder" : "Rename File"
+        }
+    }
+
+    var message: String {
+        switch kind {
+        case .newFile, .newFolder:
+            let folder = path.isEmpty ? (location.root as NSString).lastPathComponent : path
+            return "In \(folder). Use / to create it inside new subfolders."
+        case .rename:
+            return "Enter a new name for “\((path as NSString).lastPathComponent)”."
+        }
     }
 }

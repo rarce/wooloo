@@ -151,3 +151,43 @@ final class WorkspaceGitParsingTests: XCTestCase {
         XCTAssertEqual(WorkspaceFiles.gitBlobHash(Data()), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
     }
 }
+
+/// Pure helpers behind the explorer's file operations.
+final class WorkspaceFileOperationHelperTests: XCTestCase {
+    func testPermalinkURLsForCommonHosts() {
+        let sha = "0123456789abcdef0123456789abcdef01234567"
+        func link(_ remote: String) -> String? {
+            WorkspaceFiles.permalinkURL(remote: remote, commit: sha, path: "dir/a#1.swift")?.absoluteString
+        }
+        XCTAssertEqual(link("git@github.com:owner/repo.git"), "https://github.com/owner/repo/blob/\(sha)/dir/a%231.swift")
+        XCTAssertEqual(link("ssh://git@github.com:22/owner/repo.git"), "https://github.com/owner/repo/blob/\(sha)/dir/a%231.swift")
+        XCTAssertEqual(link("https://user:token@github.com/owner/repo/"), "https://github.com/owner/repo/blob/\(sha)/dir/a%231.swift")
+        XCTAssertEqual(link("https://gitlab.com/group/sub/repo.git"), "https://gitlab.com/group/sub/repo/-/blob/\(sha)/dir/a%231.swift")
+        XCTAssertEqual(link("git@bitbucket.org:team/repo.git"), "https://bitbucket.org/team/repo/src/\(sha)/dir/a%231.swift")
+        XCTAssertNil(link("../origin.git"))
+        XCTAssertNil(link("/srv/git/repo.git"))
+        XCTAssertNil(WorkspaceFiles.permalinkURL(remote: "git@github.com:o/r", commit: "HEAD", path: "a"))
+    }
+
+    func testIgnorePatternsMatchOnlyThePath() {
+        XCTAssertEqual(WorkspaceFiles.ignorePattern("build", isDirectory: true), "/build/")
+        XCTAssertEqual(WorkspaceFiles.ignorePattern("#notes!.md", isDirectory: false), "/#notes!.md")
+        XCTAssertEqual(WorkspaceFiles.ignorePattern("a*b?[c]\\d", isDirectory: false), "/a\\*b\\?\\[c]\\\\d")
+        XCTAssertEqual(WorkspaceFiles.ignorePattern("trailing  ", isDirectory: false), "/trailing\\ \\ ")
+    }
+
+    func testCopyNamesKeepTheExtension() {
+        XCTAssertEqual(Array(WorkspaceFiles.copyNames(for: "a.txt", includingOriginal: true).prefix(3)),
+                       ["a.txt", "a copy.txt", "a copy 2.txt"])
+        XCTAssertEqual(Array(WorkspaceFiles.copyNames(for: ".env", includingOriginal: false).prefix(2)),
+                       [".env copy", ".env copy 2"])
+        XCTAssertEqual(WorkspaceFiles.copyNames(for: "Makefile", includingOriginal: false).first, "Makefile copy")
+    }
+
+    func testEmptyFoldersAppearInTheTree() {
+        let rows = WorkspaceTreeNode.visibleRows(paths: ["a.txt", "src/main.swift"], directories: ["empty", "src/new"],
+                                                 expanded: ["s|src"], identity: "s")
+        XCTAssertEqual(rows.map(\.node.path), ["empty", "src", "src/new", "src/main.swift", "a.txt"])
+        XCTAssertEqual(rows.map(\.node.isDirectory), [true, true, true, false, false])
+    }
+}
