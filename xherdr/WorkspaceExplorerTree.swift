@@ -34,6 +34,12 @@ struct WorkspaceExplorerTree {
         selected = identity + "|" + path
     }
 
+    /// Paths of the expanded folders of the tree `identity`.
+    func expandedFolders(in identity: String) -> [String] {
+        let prefix = identity + "|"
+        return expanded.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
+    }
+
     /// The selected item's path when it belongs to the tree `identity`.
     func selectedPath(in identity: String) -> String? {
         let prefix = identity + "|"
@@ -118,6 +124,25 @@ enum WorkspaceExplorer {
         case "png", "jpg", "jpeg", "gif", "webp": return "photo"
         default: return "doc.text"
         }
+    }
+
+    /// The files and folders of the Files tree: the listing's, the ignored folders Git lists
+    /// without contents, what was read of the expanded ones, and folders created empty.
+    static func filesTreeEntries(_ listing: WorkspaceFileListing, ignoredContents: [String: WorkspaceFolderContents],
+                                 created: Set<String>) -> (paths: [String], directories: Set<String>) {
+        var paths = listing.files
+        var directories = created.union(listing.ignored.directories)
+        for contents in ignoredContents.values {
+            paths += contents.files
+            directories.formUnion(contents.directories)
+        }
+        return (paths, directories)
+    }
+
+    /// Ignored folders among `expanded` whose contents have not been read yet, parents first.
+    static func ignoredFoldersToRead(expanded: [String], ignored: WorkspaceIgnoredEntries,
+                                     read: Set<String>, limit: Int = 50) -> [String] {
+        Array(expanded.filter { !read.contains($0) && ignored.contains($0) }.sorted().prefix(limit))
     }
 
     /// Whether `path` is a folder: the root, a folder created empty, or one with listed files.

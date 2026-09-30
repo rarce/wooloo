@@ -78,6 +78,52 @@ struct WorkspaceFileListing {
     let hasGit: Bool
     /// Files found before the listing was cut to `maximumFiles`.
     let totalFiles: Int
+    /// What Git ignores: its files are in `files`, after tracked and untracked ones; its folders
+    /// are listed without their contents, which the explorer reads when one is expanded.
+    var ignored = WorkspaceIgnoredEntries()
+}
+
+/// Ignored files and folders of a repository, as `git ls-files --ignored --directory` lists them.
+struct WorkspaceIgnoredEntries: Equatable {
+    private(set) var files: Set<String> = []
+    private(set) var directories: Set<String> = []
+
+    init() {}
+
+    /// Folders end in "/". Git also lists entries inside a listed folder; those are dropped, since
+    /// the folder stands for everything in it.
+    init(gitEntries: [String]) {
+        let folders = Set(gitEntries.filter { $0.hasSuffix("/") && $0.count > 1 }.map { String($0.dropLast()) })
+        func underFolder(_ path: String) -> Bool {
+            var parent = (path as NSString).deletingLastPathComponent
+            while !parent.isEmpty {
+                if folders.contains(parent) { return true }
+                parent = (parent as NSString).deletingLastPathComponent
+            }
+            return false
+        }
+        directories = folders.filter { !underFolder($0) }
+        files = Set(gitEntries.filter { !$0.hasSuffix("/") && !$0.isEmpty && !underFolder($0) })
+    }
+
+    var isEmpty: Bool { files.isEmpty && directories.isEmpty }
+
+    /// Whether `path` is ignored: listed itself, or inside an ignored folder.
+    func contains(_ path: String) -> Bool {
+        if files.contains(path) { return true }
+        var folder = path
+        while !folder.isEmpty {
+            if directories.contains(folder) { return true }
+            folder = (folder as NSString).deletingLastPathComponent
+        }
+        return false
+    }
+}
+
+/// The files and folders directly inside a folder, as paths from the Space root.
+struct WorkspaceFolderContents: Equatable {
+    var files: [String] = []
+    var directories: [String] = []
 }
 
 struct WorkspaceFileContents {
@@ -233,6 +279,8 @@ enum WorkspaceFiles {
     static let maximumDiffBytes = 2_000_000
     /// Files the explorer lists; it builds their tree once per listing, so this bounds memory and load time only.
     static let maximumFiles = 200_000
+    /// Entries read from one expanded ignored folder.
+    static let maximumFolderEntries = 5_000
     /// Output read for a file listing: `maximumFiles` paths of about 150 bytes.
     static let maximumListingBytes = 32_000_000
     /// Changes listed by `parseStatus`.
@@ -277,12 +325,17 @@ enum WorkspaceFiles {
         let files: [String]
         let changes: [WorkspaceFileChange]
         var totalFiles: Int?
+        var ignored = WorkspaceIgnoredEntries()
         if hasGit {
             let fileData = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."],
                                    limit: maximumListingBytes)
             let (tracked, untracked) = trackedFirst(nulStrings(fileData))
-            totalFiles = tracked.count + untracked.count
-            files = (tracked + untracked).prefix(maximumFiles).sorted()
+            let ignoredData = try git(location, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory",
+                                                 "-z", "--", "."], limit: maximumListingBytes)
+            ignored = WorkspaceIgnoredEntries(gitEntries: nulStrings(ignoredData))
+            let ignoredFiles = ignored.files.sorted()
+            totalFiles = tracked.count + untracked.count + ignoredFiles.count
+            files = (tracked + untracked + ignoredFiles).prefix(maximumFiles).sorted()
             let status = try git(location, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
             changes = parseStatus(status)
         } else if location.machine == nil {
@@ -295,7 +348,45 @@ enum WorkspaceFiles {
                 .sorted().prefix(maximumFiles).map { $0 }
             changes = []
         }
-        return WorkspaceFileListing(files: files, changes: changes, hasGit: hasGit, totalFiles: totalFiles ?? files.count)
+        return WorkspaceFileListing(files: files, changes: changes, hasGit: hasGit, totalFiles: totalFiles ?? files.count,
+                                    ignored: ignored)
+    }
+
+    /// What is directly inside `folder` ("" is the root), for an ignored folder being expanded.
+    /// Symbolic links are listed as files.
+    static func folderContents(_ folder: String, at location: WorkspaceFileLocation) throws -> WorkspaceFolderContents {
+        if !folder.isEmpty { try validateRelativePath(folder) }
+        var contents = WorkspaceFolderContents()
+        func add(_ name: String, isDirectory: Bool) {
+            guard !name.isEmpty, !name.contains("/"), name != ".git",
+                  contents.files.count + contents.directories.count < maximumFolderEntries else { return }
+            let path = WorkspaceExplorer.path(of: name, in: folder)
+            if isDirectory { contents.directories.append(path) } else { contents.files.append(path) }
+        }
+        if let machine = location.machine {
+            let script = "root=$(realpath \(quote(location.root))) || exit 70; "
+                + "dir=$(realpath \(quote(location.absolutePath(folder)))) || exit 71; "
+                + "case \"$dir\" in \"$root\"|\"$root\"/*) ;; *) echo 'Folder is outside the selected Space' >&2; exit 72;; esac; "
+                + "cd \"$dir\" || exit 73; "
+                + "for f in .* *; do case \"$f\" in .|..) continue;; esac; "
+                + "if [ -d \"$f\" ] && [ ! -L \"$f\" ]; then printf 'd%s\\0' \"$f\"; "
+                + "elif [ -e \"$f\" ] || [ -L \"$f\" ]; then printf 'f%s\\0' \"$f\"; fi; done"
+            for entry in nulStrings(try ssh(machine, script, limit: maximumListingBytes, label: "ls")) {
+                add(String(entry.dropFirst()), isDirectory: entry.hasPrefix("d"))
+            }
+        } else {
+            let base = URL(fileURLWithPath: location.root).resolvingSymlinksInPath()
+            let url = folder.isEmpty ? base : base.appendingPathComponent(folder).resolvingSymlinksInPath()
+            guard url.path == base.path || url.path.hasPrefix(base.path + "/") else {
+                throw WorkspaceFileError.message("Folder is outside the selected Space")
+            }
+            let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+            for item in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys) {
+                let values = try? item.resourceValues(forKeys: Set(keys))
+                add(item.lastPathComponent, isDirectory: values?.isDirectory == true && values?.isSymbolicLink != true)
+            }
+        }
+        return contents
     }
 
     /// Splits `git ls-files -t` entries so that a listing cut to `maximumFiles` keeps every tracked file

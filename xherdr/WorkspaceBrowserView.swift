@@ -41,6 +41,10 @@ struct WorkspaceBrowserView: View {
     @State private var pendingDelete: WorkspaceFileTarget?
     /// Bumped on every listing load so the Git bar refreshes with the explorer.
     @State private var listingVersion = 0
+    /// What was read of expanded ignored folders, by folder path, for the current listing.
+    @State private var ignoredContents: [String: WorkspaceFolderContents] = [:]
+    /// Bumped when `ignoredContents` changes, so the Files tree is rebuilt.
+    @State private var ignoredContentsVersion = 0
     /// Bumped by Git bar operations so the repository panel refreshes too.
     @State private var gitVersion = 0
     @AppStorage("RepositoryCollapsed") private var repositoryCollapsed = false
@@ -307,8 +311,9 @@ struct WorkspaceBrowserView: View {
     /// so it is built here only after a folder is created, renamed or deleted.
     private func filesTree(_ listing: WorkspaceFileListing, location: WorkspaceFileLocation) -> WorkspaceTree {
         let created = tree.createdDirectories[location.identity] ?? []
-        return treeCache.tree(.files, listing: listingVersion, directories: created) {
-            WorkspaceTree(paths: listing.files, directories: created)
+        return treeCache.tree(.files, listing: listingVersion, contents: ignoredContentsVersion, directories: created) {
+            let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: ignoredContents, created: created)
+            return WorkspaceTree(paths: entries.paths, directories: entries.directories)
         }
     }
 
@@ -418,6 +423,7 @@ struct WorkspaceBrowserView: View {
                          stageState: WorkspaceFileChange.StageState?, hasGit: Bool) -> some View {
         let node = row.node
         let kind = node.isDirectory ? directoryKind : change?.kind
+        let isIgnored = !showsChanges && listing?.ignored.contains(node.path) == true
         let identity = treeIdentity(location) + "|" + node.path
         let isExpanded = tree.expanded.contains(identity)
         let isSelected = tree.selected == identity
@@ -425,7 +431,7 @@ struct WorkspaceBrowserView: View {
             tree.selected = identity
             treeFocused = true
             if node.isDirectory {
-                toggleDirectory(identity, isExpanded: isExpanded)
+                toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
             } else {
                 if showsChanges { onOpenDiff(location, node.path, true) }
                 else { onOpenFile(location, node.path, true) }
@@ -442,7 +448,7 @@ struct WorkspaceBrowserView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .strikethrough(!node.isDirectory && kind == .deleted)
-                    .foregroundStyle(kind.map(statusColor) ?? Color.primary)
+                    .foregroundStyle(kind.map(statusColor) ?? (isIgnored ? Color.secondary : Color.primary))
                 Spacer(minLength: 0)
                 if let change, !node.isDirectory {
                     Text(change.statusLabel)
@@ -482,13 +488,13 @@ struct WorkspaceBrowserView: View {
         .overlay(alignment: .trailing) {
             if let stageState { stageToggle(stageState, path: node.path, location: location) }
         }
-        .help(node.path)
+        .help(isIgnored ? node.path + " (ignored by Git)" : node.path)
         .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
         .contextMenu {
             if node.isDirectory {
                 Button(isExpanded ? "Collapse" : "Expand",
                        systemImage: isExpanded ? "chevron.up" : "chevron.down") {
-                    toggleDirectory(identity, isExpanded: isExpanded)
+                    toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
                 }
                 Button("Find in Folder…", systemImage: "magnifyingglass") { onFindInFolder(location, node.path) }
                 if showsChanges && location.isLocal {
@@ -525,7 +531,7 @@ struct WorkspaceBrowserView: View {
                         }
                     }
                 }
-                if !showsChanges { gitFileActions(location, node: node, change: change) }
+                if !showsChanges && !isIgnored { gitFileActions(location, node: node, change: change) }
                 Divider()
             }
             if showsChanges {
@@ -620,8 +626,34 @@ struct WorkspaceBrowserView: View {
         }
     }
 
-    private func toggleDirectory(_ identity: String, isExpanded: Bool) {
+    private func toggleDirectory(_ identity: String, path: String, isExpanded: Bool, location: WorkspaceFileLocation) {
         tree.toggle(identity, isExpanded: isExpanded)
+        if !isExpanded, !showsChanges { readIgnoredFolders([path], at: location) }
+    }
+
+    /// Reads the contents of expanded ignored folders, which the listing leaves out.
+    private func readIgnoredFolders(_ folders: [String], at location: WorkspaceFileLocation) {
+        guard let listing else { return }
+        let toRead = WorkspaceExplorer.ignoredFoldersToRead(expanded: folders, ignored: listing.ignored,
+                                                           read: Set(ignoredContents.keys))
+        guard !toRead.isEmpty else { return }
+        let version = listingVersion
+        Task {
+            let read = await Task.detached { Self.readFolders(toRead, at: location) }.value
+            guard self.location?.identity == location.identity, listingVersion == version else { return }
+            ignoredContents.merge(read) { _, new in new }
+            ignoredContentsVersion += 1
+        }
+    }
+
+    /// Folders that cannot be read, such as one deleted since, are left out.
+    nonisolated private static func readFolders(_ folders: [String],
+                                                at location: WorkspaceFileLocation) -> [String: WorkspaceFolderContents] {
+        var read: [String: WorkspaceFolderContents] = [:]
+        for folder in folders {
+            if let contents = try? WorkspaceFiles.folderContents(folder, at: location) { read[folder] = contents }
+        }
+        return read
     }
 
     private func collapseAll(_ location: WorkspaceFileLocation) {
@@ -880,6 +912,7 @@ struct WorkspaceBrowserView: View {
         error = nil
         let start = TerminalPipelineMetrics.now()
         let created = tree.createdDirectories[location.identity] ?? []
+        let expanded = tree.expandedFolders(in: "\(location.identity)|files")
         func exists(_ path: String) -> Bool {
             guard location.isLocal else { return true }
             var isDirectory: ObjCBool = false
@@ -889,25 +922,32 @@ struct WorkspaceBrowserView: View {
         Task {
             // The Files tree is built here too, so a large Space is not sorted on the main thread.
             let result = await Task.detached {
-                Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>) in
+                Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>, [String: WorkspaceFolderContents]) in
                     let listing = try WorkspaceFiles.listing(at: location)
                     let kept = created.filter(exists)
-                    return (listing, WorkspaceTree(paths: listing.files, directories: kept), kept)
+                    // Expanded ignored folders are read again, so they stay open across reloads.
+                    let folders = WorkspaceExplorer.ignoredFoldersToRead(expanded: expanded, ignored: listing.ignored, read: [])
+                    let contents = Self.readFolders(folders, at: location)
+                    let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: contents, created: kept)
+                    return (listing, WorkspaceTree(paths: entries.paths, directories: entries.directories), kept, contents)
                 }
             }.value
             guard self.location?.identity == location.identity else { return }
             var filesTree: (tree: WorkspaceTree, directories: Set<String>)?
             switch result {
-            case .success(let (value, builtTree, kept)):
+            case .success(let (value, builtTree, kept, contents)):
                 listing = value
+                ignoredContents = contents
                 tree.pruneCreated(location: location.identity, exists: exists)
                 filesTree = (builtTree, kept)
             case .failure(let failure): error = failure.localizedDescription
             }
             isLoading = false
             listingVersion += 1
+            ignoredContentsVersion += 1
             if let filesTree {
-                treeCache.store(filesTree.tree, .files, listing: listingVersion, directories: filesTree.directories)
+                treeCache.store(filesTree.tree, .files, listing: listingVersion, contents: ignoredContentsVersion,
+                                directories: filesTree.directories)
             }
             TerminalPipelineMetrics.spanShown("file-list", start: start, detail: location.isLocal ? "local" : "ssh")
         }
@@ -1004,15 +1044,17 @@ final class WorkspaceTreeCache {
 
     private struct Key: Equatable {
         let listing: Int
+        /// Version of the ignored folders' contents read since the listing.
+        let contents: Int
         let directories: Set<String>
     }
 
     private var trees: [Kind: (key: Key, tree: WorkspaceTree)] = [:]
 
     /// The tree of `kind` for listing version `listing`, built with `build` when none is kept.
-    func tree(_ kind: Kind, listing: Int, directories: Set<String> = [],
+    func tree(_ kind: Kind, listing: Int, contents: Int = 0, directories: Set<String> = [],
               build: () -> WorkspaceTree) -> WorkspaceTree {
-        let key = Key(listing: listing, directories: directories)
+        let key = Key(listing: listing, contents: contents, directories: directories)
         if let kept = trees[kind], kept.key == key { return kept.tree }
         let tree = build()
         trees[kind] = (key, tree)
@@ -1020,8 +1062,8 @@ final class WorkspaceTreeCache {
     }
 
     /// Keeps a tree built elsewhere, such as the Files tree built with its listing.
-    func store(_ tree: WorkspaceTree, _ kind: Kind, listing: Int, directories: Set<String> = []) {
-        trees[kind] = (Key(listing: listing, directories: directories), tree)
+    func store(_ tree: WorkspaceTree, _ kind: Kind, listing: Int, contents: Int = 0, directories: Set<String> = []) {
+        trees[kind] = (Key(listing: listing, contents: contents, directories: directories), tree)
     }
 }
 

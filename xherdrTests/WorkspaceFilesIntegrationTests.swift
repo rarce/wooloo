@@ -34,6 +34,39 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(listing.changes[0].stageState, .partial)
     }
 
+    func testListingShowsIgnoredFilesAndIgnoredFoldersWithoutTheirContents() throws {
+        let repo = try sandbox.repository("repo", files: [".gitignore": "*.log\nnode_modules/\n", "a/y.txt": "y\n"])
+        try sandbox.write(["a/x.log": "x", "b/z.log": "z", "node_modules/pkg/index.js": "i", "node_modules/.bin/tool": "t",
+                           "debug.log": "d"], in: "repo")
+        let listing = try WorkspaceFiles.listing(at: repo)
+        XCTAssertEqual(listing.files, [".gitignore", "a/x.log", "a/y.txt", "debug.log"])
+        XCTAssertEqual(listing.totalFiles, 4)
+        // Git lists b/ and b/z.log; the folder stands for both.
+        XCTAssertEqual(listing.ignored.directories, ["b", "node_modules"])
+        XCTAssertEqual(listing.ignored.files, ["a/x.log", "debug.log"])
+        XCTAssertTrue(listing.ignored.contains("node_modules/pkg/index.js"))
+        XCTAssertFalse(listing.ignored.contains("a/y.txt"))
+        XCTAssertTrue(listing.changes.isEmpty, "ignored files are not changes")
+
+        let modules = try WorkspaceFiles.folderContents("node_modules", at: repo)
+        XCTAssertEqual(modules.directories.sorted(), ["node_modules/.bin", "node_modules/pkg"])
+        XCTAssertEqual(modules.files, [])
+        XCTAssertEqual(try WorkspaceFiles.folderContents("node_modules/pkg", at: repo).files, ["node_modules/pkg/index.js"])
+        XCTAssertFalse(try WorkspaceFiles.folderContents("", at: repo).directories.contains(".git"))
+    }
+
+    func testFolderContentsStayInsideTheSpace() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.write(["outside/secret.txt": "s"], in: ".")
+        try sandbox.sh("ln -s ../outside escape && ln -s a.txt link.txt", in: "repo")
+        for path in ["../outside", "escape", "/etc"] {
+            XCTAssertThrowsError(try WorkspaceFiles.folderContents(path, at: repo), path)
+        }
+        let root = try WorkspaceFiles.folderContents("", at: repo)
+        XCTAssertTrue(root.files.contains("link.txt"), "links are listed as files")
+        XCTAssertTrue(root.files.contains("escape"))
+    }
+
     func testListingWithoutGitSkipsLinksOutsideTheFolder() throws {
         try sandbox.write(["plain/a.txt": "a", "plain/sub/c.txt": "c"], in: ".")
         try sandbox.sh("ln -s /etc/hosts outside", in: "plain")

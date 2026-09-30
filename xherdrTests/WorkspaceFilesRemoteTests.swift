@@ -109,6 +109,21 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    func testRemoteIgnoredFoldersAreListedAndRead() throws {
+        try sandbox.repository("repo", files: [".gitignore": "build/\n"])
+        try sandbox.write(["build/out/app": "a", "build/.hidden": "h", "build/it's here.o": "o"], in: "repo")
+        try sandbox.sh("ln -s out build/latest", in: "repo")
+        let location = remote("repo")
+        XCTAssertEqual(try WorkspaceFiles.listing(at: location).ignored.directories, ["build"])
+        let contents = try WorkspaceFiles.folderContents("build", at: location)
+        XCTAssertEqual(contents.directories, ["build/out"])
+        XCTAssertEqual(contents.files.sorted(), ["build/.hidden", "build/it's here.o", "build/latest"])
+        XCTAssertEqual(try WorkspaceFiles.folderContents("build/out", at: location).files, ["build/out/app"])
+        try sandbox.sh("ln -s .. up", in: "repo/build")
+        XCTAssertThrowsError(try WorkspaceFiles.folderContents("../..", at: location))
+        XCTAssertThrowsError(try WorkspaceFiles.folderContents("build/up/..", at: location))
+    }
+
     func testRemoteFolderWithoutGitIsListedWithFind() throws {
         try sandbox.write(["plain/a.txt": "a", "plain/sub/c.txt": "c", "plain/.git/config": "not a repo"], in: ".")
         let listing = try WorkspaceFiles.listing(at: remote("plain"))

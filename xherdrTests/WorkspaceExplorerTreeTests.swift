@@ -120,6 +120,34 @@ final class WorkspaceExplorerTests: XCTestCase {
     }
 
     /// A shortcut on a file acts in its folder; on a folder, in the folder itself.
+    func testIgnoredEntriesKeepOnlyTheOutermostFolder() {
+        let ignored = WorkspaceIgnoredEntries(gitEntries: [".DS_Store", "b/", "b/z.log", "Vendor/Pkg/.swiftpm/",
+                                                           "Vendor/Pkg/.swiftpm/xcode/", "a/x.log", "/", ""])
+        XCTAssertEqual(ignored.directories, ["b", "Vendor/Pkg/.swiftpm"])
+        XCTAssertEqual(ignored.files, [".DS_Store", "a/x.log"])
+        XCTAssertTrue(ignored.contains("Vendor/Pkg/.swiftpm/xcode/x"))
+        XCTAssertTrue(ignored.contains("b"))
+        XCTAssertFalse(ignored.contains("Vendor/Pkg"))
+        XCTAssertFalse(ignored.contains("a"))
+        XCTAssertTrue(WorkspaceIgnoredEntries().isEmpty)
+    }
+
+    func testFilesTreeIncludesIgnoredFoldersAndWhatWasReadOfThem() {
+        let listing = WorkspaceFileListing(files: ["a.txt"], changes: [], hasGit: true, totalFiles: 1,
+                                           ignored: WorkspaceIgnoredEntries(gitEntries: ["build/", "cache/"]))
+        let contents = ["build": WorkspaceFolderContents(files: ["build/app"], directories: ["build/obj"])]
+        let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: contents, created: ["new"])
+        XCTAssertEqual(entries.paths, ["a.txt", "build/app"])
+        XCTAssertEqual(entries.directories, ["build", "cache", "build/obj", "new"])
+        let tree = WorkspaceTree(paths: entries.paths, directories: entries.directories)
+        XCTAssertEqual(tree.nodes.map(\.path), ["build", "cache", "new", "a.txt"])
+        XCTAssertTrue(tree.nodes[1].isDirectory, "an unread ignored folder is still a folder")
+
+        XCTAssertEqual(WorkspaceExplorer.ignoredFoldersToRead(expanded: ["src", "cache", "build/obj", "build"],
+                                                              ignored: listing.ignored, read: ["build"]),
+                       ["build/obj", "cache"])
+    }
+
     func testShortcutTargets() {
         let folders = WorkspaceTree(paths: ["src/a.swift", "src/lib/b.swift", "README.md"]).directories
         XCTAssertTrue(WorkspaceExplorer.isDirectory("", directories: folders, created: []))
