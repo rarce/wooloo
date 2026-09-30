@@ -470,13 +470,8 @@ struct HerdrSettingsView: View {
         message = "Validating with Herdr…"
         Task.detached(priority: .userInitiated) {
             do {
-                try HerdrConfigFile.save(text, original: old, at: url)
-                let result: String
-                do {
-                    result = try HerdrConfigFile.reloadServer(socketPath: path)
-                } catch {
-                    result = "Saved config.toml, but \(session) could not reload: \(error.localizedDescription)"
-                }
+                let result = try HerdrConfigFile.saveAndReload(text, original: old, at: url,
+                                                               socketPath: path, session: session)
                 await MainActor.run {
                     original = text
                     message = result

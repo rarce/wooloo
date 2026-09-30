@@ -29,10 +29,7 @@ enum HerdrConfigFile {
     }
 
     static func validate(_ text: String) throws {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [home.appendingPathComponent(".local/bin/herdr").path,
-                          "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
-        guard let executable = candidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
+        guard let executable = WorkspaceFiles.herdrCandidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
             throw HerdrConfigError.herdrUnavailable
         }
         let temporary = FileManager.default.temporaryDirectory
@@ -64,6 +61,18 @@ enum HerdrConfigFile {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Saves a validated config and asks the running session to reload it. Returns what to
+    /// tell the user; a session that cannot reload does not undo the save.
+    static func saveAndReload(_ text: String, original: String, at url: URL,
+                              socketPath: String, session: String) throws -> String {
+        try save(text, original: original, at: url)
+        do {
+            return try reloadServer(socketPath: socketPath)
+        } catch {
+            return "Saved config.toml, but \(session) could not reload: \(error.localizedDescription)"
+        }
     }
 
     static func reloadServer(socketPath: String) throws -> String {

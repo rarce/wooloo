@@ -295,8 +295,22 @@ final class HerdrConfigFileTests: XCTestCase {
     override func tearDown() { config.restore() }
 
     private var herdrInstalled: Bool {
-        [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/herdr").path,
-         "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"].contains(where: FileManager.default.isExecutableFile(atPath:))
+        WorkspaceFiles.herdrCandidates.contains(where: FileManager.default.isExecutableFile(atPath:))
+    }
+
+    /// Replaces Herdr with a script whose `config check` rejects configs containing "invalid".
+    private func useFakeHerdr() throws -> () -> Void {
+        let script = config.directory + "/bin/herdr"
+        try FileManager.default.createDirectory(atPath: config.directory + "/bin", withIntermediateDirectories: true)
+        try """
+            #!/bin/sh
+            [ "$1 $2" = "config check" ] || exit 2
+            if grep -q invalid "$HERDR_CONFIG_PATH"; then echo "error: invalid key on line 1" >&2; exit 1; fi
+            """.write(toFile: script, atomically: true, encoding: .utf8)
+        chmod(script, 0o755)
+        let saved = WorkspaceFiles.herdrCandidates
+        WorkspaceFiles.herdrCandidates = [config.directory + "/missing/herdr", script]
+        return { WorkspaceFiles.herdrCandidates = saved }
     }
 
     func testPathFollowsTheEnvironment() throws {
@@ -311,6 +325,58 @@ final class HerdrConfigFileTests: XCTestCase {
             XCTAssertEqual($0.localizedDescription, HerdrConfigError.changedOnDisk.localizedDescription)
         }
         XCTAssertEqual(try HerdrConfigFile.read(at: url), "[ui]\nsound = true\n")
+    }
+
+    /// Herdr checks a copy of the new config; a rejected one leaves the file as it was.
+    func testSaveIsValidatedByHerdr() throws {
+        let restore = try useFakeHerdr()
+        defer { restore() }
+        let url = HerdrConfigFile.url
+        XCTAssertThrowsError(try HerdrConfigFile.save("[ui]\ninvalid = 1\n", original: "[ui]\nsound = true\n", at: url)) {
+            XCTAssertEqual($0.localizedDescription, "error: invalid key on line 1")
+        }
+        XCTAssertEqual(try HerdrConfigFile.read(at: url), "[ui]\nsound = true\n")
+
+        try HerdrConfigFile.save("[ui]\nsound = false\n", original: "[ui]\nsound = true\n", at: url)
+        XCTAssertEqual(try HerdrConfigFile.read(at: url), "[ui]\nsound = false\n")
+
+        WorkspaceFiles.herdrCandidates = [config.directory + "/missing/herdr"]
+        XCTAssertThrowsError(try HerdrConfigFile.save("[ui]\n", original: "[ui]\nsound = false\n", at: url)) {
+            XCTAssertEqual($0.localizedDescription, HerdrConfigError.herdrUnavailable.localizedDescription)
+        }
+    }
+
+    /// After saving, the session reloads the config; its answer, or its absence, is reported.
+    func testSaveAndReloadReportsTheSessionsAnswer() throws {
+        let restore = try useFakeHerdr()
+        defer { restore() }
+        let url = HerdrConfigFile.url
+        let socket = "/private/tmp/xherdr-tests/\(UUID().uuidString.prefix(8)).sock"
+        var original = try HerdrConfigFile.read(at: url)
+        func save(_ text: String) throws -> String {
+            defer { original = text }
+            return try HerdrConfigFile.saveAndReload(text, original: original, at: url, socketPath: socket, session: "work")
+        }
+
+        XCTAssertTrue(try save("[ui]\nsound = false\n").hasPrefix("Saved config.toml, but work could not reload: "),
+                      "No session is running")
+
+        var reply: [String: Any] = ["status": "applied"]
+        let lock = NSLock()
+        let server = try FakeHerdrServer(path: socket) { method, _ in
+            lock.lock(); defer { lock.unlock() }
+            return method == "server.reload_config" ? ["result": reply] : ["error": ["message": "unexpected"]]
+        }
+        defer { server.stop() }
+        XCTAssertEqual(try save("[ui]\nsound = true\n"), "Saved and reloaded the selected Herdr session.")
+        lock.withLock { reply = ["status": "partial", "diagnostics": ["theme needs a restart"]] }
+        XCTAssertEqual(try save("[ui]\nsound = false\n"), "Saved; some settings need a restart. theme needs a restart")
+        lock.withLock { reply = ["status": "failed", "diagnostics": ["a", "b"]] }
+        XCTAssertEqual(try save("[ui]\nsound = true\n"), "Saved, but Herdr could not apply the config. a\nb")
+        XCTAssertEqual(server.requests.filter { $0.method == "server.reload_config" }.count, 3)
+
+        XCTAssertThrowsError(try save("[ui]\ninvalid = 1\n"), "A rejected config is neither saved nor reloaded")
+        XCTAssertEqual(server.requests.count, 3)
     }
 
     /// Validation runs the installed `herdr config check`; skipped where Herdr is not installed.
