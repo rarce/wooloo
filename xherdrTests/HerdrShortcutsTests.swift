@@ -88,3 +88,43 @@ final class HerdrShortcutsTests: XCTestCase {
         XCTAssertNil(map.displayLabel(for: "unknown"))
     }
 }
+
+/// Action names from Herdr's key bindings and xherdr's menus, as commands.
+final class HerdrCommandTests: XCTestCase {
+    /// Every action a binding can produce is handled; `switch_tab` expands to one action per tab.
+    func testEveryBindableActionIsACommand() {
+        for definition in HerdrShortcutDefinition.supported where definition.key != "switch_tab" {
+            XCTAssertNotNil(HerdrCommand(action: definition.key), definition.key)
+        }
+        XCTAssertEqual((1...9).compactMap { HerdrCommand(action: "switch_tab_\($0)") }, (1...9).map { .switchTab($0) })
+    }
+
+    func testMenuActionsAreCommands() {
+        let menu = ["close_current_tab", "switch_session", "toggle_files_sidebar", "refresh_files",
+                    "rename_workspace", "close_workspace", "rename_tab", "close_tab", "close_pane",
+                    "project_search", "project_replace", "copy_pane_cwd", "reveal_pane_cwd"]
+        for action in menu { XCTAssertNotNil(HerdrCommand(action: action), action) }
+        XCTAssertEqual(HerdrCommand(action: "project_replace"), .projectSearch(replace: true))
+        XCTAssertEqual(HerdrCommand(action: "split_vertical"), .splitPane("right"))
+        XCTAssertEqual(HerdrCommand(action: "split_horizontal"), .splitPane("down"))
+        XCTAssertEqual(HerdrCommand(action: "previous_tab"), .cycleTab(-1))
+    }
+
+    func testUnknownActionsAreIgnored() {
+        for action in ["", "unknown", "switch_tab_", "switch_tab_0", "switch_tab_x", "switch_tab_-1"] {
+            XCTAssertNil(HerdrCommand(action: action), action)
+        }
+    }
+
+    func testTabCyclingWrapsAround() {
+        let tabs = ["t1", "t2", "t3"]
+        XCTAssertEqual(HerdrCommand.tab(1, from: "t1", in: tabs), "t2")
+        XCTAssertEqual(HerdrCommand.tab(1, from: "t3", in: tabs), "t1")
+        XCTAssertEqual(HerdrCommand.tab(-1, from: "t1", in: tabs), "t3")
+        XCTAssertEqual(HerdrCommand.tab(-4, from: "t1", in: tabs), "t3")
+        XCTAssertEqual(HerdrCommand.tab(1, from: "t1", in: ["t1"]), "t1")
+        XCTAssertNil(HerdrCommand.tab(1, from: nil, in: tabs))
+        XCTAssertNil(HerdrCommand.tab(1, from: "gone", in: tabs))
+        XCTAssertNil(HerdrCommand.tab(1, from: "t1", in: []))
+    }
+}

@@ -27,6 +27,68 @@ struct HerdrShortcutDefinition: Identifiable {
     ]
 }
 
+/// What a shortcut or menu item asks xherdr to do, from Herdr's action names plus xherdr's own.
+enum HerdrCommand: Equatable {
+    case help, settings, reloadConfig, switchSession
+    case newWorkspace, renameWorkspace, closeWorkspace
+    case newTab, renameTab, closeTab
+    /// The tab `delta` places away within the Space, wrapping around.
+    case cycleTab(Int)
+    /// The Space's tab at a 1-based position.
+    case switchTab(Int)
+    /// Closes whatever the main panel shows: search, a document, or else the terminal tab.
+    case closeCurrentTab
+    case focusPane(String), splitPane(String), zoom, closePane
+    case toggleSidebar, toggleFilesSidebar, refreshFiles
+    case projectSearch(replace: Bool)
+    case copyPaneDirectory, revealPaneDirectory
+
+    init?(action: String) {
+        switch action {
+        case "help": self = .help
+        case "settings": self = .settings
+        case "reload_config": self = .reloadConfig
+        case "switch_session": self = .switchSession
+        case "new_workspace": self = .newWorkspace
+        case "rename_workspace": self = .renameWorkspace
+        case "close_workspace": self = .closeWorkspace
+        case "new_tab": self = .newTab
+        case "rename_tab": self = .renameTab
+        case "close_tab": self = .closeTab
+        case "previous_tab": self = .cycleTab(-1)
+        case "next_tab": self = .cycleTab(1)
+        case "close_current_tab": self = .closeCurrentTab
+        case "focus_pane_left": self = .focusPane("left")
+        case "focus_pane_down": self = .focusPane("down")
+        case "focus_pane_up": self = .focusPane("up")
+        case "focus_pane_right": self = .focusPane("right")
+        case "split_vertical": self = .splitPane("right")
+        case "split_horizontal": self = .splitPane("down")
+        case "zoom": self = .zoom
+        case "close_pane": self = .closePane
+        case "toggle_sidebar": self = .toggleSidebar
+        case "toggle_files_sidebar": self = .toggleFilesSidebar
+        case "refresh_files": self = .refreshFiles
+        case "project_search": self = .projectSearch(replace: false)
+        case "project_replace": self = .projectSearch(replace: true)
+        case "copy_pane_cwd": self = .copyPaneDirectory
+        case "reveal_pane_cwd": self = .revealPaneDirectory
+        default:
+            guard action.hasPrefix("switch_tab_"), let number = Int(action.dropFirst("switch_tab_".count)),
+                  number >= 1 else { return nil }
+            self = .switchTab(number)
+        }
+    }
+
+    /// The tab `delta` places from `current` in `tabs`, wrapping around; nil when `current`
+    /// is not one of them.
+    static func tab(_ delta: Int, from current: String?, in tabs: [String]) -> String? {
+        guard let index = tabs.firstIndex(where: { $0 == current }) else { return nil }
+        let count = tabs.count
+        return tabs[((index + delta) % count + count) % count]
+    }
+}
+
 private struct HerdrKeyChord: Hashable {
     let key: String
     let modifiers: Int

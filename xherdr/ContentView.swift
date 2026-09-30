@@ -964,62 +964,60 @@ struct ContentView: View {
     }
 
     private func handleShortcut(_ action: String) {
-        switch action {
-        case "help":
+        guard let command = HerdrCommand(action: action) else { return }
+        switch command {
+        case .help:
             settingsShowShortcuts = true
             showsSettings = true
-        case "settings":
+        case .settings:
             settingsShowShortcuts = false
             showsSettings = true
-        case "new_workspace":
+        case .newWorkspace:
             activeDocumentID = nil
             herdr.createWorkspace()
-        case "new_tab":
+        case .newTab:
             activeDocumentID = nil
             herdr.createTab()
-        case "previous_tab", "next_tab":
-            guard let index = selectedTabs.firstIndex(where: { $0.tabID == herdr.selectedTabID }),
-                  !selectedTabs.isEmpty else { return }
-            let delta = action == "next_tab" ? 1 : -1
-            let next = (index + delta + selectedTabs.count) % selectedTabs.count
-            herdr.select(tabID: selectedTabs[next].tabID)
+        case .cycleTab(let delta):
+            guard let tabID = HerdrCommand.tab(delta, from: herdr.selectedTabID, in: selectedTabs.map(\.tabID)) else { return }
+            herdr.select(tabID: tabID)
             activeDocumentID = nil
-        case "toggle_sidebar": showsSidebar.toggle()
-        case "focus_pane_left": herdr.focusPane("left")
-        case "focus_pane_down": herdr.focusPane("down")
-        case "focus_pane_up": herdr.focusPane("up")
-        case "focus_pane_right": herdr.focusPane("right")
-        case "split_vertical": herdr.splitPane("right")
-        case "split_horizontal": herdr.splitPane("down")
-        case "zoom": herdr.zoomPane()
-        case "reload_config":
+        case .switchTab(let number):
+            guard selectedTabs.indices.contains(number - 1) else { return }
+            herdr.select(tabID: selectedTabs[number - 1].tabID)
+            activeDocumentID = nil
+        case .toggleSidebar: showsSidebar.toggle()
+        case .focusPane(let direction): herdr.focusPane(direction)
+        case .splitPane(let direction): herdr.splitPane(direction)
+        case .zoom: herdr.zoomPane()
+        case .reloadConfig:
             shortcutMap = HerdrShortcutMap.load()
             themes.reload()
             herdr.reloadConfig()
-        case "toggle_files_sidebar": showsFilesSidebar.toggle()
-        case "refresh_files":
+        case .toggleFilesSidebar: showsFilesSidebar.toggle()
+        case .refreshFiles:
             WorkspaceFiles.forgetRecentResults()
             fileRefreshVersion += 1
-        case "switch_session":
+        case .switchSession:
             showsSidebar = true
             requestedSessionName = herdr.sessionName
             showsSessionPicker = true
-        case "rename_workspace":
+        case .renameWorkspace:
             guard let selectedWorkspace else { return }
             renameText = selectedWorkspace.label
             renameTarget = .workspace(selectedWorkspace.workspaceID)
-        case "close_workspace":
+        case .closeWorkspace:
             guard let selectedWorkspace else { return }
             closeTarget = .workspace(selectedWorkspace.workspaceID, selectedWorkspace.label)
-        case "rename_tab":
+        case .renameTab:
             guard let tab = selectedTabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
             renameText = tab.label
             renameTarget = .tab(tab.tabID)
-        case "close_tab":
+        case .closeTab:
             guard selectedTabs.count > 1,
                   let tab = selectedTabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
             closeTarget = .tab(tab.tabID, tab.label)
-        case "close_current_tab":
+        case .closeCurrentTab:
             if activeDocumentID == WorkspaceSearchModel.tabID {
                 closeSearch()
             } else if let activeDocumentID {
@@ -1027,21 +1025,13 @@ struct ContentView: View {
             } else {
                 handleShortcut("close_tab")
             }
-        case "close_pane":
+        case .closePane:
             guard let paneID = herdr.selectedPaneID else { return }
             closeTarget = .pane(paneID)
-        case "project_search": openSearch(replace: false)
-        case "project_replace": openSearch(replace: true)
-        case "copy_pane_cwd", "reveal_pane_cwd":
+        case .projectSearch(let replace): openSearch(replace: replace)
+        case .copyPaneDirectory, .revealPaneDirectory:
             guard let cwd = selectedPanes.first(where: { $0.paneID == herdr.selectedPaneID })?.cwd else { return }
-            if action == "copy_pane_cwd" { AppActions.copy(cwd) } else { AppActions.reveal(cwd) }
-        default:
-            if action.hasPrefix("switch_tab_"),
-               let number = Int(action.dropFirst("switch_tab_".count)),
-               selectedTabs.indices.contains(number - 1) {
-                herdr.select(tabID: selectedTabs[number - 1].tabID)
-                activeDocumentID = nil
-            }
+            if command == .copyPaneDirectory { AppActions.copy(cwd) } else { AppActions.reveal(cwd) }
         }
     }
 
