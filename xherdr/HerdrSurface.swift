@@ -484,8 +484,10 @@ private enum SurfaceWriter {
             payload.append(mouse.modifiers)
             payload += number(UInt64(mouse.lines))
         case .key(let name):
-            let parts = name.lowercased().split(separator: "+").map(String.init)
-            guard let key = parts.last else { return nil }
+            // "ctrl++" is Control with the plus key: a trailing "++" names "+" itself.
+            var parts = name.lowercased().split(separator: "+", omittingEmptySubsequences: false).map(String.init)
+            if parts.count >= 2, Array(parts.suffix(2)) == ["", ""] { parts = Array(parts.dropLast(2)) + ["+"] }
+            guard let key = parts.last, !key.isEmpty else { return nil }
             let code: UInt64
             var character: String?
             switch key {
