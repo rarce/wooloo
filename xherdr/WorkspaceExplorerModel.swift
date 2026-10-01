@@ -1,12 +1,26 @@
 import AppKit
 
-/// A file or folder chosen for deletion, waiting for confirmation.
+/// Files and folders chosen for deletion, waiting for confirmation.
 struct WorkspaceFileTarget {
     let location: WorkspaceFileLocation
-    let path: String
+    let paths: [String]
+    /// Whether the one item is a folder.
     let isDirectory: Bool
     /// Deleted for good rather than moved to the Trash.
     var permanently = true
+
+    init(location: WorkspaceFileLocation, paths: [String], isDirectory: Bool, permanently: Bool = true) {
+        self.location = location
+        self.paths = paths
+        self.isDirectory = isDirectory
+        self.permanently = permanently
+    }
+
+    init(location: WorkspaceFileLocation, path: String, isDirectory: Bool, permanently: Bool = true) {
+        self.init(location: location, paths: [path], isDirectory: isDirectory, permanently: permanently)
+    }
+
+    var path: String { paths[0] }
 }
 
 /// A file or folder being named in the tree: a new one, or one being renamed.
@@ -305,9 +319,10 @@ final class WorkspaceExplorerModel: ObservableObject {
         }
     }
 
-    /// Runs a file shortcut on the selected row, or on the Space root when nothing
-    /// is selected. `open` opens a file, in the preview tab when asked; `findInFolder`
-    /// searches a folder. Returns whether the key was used.
+    /// Runs a file shortcut on the selected rows, or on the Space root when nothing is
+    /// selected. Cutting, copying, duplicating, copying paths, trashing and deleting act on
+    /// every selected row; the rest on the one selected last. `open` opens a file, in the
+    /// preview tab when asked; `findInFolder` searches a folder. Returns whether the key was used.
     func perform(_ command: ExplorerFileCommand,
                  open: (WorkspaceFileLocation, String, Bool) -> Void = { _, _, _ in },
                  findInFolder: (WorkspaceFileLocation, String) -> Void = { _, _ in }) -> Bool {
@@ -323,24 +338,26 @@ final class WorkspaceExplorerModel: ObservableObject {
         )
         let folder = WorkspaceExplorer.folder(for: path, isDirectory: isDirectory)
         let absolute = location.absolutePath(path)
+        let paths = path.isEmpty ? [] : tree.selectedPaths(in: treeIdentity(location))
+        let isOnlyDirectory = paths.count == 1 && isDirectory
         switch command {
         case .newFile: startDraft(in: folder, isFolder: false, at: location)
         case .newFolder: startDraft(in: folder, isFolder: true, at: location)
         case .reveal, .openInDefaultApp:
             guard location.isLocal else { return false }
             if command == .reveal { effects.reveal(absolute) } else { effects.openInDefaultApp(absolute) }
-        case .cut, .copy: copyItem(path, in: location, cut: command == .cut)
-        case .duplicate: duplicate(path, in: location)
+        case .cut, .copy: copyItems(paths, in: location, cut: command == .cut)
+        case .duplicate: duplicate(paths, in: location)
         case .paste: paste(into: folder, in: location)
-        case .copyPath: effects.copy(absolute)
-        case .copyRelativePath: effects.copy(path)
+        case .copyPath: effects.copy(path.isEmpty ? absolute : paths.map(location.absolutePath).joined(separator: "\n"))
+        case .copyRelativePath: effects.copy(paths.joined(separator: "\n"))
         case .rename: startRename(path, isDirectory: isDirectory, at: location)
         // A Space over SSH has no Trash, so its items are deleted, after asking.
-        case .trash where location.isLocal: trash(path, in: location)
+        case .trash where location.isLocal: trash(paths, in: location)
         case .trash, .trashAsking:
-            pendingDelete = WorkspaceFileTarget(location: location, path: path, isDirectory: isDirectory,
+            pendingDelete = WorkspaceFileTarget(location: location, paths: paths, isDirectory: isOnlyDirectory,
                                                 permanently: !location.isLocal)
-        case .delete: pendingDelete = WorkspaceFileTarget(location: location, path: path, isDirectory: isDirectory)
+        case .delete: pendingDelete = WorkspaceFileTarget(location: location, paths: paths, isDirectory: isOnlyDirectory)
         case .findInFolder: findInFolder(location, folder)
         case .open, .openPreview:
             if isDirectory {
@@ -349,7 +366,14 @@ final class WorkspaceExplorerModel: ObservableObject {
             } else {
                 open(location, path, command == .openPreview)
             }
-        case .deselect: tree.selected = nil
+        // Escape first keeps only the selected row, then selects nothing.
+        case .deselect:
+            if tree.selectedPaths(in: treeIdentity(location)).count > 1 { tree.clearMarks() } else { tree.selected = nil }
+        case .extendNext, .extendPrevious:
+            let index = rows.firstIndex { $0.node.path == path }
+            let next = index.map { command == .extendNext ? $0 + 1 : $0 - 1 } ?? (path.isEmpty && command == .extendNext ? 0 : -1)
+            guard rows.indices.contains(next) else { break }
+            extendSelection(to: rows[next].node.path, in: location)
         case .selectNext, .selectPrevious, .collapse, .expand, .collapseAll:
             navigate(command, from: path, rows: rows, location: location)
         }
@@ -405,11 +429,35 @@ final class WorkspaceExplorerModel: ObservableObject {
         }
     }
 
-    func copyItem(_ path: String, in location: WorkspaceFileLocation, cut: Bool) {
-        let absolute = location.absolutePath(path)
+    // MARK: Selection
+
+    /// Adds a row to the selection or takes it out, as a Command-click does.
+    func toggleMark(_ path: String, in location: WorkspaceFileLocation) {
+        tree.toggleMark(treeIdentity(location) + "|" + path)
+    }
+
+    /// Selects the rows shown from the anchor to `path`, as a Shift-click does.
+    func extendSelection(to path: String, in location: WorkspaceFileLocation) {
+        guard let listing else { return }
+        let identity = treeIdentity(location)
+        tree.markRange(to: identity + "|" + path,
+                       rows: visibleRows(listing, location: location).map { identity + "|" + $0.node.path })
+    }
+
+    /// What a context menu on `path` acts on: the selected rows when it is one of them, or else
+    /// just it, as in VS Code.
+    func menuTargets(_ path: String, in location: WorkspaceFileLocation) -> [String] {
+        let identity = treeIdentity(location)
+        return tree.isMarked(identity + "|" + path) ? tree.selectedPaths(in: identity) : [path]
+    }
+
+    // MARK: Clipboard and file operations
+
+    func copyItems(_ paths: [String], in location: WorkspaceFileLocation, cut: Bool) {
+        let absolute = paths.map(location.absolutePath)
         // Local items also go on the general pasteboard, so Finder can paste them.
-        let changeCount = location.isLocal ? effects.putFilesOnPasteboard([absolute]) : 0
-        clipboard = WorkspaceFileClipboard(machineID: location.machine?.id, paths: [absolute],
+        let changeCount = location.isLocal ? effects.putFilesOnPasteboard(absolute) : 0
+        clipboard = WorkspaceFileClipboard(machineID: location.machine?.id, paths: absolute,
                                            isCut: cut, changeCount: changeCount)
     }
 
@@ -431,16 +479,20 @@ final class WorkspaceExplorerModel: ObservableObject {
         }
     }
 
+    /// Copies each item beside itself.
     @discardableResult
-    func duplicate(_ path: String, in location: WorkspaceFileLocation) -> Task<Void, Never> {
-        let source = location.absolutePath(path)
-        let folder = (path as NSString).deletingLastPathComponent
-        return runOperation(location) { try WorkspaceFiles.paste([source], into: folder, move: false, at: location) } completion: {
+    func duplicate(_ paths: [String], in location: WorkspaceFileLocation) -> Task<Void, Never> {
+        runOperation(location) {
+            try paths.flatMap { path in
+                try WorkspaceFiles.paste([location.absolutePath(path)], into: (path as NSString).deletingLastPathComponent,
+                                         move: false, at: location)
+            }
+        } completion: {
             self.placePasted($0, in: location)
         }
     }
 
-    /// Keeps pasted empty folders visible and selects the last pasted item.
+    /// Keeps pasted empty folders visible and selects the pasted items.
     private func placePasted(_ paths: [String], in location: WorkspaceFileLocation) {
         if location.isLocal {
             var isDirectory: ObjCBool = false
@@ -449,13 +501,13 @@ final class WorkspaceExplorerModel: ObservableObject {
                 tree.createdDirectories[location.identity, default: []].insert(path)
             }
         }
-        if let last = paths.last { reveal(last, in: location) }
+        tree.reveal(paths, in: treeIdentity(location))
     }
 
     @discardableResult
-    func trash(_ path: String, in location: WorkspaceFileLocation) -> Task<Void, Never> {
-        runOperation(location) { try WorkspaceFiles.trash(path, at: location) } completion: {
-            self.tree.forget(path, location: location.identity)
+    func trash(_ paths: [String], in location: WorkspaceFileLocation) -> Task<Void, Never> {
+        runOperation(location) { for path in paths { try WorkspaceFiles.trash(path, at: location) } } completion: {
+            for path in paths { self.tree.forget(path, location: location.identity) }
         }
     }
 
@@ -463,9 +515,9 @@ final class WorkspaceExplorerModel: ObservableObject {
     @discardableResult
     func delete(_ target: WorkspaceFileTarget) -> Task<Void, Never> {
         let location = target.location
-        guard target.permanently else { return trash(target.path, in: location) }
-        return runOperation(location) { try WorkspaceFiles.delete(target.path, at: location) } completion: {
-            self.tree.forget(target.path, location: location.identity)
+        guard target.permanently else { return trash(target.paths, in: location) }
+        return runOperation(location) { for path in target.paths { try WorkspaceFiles.delete(path, at: location) } } completion: {
+            for path in target.paths { self.tree.forget(path, location: location.identity) }
         }
     }
 
@@ -473,59 +525,64 @@ final class WorkspaceExplorerModel: ObservableObject {
 
     /// The pasteboard type that marks a drag from an explorer tree.
     static let dragType = "dev.xherdr.explorer-item"
-    /// The item of the last drag started from any explorer tree, as a location identity and a
-    /// path. A drag whose items carry `dragType` is this one.
-    private static var currentDrag: (location: String, path: String)?
+    /// The last drag started from any explorer tree: its location identity, the row dragged and
+    /// the items it carries. A drag whose items carry `dragType` is this one.
+    private static var currentDrag: (location: String, row: String, paths: [String])?
 
     /// What dragging a row carries: the file of a local item, so Finder, other apps and
-    /// terminals take it; the path of a remote one, as text; and `dragType`, so the tree knows it.
+    /// terminals take it; the path of a remote one, as text; and `dragType`, so the tree knows
+    /// it. Dragging one of the selected rows moves them all within the tree, though only the
+    /// row dragged goes to other apps.
     func startDrag(_ path: String, in location: WorkspaceFileLocation) -> NSItemProvider {
-        Self.currentDrag = (location.identity, path)
+        let paths = menuTargets(path, in: location)
+        Self.currentDrag = (location.identity, path, paths)
         let absolute = location.absolutePath(path)
         let provider = location.isLocal ? NSItemProvider(object: URL(fileURLWithPath: absolute) as NSURL)
                                         : NSItemProvider(object: absolute as NSString)
         provider.suggestedName = (path as NSString).lastPathComponent
         provider.registerDataRepresentation(forTypeIdentifier: Self.dragType, visibility: .all) { completion in
-            completion(Data((location.identity + "\n" + path).utf8), nil)
+            completion(Data(([location.identity] + paths).joined(separator: "\n").utf8), nil)
             return nil
         }
         return provider
     }
 
-    /// The item of this tree being dragged when `providers` come from an explorer drag of it.
-    func draggedItem(_ providers: [NSItemProvider], location: WorkspaceFileLocation) -> String? {
+    /// The items of this tree being dragged when `providers` come from an explorer drag of them.
+    func draggedItems(_ providers: [NSItemProvider], location: WorkspaceFileLocation) -> [String]? {
         guard let drag = Self.currentDrag, drag.location == location.identity,
               providers.contains(where: { $0.registeredTypeIdentifiers.contains(Self.dragType) }) else { return nil }
-        return drag.path
+        return drag.paths
     }
 
-    /// The item of this tree that dropped files are, when they are just the item last dragged
-    /// from it: the drop's own check for a drag whose items lost `dragType` on the way.
-    func draggedItem(files: [String], location: WorkspaceFileLocation) -> String? {
+    /// The items of this tree that dropped files stand for, when they are just the row last
+    /// dragged from it: the drop's own check for a drag whose items lost `dragType` on the way.
+    func draggedItems(files: [String], location: WorkspaceFileLocation) -> [String]? {
         guard let drag = Self.currentDrag, drag.location == location.identity,
-              files == [location.absolutePath(drag.path)] else { return nil }
-        return drag.path
+              files == [location.absolutePath(drag.row)] else { return nil }
+        return drag.paths
     }
 
-    /// What dropping on `folder` ("" is the root) does: an item of this tree moves, or is copied
+    /// What dropping on `folder` ("" is the root) does: items of this tree move, or are copied
     /// with Option held; files from elsewhere are copied. Nil refuses the drop, as for a folder
-    /// dropped into itself or an item dropped where it already is.
-    func dropAction(of dragged: String?, into folder: String, copy: Bool) -> WorkspaceDropAction? {
+    /// dropped into itself or items dropped where they already are.
+    func dropAction(of dragged: [String]?, into folder: String, copy: Bool) -> WorkspaceDropAction? {
         guard !showsChanges, draft == nil else { return nil }
         guard let dragged else { return .copy }
-        if folder == dragged || folder.hasPrefix(dragged + "/") { return nil }
-        if !copy && (dragged as NSString).deletingLastPathComponent == folder { return nil }
+        if dragged.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) { return nil }
+        if !copy && dragged.allSatisfy({ ($0 as NSString).deletingLastPathComponent == folder }) { return nil }
         return copy ? .copy : .move
     }
 
-    /// Moves or copies an item of this tree into `folder`, keeping its open folders and selection.
+    /// Moves or copies items of this tree into `folder`, keeping their open folders and selection.
     @discardableResult
-    func dropItem(_ path: String, into folder: String, copy: Bool, in location: WorkspaceFileLocation) -> Task<Void, Never>? {
-        guard dropAction(of: path, into: folder, copy: copy) != nil else { return nil }
-        let source = location.absolutePath(path)
-        return runOperation(location) { try WorkspaceFiles.paste([source], into: folder, move: !copy, at: location) } completion: {
-            if !copy, let moved = $0.first {
-                self.tree.move(from: path, to: moved, in: self.treeIdentity(location), location: location.identity)
+    func dropItems(_ paths: [String], into folder: String, copy: Bool, in location: WorkspaceFileLocation) -> Task<Void, Never>? {
+        guard dropAction(of: paths, into: folder, copy: copy) != nil else { return nil }
+        let sources = paths.map(location.absolutePath)
+        return runOperation(location) { try WorkspaceFiles.paste(sources, into: folder, move: !copy, at: location) } completion: {
+            if !copy {
+                for (path, moved) in zip(paths, $0) {
+                    self.tree.move(from: path, to: moved, in: self.treeIdentity(location), location: location.identity)
+                }
             }
             self.placePasted($0, in: location)
         }

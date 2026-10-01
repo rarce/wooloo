@@ -250,8 +250,8 @@ final class WorkspaceFileOperationHelperTests: XCTestCase {
         XCTAssertEqual(commands(try key(" ", code: 49)), [.openPreview])
         XCTAssertEqual(commands(try key("\u{1b}", code: 53)), [.deselect])
         XCTAssertEqual(commands(try key("F", [.command, .option, .shift], code: 3)), [.findInFolder])
-        XCTAssertEqual(commands(try key(String(UnicodeScalar(NSUpArrowFunctionKey)!), [.shift, .function], code: 126)), [],
-                       "Shift-arrows are left for extending a selection")
+        XCTAssertEqual(commands(try key(String(UnicodeScalar(NSUpArrowFunctionKey)!), [.shift, .function], code: 126)),
+                       [.extendPrevious])
         XCTAssertEqual(commands(try key("c")), [])
         XCTAssertEqual(commands(try key("c", [.command, .control])), [])
 

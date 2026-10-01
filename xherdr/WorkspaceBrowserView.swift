@@ -291,22 +291,24 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
-        .confirmationDialog(model.pendingDelete.map {
-                                (($0.permanently ? "Delete “" : "Move “") + ($0.path as NSString).lastPathComponent)
-                                    + ($0.permanently ? "”?" : "” to the Trash?")
+        .confirmationDialog(model.pendingDelete.map { target in
+                                let items = target.paths.count > 1 ? "\(target.paths.count) items"
+                                                                   : "“" + (target.path as NSString).lastPathComponent + "”"
+                                return target.permanently ? "Delete \(items)?" : "Move \(items) to the Trash?"
                             } ?? "",
                             isPresented: Binding(get: { model.pendingDelete != nil }, set: { if !$0 { model.pendingDelete = nil } }),
                             presenting: model.pendingDelete) { target in
             Button(target.permanently ? "Delete" : "Move to Trash", role: .destructive) { model.delete(target) }
         } message: { target in
             if target.permanently {
-                Text(target.isDirectory ? "The folder and everything in it are deleted permanently."
-                                        : "The file is deleted permanently.")
+                Text(target.paths.count > 1 ? "The items and everything in them are deleted permanently."
+                     : target.isDirectory ? "The folder and everything in it are deleted permanently."
+                     : "The file is deleted permanently.")
             } else {
                 Text("You can restore it from the Trash.")
             }
         }
-        .confirmationDialog(pendingDiscard.map { "Discard changes to “\($0.name)”?" } ?? "",
+        .confirmationDialog(pendingDiscard.map { "Discard changes to \($0.name)?" } ?? "",
                             isPresented: Binding(get: { pendingDiscard != nil }, set: { if !$0 { pendingDiscard = nil } }),
                             presenting: pendingDiscard) { target in
             Button("Discard Changes", role: .destructive) {
@@ -492,14 +494,18 @@ struct WorkspaceBrowserView: View {
         let isIgnored = !model.showsChanges && model.listing?.ignored.contains(node.path) == true
         let identity = model.treeIdentity(location) + "|" + node.path
         let isExpanded = model.tree.expanded.contains(identity)
-        let isSelected = model.tree.selected == identity
+        let isSelected = model.tree.selected == identity || model.tree.isMarked(identity)
         // A drop goes in the folder under the pointer, or in the folder of the file under it;
         // that folder and what it shows are highlighted.
         let dropFolder = node.isDirectory ? node.path : (node.path as NSString).deletingLastPathComponent
         let isDropTarget = model.dropFolder.map { $0.isEmpty || node.path == $0 || node.path.hasPrefix($0 + "/") } ?? false
         return Button {
-            model.tree.selected = identity
             treeFocused = true
+            // Command-clicks add rows to the selection and Shift-clicks select a range, as in Finder.
+            let modifiers = NSEvent.modifierFlags
+            if modifiers.contains(.command) { return model.toggleMark(node.path, in: location) }
+            if modifiers.contains(.shift) { return model.extendSelection(to: node.path, in: location) }
+            model.tree.selected = identity
             if node.isDirectory {
                 model.toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
             } else {
@@ -552,7 +558,7 @@ struct WorkspaceBrowserView: View {
         .buttonStyle(.plain)
         // A click opens a file in the preview tab; a double click keeps it open.
         .simultaneousGesture(TapGesture(count: 2).onEnded {
-            guard !node.isDirectory else { return }
+            guard !node.isDirectory, NSEvent.modifierFlags.isDisjoint(with: [.command, .shift]) else { return }
             if model.showsChanges { onOpenDiff(location, node.path, false) }
             else { onOpenFile(location, node.path, false) }
         })
@@ -565,80 +571,141 @@ struct WorkspaceBrowserView: View {
         .help(isIgnored ? node.path + " (ignored by Git)" : node.path)
         .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
         .contextMenu {
-            if node.isDirectory {
-                Button(isExpanded ? "Collapse" : "Expand",
-                       systemImage: isExpanded ? "chevron.up" : "chevron.down") {
-                    model.toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
-                }
-                Button("Find in Folder…", systemImage: "magnifyingglass") { onFindInFolder(location, node.path) }
-                    .keyboardShortcut(ExplorerFileCommand.findInFolder.shortcut)
-                if model.showsChanges && location.isLocal {
-                    Button("Open in New Tab", systemImage: "terminal") {
-                        onNewTab(location.absolutePath(node.path))
-                    }
-                }
+            let targets = model.menuTargets(node.path, in: location)
+            if targets.count > 1 {
+                selectionMenu(targets, location: location, hasGit: hasGit)
             } else {
-                Button("Open", systemImage: "doc.text") {
-                    model.tree.selected = identity
-                    onOpenFile(location, node.path, false)
-                }
-                .keyboardShortcut(model.showsChanges ? nil : ExplorerFileCommand.open.shortcut)
-                .disabled(change?.kind == .deleted)
-                if change != nil {
-                    Button("Open Changes", systemImage: "arrow.left.arrow.right") {
+                if node.isDirectory {
+                    Button(isExpanded ? "Collapse" : "Expand",
+                           systemImage: isExpanded ? "chevron.up" : "chevron.down") {
+                        model.toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
+                    }
+                    Button("Find in Folder…", systemImage: "magnifyingglass") { onFindInFolder(location, node.path) }
+                        .keyboardShortcut(ExplorerFileCommand.findInFolder.shortcut)
+                    if model.showsChanges && location.isLocal {
+                        Button("Open in New Tab", systemImage: "terminal") {
+                            onNewTab(location.absolutePath(node.path))
+                        }
+                    }
+                } else {
+                    Button("Open", systemImage: "doc.text") {
                         model.tree.selected = identity
-                        onOpenDiff(location, node.path, false)
+                        onOpenFile(location, node.path, false)
                     }
-                    .keyboardShortcut(model.showsChanges ? ExplorerFileCommand.open.shortcut : nil)
-                }
-            }
-            Divider()
-            if !model.showsChanges { fileActions(location, node: node) }
-            if hasGit {
-                if let kind {
-                    if node.isDirectory || change?.worktreeStatus != " " {
-                        Button(node.isDirectory ? "Stage Folder" : "Stage Changes", systemImage: "plus.circle") {
-                            model.runOperation(location) { try WorkspaceFiles.stage(node.path, at: location) }
+                    .keyboardShortcut(model.showsChanges ? nil : ExplorerFileCommand.open.shortcut)
+                    .disabled(change?.kind == .deleted)
+                    if change != nil {
+                        Button("Open Changes", systemImage: "arrow.left.arrow.right") {
+                            model.tree.selected = identity
+                            onOpenDiff(location, node.path, false)
                         }
+                        .keyboardShortcut(model.showsChanges ? ExplorerFileCommand.open.shortcut : nil)
                     }
-                    if node.isDirectory ? kind != .untracked
-                        : (change?.indexStatus != " " && change?.indexStatus != "?") {
-                        Button(node.isDirectory ? "Unstage Folder" : "Unstage Changes", systemImage: "minus.circle") {
-                            model.runOperation(location) { try WorkspaceFiles.unstage(node.path, at: location) }
-                        }
-                    }
-                }
-                if model.showsChanges {
-                    changeActions(location, node: node, change: change)
-                } else if !isIgnored {
-                    gitFileActions(location, node: node, change: change)
                 }
                 Divider()
-            }
-            if model.showsChanges {
-                pathActions(location, path: node.path)
+                if !model.showsChanges { fileActions(location, node: node) }
                 if hasGit {
+                    if let kind {
+                        if node.isDirectory || change?.worktreeStatus != " " {
+                            Button(node.isDirectory ? "Stage Folder" : "Stage Changes", systemImage: "plus.circle") {
+                                model.runOperation(location) { try WorkspaceFiles.stage(node.path, at: location) }
+                            }
+                        }
+                        if node.isDirectory ? kind != .untracked
+                            : (change?.indexStatus != " " && change?.indexStatus != "?") {
+                            Button(node.isDirectory ? "Unstage Folder" : "Unstage Changes", systemImage: "minus.circle") {
+                                model.runOperation(location) { try WorkspaceFiles.unstage(node.path, at: location) }
+                            }
+                        }
+                    }
+                    if model.showsChanges {
+                        changeActions(location, node: node, change: change)
+                    } else if !isIgnored {
+                        gitFileActions(location, node: node, change: change)
+                    }
                     Divider()
-                    ignoreActions(location, node: node, enabled: node.isDirectory ? kind == .untracked
-                                                                                   : change?.kind == .untracked)
-                    if !node.isDirectory {
+                }
+                if model.showsChanges {
+                    pathActions(location, path: node.path)
+                    if hasGit {
                         Divider()
-                        Button("View File History", systemImage: "clock.arrow.circlepath") { historyPath = node.path }
-                            .disabled(change?.kind == .untracked || change?.kind == .added)
+                        ignoreActions(location, node: node, enabled: node.isDirectory ? kind == .untracked
+                                                                                       : change?.kind == .untracked)
+                        if !node.isDirectory {
+                            Divider()
+                            Button("View File History", systemImage: "clock.arrow.circlepath") { historyPath = node.path }
+                                .disabled(change?.kind == .untracked || change?.kind == .added)
+                        }
+                    }
+                } else {
+                    Button("Rename…", systemImage: "pencil") { model.startRename(node.path, isDirectory: node.isDirectory, at: location) }
+                        .keyboardShortcut(ExplorerFileCommand.rename.shortcut)
+                    if location.isLocal {
+                        Button("Move to Trash", systemImage: "trash") { model.trash([node.path], in: location) }
+                            .keyboardShortcut(ExplorerFileCommand.trash.shortcut)
+                    }
+                    Button("Delete…", systemImage: "xmark.bin", role: .destructive) {
+                        model.pendingDelete = WorkspaceFileTarget(location: location, path: node.path, isDirectory: node.isDirectory)
+                    }
+                    .keyboardShortcut(ExplorerFileCommand.delete.shortcut)
+                }
+            }
+        }
+    }
+
+    /// The context menu of a row among several selected ones: what applies to all of them.
+    @ViewBuilder
+    private func selectionMenu(_ paths: [String], location: WorkspaceFileLocation, hasGit: Bool) -> some View {
+        let changes = (model.listing?.changes ?? []).filter { change in
+            paths.contains { change.path == $0 || change.path.hasPrefix($0 + "/") }
+        }
+        Text("\(paths.count) Items Selected")
+        Divider()
+        if !model.showsChanges {
+            Button("Cut", systemImage: "scissors") { model.copyItems(paths, in: location, cut: true) }
+                .keyboardShortcut(ExplorerFileCommand.cut.shortcut)
+            Button("Copy", systemImage: "doc.on.doc") { model.copyItems(paths, in: location, cut: false) }
+                .keyboardShortcut(ExplorerFileCommand.copy.shortcut)
+            Button("Duplicate", systemImage: "plus.square.on.square") { model.duplicate(paths, in: location) }
+                .keyboardShortcut(ExplorerFileCommand.duplicate.shortcut)
+            Divider()
+        }
+        Button("Copy Paths", systemImage: "doc.on.doc") {
+            AppActions.copy(paths.map(location.absolutePath).joined(separator: "\n"))
+        }
+        .keyboardShortcut(ExplorerFileCommand.copyPath.shortcut)
+        Button("Copy Relative Paths") { AppActions.copy(paths.joined(separator: "\n")) }
+            .keyboardShortcut(ExplorerFileCommand.copyRelativePath.shortcut)
+        if hasGit && !changes.isEmpty {
+            Divider()
+            Button("Stage Changes", systemImage: "plus.circle") {
+                model.runOperation(location) { for path in paths { try WorkspaceFiles.stage(path, at: location) } }
+            }
+            .disabled(!changes.contains { $0.worktreeStatus != " " })
+            Button("Unstage Changes", systemImage: "minus.circle") {
+                model.runOperation(location) {
+                    for change in changes where change.indexStatus != " " && change.indexStatus != "?" {
+                        try WorkspaceFiles.unstage(change.path, at: location)
                     }
                 }
-            } else {
-                Button("Rename…", systemImage: "pencil") { model.startRename(node.path, isDirectory: node.isDirectory, at: location) }
-                    .keyboardShortcut(ExplorerFileCommand.rename.shortcut)
-                if location.isLocal {
-                    Button("Move to Trash", systemImage: "trash") { model.trash(node.path, in: location) }
-                        .keyboardShortcut(ExplorerFileCommand.trash.shortcut)
-                }
-                Button("Delete…", systemImage: "xmark.bin", role: .destructive) {
-                    model.pendingDelete = WorkspaceFileTarget(location: location, path: node.path, isDirectory: node.isDirectory)
-                }
-                .keyboardShortcut(ExplorerFileCommand.delete.shortcut)
             }
+            .disabled(!changes.contains { $0.indexStatus != " " && $0.indexStatus != "?" })
+            if model.showsChanges {
+                Button("Discard Changes…", systemImage: "arrow.uturn.backward", role: .destructive) {
+                    pendingDiscard = PendingDiscard(location: location, name: "\(paths.count) items", changes: changes)
+                }
+            }
+        }
+        if !model.showsChanges {
+            Divider()
+            if location.isLocal {
+                Button("Move to Trash", systemImage: "trash") { model.trash(paths, in: location) }
+                    .keyboardShortcut(ExplorerFileCommand.trash.shortcut)
+            }
+            Button("Delete…", systemImage: "xmark.bin", role: .destructive) {
+                model.pendingDelete = WorkspaceFileTarget(location: location, paths: paths, isDirectory: false)
+            }
+            .keyboardShortcut(ExplorerFileCommand.delete.shortcut)
         }
     }
 
@@ -661,11 +728,11 @@ struct WorkspaceBrowserView: View {
             Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.absolutePath(folder)) }
             Divider()
         }
-        Button("Cut", systemImage: "scissors") { model.copyItem(node.path, in: location, cut: true) }
+        Button("Cut", systemImage: "scissors") { model.copyItems([node.path], in: location, cut: true) }
             .keyboardShortcut(ExplorerFileCommand.cut.shortcut)
-        Button("Copy", systemImage: "doc.on.doc") { model.copyItem(node.path, in: location, cut: false) }
+        Button("Copy", systemImage: "doc.on.doc") { model.copyItems([node.path], in: location, cut: false) }
             .keyboardShortcut(ExplorerFileCommand.copy.shortcut)
-        Button("Duplicate", systemImage: "plus.square.on.square") { model.duplicate(node.path, in: location) }
+        Button("Duplicate", systemImage: "plus.square.on.square") { model.duplicate([node.path], in: location) }
             .keyboardShortcut(ExplorerFileCommand.duplicate.shortcut)
         Button("Paste", systemImage: "doc.on.clipboard") { model.paste(into: folder, in: location) }
             .keyboardShortcut(ExplorerFileCommand.paste.shortcut)
@@ -723,7 +790,7 @@ struct WorkspaceBrowserView: View {
             ? (model.listing?.changes ?? []).filter { $0.path.hasPrefix(node.path + "/") }
             : change.map { [$0] } ?? []
         Button("Discard Changes…", systemImage: "arrow.uturn.backward", role: .destructive) {
-            pendingDiscard = PendingDiscard(location: location, name: node.displayName, changes: changes)
+            pendingDiscard = PendingDiscard(location: location, name: "“\(node.displayName)”", changes: changes)
         }
         .disabled(changes.isEmpty)
         if let change, !node.isDirectory {
@@ -996,7 +1063,7 @@ final class WorkspaceTreeBuilderNode {
 enum ExplorerFileCommand: CaseIterable {
     case newFile, newFolder, reveal, openInDefaultApp, cut, copy, duplicate, paste
     case copyPath, copyRelativePath, rename, trash, trashAsking, delete, findInFolder
-    case selectNext, selectPrevious, collapse, expand, collapseAll, open, openPreview, deselect
+    case selectNext, selectPrevious, extendNext, extendPrevious, collapse, expand, collapseAll, open, openPreview, deselect
 
     /// The key shown in menus.
     var shortcut: KeyboardShortcut {
@@ -1018,6 +1085,8 @@ enum ExplorerFileCommand: CaseIterable {
         case .findInFolder: return KeyboardShortcut("f", modifiers: [.command, .option, .shift])
         case .selectNext: return KeyboardShortcut(.downArrow, modifiers: [])
         case .selectPrevious: return KeyboardShortcut(.upArrow, modifiers: [])
+        case .extendNext: return KeyboardShortcut(.downArrow, modifiers: .shift)
+        case .extendPrevious: return KeyboardShortcut(.upArrow, modifiers: .shift)
         case .collapse: return KeyboardShortcut(.leftArrow, modifiers: [])
         case .expand: return KeyboardShortcut(.rightArrow, modifiers: [])
         case .collapseAll: return KeyboardShortcut(.leftArrow, modifiers: .command)
@@ -1039,12 +1108,13 @@ enum ExplorerFileCommand: CaseIterable {
     /// Commands that make sense with nothing selected, on the Space root.
     var appliesToRoot: Bool {
         [.newFile, .newFolder, .reveal, .openInDefaultApp, .paste, .copyPath, .findInFolder,
-         .selectNext, .selectPrevious, .collapse, .expand, .collapseAll].contains(self)
+         .selectNext, .selectPrevious, .extendNext, .extendPrevious, .collapse, .expand, .collapseAll].contains(self)
     }
 
     /// Commands that also apply in the Changes tree, which offers no file operations.
     var appliesToChanges: Bool {
-        [.copyPath, .copyRelativePath, .findInFolder, .selectNext, .selectPrevious, .collapse, .expand,
+        [.copyPath, .copyRelativePath, .findInFolder, .selectNext, .selectPrevious, .extendNext, .extendPrevious,
+         .collapse, .expand,
          .collapseAll, .open, .openPreview, .deselect].contains(self)
     }
 
@@ -1080,7 +1150,7 @@ private struct ExplorerDropDelegate: DropDelegate {
     private var copies: Bool { NSEvent.modifierFlags.contains(.option) }
 
     private func action(_ info: DropInfo) -> WorkspaceDropAction? {
-        let dragged = model.draggedItem(info.itemProviders(for: Self.types), location: location)
+        let dragged = model.draggedItems(info.itemProviders(for: Self.types), location: location)
         // Text is taken only from the tree's own drags, which carry a remote item's path.
         guard dragged != nil || info.hasItemsConforming(to: [.fileURL]) else { return nil }
         return model.dropAction(of: dragged, into: folder, copy: copies)
@@ -1107,8 +1177,8 @@ private struct ExplorerDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         model.dragEnded()
         let providers = info.itemProviders(for: Self.types)
-        if let dragged = model.draggedItem(providers, location: location) {
-            return model.dropItem(dragged, into: folder, copy: copies, in: location) != nil
+        if let dragged = model.draggedItems(providers, location: location) {
+            return model.dropItems(dragged, into: folder, copy: copies, in: location) != nil
         }
         let files = info.itemProviders(for: [.fileURL])
         guard !files.isEmpty else { return false }
@@ -1118,8 +1188,8 @@ private struct ExplorerDropDelegate: DropDelegate {
             for provider in files {
                 if let url = await Self.fileURL(provider) { paths.append(url.path) }
             }
-            if let dragged = model.draggedItem(files: paths, location: location) {
-                model.dropItem(dragged, into: folder, copy: copies, in: location)
+            if let dragged = model.draggedItems(files: paths, location: location) {
+                model.dropItems(dragged, into: folder, copy: copies, in: location)
             } else {
                 model.importFiles(paths, into: folder, in: location)
             }

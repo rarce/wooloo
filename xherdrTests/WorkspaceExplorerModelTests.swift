@@ -556,13 +556,13 @@ final class WorkspaceExplorerModelTests: XCTestCase {
 
     func testDropRules() async throws {
         try await loadNested()
-        XCTAssertEqual(model.dropAction(of: "src/main.swift", into: "docs", copy: false), .move)
-        XCTAssertEqual(model.dropAction(of: "src/main.swift", into: "docs", copy: true), .copy)
-        XCTAssertNil(model.dropAction(of: "src/main.swift", into: "src", copy: false), "Already there")
-        XCTAssertEqual(model.dropAction(of: "src/main.swift", into: "src", copy: true), .copy, "Option duplicates it")
-        XCTAssertNil(model.dropAction(of: "src", into: "src", copy: true))
-        XCTAssertNil(model.dropAction(of: "src", into: "src/util", copy: false), "Not into itself")
-        XCTAssertEqual(model.dropAction(of: "src", into: "", copy: false), nil, "Already at the root")
+        XCTAssertEqual(model.dropAction(of: ["src/main.swift"], into: "docs", copy: false), .move)
+        XCTAssertEqual(model.dropAction(of: ["src/main.swift"], into: "docs", copy: true), .copy)
+        XCTAssertNil(model.dropAction(of: ["src/main.swift"], into: "src", copy: false), "Already there")
+        XCTAssertEqual(model.dropAction(of: ["src/main.swift"], into: "src", copy: true), .copy, "Option duplicates it")
+        XCTAssertNil(model.dropAction(of: ["src"], into: "src", copy: true))
+        XCTAssertNil(model.dropAction(of: ["src"], into: "src/util", copy: false), "Not into itself")
+        XCTAssertEqual(model.dropAction(of: ["src"], into: "", copy: false), nil, "Already at the root")
         XCTAssertEqual(model.dropAction(of: nil, into: "src", copy: false), .copy, "Files from elsewhere are copied")
         model.showsChanges = true
         XCTAssertNil(model.dropAction(of: nil, into: "src", copy: false), "Not in the Changes tree")
@@ -571,21 +571,21 @@ final class WorkspaceExplorerModelTests: XCTestCase {
     func testOnlyThisTreesOwnDragIsAnItemOfIt() async throws {
         try await loadNested()
         let provider = model.startDrag("src/util", in: repo)
-        XCTAssertEqual(model.draggedItem([provider], location: repo), "src/util")
-        XCTAssertNil(model.draggedItem([NSItemProvider(object: URL(fileURLWithPath: "/tmp/x") as NSURL)], location: repo),
+        XCTAssertEqual(model.draggedItems([provider], location: repo), ["src/util"])
+        XCTAssertNil(model.draggedItems([NSItemProvider(object: URL(fileURLWithPath: "/tmp/x") as NSURL)], location: repo),
                      "Files from Finder")
         let other = try sandbox.repository("other")
-        XCTAssertNil(model.draggedItem([provider], location: other), "A drag from another Space's tree")
-        XCTAssertEqual(model.draggedItem(files: [repo.absolutePath("src/util")], location: repo), "src/util",
+        XCTAssertNil(model.draggedItems([provider], location: other), "A drag from another Space's tree")
+        XCTAssertEqual(model.draggedItems(files: [repo.absolutePath("src/util")], location: repo), ["src/util"],
                        "Dropped as a file, it is still the dragged item")
-        XCTAssertNil(model.draggedItem(files: [repo.absolutePath("b.txt")], location: repo))
+        XCTAssertNil(model.draggedItems(files: [repo.absolutePath("b.txt")], location: repo))
     }
 
     func testDroppingAnItemMovesItAndCarriesItsTreeState() async throws {
         try await loadNested()
         model.tree.expand("src/util", in: files)
         model.tree.selected = files + "|src/util/x.swift"
-        await model.dropItem("src/util", into: "docs", copy: false, in: repo)?.value
+        await model.dropItems(["src/util"], into: "docs", copy: false, in: repo)?.value
         XCTAssertNil(model.operationError)
         XCTAssertFalse(exists("src/util", in: "nested"))
         XCTAssertTrue(exists("docs/util/x.swift", in: "nested"))
@@ -596,12 +596,12 @@ final class WorkspaceExplorerModelTests: XCTestCase {
 
     func testDroppingWithOptionCopies() async throws {
         try await loadNested()
-        await model.dropItem("b.txt", into: "docs", copy: true, in: repo)?.value
-        await model.dropItem("b.txt", into: "", copy: true, in: repo)?.value
+        await model.dropItems(["b.txt"], into: "docs", copy: true, in: repo)?.value
+        await model.dropItems(["b.txt"], into: "", copy: true, in: repo)?.value
         XCTAssertTrue(exists("b.txt", in: "nested"))
         XCTAssertTrue(exists("docs/b.txt", in: "nested"))
         XCTAssertTrue(exists("b copy.txt", in: "nested"))
-        XCTAssertNil(model.dropItem("b.txt", into: "", copy: false, in: repo), "A move where it is does nothing")
+        XCTAssertNil(model.dropItems(["b.txt"], into: "", copy: false, in: repo), "A move where it is does nothing")
     }
 
     func testDroppedFilesFromFinderAreCopied() async throws {
@@ -629,6 +629,106 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertEqual(model.dropFolder, "", "A file's drop goes in its folder")
         model.dragEnded()
         XCTAssertNil(model.dropFolder)
+    }
+
+    // MARK: Selecting several rows
+
+    private func mark(_ paths: String...) {
+        model.tree.selected = files + "|" + paths[0]
+        for path in paths.dropFirst() { model.toggleMark(path, in: repo) }
+    }
+
+    func testCommandClickAddsAndRemovesRows() async throws {
+        try await loadNested()
+        mark("b.txt", "docs")
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["b.txt", "docs"])
+        XCTAssertEqual(selection, "docs", "The row clicked last is the selected one")
+        model.toggleMark("b.txt", in: repo)
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["b.txt"])
+        model.tree.selected = files + "|src"
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["src"], "A plain click selects only it")
+    }
+
+    func testShiftSelectsTheRowsBetween() async throws {
+        try await loadNested()
+        model.tree.selected = files + "|docs"
+        model.extendSelection(to: "b.txt", in: repo)
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["b.txt", "docs", "src"])
+        model.extendSelection(to: "src", in: repo)
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["docs", "src"], "The range starts at the first click")
+        XCTAssertTrue(model.perform(.extendNext))
+        XCTAssertTrue(model.perform(.extendNext))
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["b.txt", "docs", "src"])
+        XCTAssertTrue(model.perform(.extendPrevious))
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["docs", "src"])
+        XCTAssertTrue(model.perform(.deselect))
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["src"], "Escape keeps the selected row first")
+        XCTAssertTrue(model.perform(.deselect))
+        XCTAssertNil(model.tree.selected)
+    }
+
+    func testAFolderAndWhatIsInItActAsTheFolder() async throws {
+        try await loadNested()
+        model.tree.expand("src", in: files)
+        mark("src", "src/main.swift", "b.txt")
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["b.txt", "src"])
+    }
+
+    func testShortcutsActOnEverySelectedRow() async throws {
+        try await loadNested()
+        mark("b.txt", "docs/a.md")
+        XCTAssertTrue(model.perform(.copyRelativePath))
+        XCTAssertTrue(model.perform(.copyPath))
+        XCTAssertEqual(copied, ["b.txt\ndocs/a.md", repo.absolutePath("b.txt") + "\n" + repo.absolutePath("docs/a.md")])
+        XCTAssertTrue(model.perform(.trashAsking))
+        XCTAssertEqual(model.pendingDelete?.paths, ["b.txt", "docs/a.md"])
+        model.pendingDelete = nil
+        XCTAssertTrue(model.perform(.rename))
+        XCTAssertEqual(model.draft?.renaming, "docs/a.md", "Renaming takes the selected row only")
+        model.draft = nil
+
+        XCTAssertTrue(model.perform(.delete))
+        await model.delete(model.pendingDelete!).value
+        model.pendingDelete = nil
+        XCTAssertFalse(exists("b.txt", in: "nested"))
+        XCTAssertFalse(exists("docs/a.md", in: "nested"))
+    }
+
+    func testCopyingAndDuplicatingSeveralRows() async throws {
+        try await loadNested()
+        mark("b.txt", "docs")
+        XCTAssertTrue(model.perform(.copy))
+        XCTAssertEqual(pasteboardFiles, [repo.absolutePath("b.txt"), repo.absolutePath("docs")])
+        model.tree.selected = files + "|src"
+        XCTAssertTrue(model.perform(.paste))
+        await settle()
+        XCTAssertTrue(exists("src/b.txt", in: "nested"))
+        XCTAssertTrue(exists("src/docs/a.md", in: "nested"))
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["src/b.txt", "src/docs"], "What was pasted is selected")
+
+        mark("b.txt", "src/main.swift")
+        XCTAssertTrue(model.perform(.duplicate))
+        await settle()
+        XCTAssertTrue(exists("b copy.txt", in: "nested"))
+        XCTAssertTrue(exists("src/main copy.swift", in: "nested"))
+    }
+
+    func testDraggingASelectedRowMovesTheSelection() async throws {
+        try await loadNested()
+        mark("b.txt", "src/util")
+        let provider = model.startDrag("b.txt", in: repo)
+        let dragged = try XCTUnwrap(model.draggedItems([provider], location: repo))
+        XCTAssertEqual(dragged, ["b.txt", "src/util"])
+        XCTAssertNil(model.dropAction(of: dragged, into: "src/util/deep", copy: false), "Not into one of them")
+        await model.dropItems(dragged, into: "docs", copy: false, in: repo)?.value
+        XCTAssertNil(model.operationError)
+        XCTAssertTrue(exists("docs/b.txt", in: "nested"))
+        XCTAssertTrue(exists("docs/util/x.swift", in: "nested"))
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["docs/b.txt", "docs/util"])
+
+        let unselected = model.startDrag("src/main.swift", in: repo)
+        XCTAssertEqual(model.draggedItems([unselected], location: repo), ["src/main.swift"],
+                       "A row outside the selection is dragged alone")
     }
 
     // MARK: Clipboard
@@ -687,7 +787,7 @@ final class WorkspaceExplorerModelTests: XCTestCase {
     func testPastingAnEmptyFolderKeepsItInTheTree() async throws {
         try FileManager.default.createDirectory(atPath: sandbox.path("repo/empty"), withIntermediateDirectories: true)
         await load()
-        model.copyItem("empty", in: repo, cut: false)
+        model.copyItems(["empty"], in: repo, cut: false)
         await model.paste(into: "src", in: repo)?.value
         XCTAssertEqual(model.tree.createdDirectories[repo.identity], ["src/empty"])
         XCTAssertEqual(model.tree.selected, files + "|src/empty")

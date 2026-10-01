@@ -119,6 +119,20 @@ final class WorkspaceExplorerTests: XCTestCase {
         XCTAssertEqual(mixed["b"], .untracked, "New files outrank renames")
     }
 
+    func testMarkedRowsFollowARenameAndADelete() {
+        let files = "space|files"
+        var tree = WorkspaceExplorerTree()
+        tree.selected = files + "|a/1.txt"
+        tree.toggleMark(files + "|a/2.txt")
+        tree.toggleMark(files + "|b.txt")
+        tree.move(from: "a", to: "c", in: files, location: "space")
+        XCTAssertEqual(tree.selectedPaths(in: files), ["b.txt", "c/1.txt", "c/2.txt"])
+        XCTAssertEqual(tree.selected, files + "|b.txt")
+        tree.forget("c", location: "space")
+        XCTAssertEqual(tree.selectedPaths(in: files), ["b.txt"])
+        XCTAssertEqual(WorkspaceExplorer.outermost(["a/b", "a", "ab", "a/c/d"]), ["a", "ab"])
+    }
+
     func testStickyFoldersHoldTheRowBelowThem() {
         let rows = WorkspaceTree(paths: ["a/b/c/1.txt", "a/b/c/2.txt", "a/b/3.txt", "a/4.txt", "z.txt"])
             .visibleRows(expanded: ["s|a", "s|a/b", "s|a/b/c"], identity: "s")

@@ -6,7 +6,21 @@ struct WorkspaceExplorerTree {
     var expanded: Set<String> = []
     /// Tree identities whose root is collapsed.
     var collapsedRoots: Set<String> = []
-    var selected: String?
+    /// The item keys act on: the one clicked or reached with the arrows last. Setting it
+    /// selects only it, dropping the marked items.
+    var selected: String? {
+        didSet {
+            guard !keepsMarks else { return }
+            marked = []
+            anchor = selected
+        }
+    }
+    /// Items selected together with Command- and Shift-clicks or Shift-arrows, the selected
+    /// one among them; empty when only `selected` is.
+    private(set) var marked: Set<String> = []
+    /// Where a Shift-click or Shift-arrow range starts.
+    private(set) var anchor: String?
+    private var keepsMarks = false
     /// Folders created or pasted empty, which Git does not list, by location identity.
     var createdDirectories: [String: Set<String>] = [:]
 
@@ -34,6 +48,59 @@ struct WorkspaceExplorerTree {
         selected = identity + "|" + path
     }
 
+    /// Adds an item to the selection, or takes it out, as a Command-click does.
+    mutating func toggleMark(_ key: String) {
+        var marks = marked.isEmpty ? Set(selected.map { [$0] } ?? []) : marked
+        if marks.contains(key) { marks.remove(key) } else { marks.insert(key) }
+        setSelected(key, marks: marks)
+        anchor = key
+    }
+
+    /// Selects the rows from the anchor to `key`, as a Shift-click does; `rows` are the keys
+    /// of the rows shown, in order. Without an anchor in view, only `key` is selected.
+    mutating func markRange(to key: String, rows: [String]) {
+        guard let anchor, let from = rows.firstIndex(of: anchor), let to = rows.firstIndex(of: key) else {
+            selected = key
+            return
+        }
+        setSelected(key, marks: Set(rows[min(from, to)...max(from, to)]))
+    }
+
+    /// Selects every item of `paths` in the tree `identity`, opening the folders above them;
+    /// the last one is the selected one.
+    mutating func reveal(_ paths: [String], in identity: String) {
+        guard let last = paths.last else { return }
+        for path in paths { expand((path as NSString).deletingLastPathComponent, in: identity) }
+        setSelected(identity + "|" + last, marks: Set(paths.map { identity + "|" + $0 }))
+        anchor = selected
+    }
+
+    /// Keeps only the selected item.
+    mutating func clearMarks() {
+        marked = []
+        anchor = selected
+    }
+
+    func isMarked(_ key: String) -> Bool {
+        marked.contains(key)
+    }
+
+    private mutating func setSelected(_ key: String?, marks: Set<String>) {
+        keepsMarks = true
+        selected = key
+        keepsMarks = false
+        marked = marks.count > 1 ? marks : []
+    }
+
+    /// The paths the selection holds in the tree `identity`, in path order: the marked items,
+    /// or the selected one. Items inside another of them are left out, as acting on the folder
+    /// acts on them too.
+    func selectedPaths(in identity: String) -> [String] {
+        let prefix = identity + "|"
+        let keys = marked.isEmpty ? Array(selected.map { [$0] } ?? []) : Array(marked)
+        return WorkspaceExplorer.outermost(keys.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) })
+    }
+
     /// Paths of the expanded folders of the tree `identity`.
     func expandedFolders(in identity: String) -> [String] {
         let prefix = identity + "|"
@@ -57,14 +124,24 @@ struct WorkspaceExplorerTree {
         }
         let prefix = identity + "|"
         expanded = Set(expanded.map { moved($0, prefix: prefix) ?? $0 })
-        if let selected { self.selected = moved(selected, prefix: prefix) ?? selected }
+        let marks = Set(marked.map { moved($0, prefix: prefix) ?? $0 })
+        let anchor = anchor.map { moved($0, prefix: prefix) ?? $0 }
+        setSelected(selected.map { moved($0, prefix: prefix) ?? $0 }, marks: marks)
+        self.anchor = anchor
         if let created = createdDirectories[location] {
             createdDirectories[location] = Set(created.map { moved($0, prefix: "") ?? $0 })
         }
     }
 
-    /// Drops a deleted item and everything under it from the created folders.
+    /// Drops a deleted item and everything under it from the created folders and the marked items.
     mutating func forget(_ path: String, location: String) {
+        let gone = { (key: String) in
+            ["files", "changes"].contains { tree in
+                let item = location + "|" + tree + "|" + path
+                return key == item || key.hasPrefix(item + "/")
+            }
+        }
+        if marked.contains(where: gone) { setSelected(selected, marks: marked.filter { !gone($0) }) }
         createdDirectories[location] = createdDirectories[location]?.filter { $0 != path && !$0.hasPrefix(path + "/") }
     }
 
@@ -101,6 +178,12 @@ enum WorkspaceExplorer {
             }
         }
         return states
+    }
+
+    /// The paths not inside another of them, sorted.
+    static func outermost(_ paths: [String]) -> [String] {
+        let sorted = Set(paths).sorted()
+        return sorted.filter { path in !sorted.contains { path.hasPrefix($0 + "/") } }
     }
 
     /// Strongest change kind under each directory, keyed by directory path.
