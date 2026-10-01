@@ -207,21 +207,17 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         }
         switch (flags, key, code) {
         case (.command, "d", _):
-            run { self.selectNext($0, text: $1, replaceNewest: false) }
+            perform(.selectNextOccurrence)
         case (.command, "k", _):
             awaitsChord = true
         case ([.command, .shift], "l", _), (.command, _, kVK_F2):
-            run { selection, text in
-                let result = MultiCursor.selectAll(selection, in: text, wordwise: self.isWordwise(selection, text))
-                if selection.newest.length == 0, let result { self.wordwiseQuery = text.substring(with: result.newest) }
-                return result
-            }
+            perform(.selectAllOccurrences)
         case ([.command, .option], _, kVK_UpArrow), ([.command, .control], "p", _):
-            run { self.addCursor($0, text: $1, above: true) }
+            perform(.addCursorAbove)
         case ([.command, .option], _, kVK_DownArrow), ([.command, .control], "n", _):
-            run { self.addCursor($0, text: $1, above: false) }
+            perform(.addCursorBelow)
         case (.command, "u", _):
-            return undoSelection()
+            return perform(.undoSelection)
         case ([], _, kVK_Escape):
             guard ranges.count > 1 else { return false }
             run { selection, _ in MultiCursor.collapse(selection) }
@@ -232,6 +228,33 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     }
 
     // MARK: Commands
+
+    /// Runs a cursor command, from its key or the command palette, giving the editor the keyboard.
+    /// Returns false when there is nothing to do, such as no selection to undo.
+    @discardableResult
+    func perform(_ command: EditorCommand) -> Bool {
+        guard let textView = controller?.textView, textView.isEditable else { return false }
+        if textView.window?.firstResponder !== textView { textView.window?.makeFirstResponder(textView) }
+        switch command {
+        case .selectNextOccurrence:
+            run { self.selectNext($0, text: $1, replaceNewest: false) }
+        case .selectAllOccurrences:
+            run { selection, text in
+                let result = MultiCursor.selectAll(selection, in: text, wordwise: self.isWordwise(selection, text))
+                if selection.newest.length == 0, let result { self.wordwiseQuery = text.substring(with: result.newest) }
+                return result
+            }
+        case .addCursorAbove:
+            run { self.addCursor($0, text: $1, above: true) }
+        case .addCursorBelow:
+            run { self.addCursor($0, text: $1, above: false) }
+        case .undoSelection:
+            return undoSelection()
+        case .save, .find, .findAndReplace, .findNext, .findPrevious:
+            return false
+        }
+        return true
+    }
 
     private func selectNext(_ selection: MultiCursorSelection, text: NSString,
                             replaceNewest: Bool) -> MultiCursorSelection? {

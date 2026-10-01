@@ -70,6 +70,8 @@ final class ContentWindowModel: ObservableObject {
 
     /// Tests keep the palette's recent commands out of the app's defaults.
     let quickOpen: QuickOpenModel
+    /// The shown document's editor, for editor commands from the palette.
+    let editor = EditorCommandTarget()
 
     /// Tests keep the pickers' recent commands and options out of the app's defaults.
     init(defaults: UserDefaults = .standard) {
@@ -103,9 +105,15 @@ struct ContentCommands {
 
     /// Which commands apply now, for the menu bar and the command palette.
     var availability: XherdrCommandAvailability {
-        XherdrCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
-                                  tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil,
-                                  hasFiles: explorerLocation != nil)
+        let document = documents.activeID.flatMap(documents.document)
+        let hasFileDocument = document.map { $0.kind == .file && !$0.isLoading && $0.version != nil } ?? false
+        let showsSource = document.map {
+            !MarkdownDisplayMode.supports($0.path) || $0.markdownMode != .preview
+        } ?? false
+        return XherdrCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
+                                         tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil,
+                                         hasFiles: explorerLocation != nil, hasFileDocument: hasFileDocument,
+                                         showsSource: showsSource)
     }
 
     func perform(_ action: String) {
@@ -186,6 +194,9 @@ struct ContentCommands {
                 window.quickOpen.present(at: explorerLocation, recents: documents.recentPaths(at: explorerLocation),
                                          current: current?.location == explorerLocation ? current?.path : nil)
             }
+        case .editor(let command):
+            guard availability.hasFileDocument else { return }
+            window.editor.perform(command)
         case .commandPalette:
             if window.commandPalette.isPresented {
                 window.commandPalette.move(1)

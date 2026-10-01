@@ -29,8 +29,11 @@ final class CommandPaletteTests: XCTestCase {
         for action in actions {
             XCTAssertNotNil(HerdrCommand(action: action), "\(action) must dispatch to a command")
         }
-        let shortcuts = XherdrCommandItem.all.compactMap(\.shortcutLabel)
-        XCTAssertEqual(Set(shortcuts).count, shortcuts.count, "No two commands share a menu shortcut")
+        let menu = XherdrCommandItem.all.filter { $0.category != "Editor" }
+        let shortcuts = menu.compactMap(\.shortcutLabel)
+        XCTAssertEqual(Set(shortcuts).count, shortcuts.count, "No two menu commands share a shortcut")
+        let editor = XherdrCommandItem.all.filter { $0.category == "Editor" }.compactMap(\.shortcutLabel)
+        XCTAssertEqual(Set(editor).count, editor.count, "No two editor commands share a shortcut")
     }
 
     func testShortcutLabelsUseMacNotation() {
@@ -52,6 +55,21 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertTrue(XherdrCommandItem.named("rename_tab")!.isAvailable(oneTab))
         XCTAssertFalse(XherdrCommandItem.named("next_tab")!.isAvailable(oneTab), "Cycling needs two tabs")
         XCTAssertFalse(XherdrCommandItem.named("close_tab")!.isAvailable(oneTab), "The last tab is not closed")
+    }
+
+    func testEditorCommandsNeedAnOpenFileAndCursorsItsSource() {
+        var preview = everything
+        preview.hasFileDocument = true
+        let save = XherdrCommandItem.named("editor_save")!
+        let cursor = XherdrCommandItem.named("editor_add_cursor_below")!
+        XCTAssertFalse(save.isAvailable(everything), "No file is open")
+        XCTAssertTrue(save.isAvailable(preview))
+        XCTAssertFalse(cursor.isAvailable(preview), "A Markdown preview takes no cursors")
+        preview.showsSource = true
+        XCTAssertTrue(cursor.isAvailable(preview))
+        XCTAssertEqual(HerdrCommand(action: "editor_find"), .editor(.find))
+        XCTAssertEqual(cursor.label, "Editor: Add Cursor Below")
+        XCTAssertEqual(cursor.shortcutLabel, "⌥⌘↓")
     }
 
     // MARK: Model
@@ -108,6 +126,48 @@ final class CommandPaletteTests: XCTestCase {
     }
 
     // MARK: Running
+
+    func testEditorCommandsReachTheShownDocument() async throws {
+        let sandbox = try WorkspaceGitSandbox()
+        defer { sandbox.tearDown() }
+        let repo = try sandbox.repository("repo", files: ["a.txt": "one\n", "b.md": "# b\n"])
+        let window = ContentWindowModel(defaults: defaults)
+        let documents = WorkspaceDocumentStore()
+        let commands = ContentCommands(window: window, herdr: HerdrStore(), documents: documents,
+                                       search: WorkspaceSearchModel(), explorerLocation: repo)
+        var received: [EditorCommand] = []
+        let view = UUID()
+        window.editor.register(view) { received.append($0) }
+
+        commands.perform(.commandPalette)
+        XCTAssertFalse(window.commandPalette.results.contains { $0.item.category == "Editor" }, "No file is open")
+        window.commandPalette.dismiss()
+
+        documents.open(.file, path: "a.txt", at: repo)
+        for _ in 0..<300 where documents.documents.first?.isLoading != false { try await Task.sleep(nanoseconds: 10_000_000) }
+        commands.perform(.commandPalette)
+        window.commandPalette.query = "editor find"
+        XCTAssertEqual(window.commandPalette.selectedMatch?.item.action, "editor_find")
+        commands.runCommandPaletteSelection()
+        XCTAssertEqual(received, [.find])
+
+        documents.open(.file, path: "b.md", at: repo)
+        for _ in 0..<300 where documents.document(documents.activeID!)?.isLoading != false {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        commands.perform(.commandPalette)
+        let actions = Set(window.commandPalette.results.map(\.item.action))
+        XCTAssertTrue(actions.contains("editor_find"), "A Markdown preview can be searched")
+        XCTAssertFalse(actions.contains("editor_select_next"), "but takes no cursors")
+        window.commandPalette.dismiss()
+
+        window.editor.unregister(UUID())
+        commands.perform(.editor(.save))
+        XCTAssertEqual(received, [.find, .save], "Another view's unregistering leaves this one")
+        window.editor.unregister(view)
+        commands.perform(.editor(.save))
+        XCTAssertEqual(received, [.find, .save])
+    }
 
     func testCommandRunsTheSelectionAndClosesGoToFile() throws {
         let sandbox = try WorkspaceGitSandbox()

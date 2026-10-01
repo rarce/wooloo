@@ -130,6 +130,21 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertFalse(coordinator.handle(key("\u{1B}", [], code: kVK_Escape)), "one selection: Esc passes through")
     }
 
+    func testCommandPaletteRunsCursorCommandsAndFocusesTheEditor() throws {
+        let (coordinator, textView) = try makeEditor(text: "a b a b a\n")
+        textView.selectionManager.setSelectedRange(range(4))
+        textView.window?.makeFirstResponder(nil)
+        XCTAssertTrue(coordinator.perform(.selectAllOccurrences))
+        XCTAssertTrue(textView.window?.firstResponder === textView, "The editor takes the keyboard")
+        XCTAssertEqual(selectedRanges(textView), [range(0, 1), range(4, 1), range(8, 1)])
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(4)])
+        XCTAssertFalse(coordinator.perform(.undoSelection), "Nothing left to undo")
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertEqual(selectedRanges(textView).count, 2)
+        XCTAssertFalse(coordinator.perform(.find), "Finding belongs to the document view")
+    }
+
     func testAddCursorBelowThenTypeOnEachLine() throws {
         let (coordinator, textView) = try makeEditor(text: "one\ntwo\nthree\n")
         textView.selectionManager.setSelectedRange(range(0))

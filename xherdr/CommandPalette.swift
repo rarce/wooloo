@@ -9,12 +9,94 @@ struct XherdrCommandAvailability: Equatable {
     var hasPane = false
     /// The explorer shows a location, which Go to File and project search use.
     var hasFiles = false
+    /// The main panel shows a loaded file in the editor or, for Markdown, its preview.
+    var hasFileDocument = false
+    /// That file's source is shown, so its editor can take cursors.
+    var showsSource = false
+}
+
+/// Actions of the open file's editor that the command palette offers. The document view runs
+/// them; they stay out of the menu bar, whose shortcuts they share (⌘D also splits a pane).
+enum EditorCommand: String, CaseIterable {
+    case save = "editor_save"
+    case find = "editor_find"
+    case findAndReplace = "editor_find_replace"
+    case findNext = "editor_find_next"
+    case findPrevious = "editor_find_previous"
+    case selectNextOccurrence = "editor_select_next"
+    case selectAllOccurrences = "editor_select_all_occurrences"
+    case addCursorAbove = "editor_add_cursor_above"
+    case addCursorBelow = "editor_add_cursor_below"
+    case undoSelection = "editor_undo_selection"
+
+    var title: String {
+        switch self {
+        case .save: return "Save"
+        case .find: return "Find…"
+        case .findAndReplace: return "Find and Replace…"
+        case .findNext: return "Find Next"
+        case .findPrevious: return "Find Previous"
+        case .selectNextOccurrence: return "Add Next Occurrence to Selection"
+        case .selectAllOccurrences: return "Select All Occurrences"
+        case .addCursorAbove: return "Add Cursor Above"
+        case .addCursorBelow: return "Add Cursor Below"
+        case .undoSelection: return "Undo Selection"
+        }
+    }
+
+    var shortcut: KeyboardShortcut {
+        switch self {
+        case .save: return KeyboardShortcut("s", modifiers: .command)
+        case .find: return KeyboardShortcut("f", modifiers: .command)
+        case .findAndReplace: return KeyboardShortcut("f", modifiers: [.command, .option])
+        case .findNext: return KeyboardShortcut("g", modifiers: .command)
+        case .findPrevious: return KeyboardShortcut("g", modifiers: [.command, .shift])
+        case .selectNextOccurrence: return KeyboardShortcut("d", modifiers: .command)
+        case .selectAllOccurrences: return KeyboardShortcut("l", modifiers: [.command, .shift])
+        case .addCursorAbove: return KeyboardShortcut(.upArrow, modifiers: [.command, .option])
+        case .addCursorBelow: return KeyboardShortcut(.downArrow, modifiers: [.command, .option])
+        case .undoSelection: return KeyboardShortcut("u", modifiers: .command)
+        }
+    }
+
+    /// Cursor commands need the source editor; saving and finding also work on a preview.
+    var needsSource: Bool {
+        switch self {
+        case .save, .find, .findAndReplace, .findNext, .findPrevious: return false
+        default: return true
+        }
+    }
+}
+
+/// Where the command palette sends editor commands: the document view shown registers itself.
+@MainActor
+final class EditorCommandTarget {
+    private var owner: UUID?
+    private var handler: ((EditorCommand) -> Void)?
+
+    /// `owner` identifies the view, so a view going away does not unregister its replacement.
+    func register(_ owner: UUID, _ handler: @escaping (EditorCommand) -> Void) {
+        self.owner = owner
+        self.handler = handler
+    }
+
+    func unregister(_ owner: UUID) {
+        guard self.owner == owner else { return }
+        self.owner = nil
+        handler = nil
+    }
+
+    func perform(_ command: EditorCommand) { handler?(command) }
 }
 
 /// An app command the menu bar and the command palette both offer, by its shortcut action.
 struct XherdrCommandItem: Identifiable, Equatable {
     enum Requirement: Equatable {
         case window, connected, space, pane, files
+        /// A file open in the main panel.
+        case fileDocument
+        /// A file's source shown in the editor.
+        case source
         /// A Space with at least this many tabs.
         case tabs(Int)
     }
@@ -45,6 +127,8 @@ struct XherdrCommandItem: Identifiable, Equatable {
         case .space: return availability.isConnected && availability.hasSpace
         case .pane: return availability.isConnected && availability.hasPane
         case .files: return availability.hasFiles
+        case .fileDocument: return availability.hasFileDocument
+        case .source: return availability.hasFileDocument && availability.showsSource
         case .tabs(let count): return availability.isConnected && availability.hasSpace && availability.tabCount >= count
         }
     }
@@ -68,8 +152,12 @@ struct XherdrCommandItem: Identifiable, Equatable {
 
     static func named(_ action: String) -> Self? { all.first { $0.action == action } }
 
-    /// Every command, in menu order.
-    static let all: [Self] = [
+    /// Every command: the menu bar's in menu order, then the editor's.
+    static let all: [Self] = appCommands + EditorCommand.allCases.map {
+        Self($0.rawValue, "Editor", $0.title, $0.shortcut, requires: $0.needsSource ? .source : .fileDocument)
+    }
+
+    private static let appCommands: [Self] = [
         .init("settings", "Herdr", "Settings…", KeyboardShortcut(",", modifiers: .command)),
         .init("reload_config", "Herdr", "Reload Config", requires: .connected),
         .init("switch_session", "Herdr", "Switch Session…"),

@@ -684,7 +684,7 @@ struct ContentView: View {
                         saveDocument(activeDocumentID)
                     }, onOpenFile: { [location = documentStore.documents[index].location] path in
                         openDocument(.file, path: path, at: location)
-                    })
+                    }, commandTarget: window.editor)
                     .id(activeDocumentID)
                 } else if !herdr.isConnected {
                     emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")

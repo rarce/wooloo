@@ -76,6 +76,9 @@ struct WorkspaceDocumentView: View {
     @Binding var document: WorkspaceDocument
     let onSave: () -> Void
     var onOpenFile: (String) -> Void = { _ in }
+    /// Receives the command palette's editor commands while this document is shown.
+    var commandTarget: EditorCommandTarget?
+    @State private var commandToken = UUID()
     @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
     @State private var revealCoordinator = EditorRevealCoordinator()
     @State private var lineChangeCoordinator = EditorLineChangeCoordinator()
@@ -238,6 +241,23 @@ struct WorkspaceDocumentView: View {
         }
         .onChange(of: find.current) { _, _ in syncEditorMatches() }
         .onChange(of: find.revealRequest) { _, _ in revealFindMatch() }
+        .onAppear { commandTarget?.register(commandToken) { run($0) } }
+        .onDisappear { commandTarget?.unregister(commandToken) }
+    }
+
+    /// An editor command from the command palette.
+    private func run(_ command: EditorCommand) {
+        guard document.kind == .file else { return }
+        switch command {
+        case .save:
+            if document.isDirty && !document.isSaving { onSave() }
+        case .find: openFind(replace: false)
+        case .findAndReplace: openFind(replace: true)
+        case .findNext: find.isVisible ? find.move(1) : openFind(replace: false)
+        case .findPrevious: find.isVisible ? find.move(-1) : openFind(replace: false)
+        case .selectNextOccurrence, .selectAllOccurrences, .addCursorAbove, .addCursorBelow, .undoSelection:
+            multiCursorCoordinator.perform(command)
+        }
     }
 
     /// ⌘F, ⌥⌘F, ⌘G and ⇧⌘G, handled here so they reach the document rather than the terminal.

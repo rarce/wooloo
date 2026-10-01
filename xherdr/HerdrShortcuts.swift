@@ -45,6 +45,8 @@ enum HerdrCommand: Equatable {
     case quickOpen
     /// The command palette; while it is open, selects the next command.
     case commandPalette
+    /// An action of the open file's editor, from the command palette.
+    case editor(EditorCommand)
     case copyPaneDirectory, revealPaneDirectory
 
     init?(action: String) {
@@ -80,6 +82,10 @@ enum HerdrCommand: Equatable {
         case "copy_pane_cwd": self = .copyPaneDirectory
         case "reveal_pane_cwd": self = .revealPaneDirectory
         default:
+            if let command = EditorCommand(rawValue: action) {
+                self = .editor(command)
+                return
+            }
             guard action.hasPrefix("switch_tab_"), let number = Int(action.dropFirst("switch_tab_".count)),
                   number >= 1 else { return nil }
             self = .switchTab(number)
