@@ -355,18 +355,35 @@ enum WorkspaceFiles {
             files = (tracked + untracked + ignoredFiles).prefix(maximumFiles).sorted()
             let status = try git(location, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
             changes = parseStatus(status)
-        } else if location.machine == nil {
-            files = try localFiles(root: location.root)
-            changes = []
         } else {
-            let script = "cd \(quote(location.root)) && find . -type f -not -path './.git/*' -print0"
-            files = nulStrings(try ssh(location.machine!, script, limit: maximumListingBytes))
-                .map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }
-                .sorted().prefix(maximumFiles).map { $0 }
+            files = try filesWithoutGit(at: location)
             changes = []
         }
         return WorkspaceFileListing(files: files, changes: changes, hasGit: hasGit, totalFiles: totalFiles ?? files.count,
                                     ignored: ignored)
+    }
+
+    /// The files Go to File searches: tracked and untracked ones, without what Git ignores, cut
+    /// to `maximumFiles`. Lighter than `listing`, which also reads ignored entries and the status.
+    static func quickOpenFiles(at location: WorkspaceFileLocation) throws -> (files: [String], truncated: Bool) {
+        guard (try? git(location, ["rev-parse", "--is-inside-work-tree"], limit: 100)) != nil else {
+            let files = try filesWithoutGit(at: location)
+            return (files, files.count >= maximumFiles)
+        }
+        let data = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
+                           limit: maximumListingBytes)
+        // A conflicted file is listed once per stage.
+        let files = Array(Set(nulStrings(data))).sorted()
+        return (Array(files.prefix(maximumFiles)), files.count > maximumFiles)
+    }
+
+    /// Every file under a folder that is not in a Git repository, skipping `.git` folders.
+    private static func filesWithoutGit(at location: WorkspaceFileLocation) throws -> [String] {
+        guard let machine = location.machine else { return try localFiles(root: location.root) }
+        let script = "cd \(quote(location.root)) && find . -type f -not -path './.git/*' -print0"
+        return nulStrings(try ssh(machine, script, limit: maximumListingBytes))
+            .map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }
+            .sorted().prefix(maximumFiles).map { $0 }
     }
 
     /// What is directly inside `folder` ("" is the root), for an ignored folder being expanded.

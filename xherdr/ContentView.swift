@@ -62,11 +62,17 @@ struct ContentView: View {
             hasSpace: selectedWorkspace != nil,
             tabCount: selectedTabs.count,
             hasPane: herdr.selectedPaneID != nil,
+            hasFiles: explorerLocation != nil,
             showsSidebar: window.showsSidebar,
             showsFilesSidebar: window.showsFilesSidebar,
             perform: handleShortcut
         ))
         .onDisappear { herdr.stop() }
+        .overlay {
+            QuickOpenOverlay(model: window.quickOpen) { commands.openQuickOpenSelection() }
+                .environment(\.xherdrTheme, theme)
+                .environment(\.xherdrTypography, textScale)
+        }
         .overlay { HerdrToastStack(notifier: notifier) }
         .onAppear {
             notifier.onOpenPane = { focusPane($0) }
@@ -203,6 +209,8 @@ struct ContentView: View {
         Button("Refresh Files and Repository", systemImage: "arrow.clockwise") { commands.perform(.refreshFiles) }
         Button("Find in Project…", systemImage: "magnifyingglass") { openSearch(replace: false) }
         Button("Replace in Project…", systemImage: "text.magnifyingglass") { openSearch(replace: true) }
+        Button("Go to File…", systemImage: "doc.text.magnifyingglass") { commands.perform(.quickOpen) }
+            .disabled(explorerLocation == nil)
         Divider()
         Button("Keyboard Shortcuts…", systemImage: "keyboard") { commands.perform(.help) }
         Button("Herdr Settings…", systemImage: "gearshape") { commands.perform(.settings) }

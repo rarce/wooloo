@@ -28,6 +28,8 @@ struct XherdrCommandContext {
     let hasSpace: Bool
     let tabCount: Int
     let hasPane: Bool
+    /// The explorer shows a location, which Go to File searches.
+    let hasFiles: Bool
     let showsSidebar: Bool
     let showsFilesSidebar: Bool
     let perform: (String) -> Void
@@ -73,6 +75,12 @@ private struct XherdrCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             item("New Tab", "new_tab", enabled: hasSpace)
                 .keyboardShortcut("t", modifiers: .command)
+        }
+
+        // Command-P goes to a file, as in Zed and VS Code, rather than printing.
+        CommandGroup(replacing: .printItem) {
+            item("Go to File…", "quick_open", enabled: context?.hasFiles == true)
+                .keyboardShortcut("p", modifiers: .command)
         }
 
         // Command-W closes the tab in the main panel rather than the window.

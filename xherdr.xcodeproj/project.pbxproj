@@ -41,6 +41,9 @@
 		A10000000000000000000F01 /* AgentQuota.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F02 /* AgentQuota.swift */; };
 		A10000000000000000000F03 /* AgentQuotaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F04 /* AgentQuotaView.swift */; };
 		C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F06 /* AgentQuotaTests.swift */; };
+		A10000000000000000000F05 /* QuickOpen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F06 /* QuickOpen.swift */; };
+		A10000000000000000000F07 /* QuickOpenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F08 /* QuickOpenView.swift */; };
+		C30000000000000000000F09 /* QuickOpenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F0A /* QuickOpenTests.swift */; };
 		C30000000000000000000060 /* HostStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000061 /* HostStatsTests.swift */; };
 		C30000000000000000000064 /* ContentCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000065 /* ContentCommandsTests.swift */; };
 		C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */; };
@@ -136,6 +139,9 @@
 		A10000000000000000000F02 /* AgentQuota.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuota.swift; sourceTree = "<group>"; };
 		A10000000000000000000F04 /* AgentQuotaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaView.swift; sourceTree = "<group>"; };
 		C30000000000000000000F06 /* AgentQuotaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000F06 /* QuickOpen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpen.swift; sourceTree = "<group>"; };
+		A10000000000000000000F08 /* QuickOpenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenView.swift; sourceTree = "<group>"; };
+		C30000000000000000000F0A /* QuickOpenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000061 /* HostStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000065 /* ContentCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCommandsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerModelTests.swift; sourceTree = "<group>"; };
@@ -232,6 +238,8 @@
 				A1000000000000000000005F /* HostStatsView.swift */,
 				A10000000000000000000F02 /* AgentQuota.swift */,
 				A10000000000000000000F04 /* AgentQuotaView.swift */,
+				A10000000000000000000F06 /* QuickOpen.swift */,
+				A10000000000000000000F08 /* QuickOpenView.swift */,
 				A10000000000000000000041 /* Assets.xcassets */,
 			);
 			path = xherdr;
@@ -271,6 +279,7 @@
 				C30000000000000000000035 /* WorkspaceFilesRemoteTests.swift */,
 				C30000000000000000000061 /* HostStatsTests.swift */,
 				C30000000000000000000F06 /* AgentQuotaTests.swift */,
+				C30000000000000000000F0A /* QuickOpenTests.swift */,
 				C30000000000000000000065 /* ContentCommandsTests.swift */,
 				C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */,
 				C30000000000000000000073 /* HerdrSettingsModelTests.swift */,
@@ -440,6 +449,8 @@
 				A1000000000000000000005E /* HostStatsView.swift in Sources */,
 				A10000000000000000000F01 /* AgentQuota.swift in Sources */,
 				A10000000000000000000F03 /* AgentQuotaView.swift in Sources */,
+				A10000000000000000000F05 /* QuickOpen.swift in Sources */,
+				A10000000000000000000F07 /* QuickOpenView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -469,6 +480,7 @@
 				C30000000000000000000034 /* WorkspaceFilesRemoteTests.swift in Sources */,
 				C30000000000000000000060 /* HostStatsTests.swift in Sources */,
 				C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */,
+				C30000000000000000000F09 /* QuickOpenTests.swift in Sources */,
 				C30000000000000000000064 /* ContentCommandsTests.swift in Sources */,
 				C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */,
 				C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */,

@@ -64,6 +64,8 @@ final class ContentWindowModel: ObservableObject {
     @Published var renameTarget: HerdrRenameTarget?
     @Published var renameText = ""
     @Published var closeTarget: HerdrCloseTarget?
+    /// Go to File; `QuickOpenOverlay` observes it.
+    let quickOpen = QuickOpenModel()
 }
 
 /// Effects of window commands beyond Herdr and the window, replaceable in tests.
@@ -156,10 +158,30 @@ struct ContentCommands {
             guard let paneID = herdr.selectedPaneID else { return }
             window.closeTarget = .pane(paneID)
         case .projectSearch(let replace): openSearch(replace: replace)
+        case .quickOpen:
+            if window.quickOpen.isPresented {
+                window.quickOpen.move(1)
+            } else if let explorerLocation {
+                let current = documents.activeID.flatMap(documents.document)
+                window.quickOpen.present(at: explorerLocation, recents: documents.recentPaths(at: explorerLocation),
+                                         current: current?.location == explorerLocation ? current?.path : nil)
+            }
         case .copyPaneDirectory, .revealPaneDirectory:
             guard let cwd = herdr.selectedPanes.first(where: { $0.paneID == herdr.selectedPaneID })?.cwd else { return }
             if command == .copyPaneDirectory { effects.copy(cwd) } else { effects.reveal(cwd) }
         }
+    }
+
+    /// Opens Go to File's selected file, at the line and column typed after its name.
+    func openQuickOpenSelection() {
+        let quickOpen = window.quickOpen
+        guard let location = quickOpen.location, let match = quickOpen.selectedMatch else { return }
+        let query = QuickOpenQuery(quickOpen.query)
+        quickOpen.dismiss(restoringFocus: false)
+        let reveal = query.line.map { line in
+            WorkspaceDocumentReveal(line: line, range: query.column.map { NSRange(location: max($0 - 1, 0), length: 0) })
+        }
+        documents.open(.file, path: match.path, at: location, reveal: reveal, focus: true)
     }
 
     /// Shows the Search tab on the explorer's location and focuses its field. The first time

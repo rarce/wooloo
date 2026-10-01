@@ -41,6 +41,8 @@ enum HerdrCommand: Equatable {
     case focusPane(String), splitPane(String), zoom, closePane
     case toggleSidebar, toggleFilesSidebar, refreshFiles
     case projectSearch(replace: Bool)
+    /// Go to File; while it is open, selects the next file.
+    case quickOpen
     case copyPaneDirectory, revealPaneDirectory
 
     init?(action: String) {
@@ -71,6 +73,7 @@ enum HerdrCommand: Equatable {
         case "refresh_files": self = .refreshFiles
         case "project_search": self = .projectSearch(replace: false)
         case "project_replace": self = .projectSearch(replace: true)
+        case "quick_open": self = .quickOpen
         case "copy_pane_cwd": self = .copyPaneDirectory
         case "reveal_pane_cwd": self = .revealPaneDirectory
         default:

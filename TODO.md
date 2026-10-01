@@ -43,3 +43,12 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 ## Editor
 
 - [ ] Multiple cursors: ⌥⌘↑/↓ keeps the goal column in UTF-16 offsets, so tabs and wide characters shift it; use the text's display column instead. Also missing from Zed's set: ⌃⌘D (select previous occurrence, taken by macOS's Look Up unless disabled), Option-drag column selection, and ⌘U for selection changes made by clicks or arrows.
+
+## Go to File and command palette
+
+- [ ] Command palette (⇧⌘P): every menu and shortcut action, with its binding, recently used first, filtered to what applies to the focused terminal, editor or explorer.
+- [ ] Go to File: show each file's Git status color, as the explorer does.
+- [ ] Go to File: offer to create the typed path when no file matches, as Zed does.
+- [ ] Go to File: a toggle to include files ignored by Git.
+- [ ] Symbol search in the open file (⇧⌘O) and across the Space (⌘T), or as `@` and `#` prefixes in Go to File.
+- [ ] Go to File without Git walks the whole folder up to `maximumFiles`, which is slow in a large non-repository folder such as `/private/tmp`; consider a time or depth limit, or reading only to the depth already listed.

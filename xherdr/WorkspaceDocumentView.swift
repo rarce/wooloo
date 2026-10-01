@@ -53,6 +53,8 @@ struct WorkspaceDocument: Identifiable {
     /// Opened with a single click in the explorer: the next such file replaces it, until it is
     /// kept open by a double click or an edit.
     var isPreview = false
+    /// Set to give the editor the keyboard once it is shown, as Go to File does.
+    var focusRequest: UUID?
 
     var id: String { "\(space ?? "")|\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)" }
     var isDirty: Bool { kind == .file && text != savedText }
@@ -268,6 +270,8 @@ struct WorkspaceDocumentView: View {
         )
         .onAppear { applyReveal() }
         .onChange(of: document.reveal) { _, _ in applyReveal() }
+        .onAppear { applyFocusRequest() }
+        .onChange(of: document.focusRequest) { _, _ in applyFocusRequest() }
         .onAppear { updateLineChangeColors() }
         .onChange(of: theme.id) { _, _ in updateLineChangeColors() }
         .task(id: "\(document.version ?? "")|\(gitBasesVersion)") { await loadGitBases() }
@@ -387,11 +391,20 @@ struct WorkspaceDocumentView: View {
     private func applyReveal() {
         guard let reveal = document.reveal,
               let line = WorkspaceSearch.range(ofLine: reveal.line, in: document.text as NSString) else { return }
-        let selection = reveal.range.map { NSRange(location: line.location + $0.location, length: $0.length) }
-            ?? NSRange(location: line.location, length: 0)
+        // A column typed in Go to File can lie past the end of the line.
+        let selection = reveal.range.map {
+            let start = min($0.location, line.length)
+            return NSRange(location: line.location + start, length: min($0.length, line.length - start))
+        } ?? NSRange(location: line.location, length: 0)
         cursorPositions = [CursorPosition(range: selection)]
         document.reveal = nil
         DispatchQueue.main.async { revealCoordinator.scrollSelectionToVisible() }
+    }
+
+    private func applyFocusRequest() {
+        guard document.focusRequest != nil else { return }
+        document.focusRequest = nil
+        revealCoordinator.focus()
     }
 }
 
@@ -405,13 +418,26 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     private var currentFindColor = NSColor.systemOrange
     private var findLayers: [CALayer] = []
     private var scrollObserver: NSObjectProtocol?
+    private var focusesWhenReady = false
 
     func prepareCoordinator(controller: TextViewController) {
         self.controller = controller
         drawFindMatches()
+        // The text view joins its window after this returns.
+        if focusesWhenReady { DispatchQueue.main.async { [weak self] in self?.focus() } }
     }
 
     func scrollSelectionToVisible() { controller?.textView.scrollSelectionToVisible() }
+
+    /// Gives the editor the keyboard, now or once its text view is in a window.
+    func focus() {
+        guard let textView = controller?.textView, let window = textView.window else {
+            focusesWhenReady = true
+            return
+        }
+        focusesWhenReady = false
+        window.makeFirstResponder(textView)
+    }
 
     func textViewDidChangeText(controller: TextViewController) {
         // Ranges are stale until the find bar recomputes them from the new text.

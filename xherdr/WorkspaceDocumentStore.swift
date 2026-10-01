@@ -7,7 +7,11 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// Every Space's documents; `visibleDocuments` are the shown Space's.
     @Published var documents: [WorkspaceDocument] = []
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
-    @Published var activeID: String?
+    @Published var activeID: String? {
+        didSet { if let activeID, let document = document(activeID), document.kind == .file { remember(document) } }
+    }
+    /// Files shown most recently first, for Go to File.
+    private var recentFiles: [(space: String?, location: String, path: String)] = []
     /// The Space whose documents are shown and where new ones open.
     @Published private(set) var space: String?
 
@@ -41,15 +45,17 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// previous preview unless that one has unsaved edits.
     func open(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
               reveal: WorkspaceDocumentReveal? = nil, commit: String? = nil, originalPath: String? = nil,
-              scope: WorkspaceDiffScope? = nil, preview: Bool = false) {
+              scope: WorkspaceDiffScope? = nil, preview: Bool = false, focus: Bool = false) {
         var document = WorkspaceDocument(space: space, location: location, path: path, kind: kind)
         document.reveal = reveal
+        if focus { document.focusRequest = UUID() }
         if let scope { document.diffScope = scope }
         document.commit = commit
         document.originalPath = originalPath
         document.isPreview = preview
         if let index = documents.firstIndex(where: { $0.id == document.id }) {
             if let reveal { documents[index].reveal = reveal }
+            if focus { documents[index].focusRequest = UUID() }
             if let scope, documents[index].diffPatches.isEmpty || documents[index].diffPatches[scope] != nil {
                 documents[index].diffScope = scope
             }
@@ -70,6 +76,19 @@ final class WorkspaceDocumentStore: ObservableObject {
         documents.append(document)
         activeID = document.id
         load(document.id)
+    }
+
+    /// The files at a location shown in the current Space, most recently first.
+    func recentPaths(at location: WorkspaceFileLocation) -> [String] {
+        recentFiles.filter { $0.space == space && $0.location == location.identity }.map(\.path)
+    }
+
+    private func remember(_ document: WorkspaceDocument) {
+        recentFiles.removeAll {
+            $0.space == document.space && $0.location == document.location.identity && $0.path == document.path
+        }
+        recentFiles.insert((document.space, document.location.identity, document.path), at: 0)
+        if recentFiles.count > 200 { recentFiles.removeLast() }
     }
 
     /// Turns a preview into a regular tab that later previews do not replace.
