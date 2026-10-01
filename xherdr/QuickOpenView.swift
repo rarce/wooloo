@@ -41,20 +41,28 @@ private struct QuickOpenPanel: View {
             .padding(.horizontal, 11)
             .frame(height: typography.metric(36))
             Divider()
-            if model.results.isEmpty {
-                Text(emptyMessage)
-                    .font(.system(size: typography.body))
-                    .foregroundStyle(model.error == nil ? Color.secondary : theme.error)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+            if model.rowCount == 0 {
+                message(emptyMessage, isError: model.error != nil)
             } else {
                 results
+                if let error = model.error {
+                    Divider()
+                    message(error, isError: true)
+                }
             }
             Divider()
             footer
         }
         .pickerPanel(theme)
+    }
+
+    private func message(_ text: String, isError: Bool) -> some View {
+        Text(text)
+            .font(.system(size: typography.body))
+            .foregroundStyle(isError ? theme.error : Color.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
     }
 
     private var emptyMessage: String {
@@ -78,15 +86,54 @@ private struct QuickOpenPanel: View {
                                 onOpen()
                             }
                     }
+                    if let path = model.createPath {
+                        createRow(path, selected: model.selectedCreatePath != nil)
+                            .id(Self.createRowID)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                model.selection = model.results.count
+                                onOpen()
+                            }
+                    }
                 }
                 .padding(4)
             }
-            .frame(height: min(CGFloat(model.results.count) * rowHeight + 8, 380))
+            .frame(height: min(CGFloat(model.rowCount) * rowHeight + 8, 380))
             // Rows are identified by their path; an index would let reused rows keep old contents.
             .onChange(of: model.selection) { _, _ in
-                if let match = model.selectedMatch { proxy.scrollTo(match.path) }
+                if let match = model.selectedMatch {
+                    proxy.scrollTo(match.path)
+                } else if model.selectedCreatePath != nil {
+                    proxy.scrollTo(Self.createRowID)
+                }
             }
         }
+    }
+
+    /// Not a valid path, so it cannot clash with a file row's.
+    private static let createRowID = "/create"
+
+    private func createRow(_ path: String, selected: Bool) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "doc.badge.plus")
+                .font(.system(size: typography.secondary))
+                .foregroundStyle(theme.accent)
+                .frame(width: 16)
+            Text("Create “\(path)”")
+                .font(.system(size: typography.body))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: rowHeight)
+        .background(selected ? theme.rowSelected : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    /// The explorer's colors: a changed file takes its change's, an ignored one is dimmed.
+    private func nameColor(_ path: String) -> Color {
+        if let kind = model.changes[path] { return theme.vcs(kind) }
+        return model.ignored.contains(path) ? Color.secondary : Color.primary
     }
 
     private func row(_ match: QuickOpenMatch, selected: Bool) -> some View {
@@ -100,6 +147,7 @@ private struct QuickOpenPanel: View {
                 .frame(width: 16)
             Text(highlighted(name, from: nameOffset, match.positions))
                 .font(.system(size: typography.body))
+                .foregroundStyle(nameColor(match.path))
                 .lineLimit(1)
                 .layoutPriority(1)
             Text(highlighted(folder, from: 0, match.positions))
@@ -118,6 +166,7 @@ private struct QuickOpenPanel: View {
         .padding(.horizontal, 8)
         .frame(height: rowHeight)
         .background(selected ? theme.rowSelected : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+        .help(model.ignored.contains(match.path) ? match.path + " (ignored by Git)" : match.path)
     }
 
     private func highlighted(_ text: String, from offset: Int, _ positions: [Int]) -> AttributedString {
@@ -137,6 +186,13 @@ private struct QuickOpenPanel: View {
                     .foregroundStyle(theme.warning)
             }
             Spacer(minLength: 8)
+            Button { model.toggleIgnored() } label: {
+                Label("Ignored", systemImage: model.includesIgnored ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(model.includesIgnored ? theme.accent : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .help("Also search files ignored by Git (⌥⌘I)")
             Text("↑↓ select  ↩ open  esc close")
         }
         .font(.system(size: typography.caption))

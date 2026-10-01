@@ -4,6 +4,8 @@ import Foundation
 /// What was typed in Go to File: space-separated terms that must all match a path, then an
 /// optional `:line` or `:line:column` to place the cursor.
 struct QuickOpenQuery: Equatable {
+    /// What was typed before the position, trimmed: the path Go to File offers to create.
+    let text: String
     let terms: [String]
     /// 1-based.
     let line: Int?
@@ -22,6 +24,7 @@ struct QuickOpenQuery: Equatable {
             }
             rest = rest[..<colon]
         }
+        self.text = rest.trimmingCharacters(in: .whitespaces)
         terms = rest.split(whereSeparator: \.isWhitespace).map(String.init)
         line = numbers.first
         column = numbers.count > 1 ? numbers[1] : nil
@@ -235,11 +238,22 @@ final class QuickOpenModel: ObservableObject {
     @Published private(set) var isTruncated = false
     @Published private(set) var error: String?
     @Published private(set) var location: WorkspaceFileLocation?
+    /// A path typed that no file has, offered as a last row that creates it.
+    @Published private(set) var createPath: String?
+    /// Also search files Git ignores; remembered between launches.
+    @Published private(set) var includesIgnored: Bool
+    /// The kind of change of each changed file, for its color.
+    @Published private(set) var changes: [String: WorkspaceFileChange.Kind] = [:]
+    @Published private(set) var ignored: Set<String> = []
 
-    /// Reads a location's files; tests replace it.
-    var loadFiles: @Sendable (WorkspaceFileLocation) throws -> (files: [String], truncated: Bool) = {
-        try WorkspaceFiles.quickOpenFiles(at: $0)
+    static let includesIgnoredKey = "QuickOpenIncludesIgnored"
+
+    /// Reads a location's files, with ignored ones when asked; tests replace it.
+    var loadFiles: @Sendable (WorkspaceFileLocation, Bool) throws -> QuickOpenListing = {
+        try WorkspaceFiles.quickOpenFiles(at: $0, includeIgnored: $1)
     }
+
+    private let defaults: UserDefaults
 
     private var recents: [String] = []
     private var index: QuickOpenIndex?
@@ -249,16 +263,29 @@ final class QuickOpenModel: ObservableObject {
     private var matchTask: Task<Void, Never>?
     private weak var previousResponder: NSResponder?
 
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        includesIgnored = defaults.bool(forKey: Self.includesIgnoredKey)
+    }
+
     var selectedMatch: QuickOpenMatch? { results.indices.contains(selection) ? results[selection] : nil }
+    /// The path to create when the create row is selected.
+    var selectedCreatePath: String? { selection == results.count ? createPath : nil }
+    /// Matches plus the create row.
+    var rowCount: Int { results.count + (createPath == nil ? 0 : 1) }
+
+    private func identity(_ location: WorkspaceFileLocation) -> String { "\(location.identity)|\(includesIgnored)" }
 
     /// Opens on a location. `recents` are its files shown most recently first; `current`, the
     /// one shown now, goes last so that ⌘P ↩ switches back to the previous file.
     func present(at location: WorkspaceFileLocation, recents: [String], current: String?) {
         previousResponder = NSApp?.keyWindow?.firstResponder
-        if location.identity != indexIdentity {
+        if identity(location) != indexIdentity {
             index = nil
-            indexIdentity = location.identity
+            indexIdentity = identity(location)
             isTruncated = false
+            changes = [:]
+            ignored = []
         }
         self.location = location
         self.recents = recents.filter { $0 != current } + (current.map { [$0] } ?? [])
@@ -280,8 +307,22 @@ final class QuickOpenModel: ObservableObject {
     }
 
     func move(_ delta: Int) {
-        guard !results.isEmpty else { return }
-        selection = ((selection + delta) % results.count + results.count) % results.count
+        guard rowCount > 0 else { return }
+        selection = ((selection + delta) % rowCount + rowCount) % rowCount
+    }
+
+    /// Searches ignored files too, or stops; the files shown stay until the new listing arrives.
+    func toggleIgnored() {
+        includesIgnored.toggle()
+        defaults.set(includesIgnored, forKey: Self.includesIgnoredKey)
+        guard let location, isPresented else { return }
+        indexIdentity = identity(location)
+        loadIndex(location)
+    }
+
+    /// Shows why a file could not be created.
+    func fail(_ message: String) {
+        error = message
     }
 
     private func loadIndex(_ location: WorkspaceFileLocation) {
@@ -289,18 +330,21 @@ final class QuickOpenModel: ObservableObject {
         let generation = loadGeneration
         isIndexing = true
         let load = loadFiles
+        let includesIgnored = includesIgnored
         Task {
             let outcome = await Task.detached(priority: .userInitiated) {
-                Result { () -> (QuickOpenIndex, Bool) in
-                    let listing = try load(location)
-                    return (QuickOpenIndex(listing.files), listing.truncated)
+                Result { () -> (QuickOpenIndex, QuickOpenListing) in
+                    let listing = try load(location, includesIgnored)
+                    return (QuickOpenIndex(listing.files), listing)
                 }
             }.value
             guard generation == loadGeneration else { return }
             isIndexing = false
             switch outcome {
-            case .success(let (newIndex, truncated)):
-                isTruncated = truncated
+            case .success(let (newIndex, listing)):
+                isTruncated = listing.truncated
+                if changes != listing.changes { changes = listing.changes }
+                if ignored != listing.ignored { ignored = listing.ignored }
                 guard newIndex.paths != index?.paths else { return }
                 index = newIndex
                 refresh(keepingSelection: true)
@@ -318,20 +362,33 @@ final class QuickOpenModel: ObservableObject {
         let selectedPath = keepingSelection ? selectedMatch?.path : nil
         let query = QuickOpenQuery(self.query)
         let recents = recents
-        let index = index ?? QuickOpenIndex(recents)
-        if query.terms.isEmpty || index.paths.count < 2_000 {
-            apply(QuickOpenMatcher.match(query, in: index, recents: recents) ?? [], selectedPath: selectedPath)
+        // Creating is offered only once the listing shows that no such file exists.
+        let createPath = index.flatMap { Self.creatablePath(query.text, in: $0) }
+        let searched = index ?? QuickOpenIndex(recents)
+        if query.terms.isEmpty || searched.paths.count < 2_000 {
+            apply(QuickOpenMatcher.match(query, in: searched, recents: recents) ?? [], createPath: createPath,
+                  selectedPath: selectedPath)
             return
         }
         matchTask = Task.detached(priority: .userInitiated) { [weak self] in
-            guard let matches = QuickOpenMatcher.match(query, in: index, recents: recents) else { return }
-            await self?.apply(matches, selectedPath: selectedPath, generation: generation)
+            guard let matches = QuickOpenMatcher.match(query, in: searched, recents: recents) else { return }
+            await self?.apply(matches, createPath: createPath, selectedPath: selectedPath, generation: generation)
         }
     }
 
-    private func apply(_ matches: [QuickOpenMatch], selectedPath: String?, generation: Int? = nil) {
+    /// `text` when it is a valid relative file path that the index does not have.
+    nonisolated static func creatablePath(_ text: String, in index: QuickOpenIndex) -> String? {
+        guard !text.hasSuffix("/"), (try? WorkspaceFiles.validateRelativePath(text)) != nil,
+              !index.contains(text) else { return nil }
+        return text
+    }
+
+    private func apply(_ matches: [QuickOpenMatch], createPath: String?, selectedPath: String?, generation: Int? = nil) {
         if let generation, generation != matchGeneration { return }
         results = matches
+        // A bare word that matches files is a search, not a new file's name.
+        let looksLikePath = createPath.map { $0.contains("/") || $0.contains(".") } ?? false
+        self.createPath = matches.isEmpty || looksLikePath ? createPath : nil
         selection = selectedPath.flatMap { path in matches.firstIndex { $0.path == path } } ?? 0
     }
 }

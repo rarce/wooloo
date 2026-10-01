@@ -47,8 +47,5 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 ## Go to File and command palette
 
 - [ ] Command palette: also list the editor's and explorer's own actions (Save, Find, New File…), which are local buttons rather than `HerdrCommand`s.
-- [ ] Go to File: show each file's Git status color, as the explorer does.
-- [ ] Go to File: offer to create the typed path when no file matches, as Zed does.
-- [ ] Go to File: a toggle to include files ignored by Git.
 - [ ] Symbol search in the open file (⇧⌘O) and across the Space (⌘T), or as `@` and `#` prefixes in Go to File.
 - [ ] Go to File without Git walks the whole folder up to `maximumFiles`, which is slow in a large non-repository folder such as `/private/tmp`; consider a time or depth limit, or reading only to the depth already listed.

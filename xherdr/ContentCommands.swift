@@ -65,12 +65,15 @@ final class ContentWindowModel: ObservableObject {
     @Published var renameText = ""
     @Published var closeTarget: HerdrCloseTarget?
     /// Go to File; `QuickOpenOverlay` observes it.
-    let quickOpen = QuickOpenModel()
     /// The command palette; `CommandPaletteOverlay` observes it.
     let commandPalette: CommandPaletteModel
 
     /// Tests keep the palette's recent commands out of the app's defaults.
+    let quickOpen: QuickOpenModel
+
+    /// Tests keep the pickers' recent commands and options out of the app's defaults.
     init(defaults: UserDefaults = .standard) {
+        quickOpen = QuickOpenModel(defaults: defaults)
         commandPalette = CommandPaletteModel(defaults: defaults)
     }
 }
@@ -209,16 +212,35 @@ struct ContentCommands {
         perform(item.action)
     }
 
-    /// Opens Go to File's selected file, at the line and column typed after its name.
-    func openQuickOpenSelection() {
+    /// Opens Go to File's selected file, at the line and column typed after its name, or creates
+    /// the typed file and opens it; the returned task does the creating.
+    @discardableResult
+    func openQuickOpenSelection() -> Task<Void, Never>? {
         let quickOpen = window.quickOpen
-        guard let location = quickOpen.location, let match = quickOpen.selectedMatch else { return }
+        guard let location = quickOpen.location else { return nil }
         let query = QuickOpenQuery(quickOpen.query)
-        quickOpen.dismiss(restoringFocus: false)
         let reveal = query.line.map { line in
             WorkspaceDocumentReveal(line: line, range: query.column.map { NSRange(location: max($0 - 1, 0), length: 0) })
         }
+        if let path = quickOpen.selectedCreatePath {
+            return Task { [documents, window] in
+                let created = await Task.detached(priority: .userInitiated) {
+                    Result { try WorkspaceFiles.createFile(path, at: location) }
+                }.value
+                switch created {
+                case .success:
+                    quickOpen.dismiss(restoringFocus: false)
+                    documents.open(.file, path: path, at: location, focus: true)
+                    window.fileRefreshVersion += 1
+                case .failure(let failure):
+                    quickOpen.fail(failure.localizedDescription)
+                }
+            }
+        }
+        guard let match = quickOpen.selectedMatch else { return nil }
+        quickOpen.dismiss(restoringFocus: false)
         documents.open(.file, path: match.path, at: location, reveal: reveal, focus: true)
+        return nil
     }
 
     /// Shows the Search tab on the explorer's location and focuses its field. The first time

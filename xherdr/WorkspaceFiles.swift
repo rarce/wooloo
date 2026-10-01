@@ -96,6 +96,17 @@ struct WorkspaceFileListing {
 }
 
 /// Ignored files and folders of a repository, as `git ls-files --ignored --directory` lists them.
+/// What Go to File searches at a location.
+struct QuickOpenListing: Equatable, Sendable {
+    var files: [String] = []
+    /// True when the location has more files than `WorkspaceFiles.maximumFiles`.
+    var truncated = false
+    /// The kind of change of each changed file.
+    var changes: [String: WorkspaceFileChange.Kind] = [:]
+    /// Files Git ignores, listed when asked for.
+    var ignored: Set<String> = []
+}
+
 struct WorkspaceIgnoredEntries: Equatable {
     private(set) var files: Set<String> = []
     private(set) var directories: Set<String> = []
@@ -363,18 +374,30 @@ enum WorkspaceFiles {
                                     ignored: ignored)
     }
 
-    /// The files Go to File searches: tracked and untracked ones, without what Git ignores, cut
-    /// to `maximumFiles`. Lighter than `listing`, which also reads ignored entries and the status.
-    static func quickOpenFiles(at location: WorkspaceFileLocation) throws -> (files: [String], truncated: Bool) {
+    /// The files Go to File searches: tracked and untracked ones, and with `includeIgnored` those
+    /// Git ignores, cut to `maximumFiles`; with the status of changed files for their colors.
+    /// Lighter than `listing`, which also lists ignored folders for the explorer tree.
+    static func quickOpenFiles(at location: WorkspaceFileLocation, includeIgnored: Bool = false) throws -> QuickOpenListing {
         guard (try? git(location, ["rev-parse", "--is-inside-work-tree"], limit: 100)) != nil else {
             let files = try filesWithoutGit(at: location)
-            return (files, files.count >= maximumFiles)
+            return QuickOpenListing(files: files, truncated: files.count >= maximumFiles)
         }
         let data = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
                            limit: maximumListingBytes)
         // A conflicted file is listed once per stage.
-        let files = Array(Set(nulStrings(data))).sorted()
-        return (Array(files.prefix(maximumFiles)), files.count > maximumFiles)
+        var files = Array(Set(nulStrings(data))).sorted()
+        var ignored: Set<String> = []
+        if includeIgnored {
+            let ignoredData = try git(location, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", "."],
+                                      limit: maximumListingBytes)
+            let ignoredFiles = nulStrings(ignoredData).sorted()
+            ignored = Set(ignoredFiles)
+            files += ignoredFiles
+        }
+        let status = try git(location, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
+        let changes = Dictionary(parseStatus(status).map { ($0.path, $0.kind) }, uniquingKeysWith: { first, _ in first })
+        return QuickOpenListing(files: Array(files.prefix(maximumFiles)), truncated: files.count > maximumFiles,
+                                changes: changes, ignored: ignored)
     }
 
     /// Every file under a folder that is not in a Git repository, skipping `.git` folders.
