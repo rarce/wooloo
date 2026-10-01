@@ -158,6 +158,9 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(try WorkspaceFiles.paste([sandbox.path("repo/a.txt")], into: "it's", move: false, at: repo),
                        ["it's/a.txt"])
         XCTAssertEqual(try sandbox.read("it's/a.txt", in: "repo"), "one\n")
+        try WorkspaceFiles.moveItem("it's/a.txt", to: "back/-a.txt", at: repo)
+        XCTAssertEqual(try sandbox.read("back/-a.txt", in: "repo"), "one\n")
+        XCTAssertThrowsError(try WorkspaceFiles.moveItem("back/-a.txt", to: "a.txt", at: repo), "a.txt is in the way")
         try WorkspaceFiles.delete("it's", at: repo)
         XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("repo/it's")))
         XCTAssertThrowsError(try WorkspaceFiles.trash("a.txt", at: repo))

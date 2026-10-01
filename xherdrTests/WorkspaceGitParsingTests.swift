@@ -254,6 +254,8 @@ final class WorkspaceFileOperationHelperTests: XCTestCase {
                        [.extendPrevious])
         XCTAssertEqual(commands(try key("c")), [])
         XCTAssertEqual(commands(try key("c", [.command, .control])), [])
+        XCTAssertEqual(commands(try key("z", .command, code: 6)), [.undo])
+        XCTAssertEqual(commands(try key("Z", [.command, .shift], code: 6)), [.redo])
 
         let shortcuts = ExplorerFileCommand.allCases.map { "\($0.shortcut.key.character)|\($0.shortcut.modifiers.rawValue)" }
         XCTAssertEqual(Set(shortcuts).count, shortcuts.count)

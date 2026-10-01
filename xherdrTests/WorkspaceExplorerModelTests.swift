@@ -14,6 +14,7 @@ final class WorkspaceExplorerModelTests: XCTestCase {
     /// The general pasteboard as the fake effects see it.
     private var pasteboardCount = 0
     private var pasteboardFiles: [String] = []
+    private var savedTrash: ((URL) throws -> URL)?
 
     override func setUp() async throws {
         sandbox = try WorkspaceGitSandbox()
@@ -34,6 +35,7 @@ final class WorkspaceExplorerModelTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        if let savedTrash { WorkspaceFiles.trashItem = savedTrash }
         sandbox.tearDown()
     }
 
@@ -729,6 +731,123 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         let unselected = model.startDrag("src/main.swift", in: repo)
         XCTAssertEqual(model.draggedItems([unselected], location: repo), ["src/main.swift"],
                        "A row outside the selection is dragged alone")
+    }
+
+    // MARK: Undo
+
+    /// Trashing moves items to a folder of the sandbox instead of the Trash.
+    private func useSandboxTrash() throws {
+        let trash = sandbox.path("Trash")
+        try FileManager.default.createDirectory(atPath: trash, withIntermediateDirectories: true)
+        savedTrash = WorkspaceFiles.trashItem
+        WorkspaceFiles.trashItem = { url in
+            let destination = URL(fileURLWithPath: trash).appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: destination)
+            return destination
+        }
+    }
+
+    private func undo() async { await model.undo(at: repo)?.value }
+    private func redo() async { await model.redo(at: repo)?.value }
+
+    func testUndoingANewFileTrashesItAndRedoingBringsItBack() async throws {
+        try await loadNested()
+        try useSandboxTrash()
+        model.startDraft(in: "docs", isFolder: false, at: repo)
+        await commit("new.md")
+        XCTAssertEqual(model.undoName(at: repo), "New File")
+        await undo()
+        XCTAssertNil(model.operationError)
+        XCTAssertFalse(exists("docs/new.md", in: "nested"))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("Trash")).count, 1)
+        XCTAssertEqual(model.redoName(at: repo), "New File")
+        await redo()
+        XCTAssertTrue(exists("docs/new.md", in: "nested"))
+        XCTAssertEqual(selection, "docs/new.md")
+        XCTAssertEqual(model.undoName(at: repo), "New File")
+        XCTAssertNil(model.redoName(at: repo))
+    }
+
+    func testUndoingARenameRestoresTheNameAndTheSelection() async throws {
+        try await loadNested()
+        model.tree.expand("src/util", in: files)
+        model.startRename("src/util", isDirectory: true, at: repo)
+        await commit("tools")
+        XCTAssertTrue(exists("src/tools/x.swift", in: "nested"))
+        await undo()
+        XCTAssertTrue(exists("src/util/x.swift", in: "nested"))
+        XCTAssertFalse(exists("src/tools", in: "nested"))
+        XCTAssertEqual(selection, "src/util")
+        XCTAssertTrue(model.tree.expanded.contains(files + "|src/util"), "The folder stays open under its old name")
+        await redo()
+        XCTAssertTrue(exists("src/tools/x.swift", in: "nested"))
+        XCTAssertEqual(model.undoName(at: repo), "Rename")
+    }
+
+    func testUndoingTrashPutsTheItemsBack() async throws {
+        try await loadNested()
+        try useSandboxTrash()
+        mark("b.txt", "docs")
+        XCTAssertTrue(model.perform(.trash))
+        await settle()
+        XCTAssertFalse(exists("docs/a.md", in: "nested"))
+        XCTAssertTrue(model.perform(.undo))
+        await settle()
+        XCTAssertTrue(exists("b.txt", in: "nested"))
+        XCTAssertTrue(exists("docs/a.md", in: "nested"))
+        XCTAssertEqual(model.tree.selectedPaths(in: files), ["b.txt", "docs"])
+        XCTAssertTrue(model.perform(.redo))
+        await settle()
+        XCTAssertFalse(exists("b.txt", in: "nested"))
+    }
+
+    func testUndoingMovesAndCopiesFromDragsAndPastes() async throws {
+        try await loadNested()
+        try useSandboxTrash()
+        await model.dropItems(["b.txt", "src/util"], into: "docs", copy: false, in: repo)?.value
+        XCTAssertEqual(model.undoName(at: repo), "Move")
+        await undo()
+        XCTAssertTrue(exists("b.txt", in: "nested"))
+        XCTAssertTrue(exists("src/util/x.swift", in: "nested"))
+        XCTAssertFalse(exists("docs/util", in: "nested"))
+
+        model.tree.selected = files + "|b.txt"
+        XCTAssertTrue(model.perform(.cut))
+        model.tree.selected = files + "|src"
+        XCTAssertTrue(model.perform(.paste))
+        await settle()
+        XCTAssertTrue(exists("src/b.txt", in: "nested"))
+        await undo()
+        XCTAssertTrue(exists("b.txt", in: "nested"), "A cut and paste moves back")
+
+        model.tree.selected = files + "|b.txt"
+        XCTAssertTrue(model.perform(.copy))
+        XCTAssertTrue(model.perform(.paste))
+        await settle()
+        XCTAssertTrue(exists("b copy.txt", in: "nested"))
+        XCTAssertEqual(model.undoName(at: repo), "Paste")
+        await undo()
+        XCTAssertFalse(exists("b copy.txt", in: "nested"))
+        XCTAssertTrue(exists("b.txt", in: "nested"))
+    }
+
+    func testANewOperationClearsRedoAndAFailedUndoStays() async throws {
+        try await loadNested()
+        model.startRename("b.txt", isDirectory: false, at: repo)
+        await commit("c.txt")
+        await undo()
+        XCTAssertEqual(model.redoName(at: repo), "Rename")
+        model.startRename("b.txt", isDirectory: false, at: repo)
+        await commit("d.txt")
+        XCTAssertNil(model.redoName(at: repo), "Doing something new drops what was undone")
+
+        try "in the way\n".write(toFile: sandbox.path("nested") + "/b.txt", atomically: true, encoding: .utf8)
+        await undo()
+        XCTAssertNotNil(model.operationError, "b.txt is in the way")
+        XCTAssertTrue(exists("d.txt", in: "nested"))
+        XCTAssertEqual(model.undoName(at: repo), "Rename", "The rename can be undone once b.txt is gone")
+        model.operationError = nil
+        XCTAssertFalse(model.perform(.redo), "Nothing to redo")
     }
 
     // MARK: Clipboard

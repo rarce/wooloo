@@ -34,6 +34,41 @@ struct WorkspaceFileDraft {
     var hasHadFocus = false
 }
 
+/// A file operation of the explorer that can be undone.
+enum WorkspaceFileEdit: Equatable {
+    /// Items that appeared: new, pasted, duplicated or dropped. Undoing moves them to the Trash.
+    case created([String])
+    /// Items moved or renamed. Undoing moves them back.
+    case moved([WorkspaceMove])
+    /// Items moved to the Trash. Undoing puts them back.
+    case trashed([WorkspaceTrashedItem])
+
+    var isEmpty: Bool {
+        switch self {
+        case .created(let paths): return paths.isEmpty
+        case .moved(let moves): return moves.isEmpty
+        case .trashed(let items): return items.isEmpty
+        }
+    }
+}
+
+struct WorkspaceMove: Equatable {
+    let from: String
+    let to: String
+}
+
+struct WorkspaceTrashedItem: Equatable {
+    let path: String
+    /// Where the item is in the Trash.
+    let trashPath: String
+}
+
+/// An undoable operation and the name menus give it, such as "Rename".
+struct WorkspaceUndoEntry {
+    let name: String
+    let edit: WorkspaceFileEdit
+}
+
 /// What a drop on the explorer does.
 enum WorkspaceDropAction {
     case move, copy
@@ -254,12 +289,15 @@ final class WorkspaceExplorerModel: ObservableObject {
     @discardableResult
     func runOperation<Value>(_ location: WorkspaceFileLocation, reloads: Bool = true,
                              _ operation: @escaping () throws -> Value,
-                             completion: @escaping (Value) -> Void = { _ in }) -> Task<Void, Never> {
+                             completion: @escaping (Value) -> Void = { _ in },
+                             failure: @escaping () -> Void = {}) -> Task<Void, Never> {
         let task = Task {
             let result = await Task.detached(priority: .userInitiated) { Result { try operation() } }.value
             switch result {
             case .success(let value): completion(value)
-            case .failure(let failure): operationError = failure.localizedDescription
+            case .failure(let error):
+                operationError = error.localizedDescription
+                failure()
             }
             // Reload in place, so staging does not blank the tree behind a spinner.
             if reloads, self.location?.identity == location.identity {
@@ -306,6 +344,7 @@ final class WorkspaceExplorerModel: ObservableObject {
             guard name != (original as NSString).lastPathComponent else { return nil }
             return runOperation(location) { try WorkspaceFiles.renameItem(original, to: name, at: location) } completion: {
                 self.tree.move(from: original, to: $0, in: self.treeIdentity(location), location: location.identity)
+                self.record("Rename", .moved([WorkspaceMove(from: original, to: $0)]), at: location)
             }
         }
         let path = WorkspaceExplorer.path(of: name, in: draft.folder)
@@ -315,6 +354,7 @@ final class WorkspaceExplorerModel: ObservableObject {
         } completion: {
             if draft.isFolder { self.tree.createdDirectories[location.identity, default: []].insert(path) }
             self.reveal(path, in: location)
+            self.record(draft.isFolder ? "New Folder" : "New File", .created([path]), at: location)
             if !draft.isFolder { openFile(location, path, false) }
         }
     }
@@ -359,6 +399,8 @@ final class WorkspaceExplorerModel: ObservableObject {
                                                 permanently: !location.isLocal)
         case .delete: pendingDelete = WorkspaceFileTarget(location: location, paths: paths, isDirectory: isOnlyDirectory)
         case .findInFolder: findInFolder(location, folder)
+        case .undo: return undo(at: location) != nil
+        case .redo: return redo(at: location) != nil
         case .open, .openPreview:
             if isDirectory {
                 toggleDirectory(treeIdentity(location) + "|" + path, path: path,
@@ -474,8 +516,15 @@ final class WorkspaceExplorerModel: ObservableObject {
             return nil
         }
         return runOperation(location) { try WorkspaceFiles.paste(sources, into: directory, move: move, at: location) } completion: {
+            // A cut from this Space can be moved back; one from elsewhere cannot.
+            let moved = move ? Self.moves(from: sources, to: $0, in: location) : nil
             if move { self.clipboard = nil }
+            for move in moved ?? [] {
+                self.tree.move(from: move.from, to: move.to, in: self.treeIdentity(location), location: location.identity)
+            }
             self.placePasted($0, in: location)
+            if !move { self.record("Paste", .created($0), at: location) }
+            if let moved { self.record("Move", .moved(moved), at: location) }
         }
     }
 
@@ -489,6 +538,7 @@ final class WorkspaceExplorerModel: ObservableObject {
             }
         } completion: {
             self.placePasted($0, in: location)
+            self.record("Duplicate", .created($0), at: location)
         }
     }
 
@@ -506,8 +556,11 @@ final class WorkspaceExplorerModel: ObservableObject {
 
     @discardableResult
     func trash(_ paths: [String], in location: WorkspaceFileLocation) -> Task<Void, Never> {
-        runOperation(location) { for path in paths { try WorkspaceFiles.trash(path, at: location) } } completion: {
+        runOperation(location) {
+            try paths.map { WorkspaceTrashedItem(path: $0, trashPath: try WorkspaceFiles.trash($0, at: location)) }
+        } completion: {
             for path in paths { self.tree.forget(path, location: location.identity) }
+            self.record("Move to Trash", .trashed($0), at: location)
         }
     }
 
@@ -519,6 +572,98 @@ final class WorkspaceExplorerModel: ObservableObject {
         return runOperation(location) { for path in target.paths { try WorkspaceFiles.delete(path, at: location) } } completion: {
             for path in target.paths { self.tree.forget(path, location: location.identity) }
         }
+    }
+
+    // MARK: Undo
+
+    /// What can be undone in each Space, by location identity, the last done last.
+    @Published private(set) var undoStacks: [String: [WorkspaceUndoEntry]] = [:]
+    /// What was undone and can be done again, by location identity.
+    @Published private(set) var redoStacks: [String: [WorkspaceUndoEntry]] = [:]
+    /// Set while an undo or redo runs, so a repeated key does not apply the same entry twice.
+    private var isUndoing = false
+    private static let undoLimit = 50
+
+    /// The name of what Command-Z undoes in `location`, such as "Rename".
+    func undoName(at location: WorkspaceFileLocation) -> String? { undoStacks[location.identity]?.last?.name }
+    func redoName(at location: WorkspaceFileLocation) -> String? { redoStacks[location.identity]?.last?.name }
+
+    private func record(_ name: String, _ edit: WorkspaceFileEdit, at location: WorkspaceFileLocation) {
+        guard !edit.isEmpty else { return }
+        var stack = undoStacks[location.identity, default: []]
+        stack.append(WorkspaceUndoEntry(name: name, edit: edit))
+        undoStacks[location.identity] = Array(stack.suffix(Self.undoLimit))
+        redoStacks[location.identity] = nil
+    }
+
+    /// Undoes the last file operation in `location`: what was created goes to the Trash, what
+    /// moved goes back, and what went to the Trash comes back. Nil when there is nothing to undo.
+    @discardableResult
+    func undo(at location: WorkspaceFileLocation) -> Task<Void, Never>? { step(at: location, redoing: false) }
+
+    @discardableResult
+    func redo(at location: WorkspaceFileLocation) -> Task<Void, Never>? { step(at: location, redoing: true) }
+
+    private func step(at location: WorkspaceFileLocation, redoing: Bool) -> Task<Void, Never>? {
+        let key = location.identity
+        guard !isUndoing, let entry = (redoing ? redoStacks : undoStacks)[key]?.last else { return nil }
+        isUndoing = true
+        return runOperation(location) { try Self.apply(entry.edit, at: location) } completion: { inverse in
+            self.isUndoing = false
+            if redoing { self.redoStacks[key]?.removeLast() } else { self.undoStacks[key]?.removeLast() }
+            let done = WorkspaceUndoEntry(name: entry.name, edit: inverse)
+            if redoing { self.undoStacks[key, default: []].append(done) } else { self.redoStacks[key, default: []].append(done) }
+            self.place(inverse, in: location)
+        } failure: {
+            // The entry stays, so it can be tried again once what blocked it is fixed.
+            self.isUndoing = false
+        }
+    }
+
+    /// Reverses `edit` and returns what reverses that in turn.
+    nonisolated private static func apply(_ edit: WorkspaceFileEdit, at location: WorkspaceFileLocation) throws -> WorkspaceFileEdit {
+        switch edit {
+        case .created(let paths):
+            guard location.isLocal else {
+                throw WorkspaceFileError.message("\(location.machineLabel) has no Trash, so undoing would delete "
+                                                 + "for good; delete the items instead")
+            }
+            return .trashed(try paths.map { WorkspaceTrashedItem(path: $0, trashPath: try WorkspaceFiles.trash($0, at: location)) })
+        case .moved(let moves):
+            for move in moves.reversed() { try WorkspaceFiles.moveItem(move.to, to: move.from, at: location) }
+            return .moved(moves.map { WorkspaceMove(from: $0.to, to: $0.from) })
+        case .trashed(let items):
+            for item in items { try WorkspaceFiles.restore(item.trashPath, to: item.path, at: location) }
+            return .created(items.map(\.path))
+        }
+    }
+
+    /// Updates the tree after an undo or redo whose reverse is `inverse`.
+    private func place(_ inverse: WorkspaceFileEdit, in location: WorkspaceFileLocation) {
+        switch inverse {
+        case .trashed(let items):
+            for item in items { tree.forget(item.path, location: location.identity) }
+        case .moved(let moves):
+            // An inverse is the move just made, so the items now sit at its destinations.
+            for move in moves {
+                tree.move(from: move.from, to: move.to, in: treeIdentity(location), location: location.identity)
+            }
+            placePasted(moves.map(\.to), in: location)
+        case .created(let paths):
+            placePasted(paths, in: location)
+        }
+    }
+
+    /// The moves a cut and paste made, as Space paths; nil when an item came from outside the Space.
+    private static func moves(from sources: [String], to results: [String], in location: WorkspaceFileLocation) -> [WorkspaceMove]? {
+        let root = location.root.hasSuffix("/") ? location.root : location.root + "/"
+        var moves: [WorkspaceMove] = []
+        for (source, result) in zip(sources, results) {
+            guard source.hasPrefix(root) else { return nil }
+            let from = String(source.dropFirst(root.count))
+            if from != result { moves.append(WorkspaceMove(from: from, to: result)) }
+        }
+        return moves
     }
 
     // MARK: Drag and drop
@@ -579,12 +724,14 @@ final class WorkspaceExplorerModel: ObservableObject {
         guard dropAction(of: paths, into: folder, copy: copy) != nil else { return nil }
         let sources = paths.map(location.absolutePath)
         return runOperation(location) { try WorkspaceFiles.paste(sources, into: folder, move: !copy, at: location) } completion: {
+            let moves = zip(paths, $0).map { WorkspaceMove(from: $0, to: $1) }.filter { $0.from != $0.to }
             if !copy {
-                for (path, moved) in zip(paths, $0) {
-                    self.tree.move(from: path, to: moved, in: self.treeIdentity(location), location: location.identity)
+                for move in moves {
+                    self.tree.move(from: move.from, to: move.to, in: self.treeIdentity(location), location: location.identity)
                 }
             }
             self.placePasted($0, in: location)
+            self.record(copy ? "Copy" : "Move", copy ? .created($0) : .moved(moves), at: location)
         }
     }
 
@@ -594,6 +741,7 @@ final class WorkspaceExplorerModel: ObservableObject {
         guard !paths.isEmpty, dropAction(of: nil, into: folder, copy: true) != nil else { return nil }
         return runOperation(location) { try WorkspaceFiles.importItems(paths, into: folder, at: location) } completion: {
             self.placePasted($0, in: location)
+            self.record("Copy", .created($0), at: location)
         }
     }
 

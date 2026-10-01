@@ -1174,12 +1174,52 @@ extension WorkspaceFiles {
         _ = try shell("rm -rf \(quote("./" + path))", at: location, limit: 4_000)
     }
 
-    /// Moves a file or folder of a local Space to the Trash.
-    static func trash(_ path: String, at location: WorkspaceFileLocation) throws {
+    /// Moves a file or folder of a local Space to the Trash and returns where it went there.
+    @discardableResult
+    static func trash(_ path: String, at location: WorkspaceFileLocation) throws -> String {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
         guard location.isLocal else { throw WorkspaceFileError.message("The Trash is only available on this Mac") }
-        try FileManager.default.trashItem(at: URL(fileURLWithPath: location.absolutePath(path)), resultingItemURL: nil)
+        return try trashItem(URL(fileURLWithPath: location.absolutePath(path))).path
+    }
+
+    /// Moves an item to the Trash and returns where it went. Tests replace it, so they leave the Trash alone.
+    static var trashItem: (URL) throws -> URL = { url in
+        var result: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &result)
+        guard let result else { throw WorkspaceFileError.message("\(url.lastPathComponent) was not moved to the Trash") }
+        return result as URL
+    }
+
+    /// Puts an item moved to the Trash back at `path` in a local Space.
+    static func restore(_ trashed: String, to path: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        try validateRelativePath(path)
+        guard location.isLocal else { throw WorkspaceFileError.message("The Trash is only available on this Mac") }
+        let name = (path as NSString).lastPathComponent
+        let destination = location.absolutePath(path)
+        let files = FileManager.default
+        guard (try? files.attributesOfItem(atPath: trashed)) != nil else {
+            throw WorkspaceFileError.message("\(name) is no longer in the Trash")
+        }
+        guard (try? files.attributesOfItem(atPath: destination)) == nil else {
+            throw WorkspaceFileError.message("\(name) already exists")
+        }
+        try files.createDirectory(atPath: (destination as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try files.moveItem(atPath: trashed, toPath: destination)
+    }
+
+    /// Moves a file or folder to another path in the Space, creating the folders above it.
+    /// An item already at `destination` is refused.
+    static func moveItem(_ path: String, to destination: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        try validateRelativePath(path)
+        try validateRelativePath(destination)
+        guard destination != path else { return }
+        // A case-only rename finds the file itself on a case-insensitive disk.
+        let check = destination.lowercased() == path.lowercased() ? "" : refuseExisting("d")
+        _ = try shell("p=\(quote("./" + path)); d=\(quote("./" + destination)); " + check
+                      + "mkdir -p \"$(dirname \"$d\")\" && mv \"$p\" \"$d\"", at: location, limit: 4_000)
     }
 
     /// Copies or moves files and folders, given by absolute paths on the Space's machine, into

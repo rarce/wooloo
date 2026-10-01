@@ -395,7 +395,19 @@ struct WorkspaceBrowserView: View {
         }
         if location.isLocal {
             Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
+            Divider()
         }
+        Button(model.undoName(at: location).map { "Undo \($0)" } ?? "Undo", systemImage: "arrow.uturn.backward") {
+            model.undo(at: location)
+        }
+        .keyboardShortcut(ExplorerFileCommand.undo.shortcut)
+        .disabled(model.undoName(at: location) == nil)
+        Button(model.redoName(at: location).map { "Redo \($0)" } ?? "Redo", systemImage: "arrow.uturn.forward") {
+            model.redo(at: location)
+        }
+        .keyboardShortcut(ExplorerFileCommand.redo.shortcut)
+        .disabled(model.redoName(at: location) == nil)
+        Divider()
         Button("Find in Space…", systemImage: "magnifyingglass") { onFindInFolder(location, "") }
             .keyboardShortcut(ExplorerFileCommand.findInFolder.shortcut)
         Button("Collapse All Folders", systemImage: "rectangle.compress.vertical") { model.collapseAll(location) }
@@ -1063,6 +1075,7 @@ final class WorkspaceTreeBuilderNode {
 enum ExplorerFileCommand: CaseIterable {
     case newFile, newFolder, reveal, openInDefaultApp, cut, copy, duplicate, paste
     case copyPath, copyRelativePath, rename, trash, trashAsking, delete, findInFolder
+    case undo, redo
     case selectNext, selectPrevious, extendNext, extendPrevious, collapse, expand, collapseAll, open, openPreview, deselect
 
     /// The key shown in menus.
@@ -1083,6 +1096,8 @@ enum ExplorerFileCommand: CaseIterable {
         case .trashAsking: return KeyboardShortcut(.delete, modifiers: [])
         case .delete: return KeyboardShortcut(.delete, modifiers: [.command, .option])
         case .findInFolder: return KeyboardShortcut("f", modifiers: [.command, .option, .shift])
+        case .undo: return KeyboardShortcut("z", modifiers: .command)
+        case .redo: return KeyboardShortcut("z", modifiers: [.command, .shift])
         case .selectNext: return KeyboardShortcut(.downArrow, modifiers: [])
         case .selectPrevious: return KeyboardShortcut(.upArrow, modifiers: [])
         case .extendNext: return KeyboardShortcut(.downArrow, modifiers: .shift)
@@ -1107,13 +1122,13 @@ enum ExplorerFileCommand: CaseIterable {
 
     /// Commands that make sense with nothing selected, on the Space root.
     var appliesToRoot: Bool {
-        [.newFile, .newFolder, .reveal, .openInDefaultApp, .paste, .copyPath, .findInFolder,
+        [.newFile, .newFolder, .reveal, .openInDefaultApp, .paste, .copyPath, .findInFolder, .undo, .redo,
          .selectNext, .selectPrevious, .extendNext, .extendPrevious, .collapse, .expand, .collapseAll].contains(self)
     }
 
     /// Commands that also apply in the Changes tree, which offers no file operations.
     var appliesToChanges: Bool {
-        [.copyPath, .copyRelativePath, .findInFolder, .selectNext, .selectPrevious, .extendNext, .extendPrevious,
+        [.copyPath, .copyRelativePath, .findInFolder, .undo, .redo, .selectNext, .selectPrevious, .extendNext, .extendPrevious,
          .collapse, .expand,
          .collapseAll, .open, .openPreview, .deselect].contains(self)
     }
