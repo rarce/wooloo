@@ -503,6 +503,55 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertNil(model.tree.selectedPath(in: changes))
     }
 
+    // MARK: Active file
+
+    func testTheActiveFileIsSelectedWithTheFoldersAboveIt() async throws {
+        try await loadNested()
+        model.tree.collapsedRoots.insert(files)
+        model.revealActiveFile(WorkspaceActiveFile(location: repo, path: "src/util/x.swift"))
+        XCTAssertEqual(selection, "src/util/x.swift")
+        XCTAssertFalse(model.tree.collapsedRoots.contains(files))
+        XCTAssertEqual(Set(model.tree.expandedFolders(in: files)), ["src", "src/util"])
+    }
+
+    func testTheActiveFileIsLeftAloneWhenTheTreeDoesNotListIt() async throws {
+        try await loadNested()
+        let other = try sandbox.repository("other")
+        model.tree.selected = files + "|b.txt"
+        model.revealActiveFile(WorkspaceActiveFile(location: other, path: "a.txt"))
+        model.revealActiveFile(WorkspaceActiveFile(location: repo, path: "build/out.log"))
+        model.modifiedOnly = true
+        model.revealActiveFile(WorkspaceActiveFile(location: repo, path: "docs/a.md"))
+        XCTAssertEqual(selection, "b.txt", "Another Space, an unlisted file and an unmodified one")
+        model.modifiedOnly = false
+
+        model.startDraft(in: "", isFolder: false, at: repo)
+        model.revealActiveFile(WorkspaceActiveFile(location: repo, path: "docs/a.md"))
+        XCTAssertEqual(selection, "b.txt", "Not while an item is being named")
+    }
+
+    func testTheActiveFileWaitsForItsSpacesListing() async throws {
+        try await loadNested()
+        let other = try sandbox.repository("other")
+        let load = model.loadListing(at: other)
+        model.revealActiveFile(WorkspaceActiveFile(location: other, path: "a.txt"))
+        XCTAssertNil(model.tree.selected, "The previous Space's listing is still shown")
+        await load?.value
+        model.revealActiveFile(WorkspaceActiveFile(location: other, path: "a.txt"))
+        XCTAssertEqual(model.tree.selectedPath(in: "\(other.identity)|files"), "a.txt")
+    }
+
+    func testTheChangesTreeSelectsTheActiveChangedFile() async throws {
+        try await loadNested()
+        try "changed\n".write(toFile: sandbox.path("nested") + "/src/main.swift", atomically: true, encoding: .utf8)
+        await load()
+        model.showsChanges = true
+        model.revealActiveFile(WorkspaceActiveFile(location: repo, path: "b.txt"))
+        XCTAssertNil(model.tree.selected, "An unchanged file is not in the Changes tree")
+        model.revealActiveFile(WorkspaceActiveFile(location: repo, path: "src/main.swift"))
+        XCTAssertEqual(model.tree.selectedPath(in: "\(repo.identity)|changes"), "src/main.swift")
+    }
+
     // MARK: Clipboard
 
     func testCopyThenPasteCopiesIntoTheSelectedFolder() async throws {

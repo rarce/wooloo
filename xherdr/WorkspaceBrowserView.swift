@@ -18,6 +18,8 @@ struct WorkspaceBrowserView: View {
     let onFindInFolder: (WorkspaceFileLocation, String) -> Void
     let onOpenWorktree: (String, String) -> Void
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
+    /// The active editor tab's file, selected in the tree when it changes.
+    var activeFile: WorkspaceActiveFile?
     /// Opens only a file's staged or unstaged changes.
     var onOpenScopedDiff: (_ location: WorkspaceFileLocation, _ path: String, _ scope: WorkspaceDiffScope) -> Void = { _, _, _ in }
 
@@ -88,6 +90,11 @@ struct WorkspaceBrowserView: View {
         }
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { onLocationChange(location) }
+        // Also once the Space's listing arrives, and when switching between Files and Changes.
+        .onChange(of: ActiveFileReveal(file: activeFile, listed: model.listedIdentity, changes: model.showsChanges),
+                  initial: true) { _, reveal in
+            if let file = reveal.file { model.revealActiveFile(file) }
+        }
         .alert("Operation failed", isPresented: Binding(
             get: { model.operationError != nil }, set: { if !$0 { model.operationError = nil } }
         )) {
@@ -979,6 +986,13 @@ enum ExplorerFileCommand: CaseIterable {
         default: return event.charactersIgnoringModifiers?.lowercased() == String(shortcut.key.character)
         }
     }
+}
+
+/// What reveals the active file again in the tree.
+private struct ActiveFileReveal: Equatable {
+    let file: WorkspaceActiveFile?
+    let listed: String?
+    let changes: Bool
 }
 
 /// The window a view is in, for telling apart key events of other windows.

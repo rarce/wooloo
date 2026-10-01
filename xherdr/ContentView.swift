@@ -17,6 +17,12 @@ struct ContentView: View {
         get { documentStore.activeID }
         nonmutating set { documentStore.activeID = newValue }
     }
+    /// The active editor tab's file or changes, for the explorer to select.
+    private var activeFile: WorkspaceActiveFile? {
+        guard let activeDocumentID, let document = documentStore.document(activeDocumentID),
+              document.kind != .commit else { return nil }
+        return WorkspaceActiveFile(location: document.location, path: document.path)
+    }
     @StateObject private var search = WorkspaceSearchModel()
     @State private var explorerLocation: WorkspaceFileLocation?
     @AppStorage("SidebarWidth") private var sidebarWidth = 206.0
@@ -189,6 +195,7 @@ struct ContentView: View {
                                          openDocument(.commit, path: file.path, at: location,
                                                       commit: commit.id, originalPath: file.originalPath)
                                      },
+                                     activeFile: activeFile,
                                      onOpenScopedDiff: { location, path, scope in
                                          openDocument(.change, path: path, at: location, scope: scope)
                                      })

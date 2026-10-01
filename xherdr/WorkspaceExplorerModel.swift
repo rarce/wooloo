@@ -20,6 +20,12 @@ struct WorkspaceFileDraft {
     var hasHadFocus = false
 }
 
+/// The file of the active editor tab, which the explorer selects.
+struct WorkspaceActiveFile: Hashable {
+    let location: WorkspaceFileLocation
+    let path: String
+}
+
 /// Effects of explorer commands beyond files and Git, replaceable in tests.
 struct WorkspaceExplorerEffects {
     var copy: (String) -> Void = { AppActions.copy($0) }
@@ -64,6 +70,8 @@ final class WorkspaceExplorerModel: ObservableObject {
     @Published private(set) var ignoredContentsVersion = 0
     /// The location of the last listing asked for.
     private(set) var location: WorkspaceFileLocation?
+    /// The location `listing` belongs to; the previous Space's stays shown while the next loads.
+    @Published private(set) var listedIdentity: String?
     /// The last operation started, with the reload that follows it, for tests to wait on.
     private(set) var lastOperation: Task<Void, Never>?
     private let treeCache = WorkspaceTreeCache()
@@ -80,6 +88,7 @@ final class WorkspaceExplorerModel: ObservableObject {
 
     func clearListing() {
         listing = nil
+        listedIdentity = nil
         error = nil
     }
 
@@ -89,7 +98,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     func loadListing(at location: WorkspaceFileLocation?, quietly: Bool = false) -> Task<Void, Never>? {
         let isReload = listing != nil && self.location?.identity == location?.identity
         self.location = location
-        guard let location else { listing = nil; return nil }
+        guard let location else { listing = nil; listedIdentity = nil; return nil }
         isLoading = !quietly && !isReload
         error = nil
         let start = TerminalPipelineMetrics.now()
@@ -114,6 +123,7 @@ final class WorkspaceExplorerModel: ObservableObject {
             switch result {
             case .success(let (value, builtTree, kept, contents)):
                 listing = value
+                listedIdentity = location.identity
                 ignoredContents = contents
                 tree.pruneCreated(location: location.identity, exists: exists)
                 filesTree = (builtTree, kept)
@@ -195,6 +205,17 @@ final class WorkspaceExplorerModel: ObservableObject {
             if let contents = try? WorkspaceFiles.folderContents(folder, at: location) { read[folder] = contents }
         }
         return read
+    }
+
+    /// Selects the active editor's file and opens the folders above it, as Zed's auto-reveal
+    /// does. A file the shown tree does not list, such as an ignored one, is left alone, as is
+    /// the tree while an item is being named.
+    func revealActiveFile(_ file: WorkspaceActiveFile) {
+        guard let listing, listedIdentity == file.location.identity, draft == nil else { return }
+        let isChanged = { listing.changes.contains { $0.path == file.path } }
+        let isListed = showsChanges ? isChanged() : listing.files.contains(file.path) && (!modifiedOnly || isChanged())
+        guard isListed else { return }
+        tree.reveal(file.path, in: treeIdentity(file.location))
     }
 
     /// The rows the tree shows, in order; none while its root is collapsed.
