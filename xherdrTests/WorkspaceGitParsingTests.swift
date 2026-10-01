@@ -234,10 +234,24 @@ final class WorkspaceFileOperationHelperTests: XCTestCase {
         XCTAssertEqual(commands(try key("c", [.command, .option])), [.copyPath])
         XCTAssertEqual(commands(try key("C", [.command, .option, .shift])), [.copyRelativePath])
         XCTAssertEqual(commands(try key("n", [.command, .option])), [.newFolder])
-        XCTAssertEqual(commands(try key("\u{7f}", code: 51)), [.trash])
+        XCTAssertEqual(commands(try key("\u{7f}", code: 51)), [.trashAsking])
+        XCTAssertEqual(commands(try key(String(UnicodeScalar(NSDeleteFunctionKey)!), .function, code: 117)), [.trashAsking])
+        XCTAssertEqual(commands(try key("\u{7f}", .command, code: 51)), [.trash])
         XCTAssertEqual(commands(try key("\u{7f}", [.command, .option], code: 51)), [.delete])
         XCTAssertEqual(commands(try key("\r", [.control, .shift], code: 36)), [.openInDefaultApp])
+        XCTAssertEqual(commands(try key("\r", code: 36)), [.rename])
         XCTAssertEqual(commands(try key(String(UnicodeScalar(NSF2FunctionKey)!), .function, code: 120)), [.rename])
+        XCTAssertEqual(commands(try key(String(UnicodeScalar(NSDownArrowFunctionKey)!), [.function, .numericPad], code: 125)),
+                       [.selectNext])
+        XCTAssertEqual(commands(try key(String(UnicodeScalar(NSDownArrowFunctionKey)!), [.command, .function], code: 125)),
+                       [.open])
+        XCTAssertEqual(commands(try key(String(UnicodeScalar(NSLeftArrowFunctionKey)!), [.command, .function], code: 123)),
+                       [.collapseAll])
+        XCTAssertEqual(commands(try key(" ", code: 49)), [.openPreview])
+        XCTAssertEqual(commands(try key("\u{1b}", code: 53)), [.deselect])
+        XCTAssertEqual(commands(try key("F", [.command, .option, .shift], code: 3)), [.findInFolder])
+        XCTAssertEqual(commands(try key(String(UnicodeScalar(NSUpArrowFunctionKey)!), [.shift, .function], code: 126)), [],
+                       "Shift-arrows are left for extending a selection")
         XCTAssertEqual(commands(try key("c")), [])
         XCTAssertEqual(commands(try key("c", [.command, .control])), [])
 

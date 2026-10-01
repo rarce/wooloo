@@ -380,6 +380,129 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertEqual(openedInApp, [repo.absolutePath("a.txt")])
     }
 
+    /// Only the question is checked: trashing for real would fill the Trash of whoever runs the tests.
+    func testDeleteKeyAsksBeforeTrashing() async {
+        await load()
+        XCTAssertTrue(perform(.trashAsking, on: "src"))
+        XCTAssertEqual(model.pendingDelete?.path, "src")
+        XCTAssertEqual(model.pendingDelete?.isDirectory, true)
+        XCTAssertEqual(model.pendingDelete?.permanently, false)
+        XCTAssertTrue(exists("src"))
+    }
+
+    // MARK: Keyboard navigation
+
+    /// A repository with `src/main.swift`, `src/util/x.swift`, `docs/a.md` and `b.txt`.
+    private func loadNested() async throws {
+        repo = try sandbox.repository("nested", files: ["src/main.swift": "1\n", "src/util/x.swift": "2\n",
+                                                       "src/util/y.swift": "3\n", "docs/a.md": "4\n", "b.txt": "5\n"])
+        await load()
+    }
+
+    private var selection: String? { model.tree.selectedPath(in: files) }
+
+    func testArrowsWalkTheRowsShownFromTheRoot() async throws {
+        try await loadNested()
+        XCTAssertTrue(perform(.selectPrevious, on: nil))
+        XCTAssertNil(selection, "Nothing is above the root")
+        XCTAssertTrue(model.perform(.selectNext))
+        XCTAssertEqual(selection, "docs")
+        XCTAssertTrue(model.perform(.selectNext))
+        XCTAssertEqual(selection, "src", "Closed folders are skipped over")
+        XCTAssertTrue(model.perform(.selectNext))
+        XCTAssertEqual(selection, "b.txt")
+        XCTAssertTrue(model.perform(.selectNext))
+        XCTAssertEqual(selection, "b.txt", "The last row stays selected")
+        XCTAssertTrue(model.perform(.selectPrevious))
+        XCTAssertTrue(model.perform(.selectPrevious))
+        XCTAssertTrue(model.perform(.selectPrevious))
+        XCTAssertNil(selection, "Up from the first row selects the root")
+    }
+
+    func testRightOpensAFolderThenEntersIt() async throws {
+        try await loadNested()
+        XCTAssertTrue(perform(.expand, on: "src"))
+        XCTAssertTrue(model.tree.expanded.contains(files + "|src"))
+        XCTAssertEqual(selection, "src")
+        XCTAssertTrue(model.perform(.expand))
+        XCTAssertEqual(selection, "src/util")
+        XCTAssertTrue(model.perform(.expand))
+        XCTAssertTrue(model.perform(.selectNext))
+        XCTAssertEqual(selection, "src/util/x.swift")
+        XCTAssertTrue(model.perform(.expand))
+        XCTAssertEqual(selection, "src/util/x.swift", "A file has nothing to open")
+    }
+
+    func testLeftClosesAFolderThenGoesToItsParent() async throws {
+        try await loadNested()
+        model.tree.reveal("src/util/x.swift", in: files)
+        XCTAssertTrue(model.perform(.collapse))
+        XCTAssertEqual(selection, "src/util", "A file goes to its folder")
+        XCTAssertTrue(model.perform(.collapse))
+        XCTAssertFalse(model.tree.expanded.contains(files + "|src/util"))
+        XCTAssertEqual(selection, "src/util")
+        XCTAssertTrue(model.perform(.collapse))
+        XCTAssertEqual(selection, "src")
+        XCTAssertTrue(model.perform(.collapse))
+        XCTAssertTrue(model.perform(.collapse))
+        XCTAssertNil(selection, "A top-level row goes to the root")
+        XCTAssertTrue(model.perform(.collapse))
+        XCTAssertTrue(model.tree.collapsedRoots.contains(files), "The root closes last")
+        XCTAssertTrue(model.perform(.expand))
+        XCTAssertFalse(model.tree.collapsedRoots.contains(files))
+    }
+
+    func testCollapseAllSelectsTheTopLevelRowThatHeldTheSelection() async throws {
+        try await loadNested()
+        model.tree.reveal("src/util/y.swift", in: files)
+        XCTAssertTrue(model.perform(.collapseAll))
+        XCTAssertTrue(model.tree.expandedFolders(in: files).isEmpty)
+        XCTAssertEqual(selection, "src")
+    }
+
+    func testOpeningAFileOrTogglingAFolder() async throws {
+        try await loadNested()
+        var opened: [(String, Bool)] = []
+        XCTAssertTrue(perform(.openPreview, on: "b.txt"))
+        XCTAssertTrue(model.perform(.openPreview, open: { opened.append(($1, $2)) }))
+        XCTAssertTrue(model.perform(.open, open: { opened.append(($1, $2)) }))
+        XCTAssertEqual(opened.map(\.0), ["b.txt", "b.txt"])
+        XCTAssertEqual(opened.map(\.1), [true, false], "Space previews, Command-Down keeps it open")
+        XCTAssertTrue(perform(.openPreview, on: "docs"))
+        XCTAssertTrue(model.tree.expanded.contains(files + "|docs"))
+        XCTAssertTrue(model.perform(.open))
+        XCTAssertFalse(model.tree.expanded.contains(files + "|docs"))
+    }
+
+    func testFindInFolderSearchesTheSelectedFolderOrTheFilesFolder() async throws {
+        try await loadNested()
+        var searched: [String] = []
+        model.tree.selected = files + "|src/main.swift"
+        XCTAssertTrue(model.perform(.findInFolder, findInFolder: { searched.append($1) }))
+        model.tree.selected = files + "|docs"
+        XCTAssertTrue(model.perform(.findInFolder, findInFolder: { searched.append($1) }))
+        model.tree.selected = nil
+        XCTAssertTrue(model.perform(.findInFolder, findInFolder: { searched.append($1) }))
+        XCTAssertEqual(searched, ["src", "docs", ""])
+    }
+
+    func testTheChangesTreeNavigatesAndOpensButHasNoFileOperations() async throws {
+        try await loadNested()
+        try "changed\n".write(toFile: sandbox.path("nested") + "/b.txt", atomically: true, encoding: .utf8)
+        await load()
+        model.showsChanges = true
+        let changes = "\(repo.identity)|changes"
+        XCTAssertTrue(model.perform(.selectNext))
+        XCTAssertEqual(model.tree.selectedPath(in: changes), "b.txt")
+        var opened: [String] = []
+        XCTAssertTrue(model.perform(.openPreview, open: { _, path, _ in opened.append(path) }))
+        XCTAssertEqual(opened, ["b.txt"])
+        XCTAssertFalse(model.perform(.rename))
+        XCTAssertFalse(model.perform(.trashAsking))
+        XCTAssertTrue(model.perform(.deselect))
+        XCTAssertNil(model.tree.selectedPath(in: changes))
+    }
+
     // MARK: Clipboard
 
     func testCopyThenPasteCopiesIntoTheSelectedFolder() async throws {

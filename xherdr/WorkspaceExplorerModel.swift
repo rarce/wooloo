@@ -5,6 +5,8 @@ struct WorkspaceFileTarget {
     let location: WorkspaceFileLocation
     let path: String
     let isDirectory: Bool
+    /// Deleted for good rather than moved to the Trash.
+    var permanently = true
 }
 
 /// A file or folder being named in the tree: a new one, or one being renamed.
@@ -195,6 +197,13 @@ final class WorkspaceExplorerModel: ObservableObject {
         return read
     }
 
+    /// The rows the tree shows, in order; none while its root is collapsed.
+    func visibleRows(_ listing: WorkspaceFileListing, location: WorkspaceFileLocation) -> [WorkspaceTreeRow] {
+        let identity = treeIdentity(location)
+        guard !tree.collapsedRoots.contains(identity) else { return [] }
+        return shownTree(listing, location: location).visibleRows(expanded: tree.expanded, identity: identity)
+    }
+
     func collapseAll(_ location: WorkspaceFileLocation) {
         tree.collapseAll(treeIdentity(location))
     }
@@ -271,34 +280,103 @@ final class WorkspaceExplorerModel: ObservableObject {
     }
 
     /// Runs a file shortcut on the selected row, or on the Space root when nothing
-    /// is selected. Returns whether the key was used.
-    func perform(_ command: ExplorerFileCommand) -> Bool {
-        // The Changes tree offers only copying paths.
-        guard !showsChanges || command == .copyPath || command == .copyRelativePath,
+    /// is selected. `open` opens a file, in the preview tab when asked; `findInFolder`
+    /// searches a folder. Returns whether the key was used.
+    func perform(_ command: ExplorerFileCommand,
+                 open: (WorkspaceFileLocation, String, Bool) -> Void = { _, _, _ in },
+                 findInFolder: (WorkspaceFileLocation, String) -> Void = { _, _ in }) -> Bool {
+        guard !showsChanges || command.appliesToChanges,
               draft == nil, pendingDelete == nil, let listing, let location else { return false }
         let path = tree.selectedPath(in: treeIdentity(location)) ?? ""
         guard !path.isEmpty || command.appliesToRoot else { return false }
-        let isDirectory = WorkspaceExplorer.isDirectory(path, directories: filesTree(listing, location: location).directories,
-                                                        created: tree.createdDirectories[location.identity] ?? [])
+        let rows = visibleRows(listing, location: location)
+        let row = rows.first { $0.node.path == path }
+        let isDirectory = row?.node.isDirectory ?? WorkspaceExplorer.isDirectory(
+            path, directories: filesTree(listing, location: location).directories,
+            created: tree.createdDirectories[location.identity] ?? []
+        )
         let folder = WorkspaceExplorer.folder(for: path, isDirectory: isDirectory)
         let absolute = location.absolutePath(path)
         switch command {
         case .newFile: startDraft(in: folder, isFolder: false, at: location)
         case .newFolder: startDraft(in: folder, isFolder: true, at: location)
-        case .reveal, .openInDefaultApp, .trash:
+        case .reveal, .openInDefaultApp:
             guard location.isLocal else { return false }
-            if command == .reveal { effects.reveal(absolute) }
-            else if command == .trash { trash(path, in: location) }
-            else { effects.openInDefaultApp(absolute) }
+            if command == .reveal { effects.reveal(absolute) } else { effects.openInDefaultApp(absolute) }
         case .cut, .copy: copyItem(path, in: location, cut: command == .cut)
         case .duplicate: duplicate(path, in: location)
         case .paste: paste(into: folder, in: location)
         case .copyPath: effects.copy(absolute)
         case .copyRelativePath: effects.copy(path)
         case .rename: startRename(path, isDirectory: isDirectory, at: location)
+        // A Space over SSH has no Trash, so its items are deleted, after asking.
+        case .trash where location.isLocal: trash(path, in: location)
+        case .trash, .trashAsking:
+            pendingDelete = WorkspaceFileTarget(location: location, path: path, isDirectory: isDirectory,
+                                                permanently: !location.isLocal)
         case .delete: pendingDelete = WorkspaceFileTarget(location: location, path: path, isDirectory: isDirectory)
+        case .findInFolder: findInFolder(location, folder)
+        case .open, .openPreview:
+            if isDirectory {
+                toggleDirectory(treeIdentity(location) + "|" + path, path: path,
+                                isExpanded: tree.expanded.contains(treeIdentity(location) + "|" + path), location: location)
+            } else {
+                open(location, path, command == .openPreview)
+            }
+        case .deselect: tree.selected = nil
+        case .selectNext, .selectPrevious, .collapse, .expand, .collapseAll:
+            navigate(command, from: path, rows: rows, location: location)
         }
         return true
+    }
+
+    /// Moves the selection through the rows shown, or opens and closes folders, as the arrow
+    /// keys do in Zed. With nothing selected the Space root is, just above the first row.
+    private func navigate(_ command: ExplorerFileCommand, from path: String, rows: [WorkspaceTreeRow],
+                          location: WorkspaceFileLocation) {
+        let identity = treeIdentity(location)
+        let index = path.isEmpty ? nil : rows.firstIndex { $0.node.path == path }
+        let row = index.map { rows[$0] }
+        func select(_ row: WorkspaceTreeRow?) { tree.selected = row.map { identity + "|" + $0.node.path } }
+        /// The nearest row shown above `path` that contains it, or the root.
+        func shownAncestor(in rows: [WorkspaceTreeRow]) -> WorkspaceTreeRow? {
+            rows.last { path.hasPrefix($0.node.path + "/") }
+        }
+        let isExpanded = row.map { tree.expanded.contains(identity + "|" + $0.node.path) } ?? false
+        switch command {
+        case .selectNext:
+            let next = index.map { $0 + 1 } ?? (path.isEmpty ? 0 : rows.count)
+            if next < rows.count { select(rows[next]) }
+            else if index == nil, !path.isEmpty { select(shownAncestor(in: rows)) }
+        case .selectPrevious:
+            if let index { select(index > 0 ? rows[index - 1] : nil) }
+            else if !path.isEmpty { select(shownAncestor(in: rows)) }
+        case .collapse:
+            if path.isEmpty { tree.collapsedRoots.insert(identity) }
+            else if let row, row.node.isDirectory, isExpanded {
+                toggleDirectory(identity + "|" + path, path: path, isExpanded: true, location: location)
+            } else { select(shownAncestor(in: rows)) }
+        case .expand:
+            if path.isEmpty {
+                if tree.collapsedRoots.contains(identity) { tree.collapsedRoots.remove(identity) }
+                else { select(rows.first) }
+            } else if let row, let index, row.node.isDirectory {
+                if !isExpanded {
+                    toggleDirectory(identity + "|" + path, path: path, isExpanded: false, location: location)
+                } else if index + 1 < rows.count, rows[index + 1].node.path.hasPrefix(path + "/") {
+                    select(rows[index + 1])
+                }
+            }
+        case .collapseAll:
+            collapseAll(location)
+            // The selection moves up to the top-level row that held it.
+            if !path.isEmpty, let listing {
+                select(visibleRows(listing, location: location).first {
+                    $0.node.path == path || path.hasPrefix($0.node.path + "/")
+                })
+            }
+        default: break
+        }
     }
 
     func copyItem(_ path: String, in location: WorkspaceFileLocation, cut: Bool) {
@@ -355,9 +433,11 @@ final class WorkspaceExplorerModel: ObservableObject {
         }
     }
 
+    /// Deletes a confirmed target, or moves it to the Trash.
     @discardableResult
     func delete(_ target: WorkspaceFileTarget) -> Task<Void, Never> {
         let location = target.location
+        guard target.permanently else { return trash(target.path, in: location) }
         return runOperation(location) { try WorkspaceFiles.delete(target.path, at: location) } completion: {
             self.tree.forget(target.path, location: location.identity)
         }

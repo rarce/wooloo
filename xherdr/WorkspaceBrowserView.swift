@@ -176,48 +176,55 @@ struct WorkspaceBrowserView: View {
                                                uniquingKeysWith: { first, _ in first })
                 let directoryKinds = WorkspaceExplorer.directoryKinds(listing.changes)
                 let stageStates = model.showsChanges ? WorkspaceExplorer.stageStates(listing.changes) : [:]
-                let rows = shownTree.visibleRows(expanded: model.tree.expanded, identity: model.treeIdentity(location))
+                let rows = model.visibleRows(listing, location: location)
                 let shownDraft = !model.showsChanges && model.draft?.location.identity == location.identity ? model.draft : nil
                 let draftFolder = shownDraft?.renaming == nil ? shownDraft?.folder : nil
                 GeometryReader { viewport in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            treeRoot(location, stageState: listing.hasGit ? stageStates[""] : nil)
-                            if !model.tree.collapsedRoots.contains(model.treeIdentity(location)) {
-                                if draftFolder == "" { draftRow(depth: 1) }
-                                if (model.showsChanges || model.isFilteredFiles) && !listing.hasGit {
-                                    hint("No Git repository in this Space")
-                                } else if shownTree.isEmpty {
-                                    hint(model.showsChanges ? "No changes" : (model.modifiedOnly ? "No modified files" : "No files"))
-                                }
-                                if !model.showsChanges && listing.totalFiles > listing.files.count {
-                                    hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
-                                }
-                                ForEach(rows) { row in
-                                    if shownDraft?.renaming == row.node.path {
-                                        draftRow(depth: row.depth)
-                                    } else {
-                                        treeRow(row, location: location,
-                                                change: changesByPath[row.node.path],
-                                                directoryKind: directoryKinds[row.node.path],
-                                                stageState: listing.hasGit ? stageStates[row.node.path] : nil,
-                                                hasGit: listing.hasGit)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                treeRoot(location, stageState: listing.hasGit ? stageStates[""] : nil)
+                                if !model.tree.collapsedRoots.contains(model.treeIdentity(location)) {
+                                    if draftFolder == "" { draftRow(depth: 1) }
+                                    if (model.showsChanges || model.isFilteredFiles) && !listing.hasGit {
+                                        hint("No Git repository in this Space")
+                                    } else if shownTree.isEmpty {
+                                        hint(model.showsChanges ? "No changes" : (model.modifiedOnly ? "No modified files" : "No files"))
                                     }
-                                    if row.node.isDirectory, draftFolder == row.node.path { draftRow(depth: row.depth + 1) }
+                                    if !model.showsChanges && listing.totalFiles > listing.files.count {
+                                        hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
+                                    }
+                                    ForEach(rows) { row in
+                                        if shownDraft?.renaming == row.node.path {
+                                            draftRow(depth: row.depth)
+                                        } else {
+                                            treeRow(row, location: location,
+                                                    change: changesByPath[row.node.path],
+                                                    directoryKind: directoryKinds[row.node.path],
+                                                    stageState: listing.hasGit ? stageStates[row.node.path] : nil,
+                                                    hasGit: listing.hasGit)
+                                            .id(row.node.path)
+                                        }
+                                        if row.node.isDirectory, draftFolder == row.node.path { draftRow(depth: row.depth + 1) }
+                                    }
                                 }
                             }
+                            .padding(.vertical, 3)
+                            // The space under the last row opens the Space's menu too.
+                            .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
+                            .background {
+                                Color.clear
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        model.tree.selected = nil
+                                        treeFocused = true
+                                    }
+                                    .contextMenu { rootMenu(location) }
+                            }
                         }
-                        .padding(.vertical, 3)
-                        // The space under the last row opens the Space's menu too.
-                        .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
-                        .background {
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    model.tree.selected = nil
-                                    treeFocused = true
-                                }
-                                .contextMenu { rootMenu(location) }
+                        // Keeps a row chosen with the keyboard in view, scrolling no more than needed.
+                        .onChange(of: model.tree.selected) { _, _ in
+                            if let path = model.tree.selectedPath(in: model.treeIdentity(location)) { proxy.scrollTo(path) }
                         }
                     }
                 }
@@ -243,13 +250,20 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
-        .confirmationDialog(model.pendingDelete.map { "Delete “\(($0.path as NSString).lastPathComponent)”?" } ?? "",
+        .confirmationDialog(model.pendingDelete.map {
+                                (($0.permanently ? "Delete “" : "Move “") + ($0.path as NSString).lastPathComponent)
+                                    + ($0.permanently ? "”?" : "” to the Trash?")
+                            } ?? "",
                             isPresented: Binding(get: { model.pendingDelete != nil }, set: { if !$0 { model.pendingDelete = nil } }),
                             presenting: model.pendingDelete) { target in
-            Button("Delete", role: .destructive) { model.delete(target) }
+            Button(target.permanently ? "Delete" : "Move to Trash", role: .destructive) { model.delete(target) }
         } message: { target in
-            Text(target.isDirectory ? "The folder and everything in it are deleted permanently."
-                                    : "The file is deleted permanently.")
+            if target.permanently {
+                Text(target.isDirectory ? "The folder and everything in it are deleted permanently."
+                                        : "The file is deleted permanently.")
+            } else {
+                Text("You can restore it from the Trash.")
+            }
         }
         .confirmationDialog(pendingDiscard.map { "Discard changes to “\($0.name)”?" } ?? "",
                             isPresented: Binding(get: { pendingDiscard != nil }, set: { if !$0 { pendingDiscard = nil } }),
@@ -337,7 +351,9 @@ struct WorkspaceBrowserView: View {
             Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
         }
         Button("Find in Space…", systemImage: "magnifyingglass") { onFindInFolder(location, "") }
+            .keyboardShortcut(ExplorerFileCommand.findInFolder.shortcut)
         Button("Collapse All Folders", systemImage: "rectangle.compress.vertical") { model.collapseAll(location) }
+            .keyboardShortcut(ExplorerFileCommand.collapseAll.shortcut)
         Divider()
         if !model.showsChanges {
             Button(model.modifiedOnly ? "Show All Files" : "Show Modified Only",
@@ -445,7 +461,7 @@ struct WorkspaceBrowserView: View {
                     Rectangle()
                         .fill(Color.primary.opacity(0.10))
                         .frame(width: 1)
-                        .padding(.leading, CGFloat(level) * 19 + 29)
+                        .padding(.leading, CGFloat(level) * 19 + 19)
                         .allowsHitTesting(false)
                 }
             }
@@ -469,6 +485,7 @@ struct WorkspaceBrowserView: View {
                     model.toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
                 }
                 Button("Find in Folder…", systemImage: "magnifyingglass") { onFindInFolder(location, node.path) }
+                    .keyboardShortcut(ExplorerFileCommand.findInFolder.shortcut)
                 if model.showsChanges && location.isLocal {
                     Button("Open in New Tab", systemImage: "terminal") {
                         onNewTab(location.absolutePath(node.path))
@@ -479,12 +496,14 @@ struct WorkspaceBrowserView: View {
                     model.tree.selected = identity
                     onOpenFile(location, node.path, false)
                 }
+                .keyboardShortcut(model.showsChanges ? nil : ExplorerFileCommand.open.shortcut)
                 .disabled(change?.kind == .deleted)
                 if change != nil {
                     Button("Open Changes", systemImage: "arrow.left.arrow.right") {
                         model.tree.selected = identity
                         onOpenDiff(location, node.path, false)
                     }
+                    .keyboardShortcut(model.showsChanges ? ExplorerFileCommand.open.shortcut : nil)
                 }
             }
             Divider()
@@ -682,7 +701,11 @@ struct WorkspaceBrowserView: View {
     private func handleFileShortcut(_ event: NSEvent) -> Bool {
         guard treeFocused, event.window != nil, event.window === windowBox.window,
               let command = ExplorerFileCommand.allCases.first(where: { $0.matches(event) }) else { return false }
-        return model.perform(command)
+        // Holding Return would rename again right after the name is committed.
+        if command == .rename && event.isARepeat { return true }
+        return model.perform(command, open: { location, path, preview in
+            if model.showsChanges { onOpenDiff(location, path, preview) } else { onOpenFile(location, path, preview) }
+        }, findInFolder: onFindInFolder)
     }
 
     /// Removes the name field, dropping its focus first so a later field does not inherit it.
@@ -886,8 +909,10 @@ final class WorkspaceTreeBuilderNode {
 /// focus, so Command-C, Command-D and the rest keep their usual meaning in terminals and editors.
 enum ExplorerFileCommand: CaseIterable {
     case newFile, newFolder, reveal, openInDefaultApp, cut, copy, duplicate, paste
-    case copyPath, copyRelativePath, rename, trash, delete
+    case copyPath, copyRelativePath, rename, trash, trashAsking, delete, findInFolder
+    case selectNext, selectPrevious, collapse, expand, collapseAll, open, openPreview, deselect
 
+    /// The key shown in menus.
     var shortcut: KeyboardShortcut {
         switch self {
         case .newFile: return KeyboardShortcut("n", modifiers: .command)
@@ -900,18 +925,48 @@ enum ExplorerFileCommand: CaseIterable {
         case .paste: return KeyboardShortcut("v", modifiers: .command)
         case .copyPath: return KeyboardShortcut("c", modifiers: [.command, .option])
         case .copyRelativePath: return KeyboardShortcut("c", modifiers: [.command, .option, .shift])
-        case .rename: return KeyboardShortcut(KeyEquivalent(Character(UnicodeScalar(NSF2FunctionKey)!)), modifiers: [])
-        case .trash: return KeyboardShortcut(.delete, modifiers: [])
+        case .rename: return KeyboardShortcut(.return, modifiers: [])
+        case .trash: return KeyboardShortcut(.delete, modifiers: .command)
+        case .trashAsking: return KeyboardShortcut(.delete, modifiers: [])
         case .delete: return KeyboardShortcut(.delete, modifiers: [.command, .option])
+        case .findInFolder: return KeyboardShortcut("f", modifiers: [.command, .option, .shift])
+        case .selectNext: return KeyboardShortcut(.downArrow, modifiers: [])
+        case .selectPrevious: return KeyboardShortcut(.upArrow, modifiers: [])
+        case .collapse: return KeyboardShortcut(.leftArrow, modifiers: [])
+        case .expand: return KeyboardShortcut(.rightArrow, modifiers: [])
+        case .collapseAll: return KeyboardShortcut(.leftArrow, modifiers: .command)
+        case .open: return KeyboardShortcut(.downArrow, modifiers: .command)
+        case .openPreview: return KeyboardShortcut(.space, modifiers: [])
+        case .deselect: return KeyboardShortcut(.escape, modifiers: [])
+        }
+    }
+
+    /// Further keys for the same command: F2 renames, and the forward delete key trashes, as in Zed.
+    private var alternates: [KeyboardShortcut] {
+        switch self {
+        case .rename: return [KeyboardShortcut(KeyEquivalent(Character(UnicodeScalar(NSF2FunctionKey)!)), modifiers: [])]
+        case .trashAsking: return [KeyboardShortcut(.deleteForward, modifiers: [])]
+        default: return []
         }
     }
 
     /// Commands that make sense with nothing selected, on the Space root.
     var appliesToRoot: Bool {
-        [.newFile, .newFolder, .reveal, .openInDefaultApp, .paste, .copyPath].contains(self)
+        [.newFile, .newFolder, .reveal, .openInDefaultApp, .paste, .copyPath, .findInFolder,
+         .selectNext, .selectPrevious, .collapse, .expand, .collapseAll].contains(self)
+    }
+
+    /// Commands that also apply in the Changes tree, which offers no file operations.
+    var appliesToChanges: Bool {
+        [.copyPath, .copyRelativePath, .findInFolder, .selectNext, .selectPrevious, .collapse, .expand,
+         .collapseAll, .open, .openPreview, .deselect].contains(self)
     }
 
     func matches(_ event: NSEvent) -> Bool {
+        ([shortcut] + alternates).contains { Self.shortcut($0, matches: event) }
+    }
+
+    private static func shortcut(_ shortcut: KeyboardShortcut, matches event: NSEvent) -> Bool {
         var modifiers: NSEvent.ModifierFlags = []
         if shortcut.modifiers.contains(.command) { modifiers.insert(.command) }
         if shortcut.modifiers.contains(.option) { modifiers.insert(.option) }
