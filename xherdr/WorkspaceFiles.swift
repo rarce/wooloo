@@ -1197,6 +1197,46 @@ extension WorkspaceFiles {
         return results
     }
 
+    /// The most a drop from Finder sends to an SSH machine at once.
+    static let maximumImportBytes = 256_000_000
+
+    /// Copies files and folders of this Mac, such as ones dropped from Finder, into `directory`
+    /// ("" is the Space root) and returns their new Space-relative paths; a name already taken
+    /// gets a free "name copy" one, as a paste does. An SSH machine is sent each one as a tar
+    /// archive over the shared connection, unpacked beside its destination and then moved there.
+    static func importItems(_ sources: [String], into directory: String,
+                            at location: WorkspaceFileLocation) throws -> [String] {
+        guard let machine = location.machine else { return try paste(sources, into: directory, move: false, at: location) }
+        defer { forgetRecentResults() }
+        if !directory.isEmpty { try validateRelativePath(directory) }
+        let prefix = directory.isEmpty ? "./" : "./" + directory + "/"
+        var results: [String] = []
+        for source in sources {
+            let source = source.count > 1 && source.hasSuffix("/") ? String(source.dropLast()) : source
+            let name = (source as NSString).lastPathComponent
+            try validateName(name)
+            // Without COPYFILE_DISABLE, macOS tar adds "._" files carrying extended attributes.
+            let archive: Data
+            do {
+                archive = try run("/usr/bin/tar", ["-c", "-f", "-", "-C", (source as NSString).deletingLastPathComponent, "./" + name],
+                                  environment: ["COPYFILE_DISABLE": "1"], limit: maximumImportBytes, timeout: 120, label: "tar")
+            } catch WorkspaceFileError.message("Output is too large") {
+                throw WorkspaceFileError.message("\(name) is too large to copy to \(machine.label)")
+            }
+            let candidates = copyNames(for: name, includingOriginal: true).map(quote).joined(separator: " ")
+            let script = "cd \(quote(location.root)) || exit 3\n"
+                + "t=$(mktemp -d \(quote(prefix + ".xherdr-import.XXXXXXXX"))) || exit 1; "
+                + "trap 'rm -rf \"$t\"' EXIT HUP INT TERM; "
+                + "tar -x -f - -C \"$t\" || exit 1; "
+                + "for c in \(candidates); do d=\(quote(prefix))\"$c\"; "
+                + "if [ ! -e \"$d\" ] && [ ! -L \"$d\" ]; then mv \"$t\"/\(quote(name)) \"$d\" && printf '%s' \"$c\"; exit; fi; "
+                + "done; echo 'No free name for the copy' >&2; exit 1"
+            let output = try ssh(machine, script, input: archive, limit: 4_000, timeout: 300, label: "import")
+            results.append(String(prefix.dropFirst(2)) + String(decoding: output, as: UTF8.self))
+        }
+        return results
+    }
+
     /// Names tried for a copy: "a.txt", then "a copy.txt", "a copy 2.txt" and so on.
     static func copyNames(for name: String, includingOriginal: Bool) -> [String] {
         let ext = (name as NSString).pathExtension

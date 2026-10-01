@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct WorkspaceBrowserView: View {
     @Environment(\.xherdrTypography) private var typography
@@ -227,6 +228,8 @@ struct WorkspaceBrowserView: View {
                                         treeFocused = true
                                     }
                                     .contextMenu { rootMenu(location) }
+                                    .onDrop(of: ExplorerDropDelegate.types,
+                                            delegate: ExplorerDropDelegate(row: "", folder: "", location: location, model: model))
                             }
                         }
                         // Keeps a row chosen with the keyboard in view, scrolling no more than needed.
@@ -338,9 +341,12 @@ struct WorkspaceBrowserView: View {
         .overlay(alignment: .trailing) {
             if let stageState { stageToggle(stageState, path: "", location: location) }
         }
+        .background(model.dropFolder == "" ? theme.accent.opacity(0.14) : .clear)
         .help(location.root)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         .contextMenu { rootMenu(location) }
+        .onDrop(of: ExplorerDropDelegate.types,
+                delegate: ExplorerDropDelegate(row: "", folder: "", location: location, model: model))
     }
 
     @ViewBuilder
@@ -422,6 +428,10 @@ struct WorkspaceBrowserView: View {
         let identity = model.treeIdentity(location) + "|" + node.path
         let isExpanded = model.tree.expanded.contains(identity)
         let isSelected = model.tree.selected == identity
+        // A drop goes in the folder under the pointer, or in the folder of the file under it;
+        // that folder and what it shows are highlighted.
+        let dropFolder = node.isDirectory ? node.path : (node.path as NSString).deletingLastPathComponent
+        let isDropTarget = model.dropFolder.map { $0.isEmpty || node.path == $0 || node.path.hasPrefix($0 + "/") } ?? false
         return Button {
             model.tree.selected = identity
             treeFocused = true
@@ -462,6 +472,7 @@ struct WorkspaceBrowserView: View {
             .frame(height: typography.metric(23))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected ? Color.primary.opacity(0.12) : .clear)
+            .background(isDropTarget ? theme.accent.opacity(0.14) : .clear)
             .contentShape(Rectangle())
             .overlay(alignment: .leading) {
                 ForEach(0..<row.depth, id: \.self) { level in
@@ -483,6 +494,9 @@ struct WorkspaceBrowserView: View {
         .overlay(alignment: .trailing) {
             if let stageState { stageToggle(stageState, path: node.path, location: location) }
         }
+        .onDrag { model.startDrag(node.path, in: location) }
+        .onDrop(of: ExplorerDropDelegate.types,
+                delegate: ExplorerDropDelegate(row: node.path, folder: dropFolder, location: location, model: model))
         .help(isIgnored ? node.path + " (ignored by Git)" : node.path)
         .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
         .contextMenu {
@@ -984,6 +998,75 @@ enum ExplorerFileCommand: CaseIterable {
         case KeyEquivalent.delete.character: return event.keyCode == 51
         case KeyEquivalent.return.character: return event.keyCode == 36 || event.keyCode == 76
         default: return event.charactersIgnoringModifiers?.lowercased() == String(shortcut.key.character)
+        }
+    }
+}
+
+/// Drops on a row of the Files tree, or on its root: an item of the tree moves there, or is
+/// copied with Option held, and files from Finder or other apps are copied.
+private struct ExplorerDropDelegate: DropDelegate {
+    static let types: [UTType] = [.fileURL, .plainText]
+    /// The row under the pointer, "" for the root, and the folder a drop there goes in.
+    let row: String
+    let folder: String
+    let location: WorkspaceFileLocation
+    let model: WorkspaceExplorerModel
+
+    private var copies: Bool { NSEvent.modifierFlags.contains(.option) }
+
+    private func action(_ info: DropInfo) -> WorkspaceDropAction? {
+        let dragged = model.draggedItem(info.itemProviders(for: Self.types), location: location)
+        // Text is taken only from the tree's own drags, which carry a remote item's path.
+        guard dragged != nil || info.hasItemsConforming(to: [.fileURL]) else { return nil }
+        return model.dropAction(of: dragged, into: folder, copy: copies)
+    }
+
+    func validateDrop(info: DropInfo) -> Bool { action(info) != nil }
+
+    func dropEntered(info: DropInfo) {
+        model.dragEntered(row: row, folder: folder, location: location)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        switch action(info) {
+        case .move: return DropProposal(operation: .move)
+        case .copy: return DropProposal(operation: .copy)
+        case nil: return DropProposal(operation: .forbidden)
+        }
+    }
+
+    func dropExited(info: DropInfo) {
+        model.dragExited(row: row)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        model.dragEnded()
+        let providers = info.itemProviders(for: Self.types)
+        if let dragged = model.draggedItem(providers, location: location) {
+            return model.dropItem(dragged, into: folder, copy: copies, in: location) != nil
+        }
+        let files = info.itemProviders(for: [.fileURL])
+        guard !files.isEmpty else { return false }
+        let (folder, location, model, copies) = (folder, location, model, copies)
+        Task { @MainActor in
+            var paths: [String] = []
+            for provider in files {
+                if let url = await Self.fileURL(provider) { paths.append(url.path) }
+            }
+            if let dragged = model.draggedItem(files: paths, location: location) {
+                model.dropItem(dragged, into: folder, copy: copies, in: location)
+            } else {
+                model.importFiles(paths, into: folder, in: location)
+            }
+        }
+        return true
+    }
+
+    private static func fileURL(_ provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: NSURL.self) { object, _ in
+                continuation.resume(returning: (object as? NSURL).flatMap { $0.isFileURL ? $0 as URL : nil })
+            }
         }
     }
 }

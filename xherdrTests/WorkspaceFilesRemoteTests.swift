@@ -163,6 +163,21 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.trash("a.txt", at: repo))
     }
 
+    func testFilesOfThisMacAreSentToTheMachine() throws {
+        try sandbox.repository("repo")
+        try sandbox.write(["-notes/todo.txt": "todo\n", "-notes/deep/x.txt": "x\n", "a.txt": "mine\n"], in: "mac")
+        let repo = remote("repo")
+        XCTAssertEqual(try WorkspaceFiles.importItems([sandbox.path("mac/-notes"), sandbox.path("mac/a.txt")],
+                                                      into: "", at: repo),
+                       ["-notes", "a copy.txt"], "A taken name gets a copy name")
+        XCTAssertEqual(try sandbox.read("-notes/deep/x.txt", in: "repo"), "x\n")
+        XCTAssertEqual(try sandbox.read("a copy.txt", in: "repo"), "mine\n")
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\n")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: sandbox.path("repo")).filter { $0.hasPrefix(".xherdr") }
+        XCTAssertEqual(leftovers, [], "The unpacking folder is removed")
+        XCTAssertThrowsError(try WorkspaceFiles.importItems([sandbox.path("mac/a.txt")], into: "../out", at: repo))
+    }
+
     func testRemoteSearch() throws {
         try sandbox.repository("repo", files: ["src/a.swift": "let foo = 1\n", "b.txt": "no match\n"])
         let result = try WorkspaceSearch.search(WorkspaceSearchOptions(query: "foo"), at: remote("repo"))

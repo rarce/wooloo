@@ -20,6 +20,11 @@ struct WorkspaceFileDraft {
     var hasHadFocus = false
 }
 
+/// What a drop on the explorer does.
+enum WorkspaceDropAction {
+    case move, copy
+}
+
 /// The file of the active editor tab, which the explorer selects.
 struct WorkspaceActiveFile: Hashable {
     let location: WorkspaceFileLocation
@@ -462,6 +467,109 @@ final class WorkspaceExplorerModel: ObservableObject {
         return runOperation(location) { try WorkspaceFiles.delete(target.path, at: location) } completion: {
             self.tree.forget(target.path, location: location.identity)
         }
+    }
+
+    // MARK: Drag and drop
+
+    /// The pasteboard type that marks a drag from an explorer tree.
+    static let dragType = "dev.xherdr.explorer-item"
+    /// The item of the last drag started from any explorer tree, as a location identity and a
+    /// path. A drag whose items carry `dragType` is this one.
+    private static var currentDrag: (location: String, path: String)?
+
+    /// What dragging a row carries: the file of a local item, so Finder, other apps and
+    /// terminals take it; the path of a remote one, as text; and `dragType`, so the tree knows it.
+    func startDrag(_ path: String, in location: WorkspaceFileLocation) -> NSItemProvider {
+        Self.currentDrag = (location.identity, path)
+        let absolute = location.absolutePath(path)
+        let provider = location.isLocal ? NSItemProvider(object: URL(fileURLWithPath: absolute) as NSURL)
+                                        : NSItemProvider(object: absolute as NSString)
+        provider.suggestedName = (path as NSString).lastPathComponent
+        provider.registerDataRepresentation(forTypeIdentifier: Self.dragType, visibility: .all) { completion in
+            completion(Data((location.identity + "\n" + path).utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    /// The item of this tree being dragged when `providers` come from an explorer drag of it.
+    func draggedItem(_ providers: [NSItemProvider], location: WorkspaceFileLocation) -> String? {
+        guard let drag = Self.currentDrag, drag.location == location.identity,
+              providers.contains(where: { $0.registeredTypeIdentifiers.contains(Self.dragType) }) else { return nil }
+        return drag.path
+    }
+
+    /// The item of this tree that dropped files are, when they are just the item last dragged
+    /// from it: the drop's own check for a drag whose items lost `dragType` on the way.
+    func draggedItem(files: [String], location: WorkspaceFileLocation) -> String? {
+        guard let drag = Self.currentDrag, drag.location == location.identity,
+              files == [location.absolutePath(drag.path)] else { return nil }
+        return drag.path
+    }
+
+    /// What dropping on `folder` ("" is the root) does: an item of this tree moves, or is copied
+    /// with Option held; files from elsewhere are copied. Nil refuses the drop, as for a folder
+    /// dropped into itself or an item dropped where it already is.
+    func dropAction(of dragged: String?, into folder: String, copy: Bool) -> WorkspaceDropAction? {
+        guard !showsChanges, draft == nil else { return nil }
+        guard let dragged else { return .copy }
+        if folder == dragged || folder.hasPrefix(dragged + "/") { return nil }
+        if !copy && (dragged as NSString).deletingLastPathComponent == folder { return nil }
+        return copy ? .copy : .move
+    }
+
+    /// Moves or copies an item of this tree into `folder`, keeping its open folders and selection.
+    @discardableResult
+    func dropItem(_ path: String, into folder: String, copy: Bool, in location: WorkspaceFileLocation) -> Task<Void, Never>? {
+        guard dropAction(of: path, into: folder, copy: copy) != nil else { return nil }
+        let source = location.absolutePath(path)
+        return runOperation(location) { try WorkspaceFiles.paste([source], into: folder, move: !copy, at: location) } completion: {
+            if !copy, let moved = $0.first {
+                self.tree.move(from: path, to: moved, in: self.treeIdentity(location), location: location.identity)
+            }
+            self.placePasted($0, in: location)
+        }
+    }
+
+    /// Copies files of this Mac, such as ones dropped from Finder, into `folder`.
+    @discardableResult
+    func importFiles(_ paths: [String], into folder: String, in location: WorkspaceFileLocation) -> Task<Void, Never>? {
+        guard !paths.isEmpty, dropAction(of: nil, into: folder, copy: true) != nil else { return nil }
+        return runOperation(location) { try WorkspaceFiles.importItems(paths, into: folder, at: location) } completion: {
+            self.placePasted($0, in: location)
+        }
+    }
+
+    /// The folder a drag hovers over, "" for the root, shown highlighted with what it holds.
+    @Published private(set) var dropFolder: String?
+    /// The row the drag is over, which may be a file of `dropFolder`.
+    private var dropRow: String?
+    private var springLoad: Task<Void, Never>?
+
+    /// Highlights the folder under a drag; a closed folder held under it opens after a moment,
+    /// as in Finder.
+    func dragEntered(row: String, folder: String, location: WorkspaceFileLocation) {
+        dropRow = row
+        dropFolder = folder
+        springLoad?.cancel()
+        let key = treeIdentity(location) + "|" + folder
+        guard row == folder, !folder.isEmpty, !tree.expanded.contains(key) else { return }
+        springLoad = Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, dropRow == row else { return }
+            toggleDirectory(key, path: folder, isExpanded: false, location: location)
+        }
+    }
+
+    func dragExited(row: String) {
+        guard dropRow == row else { return }
+        dragEnded()
+    }
+
+    func dragEnded() {
+        springLoad?.cancel()
+        dropRow = nil
+        dropFolder = nil
     }
 
     /// Expands the folders above `path` and selects it.
