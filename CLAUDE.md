@@ -28,7 +28,7 @@ Benchmarks and trace replay are skipped in normal `test` runs unless their env v
 
 Git, SSH and Herdr socket tests use `WorkspaceGitSandbox` (disposable repos under `/private/tmp/xherdr-tests`, global Git config ignored), a fake `ssh` via `WorkspaceFiles.sshExecutable`, and `FakeHerdrServer`. After changing a dependency, run `scripts/third-party-notices.py` to regenerate `THIRD_PARTY_NOTICES.txt`.
 
-Run the app against an isolated Herdr session, never `default` or the primary one (the app rejects `default`):
+Develop against an isolated Herdr session, never `default` or your primary one. The app opens the last session it used (`default` on first launch), so switch to the test session in the sidebar's session picker:
 
 ```sh
 herdr --session xherdr-ui-test server
@@ -40,7 +40,7 @@ The Xcode project lists sources explicitly: adding a Swift file requires editing
 
 ## Architecture
 
-**Herdr connection (`HerdrConnection.swift`).** `HerdrStore` (the app's `ObservableObject`) talks to Herdr over two Unix sockets under `~/.config/herdr/sessions/<name>/`:
+**Herdr connection (`HerdrConnection.swift`).** `HerdrStore` (the app's `ObservableObject`) talks to Herdr over two Unix sockets in the session directory (`~/.config/herdr/` for `default`, `~/.config/herdr/sessions/<name>/` otherwise; tests repoint `HerdrStore.sessionRoot`):
 - `herdr.sock`: newline-delimited JSON. A persistent `events.subscribe` stream (`HerdrEventStream`) triggers a fresh `session.snapshot` on each event; commands (`workspace.create`, `tab.create`, `pane.split`, `server.reload_config`, …) are one-shot requests via `HerdrSocket`. `herdr api schema --json` is the method contract.
 - `herdr-client.sock`: binary generation-1 client endpoint for the selected tab — streams terminal surfaces and carries keyboard, paste, mouse and split-resize input. `pane.read` / JSON `pane.send_input` are fallbacks when it is unavailable.
 
@@ -50,11 +50,17 @@ The Xcode project lists sources explicitly: adding a Swift file requires editing
 
 **UI.** `ContentView` assembles the left sidebar (spaces, agents, session picker), tab row and terminal panes, and the right sidebar (`WorkspaceBrowserView` Files/Changes, `WorkspaceRepositoryView` history/branches/worktrees, `WorkspaceGitBar`). Editor tabs use the vendored CodeEditSourceEditor (`Vendor/`, pinned, SwiftLint plugins stripped). `HerdrConfig` / `HerdrSettingsView` edit the shared `config.toml` (validated with `herdr config check`, conflict-checked, written atomically, then `server.reload_config`); `HerdrShortcuts` implements Herdr's prefix and direct key bindings from the same file.
 
+**Commands.** Window state lives in `ContentWindowModel`; `ContentCommands` (built by `ContentView` per use) is the single place menu items, shortcuts, dialogs and the command palette act on Herdr, documents, search and the window, with `XherdrCommandAvailability` deciding what applies. View-local commands (editor, explorer) reach the palette through a `PaletteCommandTarget` that the visible view registers and unregisters by owner UUID. Side effects beyond the window go through `ContentCommandEffects` so tests can replace them. A new action usually needs wiring in all of these: menu (`XherdrApp`), availability, `ContentCommands`, and the palette list.
+
+**Models vs. views.** Logic is kept in testable models beside their views: `WorkspaceDocumentStore` (per-Space editor tabs, single preview tab, save/close), `WorkspaceExplorerModel` (multi-selection, create/rename/move/trash with undo and redo), `QuickOpen` (Go to File index and fuzzy matching), `WorkspaceSearch` (project search and replace), `HerdrNotifier` (Herdr's `[ui.sound]`/`[ui.toast]` alerts), `AgentQuota` (Claude Code / Codex subscription limits from undocumented endpoints; parse every field as optional) and `HostStats` (local or SSH CPU/memory sampling).
+
 **Instrumentation env vars** (read by the app): `XHERDR_METRICS_FILE`, `XHERDR_SURFACE_TRACE`, `XHERDR_WINDOW_SIZE`, `XHERDR_TYPING_PROBE*`. Signposts use subsystem `dev.xherdr.terminal`.
 
 ## Working here
 
 - Other agents may edit this working tree concurrently: stage only files you changed.
+- Requires Xcode 26 (a vendored package needs Swift 6.2) and Herdr 0.9+.
+- Keep process, file and SSH work off the main thread; pass command arguments as arrays and quote anything sent to a remote shell with `WorkspaceFiles.quote`.
 - Test Git worktree operations in a disposable repo under `/private/tmp`; normal removal must reject dirty worktrees.
 - For terminal rendering or surface changes, run `scripts/terminal-bench.sh` and `scripts/terminal-e2e.sh` in addition to unit tests.
 - Deferred work is tracked in `TODO.md`; design notes are in `docs/` (`herdr-connection.md`, `git-and-files-research.md`).
