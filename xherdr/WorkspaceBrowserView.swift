@@ -23,6 +23,9 @@ struct WorkspaceBrowserView: View {
     var activeFile: WorkspaceActiveFile?
     /// Opens only a file's staged or unstaged changes.
     var onOpenScopedDiff: (_ location: WorkspaceFileLocation, _ path: String, _ scope: WorkspaceDiffScope) -> Void = { _, _, _ in }
+    /// Receives the command palette's file commands, listed while a tree has focus.
+    var commandTarget: ExplorerCommandTarget?
+    @State private var commandToken = UUID()
 
     @State private var remoteSnapshot: HerdrSnapshot?
     @State private var remoteWorkspaceID: String?
@@ -89,10 +92,14 @@ struct WorkspaceBrowserView: View {
             keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 handleFileShortcut(event) ? nil : event
             }
+            commandTarget?.register(commandToken, available: { treeFocused && model.canPerform($0) }) {
+                _ = performFileCommand($0)
+            }
         }
         .onDisappear {
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
             keyMonitor = nil
+            commandTarget?.unregister(commandToken)
         }
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { onLocationChange(location) }
@@ -868,7 +875,12 @@ struct WorkspaceBrowserView: View {
               let command = ExplorerFileCommand.allCases.first(where: { $0.matches(event) }) else { return false }
         // Holding Return would rename again right after the name is committed.
         if command == .rename && event.isARepeat { return true }
-        return model.perform(command, open: { location, path, preview in
+        return performFileCommand(command)
+    }
+
+    /// Runs a file command from its key or the command palette.
+    private func performFileCommand(_ command: ExplorerFileCommand) -> Bool {
+        model.perform(command, open: { location, path, preview in
             if model.showsChanges { onOpenDiff(location, path, preview) } else { onOpenFile(location, path, preview) }
         }, findInFolder: onFindInFolder)
     }

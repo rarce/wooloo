@@ -72,6 +72,8 @@ final class ContentWindowModel: ObservableObject {
     let quickOpen: QuickOpenModel
     /// The shown document's editor, for editor commands from the palette.
     let editor = EditorCommandTarget()
+    /// The explorer's Files and Changes trees, for their file commands from the palette.
+    let explorer = ExplorerCommandTarget()
 
     /// Tests keep the pickers' recent commands and options out of the app's defaults.
     init(defaults: UserDefaults = .standard) {
@@ -113,7 +115,9 @@ struct ContentCommands {
         return XherdrCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
                                          tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil,
                                          hasFiles: explorerLocation != nil, hasFileDocument: hasFileDocument,
-                                         showsSource: showsSource)
+                                         showsSource: showsSource,
+                                         explorerActions: Set(ExplorerFileCommand.paletteCommands
+                                             .filter(window.explorer.isAvailable).map(\.paletteAction)))
     }
 
     func perform(_ action: String) {
@@ -197,6 +201,9 @@ struct ContentCommands {
         case .editor(let command):
             guard availability.hasFileDocument else { return }
             window.editor.perform(command)
+        // Listed only while the tree had focus; the explorer checks its selection again.
+        case .explorer(let command):
+            window.explorer.perform(command)
         case .commandPalette:
             if window.commandPalette.isPresented {
                 window.commandPalette.move(1)

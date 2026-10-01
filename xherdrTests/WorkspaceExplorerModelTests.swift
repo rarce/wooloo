@@ -334,6 +334,27 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertFalse(perform(.copyPath, on: nil), "Not while a delete waits")
     }
 
+    func testCanPerformListsWhatAppliesToTheSelection() async {
+        XCTAssertFalse(model.canPerform(.newFile), "No listing yet")
+        await load()
+        XCTAssertTrue(model.canPerform(.newFile))
+        XCTAssertFalse(model.canPerform(.rename), "Nothing selected")
+        XCTAssertFalse(model.canPerform(.undo), "Nothing to undo")
+        model.tree.selected = files + "|a.txt"
+        XCTAssertTrue(model.canPerform(.rename))
+        XCTAssertTrue(model.canPerform(.reveal))
+        model.showsChanges = true
+        XCTAssertFalse(model.canPerform(.newFile), "No file operations in the Changes tree")
+        XCTAssertTrue(model.canPerform(.copyPath))
+        model.showsChanges = false
+        XCTAssertTrue(perform(.duplicate, on: "a.txt"))
+        await settle()
+        XCTAssertTrue(model.canPerform(.undo))
+        XCTAssertFalse(model.canPerform(.redo))
+        model.startDraft(in: "", isFolder: false, at: repo)
+        XCTAssertFalse(model.canPerform(.copyPath), "Not while naming an item")
+    }
+
     func testWithNothingSelectedOnlyRootCommandsApply() async {
         await load()
         for command in [ExplorerFileCommand.rename, .delete, .cut, .copy, .duplicate, .trash, .copyRelativePath] {

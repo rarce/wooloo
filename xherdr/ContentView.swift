@@ -198,7 +198,8 @@ struct ContentView: View {
                                      activeFile: activeFile,
                                      onOpenScopedDiff: { location, path, scope in
                                          openDocument(.change, path: path, at: location, scope: scope)
-                                     })
+                                     },
+                                     commandTarget: window.explorer)
                     .frame(width: filesSidebarWidth)
             }
         }

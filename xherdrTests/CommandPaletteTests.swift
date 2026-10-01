@@ -29,11 +29,13 @@ final class CommandPaletteTests: XCTestCase {
         for action in actions {
             XCTAssertNotNil(HerdrCommand(action: action), "\(action) must dispatch to a command")
         }
-        let menu = XherdrCommandItem.all.filter { $0.category != "Editor" }
-        let shortcuts = menu.compactMap(\.shortcutLabel)
-        XCTAssertEqual(Set(shortcuts).count, shortcuts.count, "No two menu commands share a shortcut")
-        let editor = XherdrCommandItem.all.filter { $0.category == "Editor" }.compactMap(\.shortcutLabel)
-        XCTAssertEqual(Set(editor).count, editor.count, "No two editor commands share a shortcut")
+        // Editor and explorer commands act where the keyboard is, so each group is checked alone.
+        for group in [nil, "Editor", "Explorer"] {
+            let shortcuts = XherdrCommandItem.all
+                .filter { group == nil ? !["Editor", "Explorer"].contains($0.category) : $0.category == group }
+                .compactMap(\.shortcutLabel)
+            XCTAssertEqual(Set(shortcuts).count, shortcuts.count, "No two \(group ?? "menu") commands share a shortcut")
+        }
     }
 
     func testShortcutLabelsUseMacNotation() {
@@ -70,6 +72,19 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertEqual(HerdrCommand(action: "editor_find"), .editor(.find))
         XCTAssertEqual(cursor.label, "Editor: Add Cursor Below")
         XCTAssertEqual(cursor.shortcutLabel, "⌥⌘↓")
+    }
+
+    func testExplorerCommandsFollowTheFocusedTree() {
+        XCTAssertEqual(HerdrCommand(action: "explorer_rename"), .explorer(.rename))
+        XCTAssertNil(ExplorerFileCommand(paletteAction: "explorer_selectNext"), "Moving through rows stays on the keys")
+        let rename = XherdrCommandItem.named("explorer_rename")!
+        XCTAssertEqual(rename.label, "Explorer: Rename…")
+        XCTAssertEqual(rename.shortcutLabel, "↩")
+        XCTAssertFalse(rename.isAvailable(everything))
+        var focused = everything
+        focused.explorerActions = ["explorer_rename"]
+        XCTAssertTrue(rename.isAvailable(focused))
+        XCTAssertFalse(XherdrCommandItem.named("explorer_trash")!.isAvailable(focused))
     }
 
     // MARK: Model
@@ -126,6 +141,33 @@ final class CommandPaletteTests: XCTestCase {
     }
 
     // MARK: Running
+
+    func testExplorerCommandsReachTheTreeWhileItHadFocus() throws {
+        let sandbox = try WorkspaceGitSandbox()
+        defer { sandbox.tearDown() }
+        let repo = try sandbox.repository("repo")
+        let window = ContentWindowModel(defaults: defaults)
+        let commands = ContentCommands(window: window, herdr: HerdrStore(), documents: WorkspaceDocumentStore(),
+                                       search: WorkspaceSearchModel(), explorerLocation: repo)
+        var focused = false
+        var received: [ExplorerFileCommand] = []
+        window.explorer.register(UUID(), available: { focused && [.newFile, .copyPath].contains($0) }) {
+            received.append($0)
+        }
+        commands.perform(.commandPalette)
+        XCTAssertFalse(window.commandPalette.results.contains { $0.item.category == "Explorer" }, "The tree lacks focus")
+        window.commandPalette.dismiss()
+
+        focused = true
+        commands.perform(.commandPalette)
+        XCTAssertEqual(Set(window.commandPalette.results.filter { $0.item.category == "Explorer" }.map(\.item.action)),
+                       ["explorer_new_file", "explorer_copy_path"])
+        window.commandPalette.query = "explorer new file"
+        // Focus moves to the palette's field and back before the command runs.
+        focused = false
+        commands.runCommandPaletteSelection()
+        XCTAssertEqual(received, [.newFile], "The command runs although the tree has not taken focus back yet")
+    }
 
     func testEditorCommandsReachTheShownDocument() async throws {
         let sandbox = try WorkspaceGitSandbox()

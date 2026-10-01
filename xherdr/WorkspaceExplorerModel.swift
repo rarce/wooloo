@@ -359,6 +359,22 @@ final class WorkspaceExplorerModel: ObservableObject {
         }
     }
 
+    /// Whether `perform` would act now: the tree shown, the selection, or the Space root when
+    /// nothing is selected, suits the command, and nothing is being named or confirmed. The
+    /// command palette lists only these.
+    func canPerform(_ command: ExplorerFileCommand) -> Bool {
+        guard !showsChanges || command.appliesToChanges,
+              draft == nil, pendingDelete == nil, listing != nil, let location else { return false }
+        let path = tree.selectedPath(in: treeIdentity(location)) ?? ""
+        guard !path.isEmpty || command.appliesToRoot else { return false }
+        switch command {
+        case .reveal, .openInDefaultApp: return location.isLocal
+        case .undo: return undoName(at: location) != nil
+        case .redo: return redoName(at: location) != nil
+        default: return true
+        }
+    }
+
     /// Runs a file shortcut on the selected rows, or on the Space root when nothing is
     /// selected. Cutting, copying, duplicating, copying paths, trashing and deleting act on
     /// every selected row; the rest on the one selected last. `open` opens a file, in the
@@ -366,10 +382,8 @@ final class WorkspaceExplorerModel: ObservableObject {
     func perform(_ command: ExplorerFileCommand,
                  open: (WorkspaceFileLocation, String, Bool) -> Void = { _, _, _ in },
                  findInFolder: (WorkspaceFileLocation, String) -> Void = { _, _ in }) -> Bool {
-        guard !showsChanges || command.appliesToChanges,
-              draft == nil, pendingDelete == nil, let listing, let location else { return false }
+        guard canPerform(command), let listing, let location else { return false }
         let path = tree.selectedPath(in: treeIdentity(location)) ?? ""
-        guard !path.isEmpty || command.appliesToRoot else { return false }
         let rows = visibleRows(listing, location: location)
         let row = rows.first { $0.node.path == path }
         let isDirectory = row?.node.isDirectory ?? WorkspaceExplorer.isDirectory(

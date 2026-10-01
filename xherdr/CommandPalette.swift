@@ -13,6 +13,9 @@ struct XherdrCommandAvailability: Equatable {
     var hasFileDocument = false
     /// That file's source is shown, so its editor can take cursors.
     var showsSource = false
+    /// The palette actions of the explorer commands that apply to its selection; empty unless
+    /// the Files or Changes tree has focus.
+    var explorerActions: Set<String> = []
 }
 
 /// Actions of the open file's editor that the command palette offers. The document view runs
@@ -68,15 +71,19 @@ enum EditorCommand: String, CaseIterable {
     }
 }
 
-/// Where the command palette sends editor commands: the document view shown registers itself.
+/// Where the command palette sends a view's own commands: the view shown registers itself,
+/// with which of its commands apply now.
 @MainActor
-final class EditorCommandTarget {
+final class PaletteCommandTarget<Command> {
     private var owner: UUID?
-    private var handler: ((EditorCommand) -> Void)?
+    private var handler: ((Command) -> Void)?
+    private var available: ((Command) -> Bool)?
 
     /// `owner` identifies the view, so a view going away does not unregister its replacement.
-    func register(_ owner: UUID, _ handler: @escaping (EditorCommand) -> Void) {
+    func register(_ owner: UUID, available: @escaping (Command) -> Bool = { _ in true },
+                  _ handler: @escaping (Command) -> Void) {
         self.owner = owner
+        self.available = available
         self.handler = handler
     }
 
@@ -84,9 +91,74 @@ final class EditorCommandTarget {
         guard self.owner == owner else { return }
         self.owner = nil
         handler = nil
+        available = nil
     }
 
-    func perform(_ command: EditorCommand) { handler?(command) }
+    func isAvailable(_ command: Command) -> Bool { available?(command) ?? false }
+
+    func perform(_ command: Command) { handler?(command) }
+}
+
+typealias EditorCommandTarget = PaletteCommandTarget<EditorCommand>
+typealias ExplorerCommandTarget = PaletteCommandTarget<ExplorerFileCommand>
+
+extension ExplorerFileCommand {
+    /// The explorer commands the palette lists; moving through rows stays on the keys.
+    static let paletteCommands: [Self] = [
+        .newFile, .newFolder, .rename, .duplicate, .cut, .copy, .paste, .copyPath, .copyRelativePath,
+        .reveal, .openInDefaultApp, .trash, .delete, .findInFolder, .collapseAll, .undo, .redo
+    ]
+
+    init?(paletteAction: String) {
+        guard let command = Self.paletteCommands.first(where: { $0.paletteAction == paletteAction }) else { return nil }
+        self = command
+    }
+
+    var paletteAction: String {
+        switch self {
+        case .newFile: return "explorer_new_file"
+        case .newFolder: return "explorer_new_folder"
+        case .rename: return "explorer_rename"
+        case .duplicate: return "explorer_duplicate"
+        case .cut: return "explorer_cut"
+        case .copy: return "explorer_copy"
+        case .paste: return "explorer_paste"
+        case .copyPath: return "explorer_copy_path"
+        case .copyRelativePath: return "explorer_copy_relative_path"
+        case .reveal: return "explorer_reveal"
+        case .openInDefaultApp: return "explorer_open_in_default_app"
+        case .trash: return "explorer_trash"
+        case .delete: return "explorer_delete"
+        case .findInFolder: return "explorer_find_in_folder"
+        case .collapseAll: return "explorer_collapse_all"
+        case .undo: return "explorer_undo"
+        case .redo: return "explorer_redo"
+        default: return "explorer_\(self)"
+        }
+    }
+
+    var paletteTitle: String {
+        switch self {
+        case .newFile: return "New File…"
+        case .newFolder: return "New Folder…"
+        case .rename: return "Rename…"
+        case .duplicate: return "Duplicate"
+        case .cut: return "Cut"
+        case .copy: return "Copy"
+        case .paste: return "Paste"
+        case .copyPath: return "Copy Path"
+        case .copyRelativePath: return "Copy Relative Path"
+        case .reveal: return "Reveal in Finder"
+        case .openInDefaultApp: return "Open in Default App"
+        case .trash: return "Move to Trash"
+        case .delete: return "Delete…"
+        case .findInFolder: return "Find in Folder…"
+        case .collapseAll: return "Collapse All Folders"
+        case .undo: return "Undo File Operation"
+        case .redo: return "Redo File Operation"
+        default: return "\(self)"
+        }
+    }
 }
 
 /// An app command the menu bar and the command palette both offer, by its shortcut action.
@@ -97,6 +169,8 @@ struct XherdrCommandItem: Identifiable, Equatable {
         case fileDocument
         /// A file's source shown in the editor.
         case source
+        /// The focused explorer tree, with a selection the command applies to.
+        case explorer
         /// A Space with at least this many tabs.
         case tabs(Int)
     }
@@ -129,6 +203,7 @@ struct XherdrCommandItem: Identifiable, Equatable {
         case .files: return availability.hasFiles
         case .fileDocument: return availability.hasFileDocument
         case .source: return availability.hasFileDocument && availability.showsSource
+        case .explorer: return availability.explorerActions.contains(action)
         case .tabs(let count): return availability.isConnected && availability.hasSpace && availability.tabCount >= count
         }
     }
@@ -152,9 +227,11 @@ struct XherdrCommandItem: Identifiable, Equatable {
 
     static func named(_ action: String) -> Self? { all.first { $0.action == action } }
 
-    /// Every command: the menu bar's in menu order, then the editor's.
+    /// Every command: the menu bar's in menu order, then the editor's and the explorer's.
     static let all: [Self] = appCommands + EditorCommand.allCases.map {
         Self($0.rawValue, "Editor", $0.title, $0.shortcut, requires: $0.needsSource ? .source : .fileDocument)
+    } + ExplorerFileCommand.paletteCommands.map {
+        Self($0.paletteAction, "Explorer", $0.paletteTitle, $0.shortcut, requires: .explorer)
     }
 
     private static let appCommands: [Self] = [

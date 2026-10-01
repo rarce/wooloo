@@ -47,6 +47,8 @@ enum HerdrCommand: Equatable {
     case commandPalette
     /// An action of the open file's editor, from the command palette.
     case editor(EditorCommand)
+    /// A file command of the focused explorer tree, from the command palette.
+    case explorer(ExplorerFileCommand)
     case copyPaneDirectory, revealPaneDirectory
 
     init?(action: String) {
@@ -84,6 +86,10 @@ enum HerdrCommand: Equatable {
         default:
             if let command = EditorCommand(rawValue: action) {
                 self = .editor(command)
+                return
+            }
+            if let command = ExplorerFileCommand(paletteAction: action) {
+                self = .explorer(command)
                 return
             }
             guard action.hasPrefix("switch_tab_"), let number = Int(action.dropFirst("switch_tab_".count)),
