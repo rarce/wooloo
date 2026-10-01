@@ -34,8 +34,8 @@ private struct QuickOpenPanel: View {
                 Image(systemName: "doc.text.magnifyingglass")
                     .font(.system(size: typography.emphasis))
                     .foregroundStyle(theme.accent)
-                QuickOpenField(text: $model.query, font: .systemFont(ofSize: typography.emphasis),
-                               onMove: { model.move($0) }, onSubmit: onOpen, onCancel: { model.dismiss() })
+                PickerField(text: $model.query, placeholder: "Go to file…", font: .systemFont(ofSize: typography.emphasis),
+                            onMove: { model.move($0) }, onSubmit: onOpen, onCancel: { model.dismiss() })
                 if model.isIndexing { ProgressView().controlSize(.small) }
             }
             .padding(.horizontal, 11)
@@ -54,11 +54,7 @@ private struct QuickOpenPanel: View {
             Divider()
             footer
         }
-        .frame(maxWidth: 620)
-        .background(theme.contentBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12)))
-        .shadow(color: .black.opacity(0.28), radius: 18, y: 6)
+        .pickerPanel(theme)
     }
 
     private var emptyMessage: String {
@@ -76,7 +72,6 @@ private struct QuickOpenPanel: View {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(model.results.enumerated()), id: \.element.path) { index, match in
                         row(match, selected: index == model.selection)
-                            .id(index)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 model.selection = index
@@ -87,7 +82,10 @@ private struct QuickOpenPanel: View {
                 .padding(4)
             }
             .frame(height: min(CGFloat(model.results.count) * rowHeight + 8, 380))
-            .onChange(of: model.selection) { _, selection in proxy.scrollTo(selection) }
+            // Rows are identified by their path; an index would let reused rows keep old contents.
+            .onChange(of: model.selection) { _, _ in
+                if let match = model.selectedMatch { proxy.scrollTo(match.path) }
+            }
         }
     }
 
@@ -122,22 +120,8 @@ private struct QuickOpenPanel: View {
         .background(selected ? theme.rowSelected : Color.clear, in: RoundedRectangle(cornerRadius: 5))
     }
 
-    /// `text` with the matched characters emphasized; it starts `offset` UTF-8 bytes into the path.
     private func highlighted(_ text: String, from offset: Int, _ positions: [Int]) -> AttributedString {
-        let matched = Set(positions)
-        var result = AttributedString()
-        var byte = offset
-        for character in text {
-            var part = AttributedString(String(character))
-            let size = character.utf8.count
-            if (byte..<byte + size).contains(where: matched.contains) {
-                part.foregroundColor = theme.accent
-                part.font = .system(size: typography.body, weight: .bold)
-            }
-            result += part
-            byte += size
-        }
-        return result
+        PickerHighlight.text(text, from: offset, positions, color: theme.accent, size: typography.body)
     }
 
     private var footer: some View {
@@ -162,10 +146,44 @@ private struct QuickOpenPanel: View {
     }
 }
 
-/// The query field. An AppKit field, so ↑, ↓, ⌃N, ⌃P, ↩ and Esc reach the list instead of
+/// Matched characters in a picker row.
+enum PickerHighlight {
+    /// `text` with the matched characters emphasized; it starts `offset` UTF-8 bytes into the
+    /// string `positions` index.
+    static func text(_ text: String, from offset: Int, _ positions: [Int], color: Color, size: CGFloat) -> AttributedString {
+        let matched = Set(positions)
+        var result = AttributedString()
+        var byte = offset
+        for character in text {
+            var part = AttributedString(String(character))
+            let length = character.utf8.count
+            if (byte..<byte + length).contains(where: matched.contains) {
+                part.foregroundColor = color
+                part.font = .system(size: size, weight: .bold)
+            }
+            result += part
+            byte += length
+        }
+        return result
+    }
+}
+
+extension View {
+    /// The floating panel of Go to File and the command palette.
+    func pickerPanel(_ theme: XherdrTheme) -> some View {
+        frame(maxWidth: 620)
+            .background(theme.contentBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12)))
+            .shadow(color: .black.opacity(0.28), radius: 18, y: 6)
+    }
+}
+
+/// A picker's query field. An AppKit field, so ↑, ↓, ⌃N, ⌃P, ↩ and Esc reach the list instead of
 /// moving the caret.
-private struct QuickOpenField: NSViewRepresentable {
+struct PickerField: NSViewRepresentable {
     @Binding var text: String
+    let placeholder: String
     let font: NSFont
     let onMove: (Int) -> Void
     let onSubmit: () -> Void
@@ -180,7 +198,7 @@ private struct QuickOpenField: NSViewRepresentable {
         field.focusRingType = .none
         field.lineBreakMode = .byTruncatingTail
         field.cell?.usesSingleLineMode = true
-        field.placeholderString = "Go to file…"
+        field.placeholderString = placeholder
         field.delegate = context.coordinator
         DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
         return field
@@ -193,9 +211,9 @@ private struct QuickOpenField: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: QuickOpenField
+        var parent: PickerField
 
-        init(_ parent: QuickOpenField) { self.parent = parent }
+        init(_ parent: PickerField) { self.parent = parent }
 
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }

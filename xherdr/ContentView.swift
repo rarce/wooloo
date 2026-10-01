@@ -58,21 +58,13 @@ struct ContentView: View {
         .tint(theme.accent)
         .task { herdr.start() }
         .focusedSceneValue(\.xherdrCommands, XherdrCommandContext(
-            isConnected: herdr.isConnected,
-            hasSpace: selectedWorkspace != nil,
-            tabCount: selectedTabs.count,
-            hasPane: herdr.selectedPaneID != nil,
-            hasFiles: explorerLocation != nil,
+            availability: commands.availability,
             showsSidebar: window.showsSidebar,
             showsFilesSidebar: window.showsFilesSidebar,
             perform: handleShortcut
         ))
         .onDisappear { herdr.stop() }
-        .overlay {
-            QuickOpenOverlay(model: window.quickOpen) { commands.openQuickOpenSelection() }
-                .environment(\.xherdrTheme, theme)
-                .environment(\.xherdrTypography, textScale)
-        }
+        .overlay { pickers }
         .overlay { HerdrToastStack(notifier: notifier) }
         .onAppear {
             notifier.onOpenPane = { focusPane($0) }
@@ -136,6 +128,16 @@ struct ContentView: View {
         } message: {
             Text("Processes running in its terminals will be terminated.")
         }
+    }
+
+    /// Go to File and the command palette, over the whole window.
+    private var pickers: some View {
+        ZStack {
+            QuickOpenOverlay(model: window.quickOpen) { commands.openQuickOpenSelection() }
+            CommandPaletteOverlay(model: window.commandPalette) { commands.runCommandPaletteSelection() }
+        }
+        .environment(\.xherdrTheme, theme)
+        .environment(\.xherdrTypography, textScale)
     }
 
     private func content(totalWidth: CGFloat) -> some View {
@@ -211,6 +213,7 @@ struct ContentView: View {
         Button("Replace in Project…", systemImage: "text.magnifyingglass") { openSearch(replace: true) }
         Button("Go to File…", systemImage: "doc.text.magnifyingglass") { commands.perform(.quickOpen) }
             .disabled(explorerLocation == nil)
+        Button("Command Palette…", systemImage: "command") { commands.perform(.commandPalette) }
         Divider()
         Button("Keyboard Shortcuts…", systemImage: "keyboard") { commands.perform(.help) }
         Button("Herdr Settings…", systemImage: "gearshape") { commands.perform(.settings) }
@@ -821,7 +824,8 @@ struct ContentView: View {
                         effects: ContentCommandEffects(reloadAppConfig: {
                             shortcutMap = HerdrShortcutMap.load()
                             themes.reload()
-                        }))
+                        }),
+                        bindingLabel: { [shortcutMap] in shortcutMap.displayLabel(for: $0) })
     }
 
     private func openSearch(replace: Bool) {

@@ -46,7 +46,7 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 
 ## Go to File and command palette
 
-- [ ] Command palette (⇧⌘P): every menu and shortcut action, with its binding, recently used first, filtered to what applies to the focused terminal, editor or explorer.
+- [ ] Command palette: also list the editor's and explorer's own actions (Save, Find, New File…), which are local buttons rather than `HerdrCommand`s.
 - [ ] Go to File: show each file's Git status color, as the explorer does.
 - [ ] Go to File: offer to create the typed path when no file matches, as Zed does.
 - [ ] Go to File: a toggle to include files ignored by Git.

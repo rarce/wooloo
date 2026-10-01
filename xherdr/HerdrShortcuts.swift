@@ -43,6 +43,8 @@ enum HerdrCommand: Equatable {
     case projectSearch(replace: Bool)
     /// Go to File; while it is open, selects the next file.
     case quickOpen
+    /// The command palette; while it is open, selects the next command.
+    case commandPalette
     case copyPaneDirectory, revealPaneDirectory
 
     init?(action: String) {
@@ -74,6 +76,7 @@ enum HerdrCommand: Equatable {
         case "project_search": self = .projectSearch(replace: false)
         case "project_replace": self = .projectSearch(replace: true)
         case "quick_open": self = .quickOpen
+        case "command_palette": self = .commandPalette
         case "copy_pane_cwd": self = .copyPaneDirectory
         case "reveal_pane_cwd": self = .revealPaneDirectory
         default:

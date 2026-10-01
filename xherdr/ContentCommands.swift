@@ -66,6 +66,13 @@ final class ContentWindowModel: ObservableObject {
     @Published var closeTarget: HerdrCloseTarget?
     /// Go to File; `QuickOpenOverlay` observes it.
     let quickOpen = QuickOpenModel()
+    /// The command palette; `CommandPaletteOverlay` observes it.
+    let commandPalette: CommandPaletteModel
+
+    /// Tests keep the palette's recent commands out of the app's defaults.
+    init(defaults: UserDefaults = .standard) {
+        commandPalette = CommandPaletteModel(defaults: defaults)
+    }
 }
 
 /// Effects of window commands beyond Herdr and the window, replaceable in tests.
@@ -88,6 +95,15 @@ struct ContentCommands {
     /// Where project search looks: the explorer's location.
     var explorerLocation: WorkspaceFileLocation?
     var effects = ContentCommandEffects()
+    /// An action's Herdr key binding in Mac notation, shown in the command palette.
+    var bindingLabel: (String) -> String? = { _ in nil }
+
+    /// Which commands apply now, for the menu bar and the command palette.
+    var availability: XherdrCommandAvailability {
+        XherdrCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
+                                  tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil,
+                                  hasFiles: explorerLocation != nil)
+    }
 
     func perform(_ action: String) {
         guard let command = HerdrCommand(action: action) else { return }
@@ -162,14 +178,35 @@ struct ContentCommands {
             if window.quickOpen.isPresented {
                 window.quickOpen.move(1)
             } else if let explorerLocation {
+                window.commandPalette.dismiss()
                 let current = documents.activeID.flatMap(documents.document)
                 window.quickOpen.present(at: explorerLocation, recents: documents.recentPaths(at: explorerLocation),
                                          current: current?.location == explorerLocation ? current?.path : nil)
+            }
+        case .commandPalette:
+            if window.commandPalette.isPresented {
+                window.commandPalette.move(1)
+            } else {
+                window.quickOpen.dismiss()
+                let availability = availability
+                let items = XherdrCommandItem.all.filter { $0.isAvailable(availability) }
+                let bindings = Dictionary(items.compactMap { item in bindingLabel(item.action).map { (item.action, $0) } },
+                                          uniquingKeysWith: { first, _ in first })
+                window.commandPalette.present(items, bindings: bindings)
             }
         case .copyPaneDirectory, .revealPaneDirectory:
             guard let cwd = herdr.selectedPanes.first(where: { $0.paneID == herdr.selectedPaneID })?.cwd else { return }
             if command == .copyPaneDirectory { effects.copy(cwd) } else { effects.reveal(cwd) }
         }
+    }
+
+    /// Runs the command palette's selected command where the keyboard was before it opened.
+    func runCommandPaletteSelection() {
+        let palette = window.commandPalette
+        guard let item = palette.selectedMatch?.item else { return }
+        palette.dismiss()
+        palette.record(item.action)
+        perform(item.action)
     }
 
     /// Opens Go to File's selected file, at the line and column typed after its name.
