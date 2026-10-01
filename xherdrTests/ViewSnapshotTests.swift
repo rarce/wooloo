@@ -278,6 +278,53 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    /// The Files tree scrolled into Sources/App, with Sources and App pinned at its top.
+    func testExplorerStickyFolders() throws {
+        let (sandbox, repo) = try snapshotRepository()
+        defer { sandbox.tearDown() }
+        let defaults = UserDefaults.standard
+        let savedCollapsed = defaults.object(forKey: "RepositoryCollapsed")
+        defer { defaults.set(savedCollapsed, forKey: "RepositoryCollapsed") }
+        defaults.set(true, forKey: "RepositoryCollapsed")
+        let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: [
+            "workspaces": [["workspace_id": "repo", "label": "repo"]],
+            "tabs": [["tab_id": "repo:t1", "workspace_id": "repo", "label": "1"]],
+            "panes": [["pane_id": "p1", "workspace_id": "repo", "tab_id": "repo:t1", "cwd": repo.root]],
+            "agents": [], "layouts": [], "focused_pane_id": "p1",
+        ] as [String: Any]))
+        let location = try XCTUnwrap(WorkspaceFiles.location(snapshot: snapshot, workspaceID: "repo",
+                                                             session: "test", machine: nil))
+        let model = WorkspaceExplorerModel()
+        let identity = model.treeIdentity(location)
+        for folder in ["build", "docs", "Sources", "Sources/App", "Sources/Core"] { model.tree.expand(folder, in: identity) }
+        let view = WorkspaceBrowserView(localSnapshot: snapshot, localWorkspaceID: "repo", localSession: "test",
+                                        machine: nil, refreshVersion: 0,
+                                        onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in }, onNewTab: { _ in },
+                                        onNewSpace: { _, _ in }, onLocationChange: { _ in },
+                                        onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in },
+                                        onOpenCommitFile: { _, _, _ in }, model: model)
+        var scrolled = false
+        try assertSnapshot(render(view, size: NSSize(width: 300, height: 340), settle: 5) {
+            guard model.listing != nil, !model.isLoading else { return false }
+            guard !scrolled else { return true }
+            // The root row, then build, its log, docs, its two files, Sources and App above the top.
+            guard let scrollView = rendered.flatMap({ Self.treeScrollView(in: $0) }) else { return false }
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: 27 + 6 * 23 + 8))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            scrolled = true
+            return false
+        }, named: "explorer-sticky")
+        try skipIfRecorded()
+    }
+
+    /// The scroll view of the explorer's tree: the one that can scroll.
+    private static func treeScrollView(in view: NSView) -> NSScrollView? {
+        if let scrollView = view as? NSScrollView, let document = scrollView.documentView,
+           document.frame.height > scrollView.contentView.bounds.height + 1 { return scrollView }
+        for subview in view.subviews { if let found = treeScrollView(in: subview) { return found } }
+        return nil
+    }
+
     /// The repository panel's history, a commit's files, and its branches and worktrees.
     func testRepository() throws {
         let (sandbox, repo) = try snapshotRepository()

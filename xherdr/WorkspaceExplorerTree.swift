@@ -117,6 +117,23 @@ enum WorkspaceExplorer {
         return kinds
     }
 
+    /// The folders pinned at the top of the tree while it scrolls, outermost first, as in VS
+    /// Code: the folders holding the row that shows just below them. `top` is the index of the
+    /// row at the top of the view. A folder lets go once the row below it is no longer its own.
+    static func stickyRows(_ rows: [WorkspaceTreeRow], top: Int, limit: Int = 5) -> [WorkspaceTreeRow] {
+        guard top >= 0 else { return [] }
+        var sticky: [WorkspaceTreeRow] = []
+        for depth in 1...max(limit, 1) {
+            let index = top + depth
+            guard index < rows.count, rows[index].depth > depth,
+                  // The nearest row above at this depth is the folder holding it.
+                  let folder = rows[..<index].last(where: { $0.depth == depth }), folder.node.isDirectory,
+                  rows[index].node.path.hasPrefix(folder.node.path + "/") else { break }
+            sticky.append(folder)
+        }
+        return sticky
+    }
+
     static func fileIcon(_ path: String) -> String {
         switch (path as NSString).pathExtension.lowercased() {
         case "swift": return "swift"

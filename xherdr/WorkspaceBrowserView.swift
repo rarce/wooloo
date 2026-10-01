@@ -40,6 +40,11 @@ struct WorkspaceBrowserView: View {
     @State private var historyPath: String?
     /// Changes waiting for confirmation before they are discarded.
     @State private var pendingDiscard: PendingDiscard?
+    /// The index of the row at the top of the tree's view, once it scrolls past the first row,
+    /// for the folders pinned above it.
+    @State private var stickyTop: Int?
+    /// Where the rows start in the tree's content, below the root and its hints.
+    @State private var rowsOffset: CGFloat = 0
 
     private var snapshot: HerdrSnapshot? {
         machine == nil ? localSnapshot : remoteSnapshot
@@ -202,6 +207,12 @@ struct WorkspaceBrowserView: View {
                                     if !model.showsChanges && listing.totalFiles > listing.files.count {
                                         hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
                                     }
+                                    Color.clear
+                                        .frame(height: 0)
+                                        .background(GeometryReader { anchor in
+                                            Color.clear.preference(key: ExplorerScrollMetrics.self, value: ExplorerScrollMetrics(
+                                                rowsTop: anchor.frame(in: .named(ExplorerScrollMetrics.space)).minY))
+                                        })
                                     ForEach(rows) { row in
                                         if shownDraft?.renaming == row.node.path {
                                             draftRow(depth: row.depth)
@@ -218,6 +229,10 @@ struct WorkspaceBrowserView: View {
                                 }
                             }
                             .padding(.vertical, 3)
+                            .background(GeometryReader { content in
+                                Color.clear.preference(key: ExplorerScrollMetrics.self, value: ExplorerScrollMetrics(
+                                    contentTop: content.frame(in: .named(ExplorerScrollMetrics.space)).minY))
+                            })
                             // The space under the last row opens the Space's menu too.
                             .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
                             .background {
@@ -231,6 +246,22 @@ struct WorkspaceBrowserView: View {
                                     .onDrop(of: ExplorerDropDelegate.types,
                                             delegate: ExplorerDropDelegate(row: "", folder: "", location: location, model: model))
                             }
+                        }
+                        .coordinateSpace(name: ExplorerScrollMetrics.space)
+                        .onPreferenceChange(ExplorerScrollMetrics.self) { metrics in
+                            // The rows' start is measured while it is in view, and kept once it scrolls away.
+                            if let rowsTop = metrics.rowsTop, let contentTop = metrics.contentTop,
+                               rowsTop - contentTop != rowsOffset {
+                                rowsOffset = rowsTop - contentTop
+                            }
+                            guard let contentTop = metrics.contentTop else { return }
+                            let scrolled = -contentTop - rowsOffset
+                            let top = scrolled > 0 ? Int(scrolled / typography.metric(23)) : nil
+                            if top != stickyTop { stickyTop = top }
+                        }
+                        .overlay(alignment: .top) {
+                            stickyFolders(rows, location: location, listing: listing, stageStates: stageStates,
+                                          directoryKinds: directoryKinds, proxy: proxy)
                         }
                         // Keeps a row chosen with the keyboard in view, scrolling no more than needed.
                         .onChange(of: model.tree.selected) { _, _ in
@@ -375,6 +406,40 @@ struct WorkspaceBrowserView: View {
         Button("Refresh", systemImage: "arrow.clockwise") { refresh() }
         Divider()
         pathActions(location, path: "")
+    }
+
+    /// The folders holding the rows in view, pinned at the top while the tree scrolls. Clicking
+    /// one selects it and scrolls back to it, just below the folders that hold it.
+    @ViewBuilder
+    private func stickyFolders(_ rows: [WorkspaceTreeRow], location: WorkspaceFileLocation, listing: WorkspaceFileListing,
+                               stageStates: [String: WorkspaceFileChange.StageState],
+                               directoryKinds: [String: WorkspaceFileChange.Kind], proxy: ScrollViewProxy) -> some View {
+        let sticky = stickyTop.map { WorkspaceExplorer.stickyRows(rows, top: $0) } ?? []
+        if !sticky.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(sticky) { row in
+                    treeRow(row, location: location, change: nil, directoryKind: directoryKinds[row.node.path],
+                            stageState: listing.hasGit ? stageStates[row.node.path] : nil, hasGit: listing.hasGit)
+                        .allowsHitTesting(false)
+                        .overlay {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    model.tree.selected = model.treeIdentity(location) + "|" + row.node.path
+                                    treeFocused = true
+                                    guard let index = rows.firstIndex(where: { $0.node.path == row.node.path }) else { return }
+                                    proxy.scrollTo(rows[max(0, index - (row.depth - 1))].node.path, anchor: .top)
+                                }
+                                .onDrop(of: ExplorerDropDelegate.types,
+                                        delegate: ExplorerDropDelegate(row: row.node.path, folder: row.node.path,
+                                                                       location: location, model: model))
+                        }
+                }
+            }
+            .background(theme.sidebarBackground)
+            .overlay(alignment: .bottom) { Divider() }
+            .shadow(color: .black.opacity(0.18), radius: 3, y: 2)
+        }
     }
 
     /// The name field of a file or folder being created, indented as its first child, or of
@@ -1068,6 +1133,21 @@ private struct ExplorerDropDelegate: DropDelegate {
                 continuation.resume(returning: (object as? NSURL).flatMap { $0.isFileURL ? $0 as URL : nil })
             }
         }
+    }
+}
+
+/// Where the tree's content and its first row are in the scrolled view, for the pinned folders.
+private struct ExplorerScrollMetrics: PreferenceKey, Equatable {
+    static let space = "explorer-scroll"
+    var contentTop: CGFloat?
+    var rowsTop: CGFloat?
+
+    static var defaultValue = ExplorerScrollMetrics()
+
+    static func reduce(value: inout ExplorerScrollMetrics, nextValue: () -> ExplorerScrollMetrics) {
+        let next = nextValue()
+        value.contentTop = next.contentTop ?? value.contentTop
+        value.rowsTop = next.rowsTop ?? value.rowsTop
     }
 }
 

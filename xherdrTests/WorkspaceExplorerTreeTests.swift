@@ -119,6 +119,23 @@ final class WorkspaceExplorerTests: XCTestCase {
         XCTAssertEqual(mixed["b"], .untracked, "New files outrank renames")
     }
 
+    func testStickyFoldersHoldTheRowBelowThem() {
+        let rows = WorkspaceTree(paths: ["a/b/c/1.txt", "a/b/c/2.txt", "a/b/3.txt", "a/4.txt", "z.txt"])
+            .visibleRows(expanded: ["s|a", "s|a/b", "s|a/b/c"], identity: "s")
+        XCTAssertEqual(rows.map(\.node.path), ["a", "a/b", "a/b/c", "a/b/c/1.txt", "a/b/c/2.txt", "a/b/3.txt", "a/4.txt", "z.txt"])
+        func sticky(_ top: Int, limit: Int = 5) -> [String] {
+            WorkspaceExplorer.stickyRows(rows, top: top, limit: limit).map(\.node.path)
+        }
+        XCTAssertEqual(sticky(0), ["a", "a/b", "a/b/c"])
+        XCTAssertEqual(sticky(1), ["a", "a/b", "a/b/c"])
+        XCTAssertEqual(sticky(2), ["a", "a/b"], "a/b/c lets go once a/b/3.txt would show below it")
+        XCTAssertEqual(sticky(4), ["a"], "Only a holds a/4.txt")
+        XCTAssertEqual(sticky(6), [], "z.txt is at the top level")
+        XCTAssertEqual(sticky(1, limit: 2), ["a", "a/b"])
+        XCTAssertEqual(sticky(-1), [])
+        XCTAssertEqual(sticky(20), [])
+    }
+
     func testFileIcons() {
         XCTAssertEqual(WorkspaceExplorer.fileIcon("a/B.SWIFT"), "swift")
         XCTAssertEqual(WorkspaceExplorer.fileIcon("README.markdown"), "doc.richtext")
