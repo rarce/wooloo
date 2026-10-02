@@ -7,9 +7,8 @@ xherdr is a native macOS (14+) SwiftUI client for [Herdr](https://herdr.dev/), a
 ## Commands
 
 ```sh
-# Build (ad hoc signature; keep it — without a signature macOS refuses notification permission)
-xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' \
-  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
+# Build (the project signs ad hoc; keep a signature — without one macOS refuses notification permission)
+xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' build
 
 # Unit tests: same command with `test`. Single class or method:
 #   ... test -only-testing:xherdrTests/SurfaceDecodingTests

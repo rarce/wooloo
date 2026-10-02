@@ -6,14 +6,13 @@ Thanks for helping. Bug reports, ideas and pull requests are all welcome. For a 
 
 You need macOS 14 or later, Xcode 26 (one vendored package needs Swift 6.2), Git, and [Herdr](https://herdr.dev/) 0.9 or later.
 
-Build with an ad hoc signature, so no developer account is needed:
+The project signs ad hoc ("Sign to Run Locally"), so no developer account is needed:
 
 ```sh
-xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' \
-  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
+xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' build
 ```
 
-Keep the signature: with `CODE_SIGNING_ALLOWED=NO` the app lacks its bundle identity and macOS refuses its notification permission. For interactive checks, open the project in Xcode and run the `xherdr` scheme on My Mac.
+Keep a signature: with `CODE_SIGNING_ALLOWED=NO` the app lacks its bundle identity and macOS refuses its notification permission. For interactive checks, open the project in Xcode and run the `xherdr` scheme on My Mac.
 
 Develop against a separate Herdr session, never your main one:
 

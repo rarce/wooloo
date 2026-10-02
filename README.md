@@ -68,11 +68,10 @@ There is no prebuilt release yet; build from source.
 ```sh
 git clone https://github.com/rarce/xherdr.git
 cd xherdr
-xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' \
-  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
+xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' build
 ```
 
-The ad hoc signature needs no developer account; keep it, since macOS refuses notification permission to an unsigned app. You can also open `xherdr.xcodeproj` in Xcode and run the `xherdr` scheme on **My Mac**.
+The project signs ad hoc ("Sign to Run Locally"), so no developer account is needed. Keep a signature: macOS refuses notification permission to an unsigned app. You can also open `xherdr.xcodeproj` in Xcode and run the `xherdr` scheme on **My Mac**.
 
 xherdr connects to Herdr's `default` session on first launch. To try it without touching your main session, start a separate one and pick it in the sidebar's session picker:
 
