@@ -314,8 +314,27 @@ struct WorkspaceDocumentView: View {
 
     private var preview: some View {
         MarkdownPreviewView(text: document.text, path: document.path, location: document.location,
-                            onOpenFile: onOpenFile, highlight: previewHighlight, focus: previewFocus)
+                            onOpenFile: onOpenFile, highlight: previewHighlight, focus: previewFocus,
+                            onToggleTask: toggleTask, onRevealLine: revealSource)
             .frame(minWidth: 200)
+    }
+
+    /// A checkbox clicked in the preview. The change is unsaved, like an edit in the source; in
+    /// Split it goes through the editor so ⌘Z undoes it.
+    private func toggleTask(line: Int, checked: Bool) {
+        guard document.kind == .file, !document.isLoading,
+              let edit = MarkdownTasks.toggle(line: line, checked: checked, in: document.text) else { return }
+        if document.markdownMode != .split || !revealCoordinator.replace([edit]) {
+            document.text = (document.text as NSString).replacingCharacters(in: edit.range, with: edit.text)
+        }
+    }
+
+    /// A block double-clicked in the preview: shows the source beside it at the block's line.
+    private func revealSource(line: Int) {
+        guard document.kind == .file else { return }
+        if document.markdownMode == .preview { document.markdownMode = .split }
+        document.reveal = WorkspaceDocumentReveal(line: line, range: nil)
+        document.focusRequest = UUID()
     }
 
     // MARK: Change bars
@@ -490,14 +509,17 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     }
 
     /// Replaces ranges from last to first as one undoable edit.
-    func replace(_ replacements: [(range: NSRange, text: String)]) {
-        guard let textView = controller?.textView, textView.isEditable else { return }
+    /// Returns false when no editor is shown to take the edit.
+    @discardableResult
+    func replace(_ replacements: [(range: NSRange, text: String)]) -> Bool {
+        guard let textView = controller?.textView, textView.isEditable else { return false }
         let undo = textView._undoManager
         undo?.beginGrouping()
         for replacement in replacements.sorted(by: { $0.range.location > $1.range.location }) {
             textView.replaceCharacters(in: replacement.range, with: replacement.text)
         }
         undo?.endGrouping()
+        return true
     }
 
     private func removeFindLayers() {

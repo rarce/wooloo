@@ -46,8 +46,12 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
         // xherdr patch: anchor each top-level block so find can scroll to it.
         let nodeViews = document.children.map { child in
             let nodeView = renderer.visit(child)
+            // xherdr patch: a double-click reveals the block's source line.
+            let line = child.range?.lowerBound.line
             return MarkdownNodeView {
-                nodeView.id(MarkdownBlockAnchor(index: child.indexInParent))
+                nodeView
+                    .modifier(MarkdownRevealSourceGesture(line: line))
+                    .id(MarkdownBlockAnchor(index: child.indexInParent))
             }
         }
         return MarkdownNodeView(nodeViews, layoutPolicy: .linebreak, spacing: configuration.blockSpacing)

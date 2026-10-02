@@ -42,6 +42,10 @@ struct MarkdownPreviewView: View {
     let onOpenFile: (String) -> Void
     var highlight: MarkdownSearchHighlight?
     var focus: MarkdownFindFocus?
+    /// Toggles a task list item at a 1-based source line; nil leaves checkboxes read-only.
+    var onToggleTask: ((_ line: Int, _ checked: Bool) -> Void)?
+    /// Shows the source at a 1-based line, on double-click of a block.
+    var onRevealLine: ((Int) -> Void)?
 
     @Environment(\.xherdrTheme) private var theme
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
@@ -123,6 +127,8 @@ struct MarkdownPreviewView: View {
             .markdownElementRenderer(.image(SpaceImageRenderer(location: location),
                                             urlScheme: MarkdownSpaceLinks.scheme))
             .markdownSearchHighlight(highlight)
+            .markdownTaskToggle(onToggleTask)
+            .markdownRevealSource(onRevealLine)
             .environment(\.openURL, OpenURLAction { open($0) })
             .environment(\.xherdrTheme, theme)
             .foregroundStyle(theme.text)
@@ -139,6 +145,24 @@ struct MarkdownPreviewView: View {
                                                       documentPath: path) else { return .discarded }
         onOpenFile(target)
         return .handled
+    }
+}
+
+/// Task list edits made from the rendered preview, as GitHub and GitLab do for comments.
+enum MarkdownTasks {
+    /// A list marker, possibly inside block quotes, then the `[ ]`, `[x]` or `[X]` box.
+    private static let item = try! NSRegularExpression(
+        pattern: #"^(?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX])\]"#)
+
+    /// The edit that marks the task item on a 1-based line done or not done, or nil when the
+    /// line no longer holds a task in the other state, e.g. after the source changed under the preview.
+    static func toggle(line: Int, checked: Bool, in text: String) -> (range: NSRange, text: String)? {
+        let ns = text as NSString
+        guard let lineRange = WorkspaceSearch.range(ofLine: line, in: ns),
+              let match = item.firstMatch(in: text, range: lineRange) else { return nil }
+        let box = match.range(at: 1)
+        guard (ns.substring(with: box) != " ") != checked else { return nil }
+        return (box, checked ? "x" : " ")
     }
 }
 

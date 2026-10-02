@@ -48,7 +48,7 @@ struct MarkdownList<List: ListItemContainer>: View {
         
         var body: some View {
             if let checkBox = listItem.checkbox {
-                MarkdownCheckbox(checkbox: checkBox)
+                MarkdownCheckbox(checkbox: checkBox, line: listItem.range?.lowerBound.line)
             } else if case let .left(unorderedMarker) = list.marker {
                 SwiftUI.Text(unorderedMarker.marker(listDepth: list.depth))
                     .backdeployedMonospaced(unorderedMarker.monospaced)
@@ -61,8 +61,25 @@ struct MarkdownList<List: ListItemContainer>: View {
     
     private struct MarkdownCheckbox: View {
         var checkbox: Checkbox
-        
+        /// xherdr patch: the item's source line, so a click can toggle it in the source.
+        var line: Int?
+        @Environment(\.markdownSourceActions.toggleTask) private var toggleTask
+
         var body: some View {
+            if let line, let toggleTask {
+                Button {
+                    toggleTask(line, checkbox == .unchecked)
+                } label: {
+                    symbol.contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .help(checkbox == .checked ? "Mark as not done" : "Mark as done")
+            } else {
+                symbol
+            }
+        }
+
+        @ViewBuilder private var symbol: some View {
             switch checkbox {
             case .checked:
                 Image(systemName: "checkmark.circle.fill")

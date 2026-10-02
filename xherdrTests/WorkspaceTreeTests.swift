@@ -1,4 +1,7 @@
+import AppKit
+import SwiftUI
 import XCTest
+import Markdown
 @testable import xherdr
 
 /// The explorer's folder tree: folders first, single-folder chains on one row, only expanded
@@ -103,6 +106,166 @@ final class MarkdownSpaceLinksTests: XCTestCase {
         ```
         ![escape](../../../secret.png)
         """)
+    }
+}
+
+/// Task list checkboxes clicked in the preview edit only their own `[ ]` in the source.
+final class MarkdownTasksTests: XCTestCase {
+    private let markdown = """
+        # Plan
+
+        - [ ] write
+        - [x] review
+          * [X] nested
+        1. [ ] ordered
+        2) [x] parenthesis
+        > - [ ] quoted
+        >> + [ ] twice quoted
+
+        ```
+        - [ ] in code
+        ```
+        - [~] not applicable
+        """
+
+    private func toggled(_ line: Int, _ checked: Bool) -> String? {
+        MarkdownTasks.toggle(line: line, checked: checked, in: markdown).map {
+            (markdown as NSString).replacingCharacters(in: $0.range, with: $0.text)
+        }
+    }
+
+    private func line(_ number: Int, of text: String?) -> String? {
+        text.map { $0.components(separatedBy: "\n")[number - 1] }
+    }
+
+    func testTogglesTheBoxOnTheGivenLine() {
+        XCTAssertEqual(line(3, of: toggled(3, true)), "- [x] write")
+        XCTAssertEqual(line(4, of: toggled(4, false)), "- [ ] review")
+        XCTAssertEqual(line(5, of: toggled(5, false)), "  * [ ] nested")
+        XCTAssertEqual(line(6, of: toggled(6, true)), "1. [x] ordered")
+        XCTAssertEqual(line(7, of: toggled(7, false)), "2) [ ] parenthesis")
+        XCTAssertEqual(line(8, of: toggled(8, true)), "> - [x] quoted")
+        XCTAssertEqual(line(9, of: toggled(9, true)), ">> + [x] twice quoted")
+        // Nothing else changes.
+        XCTAssertEqual(toggled(3, true)?.replacingOccurrences(of: "- [x] write", with: "- [ ] write"), markdown)
+    }
+
+    /// A stale preview (the source changed under it) or a line without a task is left alone.
+    func testRejectsLinesNotInTheExpectedState() {
+        XCTAssertNil(toggled(3, false), "already not done")
+        XCTAssertNil(toggled(4, true), "already done")
+        XCTAssertNil(toggled(1, true), "a heading")
+        XCTAssertNil(toggled(15, true), "an unknown marker")
+        XCTAssertNil(toggled(99, true), "past the end")
+    }
+
+    /// The lines the renderer reports are the parser's list item lines; code is never a task.
+    /// swift-markdown's cmark-gfm reads no tasks inside block quotes, so those render as text.
+    func testParsedTaskItemsMapToTheirLines() {
+        var lines: [Int] = []
+        func collect(_ markup: any Markup) {
+            if let item = markup as? ListItem, item.checkbox != nil, let line = item.range?.lowerBound.line {
+                lines.append(line)
+            }
+            for child in markup.children { collect(child) }
+        }
+        collect(Document(parsing: markdown))
+        XCTAssertEqual(lines, [3, 4, 5, 6, 7])
+        for line in lines {
+            XCTAssertNotNil(MarkdownTasks.toggle(line: line, checked: line == 3 || line == 6, in: markdown), "line \(line)")
+        }
+    }
+}
+
+/// Clicks in a hosted preview reach the checkbox and the double-click handler, in both styles.
+@MainActor
+final class MarkdownPreviewInteractionTests: XCTestCase {
+    private var toggles: [(line: Int, checked: Bool)] = []
+    private var reveals: [Int] = []
+
+    private func host(_ style: MarkdownPreviewStyle) -> (NSWindow, NSView) {
+        let defaults = UserDefaults.standard
+        let saved = defaults.object(forKey: MarkdownPreviewStyle.storageKey)
+        addTeardownBlock { defaults.set(saved, forKey: MarkdownPreviewStyle.storageKey) }
+        defaults.set(style.rawValue, forKey: MarkdownPreviewStyle.storageKey)
+        let view = MarkdownPreviewView(
+            text: "# Title\n\n- [ ] first\n- [x] second\n\nA paragraph of plain text to double-click.\n",
+            path: "README.md", location: WorkspaceFileLocation(machine: nil, session: "s", workspaceID: "w", workspaceLabel: "w", root: "/private/tmp"), onOpenFile: { _ in },
+            onToggleTask: { [unowned self] in toggles.append(($0, $1)) },
+            onRevealLine: { [unowned self] in reveals.append($0) })
+        let host = NSHostingView(rootView: view.frame(width: 700, height: 500))
+        host.frame = NSRect(x: 0, y: 0, width: 700, height: 500)
+        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFrontRegardless()
+        addTeardownBlock { window.close() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        return (window, host)
+    }
+
+    /// The center of the blue pixels, in window coordinates: the checked box is the only element
+    /// drawn in the tint, which is blue in both styles. Bitmaps carry the display's color profile,
+    /// so the test looks for a hue rather than the exact color.
+    private func checkedBox(in host: NSView) -> NSPoint? {
+        let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        var sum = NSPoint.zero, count = 0.0
+        let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                guard let color = bitmap.colorAt(x: x, y: y),
+                      color.blueComponent > 0.5, color.blueComponent - color.redComponent > 0.25 else { continue }
+                sum.x += CGFloat(x); sum.y += CGFloat(y); count += 1
+            }
+        }
+        guard count > 20 else { return nil }
+        // Bitmap rows run top-down; the window's y axis runs bottom-up.
+        return NSPoint(x: sum.x / count / scale, y: host.bounds.height - sum.y / count / scale)
+    }
+
+    private func click(_ point: NSPoint, in window: NSWindow, clicks: Int = 1) {
+        func event(_ type: NSEvent.EventType, _ count: Int) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                               context: nil, eventNumber: 0, clickCount: count, pressure: 1)!
+        }
+        for count in 1...clicks {
+            // A control tracks the mouse after mouse-down until it reads the mouse-up from the queue;
+            // views that don't track get it sent directly.
+            let up = event(.leftMouseUp, count)
+            NSApp.postEvent(up, atStart: false)
+            // Through the app, as real clicks are, so local event monitors see it.
+            NSApp.sendEvent(event(.leftMouseDown, count))
+            if let queued = NSApp.nextEvent(matching: .leftMouseUp, until: Date(), inMode: .default, dequeue: true) {
+                window.sendEvent(queued)
+            }
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    }
+
+    func testClickingACheckboxTogglesItsLine() {
+        for style in MarkdownPreviewStyle.allCases {
+            toggles = []
+            let (window, host) = host(style)
+            guard let box = checkedBox(in: host) else { return XCTFail("No checked box drawn in \(style)") }
+            click(box, in: window)
+            XCTAssertEqual(toggles.map(\.line), [4], "\(style)")
+            XCTAssertEqual(toggles.map(\.checked), [false], "\(style)")
+        }
+    }
+
+    func testDoubleClickingABlockRevealsItsLine() {
+        for style in MarkdownPreviewStyle.allCases {
+            reveals = []
+            let (window, host) = host(style)
+            guard let box = checkedBox(in: host) else { return XCTFail("No checked box drawn in \(style)") }
+            // The paragraph is the next block below the second task.
+            let paragraph = NSPoint(x: box.x + 60, y: box.y - (style == .theme ? 30 : 42))
+            click(paragraph, in: window, clicks: 2)
+            XCTAssertEqual(reveals, [6], "\(style)")
+            XCTAssertTrue(toggles.isEmpty, "\(style)")
+        }
     }
 }
 

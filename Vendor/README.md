@@ -33,6 +33,7 @@ The local `Package.swift` files keep the runtime dependencies and omit test targ
 - MarkdownView: `markdownBlockSpacing(_:)` sets the spacing between top-level blocks, which upstream fixes at 8 pt.
 - MarkdownView: `markdownSearchHighlight(_:)` colors find matches in `Text` and `InlineCode` nodes (`Modifiers/SearchHighlightModifier.swift`), and each top-level block carries a `MarkdownBlockAnchor` id so find can scroll to it. Because of the anchors, adjacent paragraphs are separate views spaced by the block spacing instead of one text joined with blank lines.
 - MarkdownView: `markdownHeadingDivider(_:)` draws a rule under headings of chosen levels (`Modifiers/Heading/HeadingDividerModifier.swift`, applied in `MarkdownHeading`), for the GitHub-style document preview.
+- MarkdownView: `markdownTaskToggle(_:)` makes task list checkboxes buttons that report the item's 1-based source line and new state, and `markdownRevealSource(_:)` reports double-clicks on top-level blocks with their first line (`Modifiers/SourceActionsModifier.swift`, applied in `MarkdownList` and `MarkdownViewRenderer.visitDocument`). The host edits the source; the renderer stays read-only.
 - BeautifulMermaid: the AppKit paths in `ImageRenderer.swift` flip the bitmap context before drawing; upstream renders diagrams upside down on macOS.
 
 The local `Package.swift` files drop test targets, examples, and MarkdownView's default `LaTeX` trait, so SwiftMath and its ~7 MB of math fonts are not linked and `ENABLE_MATH_RENDERING` stays undefined.
