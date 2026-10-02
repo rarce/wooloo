@@ -2,6 +2,12 @@
 
 ## Open-source release
 
+- [x] Review the history and the code for secrets, personal data and build artifacts. None were found apart from the commit email below; a local SSH alias in `docs/perf/files-baseline.jsonl` was replaced with a generic one.
+- [x] Ask before reading agent sign-ins: the QUOTAS section is off until the user turns it on, reads this Mac's Keychain in-process, and never shows credential output in errors (`c3defc5`).
+- [x] Sign ad hoc by default, so a clone builds without flags or a developer account (`c969796`).
+- [x] Compile the typing probe only for `scripts/terminal-e2e.sh`, and create metrics and surface traces with mode 0600 (`249c33d`).
+- [x] Keep create, rename, move, delete, discard and paste inside the Space through linked folders (`bb22647`).
+- [x] Describe the current features in the README, with a screenshot, and set the GitHub description and topics.
 - [ ] Decide whether to rewrite history to hide the personal commit email. Every commit so far is authored with a personal Gmail address, and only a history rewrite removes it. Future commits can use the GitHub noreply address.
 - [ ] Check the use of the "herdr" name with Herdr's maintainers before announcing the project.
 - [ ] Confirm the bundle identifier `dev.xherdr.app`: it implies the `xherdr.dev` domain. Change it if that domain is not ours.
