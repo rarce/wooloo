@@ -15,7 +15,8 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 - Spaces, tabs and split panes follow Herdr's [workspace, tab, pane and agent model](https://herdr.dev/docs/concepts/). Create, rename, close and zoom them from the sidebar, tab row, context menus, menu bar or command palette.
 - The Agents section shows every agent with its Space, tab, summary and status, and can be filtered to the selected Space.
 - Alerts when an agent finishes or needs input: Herdr's sounds, in-app toasts or system notifications, with unread marks until you look at the pane.
-- Claude Code and Codex subscription usage in the sidebar, plus the connected host's CPU, memory, disk and uptime, local or over SSH.
+- The connected host's CPU, memory, disk and uptime, local or over SSH.
+- Optional Claude Code and Codex plan usage in the sidebar (see [Agent quotas](#agent-quotas)).
 - A session picker for any Herdr session on the machine.
 
 ### Terminal
@@ -43,6 +44,16 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 
 - Guided sections for Herdr's terminal defaults, worktrees, appearance, notifications, headless size and shortcuts, plus a full TOML editor. Saving validates with `herdr config check`, refuses to overwrite outside changes, and reloads the running session.
 - One theme shared by the interface, editor and terminals, with adjustable text sizes.
+
+## Agent quotas
+
+The QUOTAS section is off until you turn it on. Once on, every two minutes while a window is active, xherdr:
+
+- reads Claude Code's sign-in from `~/.claude/.credentials.json`, or else from the Keychain item `Claude Code-credentials` (macOS asks you to allow xherdr the first time);
+- reads Codex's sign-in from `${CODEX_HOME:-~/.codex}/auth.json` and the rate limits in its newest session logs;
+- sends those tokens to the usage endpoints that Claude Code (`api.anthropic.com/api/oauth/usage`) and the Codex CLI (`chatgpt.com/backend-api/wham/usage`) use themselves.
+
+When the explorer points at an SSH machine, the files are read there and the requests leave from your Mac. xherdr keeps the tokens in memory only and never refreshes them. Neither endpoint is documented, so the section can break when either service changes. Turn it off from the section's context menu.
 
 ## Requirements
 

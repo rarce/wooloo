@@ -144,6 +144,41 @@ final class AgentQuotaTests: XCTestCase {
         XCTAssertEqual(files, AgentQuotaFiles())
     }
 
+    func testProbeReadsThisMacsKeychainInProcessWithoutACredentialsFile() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("xherdr-quota-\(UUID())").path
+        try FileManager.default.createDirectory(atPath: home + "/.claude", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let environment = ["HOME": home, "CODEX_HOME": ""]
+        let item = Data(#"{"claudeAiOauth": {"accessToken": "keychain-token"}}"#.utf8)
+
+        let found = try AgentQuotaProbe.read(machine: nil, keychain: true, environment: environment,
+                                             readKeychain: { .some(item) })
+        XCTAssertEqual(found.claudeCredentials, item)
+        XCTAssertFalse(found.claudeKeychainFailed)
+
+        let denied = try AgentQuotaProbe.read(machine: nil, keychain: true, environment: environment,
+                                              readKeychain: { .some(nil) })
+        XCTAssertNil(denied.claudeCredentials)
+        XCTAssertTrue(denied.claudeKeychainFailed)
+
+        let missing = try AgentQuotaProbe.read(machine: nil, keychain: true, environment: environment,
+                                               readKeychain: { nil })
+        XCTAssertNil(missing.claudeCredentials)
+        XCTAssertFalse(missing.claudeKeychainFailed)
+
+        let skipped = try AgentQuotaProbe.read(machine: nil, keychain: false, environment: environment,
+                                               readKeychain: { XCTFail("Keychain read without asking"); return nil })
+        XCTAssertTrue(skipped.claudeInstalled)
+    }
+
+    func testProbeErrorsNeverCarrySignIns() {
+        XCTAssertEqual(AgentQuotaProbe.redacted("claude=1\nclaude_credentials=eyJzZWNyZXQiOiAx"),
+                       "Could not read the agents' sign-ins")
+        XCTAssertEqual(AgentQuotaProbe.redacted("codex=1\ncodex_auth=e30="), "Could not read the agents' sign-ins")
+        XCTAssertEqual(AgentQuotaProbe.redacted("ssh: connect to host dev port 22: Connection refused"),
+                       "ssh: connect to host dev port 22: Connection refused")
+    }
+
     func testProbeParsesAFailedKeychainRead() {
         let files = AgentQuotaProbe.parse("claude=1\nclaude_keychain=failed\ncodex=1\n")
         XCTAssertTrue(files.claudeInstalled)

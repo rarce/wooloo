@@ -711,7 +711,7 @@ final class ViewSnapshotTests: XCTestCase {
         let values: [String: Any] = [
             "HerdrLastSession": "work", "SidebarWidth": 206.0, "FilesSidebarWidth": 244.0,
             "AgentsInSelectedSpaceOnly": false, "HostStatsCollapsed": false, "RepositoryCollapsed": false,
-            "AgentQuotasCollapsed": true,
+            "AgentQuotasCollapsed": true, AgentQuotaSection.enabledKey: true,
             XherdrTypography.baseKey: XherdrTypography.defaultBase, XherdrTypography.codeKey: XherdrTypography.defaultCode,
             HerdrNotifier.dockBadgeKey: false, DiffDisplayMode.storageKey: DiffDisplayMode.unified.rawValue,
         ]

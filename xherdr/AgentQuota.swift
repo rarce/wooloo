@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// A coding agent whose subscription limits the sidebar shows.
 enum AgentProvider: String, CaseIterable, Identifiable {
@@ -187,7 +188,8 @@ struct AgentQuotaFiles: Equatable {
 
 enum AgentQuotaProbe {
     /// A POSIX sh script printing `key=value` lines, file contents in base64. `keychain` also reads
-    /// Claude Code's Keychain item through `security` (macOS) when there is no credentials file.
+    /// Claude Code's Keychain item through `security` when there is no credentials file; only an SSH
+    /// machine asks for it, since xherdr reads this Mac's Keychain itself.
     static func script(keychain: Bool) -> String {
         """
         LC_ALL=C; export LC_ALL
@@ -238,17 +240,59 @@ enum AgentQuotaProbe {
         return files
     }
 
-    /// Reads `machine`, or this Mac when nil; `environment` overrides this Mac's, for tests.
+    /// Reads `machine`, or this Mac when nil; `environment` overrides this Mac's, for tests. On this
+    /// Mac the Keychain is read by xherdr itself, so macOS names xherdr when it asks for permission
+    /// and "Always Allow" does not open the item to every process that can run `security`.
     static func read(machine: HerdrMachineProfile?, keychain: Bool,
-                     environment: [String: String] = [:]) throws -> AgentQuotaFiles {
-        let script = script(keychain: keychain)
-        let data = if let machine {
-            try WorkspaceFiles.remoteOutput(machine, script: script, label: "agent-quotas", limit: 256_000)
-        } else {
-            try WorkspaceFiles.run("/bin/sh", ["-c", script], environment: environment, limit: 256_000,
-                                   timeout: 30, label: "agent-quotas")
+                     environment: [String: String] = [:],
+                     readKeychain: () -> Data?? = AgentQuotaKeychain.claudeCredentials) throws -> AgentQuotaFiles {
+        let script = script(keychain: keychain && machine != nil)
+        let data: Data
+        do {
+            data = if let machine {
+                try WorkspaceFiles.remoteOutput(machine, script: script, label: "agent-quotas", limit: 256_000)
+            } else {
+                try WorkspaceFiles.run("/bin/sh", ["-c", script], environment: environment, limit: 256_000,
+                                       timeout: 30, label: "agent-quotas")
+            }
+        } catch let error as WorkspaceFileError {
+            throw WorkspaceFileError.message(redacted(error.localizedDescription))
         }
-        return parse(String(decoding: data, as: UTF8.self))
+        var files = parse(String(decoding: data, as: UTF8.self))
+        if machine == nil, keychain, files.claudeInstalled, files.claudeCredentials == nil {
+            switch readKeychain() {
+            case .some(.some(let credentials)): files.claudeCredentials = credentials
+            case .some(.none): files.claudeKeychainFailed = true
+            case .none: break
+            }
+        }
+        return files
+    }
+
+    /// A failed run reports its output when stderr is empty, and the script prints sign-ins as it
+    /// goes, so such a message never reaches the sidebar.
+    static func redacted(_ message: String) -> String {
+        let secretKeys = ["claude_credentials=", "codex_auth=", "codex_log="]
+        return secretKeys.contains { message.contains($0) } ? "Could not read the agents' sign-ins" : message
+    }
+}
+
+/// Claude Code's sign-in in this Mac's Keychain, read in-process.
+enum AgentQuotaKeychain {
+    /// The item's data; `.some(nil)` when it exists but cannot be read, nil when there is none.
+    static func claudeCredentials() -> Data?? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true,
+        ]
+        var result: CFTypeRef?
+        switch SecItemCopyMatching(query as CFDictionary, &result) {
+        case errSecSuccess: return .some(result as? Data)
+        case errSecItemNotFound: return .none
+        default: return .some(nil)
+        }
     }
 }
 

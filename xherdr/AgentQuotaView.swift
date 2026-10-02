@@ -3,24 +3,39 @@ import SwiftUI
 /// The sidebar's QUOTAS section: how much of the Claude Code and Codex subscription limits have
 /// been used, and when each window resets. They are read on the machine the explorer points at,
 /// since that is where the agents run and are signed in. Collapsed, it shows each agent's most
-/// used window. It reads them only while its window is active.
+/// used window. It reads them only while its window is active, and only after the user turns it
+/// on, since it reads the agents' sign-ins and sends their tokens to Anthropic and OpenAI.
 struct AgentQuotaSection: View {
+    static let enabledKey = "AgentQuotasEnabled"
+
     @Environment(\.controlActiveState) private var activeState
     @AppStorage("AgentQuotasCollapsed") private var collapsed = true
+    @AppStorage(Self.enabledKey) private var enabled = false
     @State private var acquired: AgentQuotaMonitor?
 
     let machine: HerdrMachineProfile?
 
     /// The machine to poll, or nil while nothing should be polled.
     private var wanted: HerdrMachineProfile?? {
-        activeState == .inactive ? nil : .some(machine)
+        !enabled || activeState == .inactive ? nil : .some(machine)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             SidebarSectionToggle(title: "QUOTAS", systemImage: "chart.bar.xaxis",
                                  help: "Claude and Codex Quotas", collapsed: $collapsed)
-            AgentQuotaList(monitor: acquired ?? AgentQuotaMonitor.shared(for: machine), collapsed: collapsed)
+            if enabled {
+                AgentQuotaList(monitor: acquired ?? AgentQuotaMonitor.shared(for: machine), collapsed: collapsed)
+            } else {
+                AgentQuotaOptIn(collapsed: collapsed) { enabled = true }
+            }
+        }
+        .contextMenu {
+            if enabled {
+                Button("Turn Off Quotas") { enabled = false }
+            } else {
+                Button("Turn On Quotas") { enabled = true }
+            }
         }
         .onAppear { update(wanted) }
         .onChange(of: wanted) { _, wanted in update(wanted) }
@@ -33,6 +48,34 @@ struct AgentQuotaSection: View {
         acquired?.release()
         next?.acquire()
         acquired = next
+    }
+}
+
+/// What turning quotas on does, shown until the user agrees to it.
+private struct AgentQuotaOptIn: View {
+    @Environment(\.xherdrTypography) private var typography
+    let collapsed: Bool
+    let enable: () -> Void
+
+    var body: some View {
+        if collapsed {
+            Text("Off")
+                .font(.system(size: typography.secondary))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 8)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Shows how much of your Claude Code and Codex plans you have used. To read it, xherdr "
+                     + "reads their sign-ins (~/.claude, Claude Code's Keychain item and ~/.codex) on this Mac "
+                     + "or the SSH machine, and sends the tokens to Anthropic and OpenAI every two minutes.")
+                    .font(.system(size: typography.secondary))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Turn On Quotas", action: enable)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 8)
+        }
     }
 }
 
