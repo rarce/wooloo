@@ -92,6 +92,7 @@ struct WorkspaceDocumentView: View {
     /// Set by Replace so the next match is selected once the edited text comes back.
     @State private var revealsAfterEdit = false
     @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
+    @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
 
     private var language: CodeLanguage {
         CodeLanguage.detectLanguageFrom(
@@ -135,6 +136,15 @@ struct WorkspaceDocumentView: View {
                     .labelsHidden()
                     .frame(width: 210)
                     .help("Show the Markdown source, the rendered preview, or both")
+                    if document.markdownMode != .source {
+                        Toggle(isOn: Binding(get: { previewStyle == .document },
+                                             set: { previewStyle = $0 ? .document : .theme })) {
+                            Image(systemName: previewStyle == .document ? "doc.richtext.fill" : "doc.richtext")
+                                .foregroundStyle(previewStyle == .document ? theme.accent : .secondary)
+                        }
+                        .toggleStyle(.button)
+                        .help("Show the preview as a white document page instead of in the theme's colors")
+                    }
                 }
                 if document.diffPatches.count > 1 {
                     Picker("Changes", selection: $document.diffScope) {

@@ -17,6 +17,8 @@ struct MarkdownHeading: View {
     @Environment(\.markdownFontGroup) private var fontGroup
     @Environment(\.headingStyleGroup) private var headingStyleGroup
     @Environment(\.headingPaddings) private var paddings
+    // xherdr patch: an optional rule under the heading.
+    @Environment(\.markdownHeadingDivider) private var divider
     
     private var font: Font {
         let font: any CustomCTFontConvertible = switch heading.level {
@@ -63,7 +65,24 @@ struct MarkdownHeading: View {
         .font(font)
         .foregroundStyle(foregroundStyle)
         .accessibilityHeading(accessibilityHeadingLevel)
+        .modifier(HeadingDividerOverlay(divider: divider?.levels.contains(heading.level) == true ? divider : nil))
         .padding(paddings[heading.level])
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// xherdr patch: the rule under a heading, inside its padding so it spans the text column.
+private struct HeadingDividerOverlay: ViewModifier {
+    let divider: MarkdownHeadingDivider?
+
+    func body(content: Content) -> some View {
+        if let divider {
+            VStack(alignment: .leading, spacing: divider.spacing) {
+                content.frame(maxWidth: .infinity, alignment: .leading)
+                Rectangle().fill(divider.color).frame(height: 1)
+            }
+        } else {
+            content
+        }
     }
 }

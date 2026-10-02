@@ -505,9 +505,31 @@ final class ViewSnapshotTests: XCTestCase {
     func testMarkdownPreview() throws {
         let (sandbox, repo) = try snapshotSources()
         defer { sandbox.tearDown() }
-        let view = WorkspaceDocumentView(document: try loadedDocument("README.md", at: repo), onSave: {})
-        try assertSnapshot(render(view, size: NSSize(width: 820, height: 560), settle: 3), named: "markdown-preview")
+        try withPreviewStyle(.theme) {
+            let view = WorkspaceDocumentView(document: try loadedDocument("README.md", at: repo), onSave: {})
+            try assertSnapshot(render(view, size: NSSize(width: 820, height: 560), settle: 3), named: "markdown-preview")
+        }
         try skipIfRecorded()
+    }
+
+    /// The same README as a white document page on the dark theme.
+    func testMarkdownPreviewDocument() throws {
+        let (sandbox, repo) = try snapshotSources()
+        defer { sandbox.tearDown() }
+        try withPreviewStyle(.document) {
+            let view = WorkspaceDocumentView(document: try loadedDocument("README.md", at: repo), onSave: {})
+            try assertSnapshot(render(view, size: NSSize(width: 820, height: 560), settle: 3),
+                               named: "markdown-preview-document")
+        }
+        try skipIfRecorded()
+    }
+
+    private func withPreviewStyle(_ style: MarkdownPreviewStyle, _ body: () throws -> Void) rethrows {
+        let defaults = UserDefaults.standard
+        let saved = defaults.object(forKey: MarkdownPreviewStyle.storageKey)
+        defer { defaults.set(saved, forKey: MarkdownPreviewStyle.storageKey) }
+        defaults.set(style.rawValue, forKey: MarkdownPreviewStyle.storageKey)
+        try body()
     }
 
     /// The terminal font of the saved window snapshots; with the fallback font every glyph differs.
@@ -714,6 +736,7 @@ final class ViewSnapshotTests: XCTestCase {
             "AgentQuotasCollapsed": true, AgentQuotaSection.enabledKey: true,
             XherdrTypography.baseKey: XherdrTypography.defaultBase, XherdrTypography.codeKey: XherdrTypography.defaultCode,
             HerdrNotifier.dockBadgeKey: false, DiffDisplayMode.storageKey: DiffDisplayMode.unified.rawValue,
+            MarkdownPreviewStyle.storageKey: MarkdownPreviewStyle.theme.rawValue,
         ]
         let saved = values.keys.map { ($0, defaults.object(forKey: $0)) }
         defer { for (key, value) in saved { defaults.set(value, forKey: key) } }

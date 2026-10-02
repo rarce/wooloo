@@ -15,6 +15,7 @@ struct HerdrSettingsView: View {
     @AppStorage(HerdrNotifier.bounceDockKey) private var bouncesDock = true
     @AppStorage(XherdrTypography.baseKey) private var interfaceTextSize = XherdrTypography.defaultBase
     @AppStorage(XherdrTypography.codeKey) private var codeTextSize = XherdrTypography.defaultCode
+    @AppStorage(MarkdownPreviewStyle.storageKey) private var markdownPreviewStyle = MarkdownPreviewStyle.theme
 
     private enum Category: String, CaseIterable, Identifiable {
         case terminal = "Terminal"
@@ -274,6 +275,16 @@ struct HerdrSettingsView: View {
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(theme.sidebarBackground, in: RoundedRectangle(cornerRadius: 6))
+                field("Markdown preview", hint: "Document shows a white page with GitHub's README typography whatever the theme. Also switchable from the preview's toolbar.") {
+                    Picker("", selection: $markdownPreviewStyle) {
+                        ForEach(MarkdownPreviewStyle.allCases) { style in
+                            Text(style.rawValue).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 200)
+                }
             }
             groupHeader("Herdr", subtitle: "Saved to config.toml · Save & reload to apply")
             ThemeSettingsView(name: string("theme", "name", default: XherdrTheme.fallbackID),
