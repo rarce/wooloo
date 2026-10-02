@@ -304,6 +304,41 @@ final class ContentCommandsTests: XCTestCase {
         XCTAssertEqual(documents.activeID, id)
     }
 
+    // MARK: Untitled files
+
+    /// New Untitled File opens an empty tab at the explorer's location; saving it asks where,
+    /// then refreshes the explorer and leaves the file's own tab.
+    func testNewUntitledFileSavesWhereTheSheetSays() async throws {
+        commands.perform("new_untitled_file")
+        let id = try XCTUnwrap(documents.activeID)
+        XCTAssertEqual(documents.document(id)?.title, "Untitled-1")
+        XCTAssertEqual(documents.document(id)?.location.identity, repo.identity)
+        XCTAssertTrue(commands.availability.hasFileDocument, "Editor commands apply to an untitled file")
+
+        documents.documents[0].text = "hello\n"
+        commands.saveDocument(id)
+        XCTAssertEqual(window.saveAsDocumentID, id, "Saving an untitled file asks for a path")
+        XCTAssertEqual(window.fileRefreshVersion, 0)
+
+        let refused = await commands.saveUntitled(as: "a.txt")
+        XCTAssertNotNil(refused)
+        XCTAssertEqual(window.saveAsDocumentID, id, "The sheet stays open on an error")
+
+        let error = await commands.saveUntitled(as: "hello.txt")
+        XCTAssertNil(error)
+        XCTAssertNil(window.saveAsDocumentID)
+        XCTAssertEqual(window.fileRefreshVersion, 1)
+        XCTAssertEqual(try sandbox.read("hello.txt", in: "repo"), "hello\n")
+        XCTAssertEqual(documents.activeID.flatMap(documents.document)?.path, "hello.txt")
+    }
+
+    func testNewUntitledFileNeedsTheExplorersLocation() {
+        let commands = ContentCommands(window: window, herdr: herdr, documents: documents, search: search)
+        commands.perform("new_untitled_file")
+        XCTAssertTrue(documents.documents.isEmpty)
+        XCTAssertFalse(XherdrCommandItem.named("new_untitled_file")!.isAvailable(commands.availability))
+    }
+
     // MARK: Search
 
     func testOpenSearchShowsTheSearchTabOnTheExplorersLocation() {

@@ -74,6 +74,16 @@ final class HerdrStoreTests: XCTestCase {
                 state.focus = ("w1", "w1:t1", "w1:p2")
                 return ["result": [:]]
             case "server.reload_config": return ["result": state.reload]
+            case "tab.move":
+                // As Herdr 0.9.1 does: `insert_index` is a gap in the Space's current order.
+                guard let id = params["tab_id"] as? String, let gap = params["insert_index"] as? Int,
+                      let from = state.tabs.firstIndex(where: { $0["tab_id"] as? String == id }),
+                      (0...state.tabs.count).contains(gap) else {
+                    return ["error": ["message": "insert_index is out of bounds"]]
+                }
+                let tab = state.tabs.remove(at: from)
+                state.tabs.insert(tab, at: gap > from ? gap - 1 : gap)
+                return ["result": [:]]
             default: return ["error": ["message": "\(method) is not allowed here"]]
             }
         }
@@ -191,6 +201,47 @@ final class HerdrStoreTests: XCTestCase {
         let request = server.requests.first { $0.method == "tab.create" }
         XCTAssertEqual(request?.params["workspace_id"] as? String, "w1")
         XCTAssertEqual(request?.params["cwd"] as? String, "/private/tmp")
+    }
+
+    /// The tab moves at once, `tab.move` gets the gap it goes into, and Herdr's order follows.
+    func testMovingATabSendsTheGapAndShowsTheNewOrderAtOnce() async {
+        await connect()
+        state.update { $0.tabs.append(["tab_id": "w1:t3", "workspace_id": "w1", "label": "3"]) }
+        server.emit(["event": "tab.created"])
+        await waitUntil("third tab") { store.selectedTabs.count == 3 }
+
+        store.moveTab("w1:t1", to: 3)
+        XCTAssertEqual(store.selectedTabs.map(\.tabID), ["w1:t2", "w1:t3", "w1:t1"], "Shown before Herdr answers")
+        await waitUntil("move requested") { server.requests.contains { $0.method == "tab.move" } }
+        let request = server.requests.first { $0.method == "tab.move" }
+        XCTAssertEqual(request?.params["tab_id"] as? String, "w1:t1")
+        XCTAssertEqual(request?.params["insert_index"] as? Int, 3)
+        XCTAssertEqual(request?.params.count, 2)
+
+        await waitUntil("Herdr's order") { store.snapshot?.tabs.map(\.tabID) == ["w1:t2", "w1:t3", "w1:t1"] }
+        store.moveTab("w1:t3", to: 1)
+        XCTAssertEqual(store.selectedTabs.map(\.tabID), ["w1:t2", "w1:t3", "w1:t1"], "A move in place does nothing")
+        XCTAssertEqual(server.requests.filter { $0.method == "tab.move" }.count, 1, "A move in place is not sent")
+
+        store.moveTab("w1:t1", to: 0)
+        await waitUntil("moved first") { state.lock.withLock { state.tabs.first?["tab_id"] as? String } == "w1:t1" }
+        await waitUntil("snapshot read") { store.selectedTabs.map(\.tabID) == ["w1:t1", "w1:t2", "w1:t3"] }
+        XCTAssertEqual(store.selectedTabID, "w1:t1", "The selection stays on its tab")
+        XCTAssertNil(store.actionError)
+    }
+
+    func testMovingTabsKeepsOtherSpacesInPlace() throws {
+        let json = """
+        {"workspaces": [], "panes": [], "agents": [], "layouts": [], "tabs": [
+          {"tab_id": "w1:t1", "workspace_id": "w1", "label": "a"}, {"tab_id": "w2:t1", "workspace_id": "w2", "label": "x"},
+          {"tab_id": "w1:t2", "workspace_id": "w1", "label": "b"}, {"tab_id": "w1:t3", "workspace_id": "w1", "label": "c"}]}
+        """
+        let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(snapshot.movingTab("w1:t3", to: 0)?.tabs.map(\.tabID), ["w1:t3", "w2:t1", "w1:t1", "w1:t2"])
+        XCTAssertEqual(snapshot.movingTab("w1:t1", to: 2)?.tabs.map(\.tabID), ["w1:t2", "w2:t1", "w1:t1", "w1:t3"])
+        XCTAssertNil(snapshot.movingTab("w1:t1", to: 1), "Moving into its own gap")
+        XCTAssertNil(snapshot.movingTab("w1:t1", to: 4), "Past the last gap")
+        XCTAssertNil(snapshot.movingTab("missing", to: 0))
     }
 
     func testFocusMovesFollowTheServer() async {

@@ -20,7 +20,7 @@ struct ContentView: View {
     /// The active editor tab's file or changes, for the explorer to select.
     private var activeFile: WorkspaceActiveFile? {
         guard let activeDocumentID, let document = documentStore.document(activeDocumentID),
-              document.kind != .commit else { return nil }
+              document.kind != .commit, !document.isUntitled else { return nil }
         return WorkspaceActiveFile(location: document.location, path: document.path)
     }
     @StateObject private var search = WorkspaceSearchModel()
@@ -118,6 +118,17 @@ struct ContentView: View {
             Button("Discard and close", role: .destructive) {
                 if let id = window.pendingCloseDocumentID { closeDocument(id, force: true) }
                 window.pendingCloseDocumentID = nil
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { window.saveAsDocumentID != nil }, set: { if !$0 { window.saveAsDocumentID = nil } }
+        )) {
+            if let id = window.saveAsDocumentID, let document = documentStore.document(id) {
+                UntitledSaveSheet(title: document.title, location: document.location,
+                                  save: { await commands.saveUntitled(as: $0) },
+                                  cancel: { window.saveAsDocumentID = nil })
+                    .environment(\.xherdrTheme, theme)
+                    .environment(\.xherdrTypography, textScale)
             }
         }
         .alert(window.renameTarget?.title ?? "Rename", isPresented: Binding(
@@ -563,115 +574,9 @@ struct ContentView: View {
             Divider()
 
             if herdr.isConnected || !documents.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 2) {
-                        ForEach(selectedTabs) { tab in
-                            Button {
-                                herdr.select(tabID: tab.tabID)
-                                activeDocumentID = nil
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Image(systemName: "terminal")
-                                        .font(.system(size: typography.secondary))
-                                    Text(tab.label).lineLimit(1)
-                                    let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot)
-                                    HerdrAttentionBadge(requests: marks.requests, done: marks.done)
-                                }
-                                .font(.system(size: typography.body))
-                                .padding(.horizontal, 10)
-                                .frame(height: typography.metric(27))
-                                .background(
-                                    activeDocumentID == nil && herdr.selectedTabID == tab.tabID
-                                        ? Color.primary.opacity(0.09) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 4)
-                                )
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("New Tab", systemImage: "plus") {
-                                    activeDocumentID = nil
-                                    herdr.createTab()
-                                }
-                                Button("Rename Tab…", systemImage: "pencil") {
-                                    window.renameText = tab.label
-                                    window.renameTarget = .tab(tab.tabID)
-                                }
-                                Divider()
-                                Button("Close Tab…", systemImage: "xmark", role: .destructive) {
-                                    window.closeTarget = .tab(tab.tabID, tab.label)
-                                }
-                                .disabled(selectedTabs.count < 2)
-                            }
-                        }
-                        if !documents.isEmpty || window.showsSearchTab { Divider().frame(height: typography.metric(17)).padding(.horizontal, 4) }
-                        if window.showsSearchTab {
-                            HStack(spacing: 0) {
-                                Button { openSearch(replace: false) } label: {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: "magnifyingglass").foregroundStyle(theme.accent)
-                                        Text(search.title).lineLimit(1).frame(maxWidth: 160)
-                                    }
-                                    .font(.system(size: typography.body))
-                                    .padding(.leading, 9)
-                                    .frame(height: typography.metric(27))
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                Button { closeSearch() } label: {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: typography.tiny))
-                                        .frame(width: 22, height: typography.metric(27))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .background(activeDocumentID == WorkspaceSearchModel.tabID ? Color.primary.opacity(0.09) : .clear,
-                                        in: RoundedRectangle(cornerRadius: 4))
-                            .help("Project Search")
-                        }
-                        ForEach(documents) { document in
-                            HStack(spacing: 0) {
-                                Button { activeDocumentID = document.id } label: {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: document.kind.icon)
-                                            .foregroundStyle(theme.accent)
-                                        Text(document.title).lineLimit(1).italic(document.isPreview)
-                                        if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
-                                    }
-                                    .font(.system(size: typography.body))
-                                    .padding(.leading, 9)
-                                    .frame(height: typography.metric(27))
-                                }
-                                .buttonStyle(.plain)
-                                .simultaneousGesture(TapGesture(count: 2).onEnded { keepDocumentOpen(document.id) })
-                                Button { closeDocument(document.id) } label: {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: typography.tiny))
-                                        .frame(width: 22, height: typography.metric(27))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .background(activeDocumentID == document.id ? Color.primary.opacity(0.09) : .clear,
-                                        in: RoundedRectangle(cornerRadius: 4))
-                            .help("\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.path)")
-                            .contextMenu { documentActions(document) }
-                        }
-                        Button {
-                            activeDocumentID = nil
-                            herdr.createTab()
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: typography.secondary, weight: .semibold))
-                                .frame(width: 26, height: typography.metric(25))
-                        }
-                        .buttonStyle(.plain)
-                        .help("New Tab")
-                        .disabled(herdr.selectedWorkspaceID == nil)
-                    }
-                    .padding(.horizontal, 7)
-                }
-                .frame(height: typography.metric(31))
-                .background(barBackground)
+                tabBar
+                    .frame(height: typography.metric(31))
+                    .background(barBackground)
                 Divider()
 
                 if activeDocumentID == WorkspaceSearchModel.tabID {
@@ -735,6 +640,172 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Terminal tabs, the Search tab and document tabs, then the new tab buttons. Double-clicking
+    /// the empty space after them opens an untitled file; a middle click closes a tab; terminal
+    /// and document tabs are dragged to reorder them within their group.
+    private var tabBar: some View {
+        GeometryReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    ForEach(Array(selectedTabs.enumerated()), id: \.element.id) { index, tab in
+                        terminalTab(tab, index: index)
+                    }
+                    if !documents.isEmpty || window.showsSearchTab {
+                        Divider().frame(height: typography.metric(17)).padding(.horizontal, 4)
+                            .frame(maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .tabDropAtEnd(drag: window.tabDrag, [.terminal: terminalTabsEnd])
+                    }
+                    if window.showsSearchTab { searchTab }
+                    ForEach(Array(documents.enumerated()), id: \.element.id) { index, document in
+                        documentTab(document, index: index)
+                    }
+                    Button {
+                        commands.perform(.newTab)
+                    } label: {
+                        TabBarAddIcon(symbol: "terminal")
+                            .frame(width: 26, height: typography.metric(25))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("New Terminal Tab")
+                    .disabled(herdr.selectedWorkspaceID == nil)
+                    Button {
+                        commands.newUntitledFile()
+                    } label: {
+                        TabBarAddIcon(symbol: "doc")
+                            .frame(width: 26, height: typography.metric(25))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("New Untitled File (double-click the empty tab bar)")
+                    .disabled(explorerLocation == nil)
+                    // The rest of the bar: double-clicking it opens an untitled file, and a tab
+                    // dropped on it goes last in its group.
+                    Color.clear
+                        .frame(minWidth: 12, maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { commands.newUntitledFile() }
+                        .tabDropAtEnd(drag: window.tabDrag, [
+                            .terminal: terminalTabsEnd,
+                            .document: TabDropEnd(lastIndex: documents.count - 1, onMove: { documentStore.move($0, to: $1) })
+                        ])
+                }
+                .padding(.horizontal, 7)
+                .frame(minWidth: proxy.size.width, minHeight: proxy.size.height, alignment: .leading)
+            }
+        }
+    }
+
+    private var terminalTabsEnd: TabDropEnd {
+        TabDropEnd(lastIndex: selectedTabs.count - 1, onMove: { herdr.moveTab($0, to: $1) })
+    }
+
+    private func terminalTab(_ tab: HerdrTab, index: Int) -> some View {
+        Button {
+            herdr.select(tabID: tab.tabID)
+            activeDocumentID = nil
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "terminal")
+                    .font(.system(size: typography.secondary))
+                Text(tab.label).lineLimit(1)
+                let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot)
+                HerdrAttentionBadge(requests: marks.requests, done: marks.done)
+            }
+            .font(.system(size: typography.body))
+            .padding(.horizontal, 10)
+            .frame(height: typography.metric(27))
+            .background(
+                activeDocumentID == nil && herdr.selectedTabID == tab.tabID
+                    ? Color.primary.opacity(0.09) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 4)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onMiddleClick { closeTerminalTab(tab) }
+        .contextMenu {
+            Button("New Tab", systemImage: "plus") {
+                activeDocumentID = nil
+                herdr.createTab()
+            }
+            Button("Rename Tab…", systemImage: "pencil") {
+                window.renameText = tab.label
+                window.renameTarget = .tab(tab.tabID)
+            }
+            Divider()
+            Button("Close Tab…", systemImage: "xmark", role: .destructive) { closeTerminalTab(tab) }
+                .disabled(selectedTabs.count < 2)
+        }
+        .tabReorder(.terminal, id: tab.tabID, index: index, drag: window.tabDrag,
+                    onMove: { herdr.moveTab($0, to: $1) })
+    }
+
+    /// Asks before closing a terminal tab; the last tab of a Space stays.
+    private func closeTerminalTab(_ tab: HerdrTab) {
+        guard selectedTabs.count >= 2 else { return }
+        window.closeTarget = .tab(tab.tabID, tab.label)
+    }
+
+    private var searchTab: some View {
+        HStack(spacing: 0) {
+            Button { openSearch(replace: false) } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(theme.accent)
+                    Text(search.title).lineLimit(1).frame(maxWidth: 160)
+                }
+                .font(.system(size: typography.body))
+                .padding(.leading, 9)
+                .frame(height: typography.metric(27))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Button { closeSearch() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: typography.tiny))
+                    .frame(width: 22, height: typography.metric(27))
+            }
+            .buttonStyle(.plain)
+        }
+        .background(activeDocumentID == WorkspaceSearchModel.tabID ? Color.primary.opacity(0.09) : .clear,
+                    in: RoundedRectangle(cornerRadius: 4))
+        .help("Project Search")
+        .onMiddleClick { closeSearch() }
+    }
+
+    private func documentTab(_ document: WorkspaceDocument, index: Int) -> some View {
+        HStack(spacing: 0) {
+            Button { activeDocumentID = document.id } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: document.kind.icon)
+                        .foregroundStyle(theme.accent)
+                    Text(document.title).lineLimit(1).italic(document.isPreview)
+                    if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
+                }
+                .font(.system(size: typography.body))
+                .padding(.leading, 9)
+                .frame(height: typography.metric(27))
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(TapGesture(count: 2).onEnded { keepDocumentOpen(document.id) })
+            Button { closeDocument(document.id) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: typography.tiny))
+                    .frame(width: 22, height: typography.metric(27))
+            }
+            .buttonStyle(.plain)
+        }
+        .background(activeDocumentID == document.id ? Color.primary.opacity(0.09) : .clear,
+                    in: RoundedRectangle(cornerRadius: 4))
+        .help(document.isUntitled ? "\(document.title) · not saved yet"
+              : "\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.path)")
+        .onMiddleClick { closeDocument(document.id) }
+        .contextMenu { documentActions(document) }
+        .tabReorder(.document, id: document.id, index: index, drag: window.tabDrag,
+                    onMove: { documentStore.move($0, to: $1) })
     }
 
     private func terminalPane(_ pane: HerdrPane) -> some View {
@@ -823,7 +894,7 @@ struct ContentView: View {
     }
 
     private func saveDocument(_ id: String) {
-        documentStore.save(id) { window.fileRefreshVersion += 1 }
+        commands.saveDocument(id)
     }
 
     private var commands: ContentCommands {
@@ -880,7 +951,9 @@ struct ContentView: View {
             Button("Keep Open", systemImage: "pin") { keepDocumentOpen(document.id) }
             Divider()
         }
-        if document.kind == .file {
+        if document.isUntitled {
+            Button("Save As…", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
+        } else if document.kind == .file {
             Button("Save", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
                 .disabled(!document.isDirty)
             Button("Open Changes", systemImage: "arrow.left.arrow.right") {
@@ -891,10 +964,12 @@ struct ContentView: View {
                 openDocument(.file, path: document.path, at: document.location)
             }
         }
-        Divider()
-        Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(document.location.absolutePath(document.path)) }
-        Button("Copy Relative Path") { AppActions.copy(document.path) }
-        if document.location.isLocal {
+        if !document.isUntitled {
+            Divider()
+            Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(document.location.absolutePath(document.path)) }
+            Button("Copy Relative Path") { AppActions.copy(document.path) }
+        }
+        if document.location.isLocal && !document.isUntitled {
             Button("Reveal in Finder", systemImage: "folder") {
                 AppActions.reveal(document.location.absolutePath(document.path))
             }

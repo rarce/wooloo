@@ -244,6 +244,9 @@ struct XherdrCommandItem: Identifiable, Equatable {
         .init("new_workspace", "Space", "New Space", KeyboardShortcut("n", modifiers: [.command, .shift]),
               requires: .connected),
         .init("new_tab", "Space", "New Tab", KeyboardShortcut("t", modifiers: .command), requires: .space),
+        // ⌘N stays New Window, and the Files tree takes it for New File… while it has focus.
+        .init("new_untitled_file", "File", "New Untitled File", KeyboardShortcut("n", modifiers: [.command, .control]),
+              requires: .files),
         .init("close_current_tab", "File", "Close Tab", KeyboardShortcut("w", modifiers: .command)),
         .init("project_search", "Edit", "Find in Project…", KeyboardShortcut("f", modifiers: [.command, .shift])),
         .init("project_replace", "Edit", "Replace in Project…", KeyboardShortcut("h", modifiers: [.command, .shift])),

@@ -32,6 +32,8 @@ enum HerdrCommand: Equatable {
     case help, settings, reloadConfig, switchSession
     case newWorkspace, renameWorkspace, closeWorkspace
     case newTab, renameTab, closeTab
+    /// A new empty editor tab, "Untitled-N", saved later wherever the user chooses.
+    case newUntitledFile
     /// The tab `delta` places away within the Space, wrapping around.
     case cycleTab(Int)
     /// The Space's tab at a 1-based position.
@@ -61,6 +63,7 @@ enum HerdrCommand: Equatable {
         case "rename_workspace": self = .renameWorkspace
         case "close_workspace": self = .closeWorkspace
         case "new_tab": self = .newTab
+        case "new_untitled_file": self = .newUntitledFile
         case "rename_tab": self = .renameTab
         case "close_tab": self = .closeTab
         case "previous_tab": self = .cycleTab(-1)

@@ -52,6 +52,9 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertTrue(available.isSuperset(of: ["settings", "help", "command_palette", "project_search"]))
         XCTAssertFalse(available.contains("new_tab"))
         XCTAssertFalse(available.contains("quick_open"), "Go to File needs the explorer's location")
+        XCTAssertFalse(available.contains("new_untitled_file"), "An untitled file needs a location to save in")
+        XCTAssertTrue(XherdrCommandItem.named("new_untitled_file")!.isAvailable(everything))
+        XCTAssertEqual(XherdrCommandItem.named("new_untitled_file")?.shortcutLabel, "⌃⌘N")
         var oneTab = everything
         oneTab.tabCount = 1
         XCTAssertTrue(XherdrCommandItem.named("rename_tab")!.isAvailable(oneTab))

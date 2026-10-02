@@ -43,6 +43,7 @@
 		C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F06 /* AgentQuotaTests.swift */; };
 		A10000000000000000000F05 /* QuickOpen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F06 /* QuickOpen.swift */; };
 		A10000000000000000000F07 /* QuickOpenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F08 /* QuickOpenView.swift */; };
+		A1000000000000000000AB01 /* TabBarControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AB02 /* TabBarControls.swift */; };
 		C30000000000000000000F09 /* QuickOpenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F0A /* QuickOpenTests.swift */; };
 		A10000000000000000000F0B /* CommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F0C /* CommandPalette.swift */; };
 		A10000000000000000000F0D /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F0E /* CommandPaletteView.swift */; };
@@ -144,6 +145,7 @@
 		C30000000000000000000F06 /* AgentQuotaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000F06 /* QuickOpen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpen.swift; sourceTree = "<group>"; };
 		A10000000000000000000F08 /* QuickOpenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenView.swift; sourceTree = "<group>"; };
+		A1000000000000000000AB02 /* TabBarControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarControls.swift; sourceTree = "<group>"; };
 		C30000000000000000000F0A /* QuickOpenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000F0C /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
 		A10000000000000000000F0E /* CommandPaletteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteView.swift; sourceTree = "<group>"; };
@@ -246,6 +248,7 @@
 				A10000000000000000000F04 /* AgentQuotaView.swift */,
 				A10000000000000000000F06 /* QuickOpen.swift */,
 				A10000000000000000000F08 /* QuickOpenView.swift */,
+				A1000000000000000000AB02 /* TabBarControls.swift */,
 				A10000000000000000000F0C /* CommandPalette.swift */,
 				A10000000000000000000F0E /* CommandPaletteView.swift */,
 				A10000000000000000000041 /* Assets.xcassets */,
@@ -460,6 +463,7 @@
 				A10000000000000000000F03 /* AgentQuotaView.swift in Sources */,
 				A10000000000000000000F05 /* QuickOpen.swift in Sources */,
 				A10000000000000000000F07 /* QuickOpenView.swift in Sources */,
+				A1000000000000000000AB01 /* TabBarControls.swift in Sources */,
 				A10000000000000000000F0B /* CommandPalette.swift in Sources */,
 				A10000000000000000000F0D /* CommandPaletteView.swift in Sources */,
 			);

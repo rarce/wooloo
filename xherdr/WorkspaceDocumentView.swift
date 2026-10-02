@@ -55,8 +55,15 @@ struct WorkspaceDocument: Identifiable {
     var isPreview = false
     /// Set to give the editor the keyboard once it is shown, as Go to File does.
     var focusRequest: UUID?
+    /// A new file not yet on disk, shown as "Untitled-N" until it is saved somewhere; its
+    /// `path` is empty and `location` is where saving it starts.
+    var untitledNumber: Int?
 
-    var id: String { "\(space ?? "")|\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)" }
+    var isUntitled: Bool { untitledNumber != nil }
+    var id: String {
+        if let untitledNumber { return "\(space ?? "")|\(location.identity)|untitled|\(untitledNumber)" }
+        return "\(space ?? "")|\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)"
+    }
     var isDirty: Bool { kind == .file && text != savedText }
     /// The patch a diff document shows.
     var patch: String { diffPatches[diffScope] ?? text }
@@ -64,7 +71,10 @@ struct WorkspaceDocument: Identifiable {
         DiffSource(location: location, path: path, originalPath: originalPath, commit: commit,
                    scope: kind == .change ? diffScope : .all)
     }
+    /// The path shown for the document: an untitled one has none yet.
+    var displayPath: String { isUntitled ? title : path }
     var title: String {
+        if let untitledNumber { return "Untitled-\(untitledNumber)" }
         let name = (path as NSString).lastPathComponent
         return commit.map { "\(name) @ \($0.prefix(7))" } ?? name
     }
@@ -114,7 +124,7 @@ struct WorkspaceDocumentView: View {
             HStack(spacing: 7) {
                 Image(systemName: document.kind.icon)
                     .foregroundStyle(theme.accent)
-                Text(document.path)
+                Text(document.displayPath)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let commit = document.commit {
@@ -169,9 +179,9 @@ struct WorkspaceDocumentView: View {
                     .help("Show changes in one column or old and new side by side")
                 }
                 if document.kind == .file {
-                    Button("Save") { onSave() }
+                    Button(document.isUntitled ? "Save As…" : "Save") { onSave() }
                         .keyboardShortcut("s", modifiers: .command)
-                        .disabled(document.isLoading || document.isSaving || !document.isDirty)
+                        .disabled(document.isLoading || document.isSaving || !(document.isDirty || document.isUntitled))
                 }
             }
             .font(.system(size: typography.body))
@@ -187,7 +197,7 @@ struct WorkspaceDocumentView: View {
 
             if document.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = document.error, document.version == nil {
+            } else if let error = document.error, document.version == nil, !document.isUntitled {
                 Text(error)
                     .font(.system(size: typography.emphasis))
                     .foregroundStyle(theme.warning)
@@ -260,7 +270,7 @@ struct WorkspaceDocumentView: View {
         guard document.kind == .file else { return }
         switch command {
         case .save:
-            if document.isDirty && !document.isSaving { onSave() }
+            if (document.isDirty || document.isUntitled) && !document.isSaving { onSave() }
         case .find: openFind(replace: false)
         case .findAndReplace: openFind(replace: true)
         case .findNext: find.isVisible ? find.move(1) : openFind(replace: false)

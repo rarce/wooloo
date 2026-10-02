@@ -8,7 +8,11 @@ final class WorkspaceDocumentStore: ObservableObject {
     @Published var documents: [WorkspaceDocument] = []
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
     @Published var activeID: String? {
-        didSet { if let activeID, let document = document(activeID), document.kind == .file { remember(document) } }
+        didSet {
+            if let activeID, let document = document(activeID), document.kind == .file, !document.isUntitled {
+                remember(document)
+            }
+        }
     }
     /// Files shown most recently first, for Go to File.
     private var recentFiles: [(space: String?, location: String, path: String)] = []
@@ -76,6 +80,99 @@ final class WorkspaceDocumentStore: ObservableObject {
         documents.append(document)
         activeID = document.id
         load(document.id)
+    }
+
+    /// Opens a new empty file, "Untitled-N", as a regular tab of the current Space and focuses
+    /// it. N is the lowest number no untitled tab of the Space uses, as in VS Code. Nothing is
+    /// written until it is saved, which asks where (see `saveUntitled`).
+    @discardableResult
+    func newUntitled(at location: WorkspaceFileLocation) -> String {
+        let used = Set(documents.filter { $0.space == space }.compactMap(\.untitledNumber))
+        let number = (1...).first { !used.contains($0) }!
+        var document = WorkspaceDocument(space: space, location: location, path: "", kind: .file)
+        document.untitledNumber = number
+        document.isLoading = false
+        document.focusRequest = UUID()
+        documents.append(document)
+        activeID = document.id
+        return document.id
+    }
+
+    /// The Space-relative path a Save As field names, or why it cannot be saved there. The
+    /// field may also hold an absolute path inside the Space root, or start with `./`.
+    nonisolated static func untitledSavePath(_ input: String, root: String) -> Result<String, WorkspaceFileError> {
+        var path = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rootPrefix = root.hasSuffix("/") ? root : root + "/"
+        if path.hasPrefix(rootPrefix) { path.removeFirst(rootPrefix.count) }
+        while path.hasPrefix("./") { path.removeFirst(2) }
+        guard !path.isEmpty, !path.hasSuffix("/") else { return .failure(.message("Enter a file name")) }
+        do {
+            try WorkspaceFiles.validateRelativePath(path)
+            try WorkspaceFiles.validateName((path as NSString).lastPathComponent)
+        } catch let error as WorkspaceFileError {
+            return .failure(error)
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
+        return .success(path)
+    }
+
+    /// Saves an untitled document as a new file at a Space-relative path, local or over SSH,
+    /// creating missing folders and refusing a file that already exists. The tab then becomes
+    /// that file's regular tab. Returns the error to show, or nil once saved.
+    func saveUntitled(_ id: String, as input: String) async -> String? {
+        guard let index = documents.firstIndex(where: { $0.id == id }), documents[index].isUntitled else {
+            return "The document is no longer open"
+        }
+        let document = documents[index]
+        let path: String
+        switch Self.untitledSavePath(input, root: document.location.root) {
+        case .success(let value): path = value
+        case .failure(let failure): return failure.localizedDescription
+        }
+        let (text, location) = (document.text, document.location)
+        documents[index].isSaving = true
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { () throws -> String in
+                try WorkspaceFiles.createFile(path, at: location)
+                return try WorkspaceFiles.save(text, path: path, expectedVersion: WorkspaceFiles.gitBlobHash(Data()),
+                                               at: location)
+            }
+        }.value
+        guard let currentIndex = documents.firstIndex(where: { $0.id == id }) else { return nil }
+        documents[currentIndex].isSaving = false
+        switch result {
+        case .success(let version):
+            var saved = WorkspaceDocument(space: document.space, location: location, path: path, kind: .file)
+            // Edits made while saving stay unsaved.
+            saved.text = documents[currentIndex].text
+            saved.savedText = text
+            saved.version = version
+            saved.isLoading = false
+            saved.markdownMode = .source
+            saved.focusRequest = UUID()
+            // A tab left open on a file of that name that had been deleted gives way.
+            documents.removeAll { $0.id == saved.id }
+            guard let replaced = documents.firstIndex(where: { $0.id == id }) else { return nil }
+            documents[replaced] = saved
+            if activeID == id { activeID = saved.id }
+            return nil
+        case .failure(let failure):
+            return failure.localizedDescription
+        }
+    }
+
+    /// Moves a tab of the current Space to `insertIndex`, a gap between its tabs (0 is before the
+    /// first, `count` after the last), as Herdr's `tab.move` places terminal tabs.
+    func move(_ id: String, to insertIndex: Int) {
+        var visible = visibleDocuments
+        guard let from = visible.firstIndex(where: { $0.id == id }), (0...visible.count).contains(insertIndex),
+              insertIndex != from, insertIndex != from + 1 else { return }
+        let document = visible.remove(at: from)
+        visible.insert(document, at: insertIndex > from ? insertIndex - 1 : insertIndex)
+        // Other Spaces' tabs keep their places; the shown ones fill their own slots in the new order.
+        var next = visible.makeIterator()
+        documents = documents.map { $0.space == space ? next.next()! : $0 }
     }
 
     /// The files at a location shown in the current Space, most recently first.

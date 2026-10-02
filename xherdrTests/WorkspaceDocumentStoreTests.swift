@@ -197,4 +197,128 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(store.documents.map(\.text), ["replaced\n", "unsaved\n"])
     }
+
+    // MARK: Untitled files
+
+    /// New untitled tabs take the lowest free number of their Space, open as regular tabs and
+    /// take the keyboard; nothing is read from disk.
+    func testUntitledFilesAreNumberedPerSpaceAndFocused() throws {
+        store.showSpace("one")
+        let first = store.newUntitled(at: repo)
+        let second = store.newUntitled(at: repo)
+        XCTAssertEqual(store.visibleDocuments.map(\.title), ["Untitled-1", "Untitled-2"])
+        XCTAssertEqual(store.activeID, second)
+        let document = try XCTUnwrap(store.document(second))
+        XCTAssertTrue(document.isUntitled)
+        XCTAssertFalse(document.isLoading)
+        XCTAssertFalse(document.isPreview)
+        XCTAssertFalse(document.isDirty, "An empty untitled file has nothing to save")
+        XCTAssertNotNil(document.focusRequest)
+        XCTAssertEqual(document.displayPath, "Untitled-2")
+        XCTAssertTrue(store.recentPaths(at: repo).isEmpty, "Untitled files are not recent files")
+
+        XCTAssertTrue(store.close(first))
+        store.newUntitled(at: repo)
+        XCTAssertEqual(store.visibleDocuments.map(\.title), ["Untitled-2", "Untitled-1"], "The lowest free number is reused")
+
+        store.showSpace("two")
+        store.newUntitled(at: repo)
+        XCTAssertEqual(store.visibleDocuments.map(\.title), ["Untitled-1"], "Each Space numbers its own")
+        XCTAssertEqual(Set(store.documents.map(\.id)).count, store.documents.count)
+    }
+
+    func testClosingAnUntitledFileAsksOnlyOnceItHasText() throws {
+        let id = store.newUntitled(at: repo)
+        let index = try XCTUnwrap(store.documents.firstIndex { $0.id == id })
+        store.documents[index].text = "draft"
+        XCTAssertTrue(store.documents[index].isDirty)
+        XCTAssertFalse(store.close(id))
+        store.documents[index].text = ""
+        XCTAssertTrue(store.close(id), "An emptied untitled file closes without asking")
+        XCTAssertTrue(store.documents.isEmpty)
+    }
+
+    func testSavePathsAreRelativeToTheSpaceRoot() {
+        let root = "/work/project"
+        func path(_ input: String) -> String? { try? WorkspaceDocumentStore.untitledSavePath(input, root: root).get() }
+        XCTAssertEqual(path(" notes.md "), "notes.md")
+        XCTAssertEqual(path("./docs/notes.md"), "docs/notes.md")
+        XCTAssertEqual(path("/work/project/docs/notes.md"), "docs/notes.md", "An absolute path inside the root is accepted")
+        XCTAssertNil(path(""))
+        XCTAssertNil(path("docs/"))
+        XCTAssertNil(path("../outside.txt"))
+        XCTAssertNil(path("/elsewhere/notes.md"))
+        XCTAssertNil(path("docs//notes.md"))
+    }
+
+    /// Saving writes a new file, creating its folders, and the tab becomes that file's tab.
+    func testSavingAnUntitledFileCreatesItAndOpensItAsAFile() async throws {
+        store.showSpace("one")
+        let id = store.newUntitled(at: repo)
+        let index = try XCTUnwrap(store.documents.firstIndex { $0.id == id })
+        store.documents[index].text = "# Notes\n"
+
+        let error = await store.saveUntitled(id, as: "docs/notes.md")
+        XCTAssertNil(error)
+        XCTAssertEqual(try sandbox.read("docs/notes.md", in: "repo"), "# Notes\n")
+        XCTAssertEqual(store.documents.count, 1)
+        let saved = store.documents[0]
+        XCTAssertFalse(saved.isUntitled)
+        XCTAssertEqual(saved.path, "docs/notes.md")
+        XCTAssertEqual(saved.title, "notes.md")
+        XCTAssertEqual(saved.space, "one")
+        XCTAssertFalse(saved.isDirty)
+        XCTAssertEqual(saved.version, WorkspaceFiles.gitBlobHash(Data("# Notes\n".utf8)))
+        XCTAssertEqual(saved.markdownMode, .source, "The text being written stays in view")
+        XCTAssertEqual(store.activeID, saved.id)
+
+        // The saved file is an ordinary document from then on.
+        store.documents[0].text = "# Notes\nmore\n"
+        store.save(saved.id)
+        await settle()
+        XCTAssertEqual(try sandbox.read("docs/notes.md", in: "repo"), "# Notes\nmore\n")
+    }
+
+    func testSavingAnUntitledFileRefusesExistingFilesAndBadPaths() async throws {
+        let id = store.newUntitled(at: repo)
+        store.documents[0].text = "mine\n"
+        let existing = await store.saveUntitled(id, as: "a.txt")
+        XCTAssertNotNil(existing)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\n", "An existing file is not overwritten")
+        let outside = await store.saveUntitled(id, as: "../escape.txt")
+        XCTAssertNotNil(outside)
+        XCTAssertTrue(store.documents[0].isUntitled, "A failed save keeps the untitled tab")
+        XCTAssertFalse(store.documents[0].isSaving)
+        XCTAssertEqual(store.documents[0].text, "mine\n")
+    }
+
+    // MARK: Reordering
+
+    /// Tabs move to a gap of the shown Space's order, as Herdr's `tab.move` takes it; other
+    /// Spaces' tabs keep their places.
+    func testMovingTabsReordersOnlyTheShownSpace() async throws {
+        store.showSpace("one")
+        _ = await open("a.txt")
+        _ = await open("b.txt")
+        store.showSpace("two")
+        _ = await open("c.txt")
+        store.showSpace("one")
+        _ = await open("c.txt")
+        let ids = store.visibleDocuments.map(\.id)
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["a.txt", "b.txt", "c.txt"])
+
+        store.move(ids[0], to: 2)
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["b.txt", "a.txt", "c.txt"], "A tab moved right goes before the gap's tab")
+        store.move(ids[0], to: 3)
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["b.txt", "c.txt", "a.txt"], "The last gap is after every tab")
+        store.move(ids[2], to: 0)
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["c.txt", "b.txt", "a.txt"])
+        store.move(ids[2], to: 1)
+        store.move(ids[2], to: 9)
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["c.txt", "b.txt", "a.txt"], "No move in place or out of range")
+
+        store.showSpace("two")
+        XCTAssertEqual(store.visibleDocuments.map(\.path), ["c.txt"])
+        XCTAssertEqual(store.documents.filter { $0.space == "two" }.count, 1)
+    }
 }

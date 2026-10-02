@@ -64,6 +64,7 @@ private struct XherdrCommands: Commands {
         CommandGroup(after: .newItem) {
             item("new_workspace")
             item("new_tab")
+            item("new_untitled_file")
         }
 
         // Command-P goes to a file, as in Zed and VS Code, rather than printing.

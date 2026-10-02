@@ -20,6 +20,25 @@ struct HerdrSnapshot: Decodable, Equatable {
     }
 }
 
+extension HerdrSnapshot {
+    /// This snapshot with a tab moved to `insertIndex`, a gap in its Space's tab order as
+    /// `tab.move` takes it; nil when the tab is unknown, the gap is out of range, or the tab
+    /// would stay where it is.
+    func movingTab(_ tabID: String, to insertIndex: Int) -> HerdrSnapshot? {
+        guard let tab = tabs.first(where: { $0.tabID == tabID }) else { return nil }
+        var spaceTabs = tabs.filter { $0.workspaceID == tab.workspaceID }
+        guard let from = spaceTabs.firstIndex(of: tab), (0...spaceTabs.count).contains(insertIndex),
+              insertIndex != from, insertIndex != from + 1 else { return nil }
+        spaceTabs.remove(at: from)
+        spaceTabs.insert(tab, at: insertIndex > from ? insertIndex - 1 : insertIndex)
+        var next = spaceTabs.makeIterator()
+        return HerdrSnapshot(workspaces: workspaces,
+                             tabs: tabs.map { $0.workspaceID == tab.workspaceID ? next.next()! : $0 },
+                             panes: panes, agents: agents, layouts: layouts, focusedWorkspaceID: focusedWorkspaceID,
+                             focusedTabID: focusedTabID, focusedPaneID: focusedPaneID)
+    }
+}
+
 struct HerdrWorkspace: Decodable, Equatable, Identifiable {
     let workspaceID: String
     let label: String
@@ -819,6 +838,36 @@ final class HerdrStore: ObservableObject {
 
     func closeTab(_ tabID: String) {
         performAction(method: "tab.close", params: ["tab_id": tabID], followServerFocus: false)
+    }
+
+    /// Moves a tab within its Space with `tab.move`. `insertIndex` is a gap in the Space's
+    /// current tab order: 0 is before the first tab and `count` after the last, so a tab moved
+    /// right goes before the tab at `insertIndex`. The new order shows at once and Herdr's
+    /// snapshot, read right after, replaces it.
+    func moveTab(_ tabID: String, to insertIndex: Int) {
+        guard isConnected, let current = snapshot, let moved = current.movingTab(tabID, to: insertIndex) else { return }
+        snapshot = moved
+        let path = socketPath
+        let currentGeneration = generation
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { () throws -> Void in
+                    _ = try HerdrSocket.request(path: path, method: "tab.move",
+                                                params: ["tab_id": tabID, "insert_index": insertIndex])
+                }
+            }.value
+            // Read Herdr's order even when the move failed, to undo the one shown.
+            let fresh = await Task.detached(priority: .userInitiated) { try? HerdrSocket.snapshot(path: path) }.value
+            guard generation == currentGeneration else { return }
+            if let fresh {
+                snapshot = fresh
+                repairSelection()
+            }
+            switch result {
+            case .success: actionError = nil
+            case .failure(let error): actionError = error.localizedDescription
+            }
+        }
     }
 
     func closePane(_ paneID: String) {

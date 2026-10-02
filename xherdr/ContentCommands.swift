@@ -58,6 +58,8 @@ final class ContentWindowModel: ObservableObject {
     @Published var requestedSessionName = ""
     /// A document with unsaved edits the user asked to close.
     @Published var pendingCloseDocumentID: String?
+    /// The untitled document the Save As sheet asks a path for.
+    @Published var saveAsDocumentID: String?
     /// Bumped to reload the explorer and repository views.
     @Published var fileRefreshVersion = 0
     @Published var showsSearchTab = false
@@ -74,6 +76,8 @@ final class ContentWindowModel: ObservableObject {
     let editor = EditorCommandTarget()
     /// The explorer's Files and Changes trees, for their file commands from the palette.
     let explorer = ExplorerCommandTarget()
+    /// A tab dragged in the tab bar; only the tabs observe it, so hovering redraws only them.
+    let tabDrag = TabDragModel()
 
     /// Tests keep the pickers' recent commands and options out of the app's defaults.
     init(defaults: UserDefaults = .standard) {
@@ -108,7 +112,7 @@ struct ContentCommands {
     /// Which commands apply now, for the menu bar and the command palette.
     var availability: XherdrCommandAvailability {
         let document = documents.activeID.flatMap(documents.document)
-        let hasFileDocument = document.map { $0.kind == .file && !$0.isLoading && $0.version != nil } ?? false
+        let hasFileDocument = document.map { $0.kind == .file && !$0.isLoading && ($0.version != nil || $0.isUntitled) } ?? false
         let showsSource = document.map {
             !MarkdownDisplayMode.supports($0.path) || $0.markdownMode != .preview
         } ?? false
@@ -140,6 +144,7 @@ struct ContentCommands {
         case .newTab:
             documents.activeID = nil
             herdr.createTab()
+        case .newUntitledFile: newUntitledFile()
         case .cycleTab(let delta):
             guard let tabID = HerdrCommand.tab(delta, from: herdr.selectedTabID, in: tabs.map(\.tabID)) else { return }
             herdr.select(tabID: tabID)
@@ -284,6 +289,32 @@ struct ContentCommands {
     func closeSearch() {
         window.showsSearchTab = false
         if documents.activeID == WorkspaceSearchModel.tabID { documents.activeID = nil }
+    }
+
+    /// Opens an empty "Untitled-N" tab at the explorer's location, where saving it starts.
+    func newUntitledFile() {
+        guard let explorerLocation else { return }
+        documents.newUntitled(at: explorerLocation)
+    }
+
+    /// Saves a document; an untitled one first asks where, with the Save As sheet.
+    func saveDocument(_ id: String) {
+        guard let document = documents.document(id) else { return }
+        if document.isUntitled {
+            window.saveAsDocumentID = id
+        } else {
+            documents.save(id) { [window] in window.fileRefreshVersion += 1 }
+        }
+    }
+
+    /// Saves the Save As sheet's untitled document at the path typed, relative to the Space
+    /// root, then refreshes the explorer. Returns the error to show in the sheet, or nil once saved.
+    func saveUntitled(as path: String) async -> String? {
+        guard let id = window.saveAsDocumentID else { return nil }
+        if let error = await documents.saveUntitled(id, as: path) { return error }
+        window.saveAsDocumentID = nil
+        window.fileRefreshVersion += 1
+        return nil
     }
 
     /// Closes a document, or asks first when it has unsaved edits.
