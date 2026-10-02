@@ -29,6 +29,7 @@ This script starts a dedicated `xherdr-perf` Herdr session and opens a Release b
 - `typing`: 40 characters/s
 - `burst`: `cat` of 60,000 lines
 - `keys`: 100 letters typed into `cat`, one every 100 ms. The keys go through xherdr's own `keyDown`, sent by the typing probe (`XHERDR_TYPING_PROBE`, triggered with `notifyutil -p dev.xherdr.typing-probe`), so no accessibility access is needed. The probe is compiled only with the `XHERDR_PROBES` condition, which the script sets.
+- `mouse`: splits the pane and turns on SGR mouse reporting in the new pane, whose `cat` echoes the reports Herdr writes for it. The mouse probe, enabled by the same flag, then plays three phases through the view's own mouse handlers: `mouse-click`, 40 clicks, one every 100 ms, in the pane without mouse reporting, after one unrecorded click that selects it (`notifyutil -p dev.xherdr.mouse-probe.click`); `mouse-scroll`, 40 wheel events of 3 lines, alternately up and down, over the mouse-aware pane (`.scroll`); and `mouse-drag`, a 2 s drag of the split 6 cells each way and back, one move every 40 ms (`.drag`). Wheel events enter at `HerdrTerminalTextView.scrollPane`, below `scrollWheel`, because AppKit cannot make a scroll `NSEvent` at a window location.
 
 For each workload, the script reports:
 
@@ -43,6 +44,10 @@ For each workload, the script reports:
   - `send`: from `keyDown` until the input is written to the socket
   - `herdr`: from the write until the echo frame is received (the first frame whose cursor moved)
   - `render`: from receiving that frame until it is drawn
+- for the `mouse` phases, per event:
+  - `publishes`: `HerdrStore` change notifications (`publish` events), each of which makes SwiftUI update the window
+  - `view updates`: `update` events with `rev: null`, the terminal view's SwiftUI updates
+  - `frames` and `screen`: frames Herdr sent, and the latency from the event's timestamp to the first draw of the next frame, for the events that made Herdr redraw
 
 The window's content size is fixed with `XHERDR_E2E_WINDOW` (default 1600x1000), so runs compare the same grid whatever size your own xherdr window was saved at. The live results below before this option used a 311×80 window. `e2e-baseline.json` now uses the fixed size, a 120×48 grid on the machine below.
 
@@ -93,6 +98,23 @@ Measured with the `keys` workload on a 120×48 grid:
 | max | 25.0 ms | 4.8 ms |
 
 Herdr echoes a key in about 0.3 ms. Before the fix, each keystroke wrote `nil` to `HerdrStore.inputError`, a `@Published` property. SwiftUI then updated the whole window, holding the main thread for about 8 ms before the echo frame could be shown. The store now publishes `inputError` only when it changes. What remains is about 0.7 ms to send the input and about 1.3 ms (p50) from the echo frame to the draw, which is mostly waiting for AppKit's next display pass.
+
+### Mouse events
+
+Measured with the `mouse` workload on a 126×48 grid, on 2026-10-02 under machine load 9–18:
+
+| phase | publishes per event, first run → now | frames per event, first run → now | event to screen, p50 / p95 |
+|---|---|---|---|
+| mouse-click (40) | 0 → 0 | 1 → 0 | — |
+| mouse-scroll (40) | 0 → 0 | 1 → 1 | 1.0 / 3.3 ms |
+| mouse-drag (48 moves) | 0.35 → 0 | 1 → 1 | 7.7 / 21.6 ms |
+
+Clicks and wheel events published nothing already, which confirms live the fixes that made clicks, split drags and repeated snapshots publish only changes. The first run found two more costs:
+
+- **Every click sent `pane.focus`, and Herdr answers it with a complete surface** (45 KB here), even for the pane it already focuses, about 100 ms later. `HerdrStore.select(paneID:)` now skips the request when the snapshot shows Herdr already focuses that pane (`HerdrStoreTests.testClicksInTheFocusedPaneDoNotFocusItAgain`).
+- **A split drag published the snapshot about 8 times a second**: each ratio change changes only its `layouts`, which the window reads only for panes the live surface does not show. `HerdrStore.receive` now keeps such a snapshot without publishing (`HerdrStoreTests.testLayoutOnlyChangesUnderTheLiveSurfaceDoNotPublish`).
+
+Each drag move that changes the ratio still costs a complete surface from Herdr and a cold layout of it, about 5 ms.
 
 # Workspace measurements
 
@@ -168,3 +190,18 @@ Measured on 2026-10-02 under heavy machine load (load average 25–34), against 
 | repository | 4 → 1 | 391 → 39 ms | 402 → 117 ms | unchanged |
 
 When the repository panel loads before the Git bar, the Git bar reads its status in a script of its own, and a refresh takes 3 round trips instead of 2. The baseline file still holds the earlier numbers.
+
+## One round trip per refresh
+
+Over SSH, the listing, the Git bar and the repository panel now read one remote script (`WorkspaceFiles.remoteRefresh`), with the branch status, the root check, the listing and the repository. Outside a work tree, the failed root check makes the script list the folder with `find`, so a refresh is one round trip there too. The script is shared through `SharedLoads` like the repository: the Git bar, which loads once the listing arrives, and the repository panel reuse a script that ran less than 2 s ago, while the listing, which also follows saves and file operations, joins one that is running but never reuses a finished one. `forgetRecentResults()` forgets it. Locally nothing changed.
+
+Measured on 2026-10-02 under machine load 10–14, against the OrbStack VM, compared with the run above (load 25–34, so the SSH gain is partly the lower load):
+
+| operation | SSH round trips | SSH small, before → after | SSH large, before → after |
+|---|---|---|---|
+| refresh | 2 → 1 | 81 → 64 ms | 283 → 175 ms |
+| file-list alone | 1 | 36 → 67 ms | 145 → 178 ms |
+| git-bar alone | 1 | 46 → 70 ms | 128 → 179 ms |
+| repository alone | 1 | 39 → 69 ms | 117 → 176 ms |
+
+Each load alone now runs the whole script, so it costs about what a refresh does. In the app the Git bar never loads alone, since it follows the listing; the repository panel does when it is expanded.

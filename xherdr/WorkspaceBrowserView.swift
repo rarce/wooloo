@@ -930,8 +930,11 @@ struct WorkspaceBrowserView: View {
             guard machine?.id == profile.id else { return }
             switch result {
             case .success(let snapshot):
+                let shown = location?.identity
                 remoteSnapshot = snapshot
                 remoteWorkspaceID = snapshot.focusedWorkspaceID ?? snapshot.workspaces.first?.workspaceID
+                // A refresh that keeps the location does not restart the listing's task.
+                if let identity = location?.identity, identity == shown { loadListing() }
             case .failure(let failure):
                 model.error = failure.localizedDescription
                 model.isLoading = false

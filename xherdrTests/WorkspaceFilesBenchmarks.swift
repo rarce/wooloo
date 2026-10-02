@@ -63,7 +63,8 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
         let head = try XCTUnwrap(WorkspaceFiles.repository(at: location).commits.first?.id, "no commits in \(repository)")
         let operations: [(String, () throws -> Void)] = [
             // What one refresh of the Files sidebar runs: the listing, then the Git bar, which
-            // loads the branch status and repository, then the repository panel.
+            // loads the branch status and repository, then the repository panel. Over SSH all
+            // three read one remote script; alone, as below, each runs the whole script.
             ("refresh", {
                 WorkspaceFiles.forgetRecentResults()
                 _ = try WorkspaceFiles.listing(at: location)

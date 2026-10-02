@@ -11,8 +11,11 @@
 #
 # Workloads: ascii, color and unicode stream 250 log lines per second for 5 s; typing echoes
 # 40 characters per second for 5 s; burst cats 60,000 lines at once; keys types 100 letters
-# into `cat` through xherdr's own key handling and reports keystroke-to-screen latency. All
-# run by default.
+# into `cat` through xherdr's own key handling and reports keystroke-to-screen latency; mouse
+# splits the pane, enables mouse reporting in the new one, and plays 40 clicks in the other
+# pane (which it already selected), 40 wheel events over the mouse-aware one and a 2 s drag of
+# the split, as three phases that report store publishes and view updates per event and the
+# event-to-screen latency of what Herdr redraws. All run by default.
 #
 # The xherdr window opens and must stay visible while it runs. XHERDR_E2E_WINDOW sets its
 # content size (default 1600x1000). XHERDR_E2E_SESSION changes the
@@ -26,7 +29,7 @@ baseline=$root/docs/perf/e2e-baseline.json
 herdr=(herdr --session $session)
 save_baseline=0
 if [[ ${1:-} == --save-baseline ]]; then save_baseline=1; shift; fi
-workloads=(ascii color unicode typing burst keys)
+workloads=(ascii color unicode typing burst keys mouse)
 (( $# )) && workloads=($@)
 [[ $session == default ]] && { echo "Refusing to use the primary Herdr session" >&2; exit 1; }
 
@@ -101,6 +104,27 @@ for workload in $workloads; do
         python3 -c 'import time; time.sleep(11.5)' # 100 keys, one every 100 ms
         echo "{\"name\":\"keys\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
         $herdr pane send-keys $pane ctrl+c > /dev/null
+        continue
+    fi
+    if [[ $workload == mouse ]]; then
+        echo "Running mouse"
+        $herdr pane run $pane "clear; cat" > /dev/null
+        # The new pane echoes the SGR mouse reports Herdr writes for wheel events, so each one
+        # draws a frame whose latency can be measured.
+        aware=$($herdr pane split $pane --direction right |
+            python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
+        $herdr pane run $aware "clear; printf '\\033[?1000h\\033[?1006h'; cat" > /dev/null
+        python3 -c 'import time; time.sleep(1.5)'
+        for kind seconds in click 5 scroll 5 drag 3; do
+            start=$(now_ms)
+            notifyutil -p dev.xherdr.mouse-probe.$kind
+            python3 -c "import time; time.sleep($seconds)"
+            echo "{\"name\":\"mouse-$kind\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
+            python3 -c 'import time; time.sleep(0.5)'
+        done
+        $herdr pane close $aware > /dev/null
+        $herdr pane send-keys $pane ctrl+c > /dev/null
+        python3 -c 'import time; time.sleep(1)'
         continue
     fi
     play="python3 $root/scripts/terminal-perf.py play"

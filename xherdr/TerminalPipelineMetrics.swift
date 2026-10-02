@@ -13,7 +13,9 @@ import os
 /// main thread), `update` (SwiftUI view update, with the grid layout when a revision changed)
 /// and `draw` (grid drawn). Keystrokes add `key` (the event's own time, so waiting in the main
 /// thread's queue counts, and when the view handled it) and `sent` (input written to the
-/// socket). The workspace side adds `proc` (a git, SSH or shell process that `WorkspaceFiles`
+/// socket). The mouse probe adds `mouse` (a click, scroll or split drag it played, with the
+/// event's own time), and `publish` counts the store's change notifications, each of which
+/// makes SwiftUI update the window. The workspace side adds `proc` (a git, SSH or shell process that `WorkspaceFiles`
 /// ran) and `span` (a user-visible operation such as loading the file list, from its start
 /// until its result is on screen). Times are nanoseconds since the first event's `start` line.
 final class TerminalPipelineMetrics {
@@ -31,6 +33,8 @@ final class TerminalPipelineMetrics {
                       bytes: Int, at: UInt64, decode: UInt64, cursor: HerdrCursor?)
         case key(eventAt: UInt64, at: UInt64, cursor: HerdrCursor?)
         case sent(at: UInt64, bytes: Int)
+        case mouse(kind: String, eventAt: UInt64, at: UInt64)
+        case published(at: UInt64)
         case process(label: String, remote: Bool, start: UInt64, nanos: UInt64, bytes: Int, status: Int32?)
         case span(name: String, start: UInt64, end: UInt64, detail: String?)
         case delivered(boot: String, projection: UInt64, revision: UInt64, at: UInt64)
@@ -78,6 +82,16 @@ final class TerminalPipelineMetrics {
 
     func inputSent(bytes: Int) {
         append(.sent(at: Self.now(), bytes: bytes))
+    }
+
+    /// The mouse probe is about to hand a `kind` event, due at `eventAt`, to the terminal view.
+    func mouseEvent(_ kind: String, eventAt: UInt64) {
+        append(.mouse(kind: kind, eventAt: eventAt, at: Self.now()))
+    }
+
+    /// `HerdrStore` announced a change: SwiftUI updates every view that observes it.
+    func published() {
+        append(.published(at: Self.now()))
     }
 
     func process(label: String, remote: Bool, start: UInt64, nanos: UInt64, bytes: Int, status: Int32?) {
@@ -153,6 +167,10 @@ final class TerminalPipelineMetrics {
             return #"{"e":"key","t_event":\#(time(eventAt)),"t":\#(time(at))\#(position(cursor))}"#
         case let .sent(at, bytes):
             return #"{"e":"sent","t":\#(time(at)),"bytes":\#(bytes)}"#
+        case let .mouse(kind, eventAt, at):
+            return #"{"e":"mouse","kind":\#(quoted(kind)),"t_event":\#(time(eventAt)),"t":\#(time(at))}"#
+        case let .published(at):
+            return #"{"e":"publish","t":\#(time(at))}"#
         case let .process(label, remote, start, nanos, bytes, status):
             return #"{"e":"proc","label":\#(quoted(label)),"remote":\#(remote),"t":\#(time(start)),"dur":\#(nanos),"bytes":\#(bytes),"ok":\#(status == 0),"status":\#(status.map(String.init) ?? "null")}"#
         case let .span(name, start, end, detail):
@@ -264,9 +282,11 @@ extension HerdrSurface {
 /// keyboard, so `scripts/terminal-e2e.sh` can measure keystroke-to-screen latency without
 /// accessibility access. Enabled with the metrics file and `XHERDR_TYPING_PROBE=1`; each
 /// `notifyutil -p dev.xherdr.typing-probe` types `XHERDR_TYPING_PROBE_KEYS` letters (100),
-/// one every `XHERDR_TYPING_PROBE_INTERVAL_MS` (100). Any local process can post that
-/// notification, so the probe is compiled only with the `XHERDR_PROBES` condition, which the
-/// script sets. `XHERDR_WINDOW_SIZE` (for example `1400x900`) fixes the window's content size,
+/// one every `XHERDR_TYPING_PROBE_INTERVAL_MS` (100). The same flag enables the mouse probe:
+/// `dev.xherdr.mouse-probe.click`, `.scroll` and `.drag` play clicks in a pane without mouse
+/// reporting, wheel events over one with it, and a drag of the first split, through the
+/// view's own mouse handlers. Any local process can post these notifications, so the probes
+/// are compiled only with the `XHERDR_PROBES` condition, which the script sets. `XHERDR_WINDOW_SIZE` (for example `1400x900`) fixes the window's content size,
 /// in every build.
 @MainActor
 enum TerminalTypingProbe {
@@ -284,6 +304,12 @@ enum TerminalTypingProbe {
         let interval = Double(environment["XHERDR_TYPING_PROBE_INTERVAL_MS"] ?? "") ?? 100
         notify_register_dispatch("dev.xherdr.typing-probe", &token, .main) { _ in
             MainActor.assumeIsolated { type(keys, every: interval / 1000) }
+        }
+        for kind in ["click", "scroll", "drag"] {
+            var mouseToken: Int32 = 0
+            notify_register_dispatch("dev.xherdr.mouse-probe.\(kind)", &mouseToken, .main) { _ in
+                MainActor.assumeIsolated { playMouse(kind) }
+            }
         }
         #endif
     }
@@ -304,6 +330,100 @@ enum TerminalTypingProbe {
                 window.setContentSize(NSSize(width: parts[0], height: parts[1]))
                 window.setFrameOrigin(NSPoint(x: 40, y: 40))
             }
+        }
+    }
+
+    /// Runs `step` `count` times, one every `interval`, on the main thread with the time each
+    /// was due. A strict timer on its own queue keeps the steps apart; each then waits for the
+    /// main thread like a hardware event.
+    private static func play(_ count: Int, every interval: TimeInterval,
+                             _ step: @escaping @MainActor (Int, TimeInterval) -> Void) {
+        var index = 0
+        let source = DispatchSource.makeTimerSource(flags: .strict, queue: DispatchQueue.global(qos: .userInteractive))
+        source.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(1))
+        source.setEventHandler {
+            let current = index
+            let timestamp = ProcessInfo.processInfo.systemUptime
+            index += 1
+            if index >= count { source.cancel() }
+            DispatchQueue.main.async { MainActor.assumeIsolated { step(current, timestamp) } }
+        }
+        timer?.cancel()
+        timer = source
+        source.resume()
+    }
+
+    /// Plays one mouse workload against the live view. Clicks go to a pane without mouse
+    /// reporting, after one unrecorded click that selects it, so the recorded ones click the
+    /// pane already selected. Wheel events go to a pane with mouse reporting. The drag moves
+    /// the first split 6 columns or rows each way and back.
+    private static func playMouse(_ kind: String) {
+        guard let view = target, let surface = view.surface, let window = view.window else {
+            NSLog("xherdr mouse probe: no live terminal view")
+            return
+        }
+        /// The window point at the middle of a cell.
+        func point(column: Int, row: Int) -> NSPoint {
+            view.convert(NSPoint(x: view.textContainerInset.width + (CGFloat(column) + 0.5) * TerminalPaneView.cellWidth,
+                                 y: view.textContainerInset.height + (CGFloat(row) + 0.5) * TerminalPaneView.cellHeight),
+                         to: nil)
+        }
+        func center(_ rect: HerdrRect) -> NSPoint {
+            point(column: Int(rect.x) + Int(rect.width) / 2, row: Int(rect.y) + Int(rect.height) / 2)
+        }
+        func mouse(_ type: NSEvent.EventType, at location: NSPoint, timestamp: TimeInterval) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: timestamp,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        func record(_ kind: String, _ timestamp: TimeInterval) {
+            TerminalPipelineMetrics.shared?.mouseEvent(kind, eventAt: UInt64(timestamp * 1_000_000_000))
+        }
+        switch kind {
+        case "click":
+            guard let pane = surface.paneIDs.first(where: { !surface.mouseReportingPaneIDs.contains($0) }),
+                  let rect = surface.paneInnerRects[pane] else { return NSLog("xherdr mouse probe: no pane to click") }
+            let location = center(rect)
+            play(41, every: 0.1) { index, timestamp in
+                guard let down = mouse(.leftMouseDown, at: location, timestamp: timestamp),
+                      let up = mouse(.leftMouseUp, at: location, timestamp: timestamp) else { return }
+                if index > 0 { record("click", timestamp) }
+                view.mouseDown(with: down)
+                view.mouseUp(with: up)
+            }
+        case "scroll":
+            guard let pane = surface.paneIDs.first(where: { surface.mouseReportingPaneIDs.contains($0) }),
+                  let rect = surface.paneInnerRects[pane] else { return NSLog("xherdr mouse probe: no mouse-aware pane") }
+            let location = center(rect)
+            play(40, every: 0.1) { index, timestamp in
+                record("scroll", timestamp)
+                // Three lines, as a wheel notch scrolls, alternately up and down.
+                _ = view.scrollPane(at: location, deltaX: 0, deltaY: index % 2 == 0 ? 3 : -3, precise: false, modifiers: [])
+            }
+        case "drag":
+            guard let split = surface.splits.first else { return NSLog("xherdr mouse probe: no split to drag") }
+            let horizontal = split.direction == .horizontal
+            let middle = center(split.hitRect)
+            let steps = 49
+            // Down, 6 cells one way, 12 back, 6 again, up: 48 moves after the press.
+            let offsets = (0..<steps).map { index -> Int in
+                let phase = index % 24
+                let wave = phase <= 6 ? phase : phase <= 18 ? 12 - phase : phase - 24
+                return index == 0 ? 0 : wave
+            }
+            play(steps + 1, every: 0.04) { index, timestamp in
+                let offset = CGFloat(offsets[min(index, steps - 1)])
+                let location = NSPoint(x: middle.x + (horizontal ? offset * TerminalPaneView.cellWidth : 0),
+                                       y: middle.y - (horizontal ? 0 : offset * TerminalPaneView.cellHeight))
+                switch index {
+                case 0: if let down = mouse(.leftMouseDown, at: location, timestamp: timestamp) { view.mouseDown(with: down) }
+                case steps: if let up = mouse(.leftMouseUp, at: location, timestamp: timestamp) { view.mouseUp(with: up) }
+                default:
+                    record("drag", timestamp)
+                    if let drag = mouse(.leftMouseDragged, at: location, timestamp: timestamp) { view.mouseDragged(with: drag) }
+                }
+            }
+        default:
+            break
         }
     }
 

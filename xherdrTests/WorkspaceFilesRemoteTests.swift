@@ -17,6 +17,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             printf '%s\\0' "$@" >> '\(sandbox.path("ssh.log"))'
             printf '\\036' >> '\(sandbox.path("ssh.log"))'
             echo '\(Self.warning)' >&2
+            [ -e '\(sandbox.path("slow"))' ] && sleep 0.4
             for command; do :; done
             cd '\(sandbox.base)'
             exec /bin/sh -c "$command"
@@ -201,29 +202,82 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                 String(describing: bar.repository), String(describing: repository)]
     }
 
-    /// Over SSH, the listing is one remote script, and the Git bar's status and repository
-    /// another, which the repository panel then shares; the results match a local refresh.
-    func testRefreshOverSSHRunsOneScriptPerLoadWithTheLocalResults() throws {
+    /// Over SSH, the listing, the Git bar and the repository panel read one remote script; the
+    /// results match a local refresh.
+    func testRefreshOverSSHRunsOneScriptWithTheLocalResults() throws {
         try busyRepository()
         let local = try refresh(sandbox.location("repo"))
         let before = try invocations().count
         let (remoteResult, processes) = try WorkspaceProcessLog.collect { try refresh(remote("repo")) }
         XCTAssertEqual(remoteResult, local)
-        XCTAssertEqual(try invocations().count - before, 2)
-        XCTAssertEqual(processes.map(\.label), ["git batch", "git batch"])
+        XCTAssertEqual(try invocations().count - before, 1)
+        XCTAssertEqual(processes.map(\.label), ["git batch"])
         XCTAssertTrue(local[0].contains("c.txt") && local[0].contains("build"), local[0])
         XCTAssertTrue(local[3].contains("feature") && local[3].contains("/wt"), local[3])
 
-        // A repository load first, as when the repository panel wins the race: the Git bar then
-        // reads only its status, and the listing reuses the root the load found.
-        WorkspaceFiles.forgetRecentResults()
-        let (_, ordered) = try WorkspaceProcessLog.collect {
-            _ = try WorkspaceFiles.repository(at: remote("repo"))
+        // The Git bar and repository panel reuse a recent batch; the listing, which follows
+        // saves and file operations, reads afresh, and the root it reuses spares the root check.
+        let (_, again) = try WorkspaceProcessLog.collect {
             _ = try WorkspaceFiles.gitBar(at: remote("repo"))
+            _ = try WorkspaceFiles.repository(at: remote("repo"))
             _ = try WorkspaceFiles.listing(at: remote("repo"))
         }
-        XCTAssertEqual(ordered.count, 3)
+        XCTAssertEqual(again.count, 1)
         XCTAssertEqual(try invocations().last?.last?.contains("rev-parse"), false, "The listing skips the root check")
+
+        // Forgetting, as Git operations and an explicit refresh do, makes the next load read again.
+        WorkspaceFiles.forgetRecentResults()
+        let (_, forgotten) = try WorkspaceProcessLog.collect { _ = try WorkspaceFiles.gitBar(at: remote("repo")) }
+        XCTAssertEqual(forgotten.count, 1)
+    }
+
+    /// Runs `body` on another thread; the returned group is done when it returns.
+    private func inBackground(_ body: @escaping () -> Void) -> DispatchGroup {
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) { body() }
+        return group
+    }
+
+    /// A refresh starts the listing and the repository panel together, in no set order, and
+    /// the Git bar once the listing arrives: whichever starts first, the others share its script.
+    func testLoadsStartedTogetherOverSSHShareOneScript() throws {
+        try busyRepository()
+        let expected = try refresh(remote("repo"))
+        try sandbox.write(["slow": ""], in: ".")
+        for listingFirst in [true, false] {
+            WorkspaceFiles.forgetRecentResults()
+            let before = try invocations().count
+            var first: String?
+            var second: String?
+            let started = inBackground {
+                first = listingFirst ? self.outcome { try WorkspaceFiles.listing(at: self.remote("repo")) }
+                                     : self.outcome { try WorkspaceFiles.repository(at: self.remote("repo")) }
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+            second = listingFirst ? outcome { try WorkspaceFiles.repository(at: remote("repo")) }
+                                  : outcome { try WorkspaceFiles.listing(at: remote("repo")) }
+            started.wait()
+            let bar = outcome { try WorkspaceFiles.gitBar(at: remote("repo")) }
+            let (listing, repository) = listingFirst ? (first, second) : (second, first)
+            XCTAssertEqual(listing, expected[0], "listing first: \(listingFirst)")
+            XCTAssertEqual(repository, expected[3], "listing first: \(listingFirst)")
+            XCTAssertTrue(bar.contains(expected[1]), bar)
+            XCTAssertEqual(try invocations().count - before, 1, "listing first: \(listingFirst)")
+        }
+    }
+
+    /// A batch that a forget overtakes is returned to its callers but not kept for the next load.
+    func testBatchOvertakenByAForgetIsNotReused() throws {
+        try busyRepository()
+        try sandbox.write(["slow": ""], in: ".")
+        WorkspaceFiles.forgetRecentResults()
+        let before = try invocations().count
+        let running = inBackground { _ = try? WorkspaceFiles.listing(at: self.remote("repo")) }
+        Thread.sleep(forTimeInterval: 0.1)
+        WorkspaceFiles.forgetRecentResults()
+        running.wait()
+        _ = try WorkspaceFiles.gitBar(at: remote("repo"))
+        XCTAssertEqual(try invocations().count - before, 2)
     }
 
     /// Locally, the work tree root is checked once per refresh instead of by both the listing and the repository load.
@@ -254,11 +308,38 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                            outcome { try WorkspaceFiles.repository(at: local) }, name)
             XCTAssertEqual(outcome { try WorkspaceFiles.gitBar(at: ssh) }, outcome { try WorkspaceFiles.gitBar(at: local) }, name)
         }
+        // Outside a repository the script lists the folder itself: a refresh is still one round trip.
+        let before = try invocations().count
+        _ = try refreshOutcomes(remote("plain"))
+        XCTAssertEqual(try invocations().count - before, 1)
+        XCTAssertEqual(try refreshOutcomes(remote("plain")), try refreshOutcomes(sandbox.location("plain")))
+        XCTAssertEqual(try refreshOutcomes(remote("empty")), try refreshOutcomes(sandbox.location("empty")))
+
         WorkspaceFiles.forgetRecentResults()
         XCTAssertThrowsError(try WorkspaceFiles.repository(at: remote("plain"))) {
             XCTAssertTrue($0.localizedDescription.contains("not a git repository"), $0.localizedDescription)
         }
         XCTAssertEqual(try WorkspaceFiles.repository(at: remote("empty")).commits.count, 0, "A failed log leaves no commits")
+    }
+
+    /// Every load of a refresh, in the order the UI runs them, as results or errors.
+    private func refreshOutcomes(_ location: WorkspaceFileLocation) throws -> [String] {
+        WorkspaceFiles.forgetRecentResults()
+        return [outcome { try WorkspaceFiles.listing(at: location) }, outcome { try WorkspaceFiles.gitBar(at: location) },
+                outcome { try WorkspaceFiles.repository(at: location) }]
+    }
+
+    /// A damaged index fails the listing and the branch status but not the repository; each
+    /// load reports the same over SSH as locally.
+    func testRefreshWithFailingCommandsMatchesLocal() throws {
+        try sandbox.repository("repo")
+        try sandbox.sh("printf 'junk' > .git/index", in: "repo")
+        let local = try refreshOutcomes(sandbox.location("repo"))
+        XCTAssertTrue(local[0].hasPrefix("error: ") && local[1].hasPrefix("error: "), "\(local)")
+        XCTAssertFalse(local[2].hasPrefix("error: "), local[2])
+        let before = try invocations().count
+        XCTAssertEqual(try refreshOutcomes(remote("repo")), local)
+        XCTAssertEqual(try invocations().count - before, 1)
     }
 
     /// Each command of a batch keeps its own status, output and errors, and output that looks

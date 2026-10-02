@@ -1192,7 +1192,11 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     private func surfacePoint(_ event: NSEvent) -> (Int, Int) {
-        let point = convert(event.locationInWindow, from: nil)
+        surfacePoint(at: event.locationInWindow)
+    }
+
+    private func surfacePoint(at location: NSPoint) -> (Int, Int) {
+        let point = convert(location, from: nil)
         return (Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth)),
                 Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight)))
     }
@@ -1330,25 +1334,38 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        guard let surface, let (id, column, row) = mouseHit(event, in: surface),
-              surface.mouseReportingPaneIDs.contains(id) else {
+        guard scrollPane(at: event.locationInWindow, deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY,
+                         precise: event.hasPreciseScrollingDeltas, modifiers: event.modifierFlags) else {
             scroll.reset()
             super.scrollWheel(with: event)
             return
         }
-        let vertical = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
-        let delta = vertical ? event.scrollingDeltaY : event.scrollingDeltaX
-        guard let lines = scroll.lines(for: delta, precise: event.hasPreciseScrollingDeltas,
-                                       lineHeight: TerminalPaneView.cellHeight) else { return }
+    }
+
+    /// Sends a wheel event to the pane under `location` (in the window) when its program
+    /// reports the mouse; false when it does not. The mouse probe calls it too, since AppKit
+    /// cannot make a scroll `NSEvent` at a window location.
+    func scrollPane(at location: NSPoint, deltaX: CGFloat, deltaY: CGFloat, precise: Bool,
+                    modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard let surface, let (id, column, row) = mouseHit(at: location, in: surface),
+              surface.mouseReportingPaneIDs.contains(id) else { return false }
+        let vertical = abs(deltaY) >= abs(deltaX)
+        let delta = vertical ? deltaY : deltaX
+        guard let lines = scroll.lines(for: delta, precise: precise, lineHeight: TerminalPaneView.cellHeight) else { return true }
         let kind: HerdrMouseEvent.Kind = vertical
             ? (delta > 0 ? .scrollUp : .scrollDown)
             : (delta > 0 ? .scrollLeft : .scrollRight)
         sendMouse?(HerdrMouseEvent(kind: kind, column: column, row: row,
-                                   modifiers: mouseModifiers(event), lines: lines), id)
+                                   modifiers: TerminalPointer.modifiers(modifiers), lines: lines), id)
+        return true
     }
 
     private func mouseHit(_ event: NSEvent, in surface: HerdrSurface) -> (String, UInt16, UInt16)? {
-        let (x, y) = surfacePoint(event)
+        mouseHit(at: event.locationInWindow, in: surface)
+    }
+
+    private func mouseHit(at location: NSPoint, in surface: HerdrSurface) -> (String, UInt16, UInt16)? {
+        let (x, y) = surfacePoint(at: location)
         return TerminalPointer.pane(atColumn: x, row: y, in: surface).map { ($0.id, $0.column, $0.row) }
     }
 

@@ -16,6 +16,7 @@ final class HerdrStoreTests: XCTestCase {
                                       ["pane_id": "w1:p2", "workspace_id": "w1", "tab_id": "w1:t1"],
                                       ["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t2"]]
         var focus = ("w1", "w1:t1", "w1:p1")
+        var layouts: [[String: Any]] = []
         var reload: [String: Any] = ["status": "applied"]
         /// When set, `pane.send_input` waits for it before answering, keeping the request in flight.
         var inputGate: DispatchSemaphore?
@@ -27,7 +28,7 @@ final class HerdrStoreTests: XCTestCase {
 
         func snapshot() -> [String: Any] {
             ["result": ["snapshot": [
-                "workspaces": workspaces, "tabs": tabs, "panes": panes, "agents": [], "layouts": [],
+                "workspaces": workspaces, "tabs": tabs, "panes": panes, "agents": [], "layouts": layouts,
                 "focused_workspace_id": focus.0, "focused_tab_id": focus.1, "focused_pane_id": focus.2
             ] as [String: Any]]]
         }
@@ -267,6 +268,59 @@ final class HerdrStoreTests: XCTestCase {
         server.emit(["event": "workspace.renamed"])
         await waitUntil("renamed") { store.snapshot?.workspaces.first?.label == "renamed" }
         XCTAssertGreaterThan(published, 0, "A changed snapshot is still published")
+    }
+
+    /// Herdr answers every pane.focus with a complete surface, so clicks in the pane it already
+    /// focuses send none; a click in another pane still focuses that one.
+    func testClicksInTheFocusedPaneDoNotFocusItAgain() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        let focuses = { Self.requests(in: endpoint).filter { $0.method == "pane.focus" }.compactMap { $0.params["pane_id"] as? String } }
+        let before = focuses()
+        for _ in 0..<10 { store.select(paneID: "w1:p1") }
+        store.select(paneID: "w1:p2")
+        await waitUntil("other pane focused") { focuses().count > before.count }
+        XCTAssertEqual(Array(focuses().dropFirst(before.count)), ["w1:p2"])
+        XCTAssertEqual(store.selectedPaneID, "w1:p2")
+    }
+
+    /// A split drag changes only the snapshot's layouts, which the window reads only for panes
+    /// the live surface does not show: then they are kept without publishing.
+    func testLayoutOnlyChangesUnderTheLiveSurfaceDoNotPublish() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        func layout(width: Int) -> [[String: Any]] {
+            [["tab_id": "w1:t1", "area": ["x": 0, "y": 0, "width": 80, "height": 24],
+              "panes": [["pane_id": "w1:p1", "rect": ["x": 0, "y": 0, "width": width, "height": 24]]]]]
+        }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        // The tab has a pane the surface does not show yet: its layout is still published.
+        state.update { $0.layouts = layout(width: 40) }
+        server.emit(["event": "layout.changed"])
+        await waitUntil("layout published") { store.snapshot?.layouts.first?.panes.first?.rect.width == 40 }
+
+        state.update { $0.panes.removeAll { $0["pane_id"] as? String == "w1:p2" } }
+        server.emit(["event": "pane.closed"])
+        await waitUntil("pane closed") { store.selectedPanes.map(\.paneID) == ["w1:p1"] }
+        var published = 0
+        let subscription = store.objectWillChange.sink { published += 1 }
+        defer { subscription.cancel() }
+        for width in [50, 60, 70] {
+            state.update { $0.layouts = layout(width: width) }
+            server.emit(["event": "layout.changed"])
+            await waitUntil("layout \(width) kept") { store.snapshot?.layouts.first?.panes.first?.rect.width == width }
+        }
+        XCTAssertEqual(published, 0)
+
+        state.update { $0.workspaces[0]["label"] = "renamed" }
+        server.emit(["event": "workspace.renamed"])
+        await waitUntil("renamed") { store.snapshot?.workspaces.first?.label == "renamed" }
+        XCTAssertEqual(published, 1, "Other changes still publish")
     }
 
     func testSplitResizeNeedsTheEndpoint() async {

@@ -350,42 +350,46 @@ enum WorkspaceFiles {
     }
 
     static func listing(at location: WorkspaceFileLocation) throws -> WorkspaceFileListing {
-        // One batch: a single round trip over SSH. The work tree check is skipped when the
-        // repository panel or Git bar just found the root.
+        // Over SSH the listing comes from the refresh batch, which the Git bar and repository
+        // panel share. It never reuses a finished one: it joins a running batch or starts one.
+        if location.machine != nil { return try remoteRefresh(at: location, reusingFinished: false).listing.get() }
+        // The work tree check is skipped when the repository panel or Git bar just found the root.
         let knownRoot = gitRoots.recent(for: location.identity)
         let generation = gitRoots.generation
-        let sections = (knownRoot == nil ? [GitSection.root] : []) + [
-            GitSection(["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."], limit: maximumListingBytes),
-            GitSection(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."],
-                       limit: maximumListingBytes),
-            GitSection(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000),
-        ]
-        var results = try gitBatch(location, sections)[...]
+        var results = try gitBatch(location, (knownRoot == nil ? [GitSection.root] : []) + listingSections)[...]
         let hasGit: Bool
         if knownRoot == nil, let rootResult = results.popFirst() {
             hasGit = rememberRoot(rootResult, at: location, generation: generation) != nil
         } else {
             hasGit = true
         }
-        let files: [String]
-        let changes: [WorkspaceFileChange]
-        var totalFiles: Int?
-        var ignored = WorkspaceIgnoredEntries()
-        if hasGit {
-            let outputs = Array(results)
-            let fileData = try outputs[0].get()
-            let (tracked, untracked) = trackedFirst(nulStrings(fileData))
-            ignored = WorkspaceIgnoredEntries(gitEntries: nulStrings(try outputs[1].get()))
-            let ignoredFiles = ignored.files.sorted()
-            totalFiles = tracked.count + untracked.count + ignoredFiles.count
-            files = (tracked + untracked + ignoredFiles).prefix(maximumFiles).sorted()
-            changes = parseStatus(try outputs[2].get())
-        } else {
-            files = try filesWithoutGit(at: location)
-            changes = []
+        return try makeListing(hasGit ? results : nil) { try filesWithoutGit(at: location) }
+    }
+
+    /// The commands of a listing in a work tree, for `makeListing`.
+    private static let listingSections = [
+        GitSection(["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."], limit: maximumListingBytes),
+        GitSection(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."],
+                   limit: maximumListingBytes),
+        GitSection(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000),
+    ]
+
+    /// A listing from the outputs of `listingSections`, or, outside a work tree (nil), from
+    /// the files `withoutGit` finds.
+    private static func makeListing(_ results: ArraySlice<Result<Data, Error>>?,
+                                    withoutGit: () throws -> [String]) throws -> WorkspaceFileListing {
+        guard let results else {
+            let files = try withoutGit()
+            return WorkspaceFileListing(files: files, changes: [], hasGit: false, totalFiles: files.count,
+                                        ignored: WorkspaceIgnoredEntries())
         }
-        return WorkspaceFileListing(files: files, changes: changes, hasGit: hasGit, totalFiles: totalFiles ?? files.count,
-                                    ignored: ignored)
+        let outputs = Array(results)
+        let (tracked, untracked) = trackedFirst(nulStrings(try outputs[0].get()))
+        let ignored = WorkspaceIgnoredEntries(gitEntries: nulStrings(try outputs[1].get()))
+        let ignoredFiles = ignored.files.sorted()
+        let files = (tracked + untracked + ignoredFiles).prefix(maximumFiles).sorted()
+        return WorkspaceFileListing(files: files, changes: parseStatus(try outputs[2].get()), hasGit: true,
+                                    totalFiles: tracked.count + untracked.count + ignoredFiles.count, ignored: ignored)
     }
 
     /// The files Go to File searches: tracked and untracked ones, and with `includeIgnored` those
@@ -417,10 +421,17 @@ enum WorkspaceFiles {
     /// Every file under a folder that is not in a Git repository, skipping `.git` folders.
     private static func filesWithoutGit(at location: WorkspaceFileLocation) throws -> [String] {
         guard let machine = location.machine else { return try localFiles(root: location.root) }
-        let script = "cd \(quote(location.root)) && find . -type f -not -path './.git/*' -print0"
-        return nulStrings(try ssh(machine, script, limit: maximumListingBytes))
-            .map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }
-            .sorted().prefix(maximumFiles).map { $0 }
+        return filesFound(try ssh(machine, findWords(location).map(quote).joined(separator: " "), limit: maximumListingBytes))
+    }
+
+    /// The remote command that lists every file under a folder that is not in a repository.
+    private static func findWords(_ location: WorkspaceFileLocation) -> [String] {
+        ["sh", "-c", #"cd "$1" && find . -type f -not -path './.git/*' -print0"#, "sh", location.root]
+    }
+
+    /// The files of `findWords`'s output.
+    private static func filesFound(_ data: Data) -> [String] {
+        nulStrings(data).map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }.sorted().prefix(maximumFiles).map { $0 }
     }
 
     /// What is directly inside `folder` ("" is the root), for an ignored folder being expanded.
@@ -599,12 +610,25 @@ enum WorkspaceFiles {
     /// load both need one; whichever runs first finds it, and the other skips the command.
     private static let gitRoots = SharedLoads<String>(maxAge: 2)
 
+    /// What one refresh of an SSH location shows: the explorer's listing, the Git bar's
+    /// branch status and the repository, which the Git bar and repository panel share.
+    private struct RemoteRefresh {
+        let listing: Result<WorkspaceFileListing, Error>
+        let status: Result<WorkspaceBranchStatus, Error>
+        let repository: Result<WorkspaceRepositoryListing, Error>
+    }
+
+    /// Recent SSH refreshes. A refresh starts the listing and the repository panel together and
+    /// the Git bar once the listing arrives, so all three read one remote script: one round trip.
+    private static let remoteRefreshes = SharedLoads<RemoteRefresh>(maxAge: 2)
+
     /// Forgets recently loaded results, so the next load reads the repository again. Git
     /// operations run here do this themselves; an explicit refresh does it for changes made
     /// elsewhere, such as in a terminal.
     static func forgetRecentResults() {
         repositoryLoads.forget()
         gitRoots.forget()
+        remoteRefreshes.forget()
         NotificationCenter.default.post(name: repositoryDidChange, object: nil)
     }
 
@@ -631,13 +655,18 @@ enum WorkspaceFiles {
     }
 
     static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
-        try repositoryLoads.value(for: location.identity) { try loadRepository(at: location).repository.get() }
+        if location.machine != nil { return try remoteRefresh(at: location).repository.get() }
+        return try repositoryLoads.value(for: location.identity) { try loadRepository(at: location).repository.get() }
     }
 
-    /// The Git bar's branch status and the repository, which it shows together. Over SSH, when
-    /// the repository is not loaded yet, both come from one remote script.
+    /// The Git bar's branch status and the repository, which it shows together. Over SSH both
+    /// come from the refresh batch, which the listing that comes before the Git bar just ran.
     static func gitBar(at location: WorkspaceFileLocation) throws -> (status: WorkspaceBranchStatus,
                                                                       repository: WorkspaceRepositoryListing?) {
+        if location.machine != nil {
+            let refresh = try remoteRefresh(at: location)
+            return (try refresh.status.get(), try? refresh.repository.get())
+        }
         var status: Result<WorkspaceBranchStatus, Error>?
         let repository = try? repositoryLoads.value(for: location.identity) {
             let loaded = try loadRepository(at: location, withBranchStatus: true)
@@ -661,17 +690,32 @@ enum WorkspaceFiles {
         return parseBranchStatus(try outputs[0].get(), remotes: remotes)
     }
 
+    /// The commands of a repository listing after the root, for `makeRepository`.
+    private static let repositorySections = [
+        GitSection(["log", "-n", "50", "--format=\(logFormat)"], limit: 200_000),
+        GitSection(["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"],
+                   limit: 200_000),
+        GitSection(["worktree", "list", "--porcelain", "-z"], limit: 200_000),
+    ]
+
+    /// A repository listing from the outputs of `repositorySections`; an empty repository has no log.
+    private static func makeRepository(_ results: ArraySlice<Result<Data, Error>>, root: String?) throws
+        -> WorkspaceRepositoryListing {
+        let outputs = Array(results)
+        let logData = (try? outputs[0].get()) ?? Data()
+        let refData = try outputs[1].get()
+        let worktreeData = try outputs[2].get()
+        return WorkspaceRepositoryListing(commits: parseLog(logData), branches: parseBranches(refData),
+                                          worktrees: parseWorktrees(worktreeData), root: root ?? "")
+    }
+
     private static func loadRepository(at location: WorkspaceFileLocation, withBranchStatus: Bool = false)
         throws -> (repository: Result<WorkspaceRepositoryListing, Error>, status: Result<WorkspaceBranchStatus, Error>?) {
         let knownRoot = gitRoots.recent(for: location.identity)
         let generation = gitRoots.generation
         // The branch status goes first, since a failed root check stops the commands after it.
         let sections = (withBranchStatus ? branchStatusSections : [])
-            + (knownRoot == nil ? [GitSection.root] : [])
-            + [GitSection(["log", "-n", "50", "--format=\(logFormat)"], limit: 200_000),
-               GitSection(["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"],
-                          limit: 200_000),
-               GitSection(["worktree", "list", "--porcelain", "-z"], limit: 200_000)]
+            + (knownRoot == nil ? [GitSection.root] : []) + repositorySections
         var results = try gitBatch(location, sections)[...]
         let status = withBranchStatus ? Result { try branchStatus(from: results.prefix(2)) } : nil
         if withBranchStatus { results = results.dropFirst(2) }
@@ -681,14 +725,51 @@ enum WorkspaceFiles {
                 root = rememberRoot(rootResult, at: location, generation: generation)
                 _ = try rootResult.get()
             }
-            let outputs = Array(results)
-            let logData = (try? outputs[0].get()) ?? Data()
-            let refData = try outputs[1].get()
-            let worktreeData = try outputs[2].get()
-            return WorkspaceRepositoryListing(commits: parseLog(logData), branches: parseBranches(refData),
-                                              worktrees: parseWorktrees(worktreeData), root: root ?? "")
+            return try makeRepository(results, root: root)
         }
         return (repository, status)
+    }
+
+    /// The refresh of an SSH location, from a batch running or, with `reusingFinished`, one
+    /// that finished less than 2 s ago, or else from a new one.
+    private static func remoteRefresh(at location: WorkspaceFileLocation, reusingFinished: Bool = true) throws
+        -> RemoteRefresh {
+        try remoteRefreshes.value(for: location.identity, reusingFinished: reusingFinished) {
+            try loadRemoteRefresh(at: location)
+        }
+    }
+
+    /// One remote script with the listing, the branch status and the repository. Outside a work
+    /// tree the root check fails, and the script lists the folder with `find` instead.
+    private static func loadRemoteRefresh(at location: WorkspaceFileLocation) throws -> RemoteRefresh {
+        guard let machine = location.machine else { throw WorkspaceFileError.message("Not an SSH location") }
+        let knownRoot = gitRoots.recent(for: location.identity)
+        let generation = gitRoots.generation
+        // The branch status goes first, since a failed root check stops the commands after it.
+        let sections = branchStatusSections + (knownRoot == nil ? [GitSection.root] : []) + listingSections
+            + repositorySections
+        let batch = try remoteGitBatch(machine, location, sections,
+                                       otherwise: knownRoot == nil ? (findWords(location), maximumListingBytes) : nil)
+        var results = batch.results[...]
+        let status = Result { try branchStatus(from: results.prefix(branchStatusSections.count)) }
+        results = results.dropFirst(branchStatusSections.count)
+        var root = knownRoot
+        var rootError: Error?
+        if knownRoot == nil, let rootResult = results.popFirst() {
+            root = rememberRoot(rootResult, at: location, generation: generation)
+            if case .failure(let error) = rootResult { rootError = error }
+        }
+        let listingResults = results.prefix(listingSections.count)
+        let listing = Result {
+            try makeListing(rootError == nil ? listingResults : nil) {
+                filesFound(try (batch.otherwise ?? .failure(WorkspaceFileError.message("Remote command output is incomplete"))).get())
+            }
+        }
+        let repository = Result { () throws -> WorkspaceRepositoryListing in
+            if let rootError { throw rootError }
+            return try makeRepository(results.dropFirst(listingSections.count), root: root)
+        }
+        return RemoteRefresh(listing: listing, status: status, repository: repository)
     }
 
     /// Keeps the root a root check found, unless results were forgotten since `generation`;
@@ -1024,37 +1105,52 @@ enum WorkspaceFiles {
                 return result
             }
         }
+        return try remoteGitBatch(machine, location, sections, timeout: timeout).results
+    }
+
+    /// `gitBatch` over SSH. `otherwise` runs in place of the commands after a failed gate, as
+    /// a command of its own whose result comes back apart; nil when no gate failed.
+    private static func remoteGitBatch(_ machine: HerdrMachineProfile, _ location: WorkspaceFileLocation,
+                                       _ sections: [GitSection], otherwise: (words: [String], limit: Int)? = nil,
+                                       timeout: TimeInterval = 15)
+        throws -> (results: [Result<Data, Error>], otherwise: Result<Data, Error>?) {
         let commands = sections.map { section in
             (words: ["env", "GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + section.args, gate: section.gate)
         }
-        let limit = sections.reduce(1_000) { $0 + $1.limit + 100 }
-        let output = try ssh(machine, "sh -c " + quote(remoteBatchScript(commands)), limit: limit,
-                             timeout: timeout * Double(max(1, sections.count)), label: "git batch")
+        let limit = sections.reduce(1_000) { $0 + $1.limit + 100 } + (otherwise.map { $0.limit + 100 } ?? 0)
+        let output = try ssh(machine, "sh -c " + quote(remoteBatchScript(commands, otherwise: otherwise?.words)),
+                             limit: limit, timeout: timeout * Double(max(1, sections.count)), label: "git batch")
         let parsed = try parseBatchOutput(output)
-        var stopped: Error?
-        return sections.indices.map { index in
-            guard index < parsed.count else {
-                return .failure(stopped ?? WorkspaceFileError.message("Remote command output is incomplete"))
-            }
+        let incomplete = WorkspaceFileError.message("Remote command output is incomplete")
+        func outcome(_ index: Int, limit: Int) -> Result<Data, Error> {
+            guard index < parsed.count else { return .failure(incomplete) }
             let section = parsed[index]
-            let result: Result<Data, Error>
-            if section.output.count > sections[index].limit {
-                result = .failure(WorkspaceFileError.message("Output is too large"))
-            } else if section.status != 0 {
-                result = .failure(WorkspaceFileError.message(failureMessage(errors: section.errors, output: section.output)))
-            } else {
-                result = .success(section.output)
+            if section.output.count > limit { return .failure(WorkspaceFileError.message("Output is too large")) }
+            if section.status != 0 {
+                return .failure(WorkspaceFileError.message(failureMessage(errors: section.errors, output: section.output)))
             }
-            if sections[index].gate, case .failure(let error) = result { stopped = error }
+            return .success(section.output)
+        }
+        var stopped: Error?
+        var fallback: Result<Data, Error>?
+        let results = sections.indices.map { index -> Result<Data, Error> in
+            if let stopped { return .failure(stopped) }
+            let result = outcome(index, limit: sections[index].limit)
+            if sections[index].gate, case .failure(let error) = result {
+                stopped = error
+                // The script printed the gate's section, then the fallback's.
+                if let otherwise, index < parsed.count { fallback = outcome(index + 1, limit: otherwise.limit) }
+            }
             return result
         }
+        return (results, fallback)
     }
 
     /// A POSIX shell script that runs each command with its output and errors in temporary
     /// files, then prints a header line, `xherdr-section <status> <output bytes> <error bytes>`,
     /// followed by both. The lengths delimit them, so no output can be mistaken for a header.
-    /// After a failed gate, the script stops.
-    static func remoteBatchScript(_ commands: [(words: [String], gate: Bool)]) -> String {
+    /// After a failed gate, the script runs `otherwise` when given, then stops.
+    static func remoteBatchScript(_ commands: [(words: [String], gate: Bool)], otherwise: [String]? = nil) -> String {
         var lines = [
             #"d=$(mktemp -d) || exit 1"#,
             #"trap 'rm -rf "$d"' EXIT"#,
@@ -1063,8 +1159,9 @@ enum WorkspaceFiles {
                 + #"printf 'xherdr-section %s %s %s\n' "$r" $(wc -c <"$d/o") $(wc -c <"$d/e"); "#
                 + #"cat "$d/o" "$d/e"; return $r; }"#,
         ]
+        let stop = otherwise.map { " || { section " + $0.map(quote).joined(separator: " ") + "; exit 0; }" } ?? " || exit 0"
         for command in commands {
-            lines.append("section " + command.words.map(quote).joined(separator: " ") + (command.gate ? " || exit 0" : ""))
+            lines.append("section " + command.words.map(quote).joined(separator: " ") + (command.gate ? stop : ""))
         }
         return lines.joined(separator: "\n") + "\n"
     }
@@ -1679,10 +1776,15 @@ final class SharedLoads<Value> {
 
     init(maxAge: TimeInterval) { self.maxAge = maxAge }
 
-    func value(for key: String, load: () throws -> Value) throws -> Value {
+    /// The result of a load of `key` running now, or of one that finished less than `maxAge`
+    /// ago, or else of `load`. Without `reusingFinished`, only a load that finishes after this
+    /// call is shared: its caller needs results read after it asked.
+    func value(for key: String, reusingFinished: Bool = true, load: () throws -> Value) throws -> Value {
         condition.lock()
+        let asked = ProcessInfo.processInfo.systemUptime
         while running.contains(key) { condition.wait() }
-        if let recent = results[key], ProcessInfo.processInfo.systemUptime - recent.time < maxAge {
+        if let recent = results[key],
+           reusingFinished ? ProcessInfo.processInfo.systemUptime - recent.time < maxAge : recent.time >= asked {
             condition.unlock()
             return recent.value
         }

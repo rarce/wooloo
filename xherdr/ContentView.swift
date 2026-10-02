@@ -76,7 +76,7 @@ struct ContentView: View {
             notifier.onOpenPane = { focusPane($0) }
             notifier.reloadSettings()
         }
-        .onReceive(herdr.$snapshot) { snapshot in
+        .onReceive(herdr.snapshotPublisher) { snapshot in
             notifier.process(snapshot, selectedPaneID: herdr.selectedPaneID)
         }
         .onChange(of: herdr.selectedPaneID) { _, paneID in notifier.acknowledge(paneID: paneID) }

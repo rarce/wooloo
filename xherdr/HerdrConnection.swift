@@ -1,3 +1,4 @@
+import Combine
 import Darwin
 import Foundation
 
@@ -452,7 +453,22 @@ final class HerdrSurfaceFeed {
 
 @MainActor
 final class HerdrStore: ObservableObject {
-    @Published private(set) var snapshot: HerdrSnapshot?
+    /// Herdr's state. Every assignment publishes, as `@Published` would, except the event
+    /// stream's layout-only changes while the live surface shows the tab (see `receive`).
+    private(set) var snapshot: HerdrSnapshot? {
+        get { snapshotValue }
+        set {
+            objectWillChange.send()
+            snapshotValue = newValue
+            publishedSnapshots.send(newValue)
+        }
+    }
+    private var snapshotValue: HerdrSnapshot?
+    private let publishedSnapshots = CurrentValueSubject<HerdrSnapshot?, Never>(nil)
+    /// Each published snapshot, starting with the current one, like `@Published`'s publisher.
+    /// Made once: SwiftUI's `onReceive` subscribes again to a publisher that is not the same,
+    /// and this one replays its current value to every subscriber.
+    let snapshotPublisher: AnyPublisher<HerdrSnapshot?, Never>
     @Published private(set) var paneText: [String: String] = [:]
     /// The live surface goes straight to the terminal view: publishing every frame would make
     /// SwiftUI update the whole window at Herdr's frame rate.
@@ -495,6 +511,16 @@ final class HerdrStore: ObservableObject {
     private var surfaceRows = 24
     private var cellWidth = 8
     private var cellHeight = 16
+    /// With metrics on, records every change notification, so a live run can count what
+    /// updates the window per event.
+    private var publishRecorder: AnyCancellable?
+
+    init() {
+        snapshotPublisher = publishedSnapshots.eraseToAnyPublisher()
+        if let metrics = TerminalPipelineMetrics.shared {
+            publishRecorder = objectWillChange.sink { _ in metrics.published() }
+        }
+    }
 
     /// Herdr's config root. Tests point it at a temporary directory with fake servers.
     static var sessionRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/herdr")
@@ -570,9 +596,7 @@ final class HerdrStore: ObservableObject {
                     try stream.run(path: path) { newSnapshot in
                         Task { @MainActor in
                             guard store.generation == currentGeneration else { return }
-                            // Each event fetches a snapshot, and several events often bring the same one;
-                            // publishing it unchanged would update the whole window for nothing.
-                            if store.snapshot != newSnapshot { store.snapshot = newSnapshot }
+                            store.receive(newSnapshot)
                             if store.errorMessage != nil { store.errorMessage = nil }
                             store.repairSelection()
                         }
@@ -876,7 +900,9 @@ final class HerdrStore: ObservableObject {
         guard snapshot?.panes.contains(where: { $0.paneID == paneID && $0.tabID == selectedTabID }) == true else { return }
         // Every click in a pane selects it; publishing the same pane again would update the whole window.
         if selectedPaneID != paneID { selectedPaneID = paneID }
-        surfaceStream?.focus(paneID: paneID)
+        // Herdr answers every pane.focus with a complete surface, even for the pane it already
+        // focuses, so a click there would cost a full frame (45 KB at 126x48).
+        if snapshot?.focusedPaneID != paneID { surfaceStream?.focus(paneID: paneID) }
     }
 
     func resizeSurface(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) {
@@ -956,6 +982,27 @@ final class HerdrStore: ObservableObject {
                 }
             }
             if generation == currentGeneration { inputTask = nil }
+        }
+    }
+
+    /// Keeps a snapshot from the event stream. Each event fetches one, and several events often
+    /// bring the same one; publishing it unchanged would update the whole window for nothing.
+    /// A split drag changes only the layouts, several times a second, and the window reads
+    /// them only for panes the live surface does not show, so then it is kept without a publish.
+    func receive(_ newSnapshot: HerdrSnapshot) {
+        guard let old = snapshotValue, old != newSnapshot else {
+            if snapshotValue == nil { snapshot = newSnapshot }
+            return
+        }
+        let onlyLayouts = old.workspaces == newSnapshot.workspaces && old.tabs == newSnapshot.tabs
+            && old.panes == newSnapshot.panes && old.agents == newSnapshot.agents
+            && old.focusedWorkspaceID == newSnapshot.focusedWorkspaceID && old.focusedTabID == newSnapshot.focusedTabID
+            && old.focusedPaneID == newSnapshot.focusedPaneID
+        let tabPanes = Set(newSnapshot.panes.filter { $0.tabID == selectedTabID }.map(\.paneID))
+        if onlyLayouts, let surfaceLayout, !tabPanes.isEmpty, Set(surfaceLayout.paneIDs) == tabPanes {
+            snapshotValue = newSnapshot
+        } else {
+            snapshot = newSnapshot
         }
     }
 

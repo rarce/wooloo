@@ -234,6 +234,7 @@ def e2e_summary(metrics_path, phases_path):
             "e2e_max_ms": max(e2e) if e2e else None,
             "main_busy_pct": round(100 * busy / (seconds * 1e9), 1),
             "keystrokes": keystrokes(events, lo, hi),
+            "mouse": mouse_events(events, lo, hi),
             "last_frame_drawn": bool(last) and (last["boot"], last["proj"], last["rev"]) in
                                 {(e["boot"], e["proj"], e["rev"]) for e in events if e["e"] == "draw"},
         })
@@ -279,6 +280,43 @@ def keystrokes(events, lo, hi):
     return result
 
 
+def mouse_events(events, lo, hi):
+    """Counts, for the mouse probe's events in [lo, hi], the store's change notifications and the
+    view updates without a new revision (SwiftUI updating the window) from the first event until
+    0.5 s after the last, and matches each event with the first frame received after it and that
+    frame's first draw: the event-to-screen latency of what Herdr redraws."""
+    key = lambda e: (e["boot"], e["proj"], e["rev"])
+    mice = [e for e in events if e["e"] == "mouse" and lo <= e["t"] <= hi]
+    if not mice:
+        return None
+    first, end = mice[0]["t"], min(hi, mice[-1]["t"] + 500_000_000)
+    inside = [e for e in events if e["e"] != "start" and first <= e["t"] <= end]
+    publishes = sum(1 for e in inside if e["e"] == "publish")
+    view_updates = sum(1 for e in inside if e["e"] == "update" and e.get("rev") is None)
+    recvs = [e for e in inside if e["e"] == "recv"]
+    draws = [e for e in events if e["e"] == "draw"]
+    samples = []
+    for index, event in enumerate(mice):
+        limit = mice[index + 1]["t"] if index + 1 < len(mice) else end
+        frame = next((e for e in recvs if event["t"] < e["t"] < limit), None)
+        drawn = frame and next((e for e in draws if key(e) == key(frame) and e["t"] >= frame["t"]), None)
+        if drawn:
+            samples.append((drawn["t"] - event["t_event"]) / 1e6)
+    return {
+        "kind": mice[0]["kind"],
+        "events": len(mice),
+        "publishes": publishes,
+        "publishes_per_event": round(publishes / len(mice), 2),
+        "view_updates": view_updates,
+        "view_updates_per_event": round(view_updates / len(mice), 2),
+        "frames": len(recvs),
+        "matched": len(samples),
+        "screen_p50_ms": percentile(samples, 0.5),
+        "screen_p95_ms": percentile(samples, 0.95),
+        "screen_max_ms": max(samples) if samples else None,
+    }
+
+
 def e2e_report(metrics_path, phases_path, baseline_path, json_path):
     summaries = e2e_summary(metrics_path, phases_path)
     base = {}
@@ -317,8 +355,25 @@ def e2e_report(metrics_path, phases_path, baseline_path, json_path):
             rows.append(row)
         table(["phase", "queue p50", "p95", "send p50", "p95", "herdr p50", "p95", "render p50", "p95",
                "total p50", "p95", "max"], rows)
+    moused = [s for s in summaries if s.get("mouse")]
+    if moused:
+        print()
+        print("Mouse: publishes = HerdrStore change notifications, view updates = terminal view updates")
+        print("without a new revision (SwiftUI updating the window); screen = event to the first draw of")
+        print("the next frame Herdr sends, for events that made Herdr redraw")
+        rows = []
+        for summary in moused:
+            mouse = summary["mouse"]
+            old = (base.get(summary["phase"]) or {}).get("mouse") or {}
+            rows.append([summary["phase"], mouse["events"], mouse["publishes"],
+                         fmt(mouse["publishes_per_event"]) + change(mouse["publishes_per_event"], old.get("publishes_per_event")),
+                         mouse["view_updates"], fmt(mouse["view_updates_per_event"]), mouse["frames"],
+                         f"{mouse['matched']}/{mouse['events']}", fmt(mouse["screen_p50_ms"]),
+                         fmt(mouse["screen_p95_ms"]), fmt(mouse["screen_max_ms"])])
+        table(["phase", "events", "publishes", "per event", "view updates", "per event", "frames",
+               "redrawn", "screen p50", "p95", "max"], rows)
     for summary in summaries:
-        if not summary["last_frame_drawn"]:
+        if summary["frames"] and not summary["last_frame_drawn"]:
             print(f"WARNING: {summary['phase']}: the last frame received was never drawn")
     if json_path:
         Path(json_path).write_text(json.dumps(summaries, indent=2))

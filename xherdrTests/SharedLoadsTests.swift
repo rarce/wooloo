@@ -54,6 +54,24 @@ final class SharedLoadsTests: XCTestCase {
         XCTAssertEqual(try loads.value(for: "a") { 2 }, 2)
     }
 
+    /// A caller that needs results read after it asked joins a running load but never reuses a finished one.
+    func testCallerNotReusingFinishedResultsOnlyJoinsARunningLoad() throws {
+        let loads = SharedLoads<Int>(maxAge: 60)
+        _ = try loads.value(for: "a") { 1 }
+        XCTAssertEqual(try loads.value(for: "a", reusingFinished: false) { 2 }, 2)
+        XCTAssertEqual(try loads.value(for: "a") { 3 }, 2, "Its result is kept for others")
+
+        loads.forget()
+        let started = DispatchSemaphore(value: 0)
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) {
+            _ = try? loads.value(for: "a") { started.signal(); Thread.sleep(forTimeInterval: 0.2); return 4 }
+        }
+        started.wait()
+        XCTAssertEqual(try loads.value(for: "a", reusingFinished: false) { 5 }, 4)
+        group.wait()
+    }
+
     /// Callers that ask while a load runs wait for it instead of starting their own.
     func testConcurrentCallersShareOneLoad() {
         let loads = SharedLoads<Int>(maxAge: 60)
