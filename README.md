@@ -2,6 +2,8 @@
 
 **A native macOS home for your coding agents.**
 
+![xherdr with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right](docs/images/main-window.png)
+
 xherdr is a Mac app for [Herdr](https://herdr.dev/), the server that runs and organizes coding agent sessions. It is for developers who work with several agents at once, use a mouse alongside the keyboard, and want some of the convenience of an IDE without leaving an environment built around their agents.
 
 Herdr keeps owning the processes, layout and terminal state, so the same sessions stay available from the Herdr TUI. xherdr renders them natively and sends your input back.

@@ -1,5 +1,5 @@
 {"machine":"Mac16,5","commit":"d57be93","load_before":"25.06"}
-{"config":{"repeat":5,"ssh_target":"xherdr-remote@orb"}}
+{"config":{"repeat":5,"ssh_target":"user@linux-vm"}}
 {"target":"local","repo":"small","op":"refresh","p50_ms":104.65,"p95_ms":139.15,"procs":9,"proc_ms":94.91,"bytes":4231,"by_label":{"git for-each-ref":1,"git log":1,"git ls-files":1,"git remote":1,"git rev-parse":2,"git status":2,"git worktree":1}}
 {"target":"local","repo":"small","op":"file-list","p50_ms":33.44,"p95_ms":33.82,"procs":3,"proc_ms":33.73,"bytes":951,"by_label":{"git ls-files":1,"git rev-parse":1,"git status":1}}
 {"target":"local","repo":"small","op":"git-bar","p50_ms":62.88,"p95_ms":70.20,"procs":6,"proc_ms":70.95,"bytes":3280,"by_label":{"git for-each-ref":1,"git log":1,"git remote":1,"git rev-parse":1,"git status":1,"git worktree":1}}
