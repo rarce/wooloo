@@ -610,7 +610,8 @@ struct ContentView: View {
                             sendPaste: { text, id in herdr.sendPaste(text, to: id) },
                             sendKey: { key, id in herdr.sendKey(key, to: id) },
                             sendMouse: { mouse, id in herdr.sendMouse(mouse, to: id) },
-                            setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) }
+                            setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) },
+                            tabDrop: terminalTabDrop
                         )
                         .onAppear { resizeSurface(to: geometry.size) }
                         .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }
@@ -744,6 +745,19 @@ struct ContentView: View {
                     onMove: { herdr.moveTab($0, to: $1) })
     }
 
+    /// A single-pane terminal tab dragged from the tab bar onto the selected tab's panes splits
+    /// next to the pane under the pointer. Other drags, and tabs that cannot move, are ignored.
+    private var terminalTabDrop: TerminalTabDropHandler {
+        TerminalTabDropHandler(
+            accepts: { [herdr, drag = window.tabDrag] in
+                drag.draggedTerminalTab.map { herdr.canSplit(tabID: $0) } ?? false
+            },
+            drop: { [herdr, drag = window.tabDrag] paneID, edge in
+                guard let tabID = drag.dropTerminalTab() else { return false }
+                return herdr.splitTab(tabID, nextTo: paneID, edge: edge)
+            })
+    }
+
     /// Asks before closing a terminal tab; the last tab of a Space stays.
     private func closeTerminalTab(_ tab: HerdrTab) {
         guard selectedTabs.count >= 2 else { return }
@@ -864,7 +878,8 @@ struct ContentView: View {
                 sendPaste: { text, id in herdr.sendPaste(text, to: id) },
                 sendKey: { key, id in herdr.sendKey(key, to: id) },
                 sendMouse: { mouse, id in herdr.sendMouse(mouse, to: id) },
-                setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) }
+                setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) },
+                tabDrop: terminalTabDrop
             )
             .id(pane.paneID)
         }

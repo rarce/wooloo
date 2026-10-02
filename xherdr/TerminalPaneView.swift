@@ -98,6 +98,8 @@ struct TerminalPaneView: NSViewRepresentable {
     let sendKey: (String, String) -> Void
     let sendMouse: (HerdrMouseEvent, String) -> Void
     let setSplitRatio: ([Bool], Double) -> Void
+    /// Splits a terminal tab dragged from the tab bar into these panes; nil ignores tab drags.
+    var tabDrop: TerminalTabDropHandler? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -125,9 +127,10 @@ struct TerminalPaneView: NSViewRepresentable {
         view.sendMouse = sendMouse
         view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
+        view.tabDrop = tabDrop
         view.isRichText = false
         view.isEditable = true
-        view.registerForDraggedTypes([.fileURL, .string])
+        view.registerForDraggedTypes([.fileURL, .string, TerminalTabDrop.pasteboardType])
         view.isSelectable = true
         view.selectedTextAttributes = [
             .backgroundColor: NSColor.selectedTextBackgroundColor,
@@ -144,6 +147,11 @@ struct TerminalPaneView: NSViewRepresentable {
         view.textContainer?.widthTracksTextView = false
         view.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         scrollView.documentView = view
+        // Above the clip view, so the highlight stays put over the visible panes.
+        let overlay = TerminalDropOverlayView(frame: scrollView.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        scrollView.addSubview(overlay, positioned: .above, relativeTo: nil)
+        view.dropOverlay = overlay
         return scrollView
     }
 
@@ -165,6 +173,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.sendMouse = sendMouse
         view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
+        view.tabDrop = tabDrop
         let theme = context.environment.xherdrTheme
         if view.themeID != theme.id {
             view.themeID = theme.id
@@ -687,6 +696,8 @@ final class HerdrTerminalTextView: NSTextView {
     var sendKey: ((String, String) -> Void)?
     var sendMouse: ((HerdrMouseEvent, String) -> Void)?
     var setSplitRatio: (([Bool], Double) -> Void)?
+    var tabDrop: TerminalTabDropHandler?
+    weak var dropOverlay: TerminalDropOverlayView?
     private var heldMouse: (paneID: String, button: UInt64)?
     private var scroll = TerminalScrollAccumulator()
     private var splitDrag: (split: HerdrSplit, grabOffset: Int, bootID: String,
@@ -1456,18 +1467,47 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     // Dropped files paste their shell-escaped paths into the pane under the pointer,
-    // as Terminal and iTerm do; dropped text pastes as is.
+    // as Terminal and iTerm do; dropped text pastes as is. A terminal tab dragged from the
+    // tab bar splits next to the pane under the pointer instead, and never pastes.
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        droppedText(sender.draggingPasteboard) == nil ? [] : .copy
+        if TerminalTabDrop.carriesTab(sender.draggingPasteboard) {
+            let target = tabDropTarget(sender)
+            showTabDrop(target)
+            guard target != nil else { return [] }
+            let allowed = sender.draggingSourceOperationMask
+            return allowed.contains(.move) ? .move : allowed.contains(.generic) ? .generic : .copy
+        }
+        return droppedText(sender.draggingPasteboard) == nil ? [] : .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         draggingEntered(sender)
     }
 
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        showTabDrop(nil)
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        showTabDrop(nil)
+        super.draggingEnded(sender)
+    }
+
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
 
+    /// NSTextView registers these again whenever it updates its drag types; keep tab drags in.
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        super.acceptableDragTypes + [TerminalTabDrop.pasteboardType]
+    }
+
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if TerminalTabDrop.carriesTab(sender.draggingPasteboard) {
+            let target = tabDropTarget(sender)
+            showTabDrop(nil)
+            guard let target, let tabDrop else { return false }
+            return tabDrop.drop(target.paneID, target.edge)
+        }
         guard let text = droppedText(sender.draggingPasteboard) else { return false }
         var target = paneID
         if let surface {
@@ -1484,7 +1524,26 @@ final class HerdrTerminalTextView: NSTextView {
         return true
     }
 
-    override func concludeDragOperation(_ sender: NSDraggingInfo?) {}
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        showTabDrop(nil)
+    }
+
+    /// Where a dragged terminal tab would drop, when the window accepts it here: in a live
+    /// surface's pane under the pointer, or in this view's only pane while showing `pane.read` text.
+    private func tabDropTarget(_ sender: NSDraggingInfo) -> TerminalTabDropTarget? {
+        guard let tabDrop, tabDrop.accepts() else { return nil }
+        let point = convert(sender.draggingLocation, from: nil)
+        let panes = surface.map {
+            TerminalTabDrop.paneRects(of: $0, inset: textContainerInset,
+                                      cell: CGSize(width: TerminalPaneView.cellWidth, height: TerminalPaneView.cellHeight))
+        } ?? [(paneID, visibleRect)]
+        return TerminalTabDrop.target(at: point, panes: panes)
+    }
+
+    private func showTabDrop(_ target: TerminalTabDropTarget?) {
+        guard let dropOverlay else { return }
+        dropOverlay.show(target.map { dropOverlay.convert($0.highlight, from: self) }, accent: theme.herdr.accent)
+    }
 
     /// What a drop pastes: shell-escaped file paths, or text as is.
     func droppedText(_ pasteboard: NSPasteboard) -> String? {

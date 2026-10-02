@@ -39,6 +39,20 @@ extension HerdrSnapshot {
     }
 }
 
+extension HerdrSnapshot {
+    /// The pane a terminal tab dropped on `targetTabID`'s panes moves there: the tab's only
+    /// pane. Nil for the target tab itself, a tab with several panes (`pane.move` moves one
+    /// pane, so the rest would stay behind), an unknown tab, or a zoomed target, which Herdr
+    /// refuses.
+    func paneToSplit(fromTab tabID: String, into targetTabID: String?) -> String? {
+        guard let targetTabID, tabID != targetTabID,
+              tabs.contains(where: { $0.tabID == tabID }), tabs.contains(where: { $0.tabID == targetTabID }),
+              layouts.first(where: { $0.tabID == targetTabID })?.zoomed != true else { return nil }
+        let moving = panes.filter { $0.tabID == tabID }
+        return moving.count == 1 ? moving[0].paneID : nil
+    }
+}
+
 struct HerdrWorkspace: Decodable, Equatable, Identifiable {
     let workspaceID: String
     let label: String
@@ -140,10 +154,12 @@ struct HerdrLayout: Decodable, Equatable {
     let tabID: String
     let area: HerdrRect
     let panes: [HerdrLayoutPane]
+    /// Whether one pane fills the tab; Herdr refuses to move panes into a zoomed tab.
+    var zoomed: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case tabID = "tab_id"
-        case area, panes
+        case area, panes, zoomed
     }
 }
 
@@ -868,6 +884,70 @@ final class HerdrStore: ObservableObject {
             case .failure(let error): actionError = error.localizedDescription
             }
         }
+    }
+
+    /// Whether the terminal tab `tabID`, dragged over the selected tab's panes, may split into them.
+    func canSplit(tabID: String) -> Bool {
+        isConnected && snapshot?.paneToSplit(fromTab: tabID, into: selectedTabID) != nil
+    }
+
+    /// Moves the only pane of tab `tabID` into the selected tab next to `targetPaneID`, on its
+    /// `edge`, and selects it. Herdr splits only right or down, so left and top split that way
+    /// and then swap the two panes, which mirrors the new split at any depth of the layout.
+    /// Herdr closes the emptied tab itself. The snapshot is read once, after both requests.
+    /// Returns false, sending nothing, when the drop is not allowed.
+    @discardableResult
+    func splitTab(_ tabID: String, nextTo targetPaneID: String, edge: TerminalDropEdge) -> Bool {
+        guard isConnected, let into = selectedTabID, let snapshot,
+              let paneID = snapshot.paneToSplit(fromTab: tabID, into: into),
+              snapshot.panes.contains(where: { $0.paneID == targetPaneID && $0.tabID == into }) else { return false }
+        let path = socketPath
+        let currentGeneration = generation
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { () throws -> Void in
+                    let moved = try HerdrSocket.request(path: path, method: "pane.move", params: [
+                        "pane_id": paneID,
+                        "destination": ["type": "tab", "tab_id": into, "split": edge.split,
+                                        "target_pane_id": targetPaneID] as [String: Any],
+                        "focus": true
+                    ])
+                    try Self.requireChange(moved, in: "move_result", doing: "move the pane")
+                    guard edge.swapsAfterMove else { return }
+                    let swapped = try HerdrSocket.request(path: path, method: "pane.swap", params: [
+                        "source_pane_id": paneID, "target_pane_id": targetPaneID
+                    ])
+                    try Self.requireChange(swapped, in: "swap", doing: "place the pane on that side")
+                }
+            }.value
+            // Read Herdr's layout even after a failure, which may follow a successful move.
+            let fresh = await Task.detached(priority: .userInitiated) { try? HerdrSocket.snapshot(path: path) }.value
+            guard generation == currentGeneration else { return }
+            if let fresh {
+                self.snapshot = fresh
+                if selectedTabID == into, fresh.panes.contains(where: { $0.paneID == paneID && $0.tabID == into }) {
+                    selectedPaneID = paneID
+                    surfaceStream?.focus(paneID: paneID)
+                }
+                repairSelection()
+            }
+            switch result {
+            case .success: actionError = nil
+            case .failure(let error): actionError = error.localizedDescription
+            }
+        }
+        return true
+    }
+
+    /// Herdr answers a move or swap it did not make with `changed: false` and a reason, not an error.
+    nonisolated private static func requireChange(_ response: Data, in key: String, doing action: String) throws {
+        guard let root = try JSONSerialization.jsonObject(with: response) as? [String: Any],
+              let result = (root["result"] as? [String: Any])?[key] as? [String: Any] else {
+            throw HerdrSocketError.message("Unexpected response from Herdr")
+        }
+        guard result["changed"] as? Bool != true else { return }
+        let reason = (result["reason"] as? String)?.replacingOccurrences(of: "_", with: " ")
+        throw HerdrSocketError.message("Herdr could not \(action)" + (reason.map { ": \($0)" } ?? ""))
     }
 
     func closePane(_ paneID: String) {

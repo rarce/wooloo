@@ -44,6 +44,7 @@
 		A10000000000000000000F05 /* QuickOpen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F06 /* QuickOpen.swift */; };
 		A10000000000000000000F07 /* QuickOpenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F08 /* QuickOpenView.swift */; };
 		A1000000000000000000AB01 /* TabBarControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AB02 /* TabBarControls.swift */; };
+		A1000000000000000000AB03 /* TerminalTabDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AB04 /* TerminalTabDrop.swift */; };
 		C30000000000000000000F09 /* QuickOpenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F0A /* QuickOpenTests.swift */; };
 		A10000000000000000000F0B /* CommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F0C /* CommandPalette.swift */; };
 		A10000000000000000000F0D /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F0E /* CommandPaletteView.swift */; };
@@ -87,6 +88,7 @@
 		C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */; };
 		C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000047 /* HerdrNotificationTests.swift */; };
 		C30000000000000000000048 /* HerdrStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000049 /* HerdrStoreTests.swift */; };
+		C300000000000000000000F0 /* TerminalTabDropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C300000000000000000000F1 /* TerminalTabDropTests.swift */; };
 		C3000000000000000000005E /* ViewSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000005F /* ViewSnapshotTests.swift */; };
 		C3000000000000000000005C /* WorkspaceExplorerTreeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000005D /* WorkspaceExplorerTreeTests.swift */; };
 		C30000000000000000000058 /* TerminalInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000059 /* TerminalInputTests.swift */; };
@@ -146,6 +148,7 @@
 		A10000000000000000000F06 /* QuickOpen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpen.swift; sourceTree = "<group>"; };
 		A10000000000000000000F08 /* QuickOpenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenView.swift; sourceTree = "<group>"; };
 		A1000000000000000000AB02 /* TabBarControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarControls.swift; sourceTree = "<group>"; };
+		A1000000000000000000AB04 /* TerminalTabDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabDrop.swift; sourceTree = "<group>"; };
 		C30000000000000000000F0A /* QuickOpenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000F0C /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
 		A10000000000000000000F0E /* CommandPaletteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteView.swift; sourceTree = "<group>"; };
@@ -187,6 +190,7 @@
 		C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSurfaceStreamTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000047 /* HerdrNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrNotificationTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000049 /* HerdrStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrStoreTests.swift; sourceTree = "<group>"; };
+		C300000000000000000000F1 /* TerminalTabDropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabDropTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000005F /* ViewSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewSnapshotTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000005D /* WorkspaceExplorerTreeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerTreeTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000059 /* TerminalInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalInputTests.swift; sourceTree = "<group>"; };
@@ -249,6 +253,7 @@
 				A10000000000000000000F06 /* QuickOpen.swift */,
 				A10000000000000000000F08 /* QuickOpenView.swift */,
 				A1000000000000000000AB02 /* TabBarControls.swift */,
+				A1000000000000000000AB04 /* TerminalTabDrop.swift */,
 				A10000000000000000000F0C /* CommandPalette.swift */,
 				A10000000000000000000F0E /* CommandPaletteView.swift */,
 				A10000000000000000000041 /* Assets.xcassets */,
@@ -303,6 +308,7 @@
 				C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */,
 				C30000000000000000000047 /* HerdrNotificationTests.swift */,
 				C30000000000000000000049 /* HerdrStoreTests.swift */,
+				C300000000000000000000F1 /* TerminalTabDropTests.swift */,
 				C3000000000000000000005F /* ViewSnapshotTests.swift */,
 				C3000000000000000000005D /* WorkspaceExplorerTreeTests.swift */,
 				C30000000000000000000059 /* TerminalInputTests.swift */,
@@ -464,6 +470,7 @@
 				A10000000000000000000F05 /* QuickOpen.swift in Sources */,
 				A10000000000000000000F07 /* QuickOpenView.swift in Sources */,
 				A1000000000000000000AB01 /* TabBarControls.swift in Sources */,
+				A1000000000000000000AB03 /* TerminalTabDrop.swift in Sources */,
 				A10000000000000000000F0B /* CommandPalette.swift in Sources */,
 				A10000000000000000000F0D /* CommandPaletteView.swift in Sources */,
 			);
@@ -508,6 +515,7 @@
 				C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */,
 				C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */,
 				C30000000000000000000048 /* HerdrStoreTests.swift in Sources */,
+				C300000000000000000000F0 /* TerminalTabDropTests.swift in Sources */,
 				C3000000000000000000005E /* ViewSnapshotTests.swift in Sources */,
 				C3000000000000000000005C /* WorkspaceExplorerTreeTests.swift in Sources */,
 				C30000000000000000000058 /* TerminalInputTests.swift in Sources */,

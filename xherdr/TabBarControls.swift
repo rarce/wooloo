@@ -129,6 +129,20 @@ final class TabDragModel: ObservableObject {
         if target?.group == group && target?.index == index { target = nil }
     }
 
+    /// The terminal tab being dragged, which the panes can also take to split.
+    var draggedTerminalTab: String? {
+        dragged?.group == .terminal ? dragged?.id : nil
+    }
+
+    /// The dragged terminal tab, ending the drag, for a drop outside the tab bar.
+    func dropTerminalTab() -> String? {
+        defer {
+            dragged = nil
+            if target != nil { target = nil }
+        }
+        return draggedTerminalTab
+    }
+
     /// The dragged tab's ID and the gap it drops into, ending the drag.
     func drop() -> (id: String, insertIndex: Int)? {
         defer {

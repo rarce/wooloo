@@ -18,6 +18,7 @@ final class HerdrStoreTests: XCTestCase {
         var focus = ("w1", "w1:t1", "w1:p1")
         var layouts: [[String: Any]] = []
         var reload: [String: Any] = ["status": "applied"]
+        var zoomedTabs: Set<String> = []
         /// When set, `pane.send_input` waits for it before answering, keeping the request in flight.
         var inputGate: DispatchSemaphore?
 
@@ -84,6 +85,32 @@ final class HerdrStoreTests: XCTestCase {
                 let tab = state.tabs.remove(at: from)
                 state.tabs.insert(tab, at: gap > from ? gap - 1 : gap)
                 return ["result": [:]]
+            case "pane.move":
+                // As Herdr 0.9.1 does: a pane moved into a zoomed tab is refused with `changed: false`;
+                // otherwise it joins the tab, takes the focus, and its emptied tab closes.
+                guard let id = params["pane_id"] as? String,
+                      let destination = params["destination"] as? [String: Any],
+                      let tabID = destination["tab_id"] as? String,
+                      let index = state.panes.firstIndex(where: { $0["pane_id"] as? String == id }),
+                      let source = state.panes[index]["tab_id"] as? String else {
+                    return ["error": ["message": "pane not found"]]
+                }
+                if state.zoomedTabs.contains(tabID) {
+                    return ["result": ["move_result": ["changed": false, "reason": "zoomed_tab"]]]
+                }
+                state.panes[index]["tab_id"] = tabID
+                var closed: Any = NSNull()
+                if !state.panes.contains(where: { $0["tab_id"] as? String == source }) {
+                    state.tabs.removeAll { $0["tab_id"] as? String == source }
+                    closed = source
+                }
+                state.focus = ("w1", tabID, id)
+                return ["result": ["move_result": ["changed": true, "closed_tab_id": closed, "focused_pane_id": id]]]
+            case "pane.swap":
+                let found = [params["source_pane_id"], params["target_pane_id"]].allSatisfy { id in
+                    state.panes.contains { $0["pane_id"] as? String == id as? String }
+                }
+                return ["result": ["swap": found ? ["changed": true] : ["changed": false, "reason": "not_found"]]]
             default: return ["error": ["message": "\(method) is not allowed here"]]
             }
         }
@@ -228,6 +255,70 @@ final class HerdrStoreTests: XCTestCase {
         await waitUntil("snapshot read") { store.selectedTabs.map(\.tabID) == ["w1:t1", "w1:t2", "w1:t3"] }
         XCTAssertEqual(store.selectedTabID, "w1:t1", "The selection stays on its tab")
         XCTAssertNil(store.actionError)
+    }
+
+    /// A tab dropped on the right of a pane is one `pane.move` into the selected tab; Herdr
+    /// closes the emptied tab and the selected tab stays, with the moved pane selected.
+    func testDroppingATabOnAPaneMovesItsPaneNextToIt() async {
+        await connect()
+        XCTAssertTrue(store.canSplit(tabID: "w1:t2"))
+        XCTAssertFalse(store.canSplit(tabID: "w1:t1"), "Not the selected tab")
+        XCTAssertTrue(store.splitTab("w1:t2", nextTo: "w1:p2", edge: .right))
+        await waitUntil("pane moved") { store.selectedPanes.map(\.paneID) == ["w1:p1", "w1:p2", "w1:p3"] }
+        await waitUntil("moved pane selected") { store.selectedPaneID == "w1:p3" }
+        XCTAssertEqual(store.selectedTabID, "w1:t1")
+        XCTAssertEqual(store.selectedTabs.map(\.tabID), ["w1:t1"], "Herdr closed the emptied tab")
+        let moves = server.requests.filter { $0.method == "pane.move" }
+        XCTAssertEqual(moves.count, 1)
+        XCTAssertEqual(moves.first?.params["pane_id"] as? String, "w1:p3")
+        XCTAssertEqual(moves.first?.params["focus"] as? Bool, true)
+        let destination = moves.first?.params["destination"] as? [String: Any]
+        XCTAssertEqual(destination?["type"] as? String, "tab")
+        XCTAssertEqual(destination?["tab_id"] as? String, "w1:t1")
+        XCTAssertEqual(destination?["split"] as? String, "right")
+        XCTAssertEqual(destination?["target_pane_id"] as? String, "w1:p2")
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.swap" || $0.method == "tab.close" })
+        XCTAssertNil(store.actionError)
+    }
+
+    /// Herdr splits only right and down, so a drop on the top splits down, then swaps the pair.
+    func testDroppingATabOnTheTopSplitsDownAndSwaps() async {
+        await connect()
+        XCTAssertTrue(store.splitTab("w1:t2", nextTo: "w1:p1", edge: .top))
+        await waitUntil("swap requested") { server.requests.contains { $0.method == "pane.swap" } }
+        await waitUntil("moved pane selected") { store.selectedPaneID == "w1:p3" }
+        let methods = server.requests.map(\.method).filter { $0.hasPrefix("pane.") }
+        XCTAssertEqual(methods, ["pane.move", "pane.swap"])
+        let move = server.requests.first { $0.method == "pane.move" }
+        XCTAssertEqual((move?.params["destination"] as? [String: Any])?["split"] as? String, "down")
+        let swap = server.requests.first { $0.method == "pane.swap" }
+        XCTAssertEqual(swap?.params["source_pane_id"] as? String, "w1:p3")
+        XCTAssertEqual(swap?.params["target_pane_id"] as? String, "w1:p1")
+        XCTAssertEqual(swap?.params.count, 2)
+        XCTAssertNil(store.actionError)
+    }
+
+    func testDropsThatCannotMoveSendNothing() async {
+        await connect()
+        state.update { $0.panes.append(["pane_id": "w1:p4", "workspace_id": "w1", "tab_id": "w1:t2"]) }
+        server.emit(["event": "pane.created"])
+        await waitUntil("second pane") { store.snapshot?.panes.count == 4 }
+        XCTAssertFalse(store.canSplit(tabID: "w1:t2"), "Only single-pane tabs move")
+        XCTAssertFalse(store.splitTab("w1:t2", nextTo: "w1:p1", edge: .right))
+        XCTAssertFalse(store.splitTab("w1:t1", nextTo: "w1:p1", edge: .right), "Not onto itself")
+        XCTAssertFalse(store.splitTab("w1:t9", nextTo: "w1:p1", edge: .right))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.move" })
+    }
+
+    /// A move Herdr refuses, such as into a zoomed tab, reports why and sends no swap.
+    func testRefusedMovesReportHerdrsReason() async {
+        await connect()
+        state.update { $0.zoomedTabs = ["w1:t1"] }
+        XCTAssertTrue(store.splitTab("w1:t2", nextTo: "w1:p1", edge: .left))
+        await waitUntil("error") { store.actionError == "Herdr could not move the pane: zoomed tab" }
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.swap" })
+        XCTAssertEqual(store.selectedTabID, "w1:t1")
     }
 
     func testMovingTabsKeepsOtherSpacesInPlace() throws {
