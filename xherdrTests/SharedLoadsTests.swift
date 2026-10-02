@@ -31,6 +31,21 @@ final class SharedLoadsTests: XCTestCase {
         XCTAssertEqual(try loads.value(for: "a") { 2 }, 2)
     }
 
+    /// A value found by other work is kept like a load's result, unless a change came in between.
+    func testStoredValueIsKeptOnlyWithoutAnInterveningForget() throws {
+        let loads = SharedLoads<Int>(maxAge: 60)
+        XCTAssertNil(loads.recent(for: "a"))
+        loads.store(1, for: "a", generation: loads.generation)
+        XCTAssertEqual(loads.recent(for: "a"), 1)
+        XCTAssertEqual(try loads.value(for: "a") { 2 }, 1)
+
+        let generation = loads.generation
+        loads.forget()
+        XCTAssertNil(loads.recent(for: "a"))
+        loads.store(3, for: "a", generation: generation)
+        XCTAssertNil(loads.recent(for: "a"), "The value may predate the change")
+    }
+
     /// A load that started before a change may have read the old state. Its caller gets it,
     /// but a later caller must load again.
     func testLoadOvertakenByForgetIsNotKept() throws {

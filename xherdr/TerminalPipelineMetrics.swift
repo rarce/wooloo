@@ -31,7 +31,7 @@ final class TerminalPipelineMetrics {
                       bytes: Int, at: UInt64, decode: UInt64, cursor: HerdrCursor?)
         case key(eventAt: UInt64, at: UInt64, cursor: HerdrCursor?)
         case sent(at: UInt64, bytes: Int)
-        case process(label: String, remote: Bool, start: UInt64, nanos: UInt64, bytes: Int, succeeded: Bool)
+        case process(label: String, remote: Bool, start: UInt64, nanos: UInt64, bytes: Int, status: Int32?)
         case span(name: String, start: UInt64, end: UInt64, detail: String?)
         case delivered(boot: String, projection: UInt64, revision: UInt64, at: UInt64)
         case updated(revision: UInt64?, at: UInt64, duration: UInt64, layout: UInt64?)
@@ -80,8 +80,8 @@ final class TerminalPipelineMetrics {
         append(.sent(at: Self.now(), bytes: bytes))
     }
 
-    func process(label: String, remote: Bool, start: UInt64, nanos: UInt64, bytes: Int, succeeded: Bool) {
-        append(.process(label: label, remote: remote, start: start, nanos: nanos, bytes: bytes, succeeded: succeeded))
+    func process(label: String, remote: Bool, start: UInt64, nanos: UInt64, bytes: Int, status: Int32?) {
+        append(.process(label: label, remote: remote, start: start, nanos: nanos, bytes: bytes, status: status))
     }
 
     /// Records an operation whose result was just assigned to view state, once SwiftUI has
@@ -153,8 +153,8 @@ final class TerminalPipelineMetrics {
             return #"{"e":"key","t_event":\#(time(eventAt)),"t":\#(time(at))\#(position(cursor))}"#
         case let .sent(at, bytes):
             return #"{"e":"sent","t":\#(time(at)),"bytes":\#(bytes)}"#
-        case let .process(label, remote, start, nanos, bytes, succeeded):
-            return #"{"e":"proc","label":\#(quoted(label)),"remote":\#(remote),"t":\#(time(start)),"dur":\#(nanos),"bytes":\#(bytes),"ok":\#(succeeded)}"#
+        case let .process(label, remote, start, nanos, bytes, status):
+            return #"{"e":"proc","label":\#(quoted(label)),"remote":\#(remote),"t":\#(time(start)),"dur":\#(nanos),"bytes":\#(bytes),"ok":\#(status == 0),"status":\#(status.map(String.init) ?? "null")}"#
         case let .span(name, start, end, detail):
             let extra = detail.map { #","detail":\#(quoted($0))"# } ?? ""
             return #"{"e":"span","name":\#(quoted(name)),"t":\#(time(start)),"dur":\#(end - start)\#(extra)}"#

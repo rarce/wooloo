@@ -153,3 +153,18 @@ Measured under heavy machine load (load average 13–25, from parallel builds), 
 
 Over SSH, a command through the shared connection takes 11–15 ms against a normal `sshd`. The OrbStack VM used here answers through OrbStack's own SSH proxy. After about 60 sessions on one connection, its commands go back to about 80 ms each, so its SSH numbers are noisy. For example, the small repository's refresh took 103 ms in the same run.
 
+
+## After batching SSH commands
+
+Over SSH, the commands of one load now run as a single remote script (`WorkspaceFiles.gitBatch`). The script prints each command's exit status and the lengths of its output and errors before them, so each command still fails or succeeds on its own. The listing is one script. The Git bar's status and repository are another, and the repository panel shares that result. The work tree root (`git rev-parse --show-toplevel`) is kept for 2 s like the repository, so the listing and the repository load no longer both look it up. Failed SSH commands are logged with their exit status and stderr (subsystem `dev.xherdr.workspace`), and `proc` events carry a `status` field.
+
+Measured on 2026-10-02 under heavy machine load (load average 25–34), against the OrbStack VM, where a single SSH command took about 100 ms in this run:
+
+| operation | processes, SSH | SSH small, before → after | SSH large, before → after | local large, before → after |
+|---|---|---|---|---|
+| refresh | 10 → 2 | 381 → 81 ms | 1041 → 283 ms | 260 → 254 ms (10 → 9 processes) |
+| file-list | 4 → 1 | 389 → 36 ms | 414 → 145 ms | unchanged |
+| git-bar | 6 → 1 | 598 → 46 ms | 614 → 128 ms | unchanged |
+| repository | 4 → 1 | 391 → 39 ms | 402 → 117 ms | unchanged |
+
+When the repository panel loads before the Git bar, the Git bar reads its status in a script of its own, and a refresh takes 3 round trips instead of 2. The baseline file still holds the earlier numbers.

@@ -67,15 +67,11 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
             ("refresh", {
                 WorkspaceFiles.forgetRecentResults()
                 _ = try WorkspaceFiles.listing(at: location)
-                _ = try WorkspaceFiles.branchStatus(at: location)
-                _ = try? WorkspaceFiles.repository(at: location)
+                _ = try WorkspaceFiles.gitBar(at: location)
                 _ = try WorkspaceFiles.repository(at: location)
             }),
             ("file-list", { _ = try WorkspaceFiles.listing(at: location) }),
-            ("git-bar", {
-                _ = try WorkspaceFiles.branchStatus(at: location)
-                _ = try? WorkspaceFiles.repository(at: location)
-            }),
+            ("git-bar", { _ = try WorkspaceFiles.gitBar(at: location) }),
             ("repository", { _ = try WorkspaceFiles.repository(at: location) }),
             ("open-file", { _ = try WorkspaceFiles.read(Self.changedPath, at: location) }),
             ("open-change", { _ = try WorkspaceFiles.diff(Self.changedPath, at: location) }),

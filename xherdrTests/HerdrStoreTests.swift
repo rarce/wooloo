@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import xherdr
 
@@ -232,6 +233,40 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(UserDefaults.standard.string(forKey: key), "other")
         await waitUntil("connected to other") { store.isConnected }
         XCTAssertTrue(other.requests.contains { $0.method == "session.snapshot" })
+    }
+
+    /// Clicks, split drags and Herdr events that change nothing must not publish: any write to a
+    /// published property, even of the same value, makes SwiftUI update the whole window.
+    func testRepeatedEventsThatChangeNothingDoNotPublish() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        // The surface shows one of the tab's two panes, so the other is still read as text once a second.
+        await waitUntil("pane text") { store.paneText.count == 2 }
+        var published = 0
+        let subscription = store.objectWillChange.sink { published += 1 }
+        defer { subscription.cancel() }
+
+        for _ in 0..<20 {
+            store.select(paneID: "w1:p1")
+            store.setSplitRatio(path: [true], ratio: 0.4)
+            store.sendMouse(HerdrMouseEvent(kind: .scrollUp, column: 1, row: 1, modifiers: 0, lines: 1), to: "w1:p1")
+        }
+        let snapshots = server.requests.filter { $0.method == "session.snapshot" }.count
+        for _ in 0..<5 { server.emit(["event": "pane.updated"]) }
+        await waitUntil("snapshots read") { server.requests.filter { $0.method == "session.snapshot" }.count >= snapshots + 5 }
+        // The pane text poll runs once a second; let it and the snapshots reach the main thread.
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertEqual(published, 0)
+        XCTAssertTrue(Self.requests(in: endpoint).contains { $0.method == "layout.set_split_ratio" })
+        XCTAssertNil(store.surfaceError)
+
+        state.update { $0.workspaces[0]["label"] = "renamed" }
+        server.emit(["event": "workspace.renamed"])
+        await waitUntil("renamed") { store.snapshot?.workspaces.first?.label == "renamed" }
+        XCTAssertGreaterThan(published, 0, "A changed snapshot is still published")
     }
 
     func testSplitResizeNeedsTheEndpoint() async {

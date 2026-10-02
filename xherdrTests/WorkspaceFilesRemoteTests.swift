@@ -181,6 +181,144 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.importItems([sandbox.path("mac/a.txt")], into: "../out", at: repo))
     }
 
+    /// A repository with staged, unstaged, untracked and ignored files, a second branch and a worktree.
+    private func busyRepository() throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n", "b.txt": "two\n", ".gitignore": "build/\n"])
+        try sandbox.sh("""
+            git branch feature && git worktree add -q ../wt feature
+            echo staged >> a.txt && git add a.txt && echo more >> a.txt
+            echo new > c.txt && mkdir -p build && echo o > build/out.o && rm b.txt
+            """, in: "repo")
+    }
+
+    /// Everything a refresh shows, as text, so local and SSH results compare field by field.
+    private func refresh(_ location: WorkspaceFileLocation) throws -> [String] {
+        WorkspaceFiles.forgetRecentResults()
+        let listing = try WorkspaceFiles.listing(at: location)
+        let bar = try WorkspaceFiles.gitBar(at: location)
+        let repository = try WorkspaceFiles.repository(at: location)
+        return [String(describing: listing), String(describing: bar.status),
+                String(describing: bar.repository), String(describing: repository)]
+    }
+
+    /// Over SSH, the listing is one remote script, and the Git bar's status and repository
+    /// another, which the repository panel then shares; the results match a local refresh.
+    func testRefreshOverSSHRunsOneScriptPerLoadWithTheLocalResults() throws {
+        try busyRepository()
+        let local = try refresh(sandbox.location("repo"))
+        let before = try invocations().count
+        let (remoteResult, processes) = try WorkspaceProcessLog.collect { try refresh(remote("repo")) }
+        XCTAssertEqual(remoteResult, local)
+        XCTAssertEqual(try invocations().count - before, 2)
+        XCTAssertEqual(processes.map(\.label), ["git batch", "git batch"])
+        XCTAssertTrue(local[0].contains("c.txt") && local[0].contains("build"), local[0])
+        XCTAssertTrue(local[3].contains("feature") && local[3].contains("/wt"), local[3])
+
+        // A repository load first, as when the repository panel wins the race: the Git bar then
+        // reads only its status, and the listing reuses the root the load found.
+        WorkspaceFiles.forgetRecentResults()
+        let (_, ordered) = try WorkspaceProcessLog.collect {
+            _ = try WorkspaceFiles.repository(at: remote("repo"))
+            _ = try WorkspaceFiles.gitBar(at: remote("repo"))
+            _ = try WorkspaceFiles.listing(at: remote("repo"))
+        }
+        XCTAssertEqual(ordered.count, 3)
+        XCTAssertEqual(try invocations().last?.last?.contains("rev-parse"), false, "The listing skips the root check")
+    }
+
+    /// Locally, the work tree root is checked once per refresh instead of by both the listing and the repository load.
+    func testLocalRefreshChecksTheRootOnce() throws {
+        try busyRepository()
+        let (_, processes) = try WorkspaceProcessLog.collect { try refresh(sandbox.location("repo")) }
+        XCTAssertEqual(processes.filter { $0.label == "git rev-parse" }.count, 1)
+        XCTAssertEqual(processes.filter { $0.label == "git status" }.count, 2, "The listing's and the Git bar's")
+    }
+
+    /// A load's result or error, as text.
+    private func outcome<T>(_ load: () throws -> T) -> String {
+        do { return String(describing: try load()) } catch { return "error: " + error.localizedDescription }
+    }
+
+    /// Outside a repository the batch stops after the root check, and every load reports what it did before.
+    func testRemoteLoadsOutsideARepositoryMatchLocalOnes() throws {
+        try sandbox.write(["plain/a.txt": "a", "plain/sub/c.txt": "c"], in: ".")
+        try sandbox.sh("git init -q -b main empty")
+        for name in ["plain", "empty"] {
+            let local = sandbox.location(name)
+            let ssh = remote(name)
+            WorkspaceFiles.forgetRecentResults()
+            XCTAssertEqual(String(describing: try WorkspaceFiles.listing(at: ssh)),
+                           String(describing: try WorkspaceFiles.listing(at: local)), name)
+            WorkspaceFiles.forgetRecentResults()
+            XCTAssertEqual(outcome { try WorkspaceFiles.repository(at: ssh) },
+                           outcome { try WorkspaceFiles.repository(at: local) }, name)
+            XCTAssertEqual(outcome { try WorkspaceFiles.gitBar(at: ssh) }, outcome { try WorkspaceFiles.gitBar(at: local) }, name)
+        }
+        WorkspaceFiles.forgetRecentResults()
+        XCTAssertThrowsError(try WorkspaceFiles.repository(at: remote("plain"))) {
+            XCTAssertTrue($0.localizedDescription.contains("not a git repository"), $0.localizedDescription)
+        }
+        XCTAssertEqual(try WorkspaceFiles.repository(at: remote("empty")).commits.count, 0, "A failed log leaves no commits")
+    }
+
+    /// Each command of a batch keeps its own status, output and errors, and output that looks
+    /// like a section header is still read as output.
+    func testRemoteBatchKeepsEachCommandsOutcome() throws {
+        try sandbox.repository("repo", files: ["fake.txt": "xherdr-section 0 3 0\nabc\n"])
+        let results = try WorkspaceFiles.gitBatch(remote("repo"), [
+            .init(["cat-file", "-p", "HEAD:fake.txt"], limit: 1_000),
+            .init(["no-such-command"], limit: 1_000),
+            .init(["cat-file", "-p", "HEAD:fake.txt"], limit: 5),
+            .root,
+        ])
+        XCTAssertEqual(try results[0].get(), Data("xherdr-section 0 3 0\nabc\n".utf8))
+        XCTAssertThrowsError(try results[1].get()) {
+            XCTAssertTrue($0.localizedDescription.contains("not a git command"), $0.localizedDescription)
+        }
+        XCTAssertThrowsError(try results[2].get()) { XCTAssertEqual($0.localizedDescription, "Output is too large") }
+        XCTAssertEqual(String(decoding: try results[3].get(), as: UTF8.self).trimmingCharacters(in: .newlines),
+                       sandbox.path("repo"))
+
+        try sandbox.write(["plain/a.txt": "a"], in: ".")
+        let before = try invocations().count
+        let stopped = try WorkspaceFiles.gitBatch(remote("plain"), [.root, .init(["status"], limit: 1_000)])
+        XCTAssertEqual(try invocations().count - before, 1)
+        for result in stopped {
+            XCTAssertThrowsError(try result.get()) {
+                XCTAssertTrue($0.localizedDescription.contains("not a git repository"), $0.localizedDescription)
+            }
+        }
+        XCTAssertNil(try? stopped[0].get())
+    }
+
+    func testBatchOutputIsSplitByItsLengths() throws {
+        let output = Data("xherdr-section 0 3 0\na\nbxherdr-section 128 0 5\nfatal".utf8)
+        let sections = try WorkspaceFiles.parseBatchOutput(output)
+        XCTAssertEqual(sections.map(\.status), [0, 128])
+        XCTAssertEqual(sections.map(\.output), [Data("a\nb".utf8), Data()])
+        XCTAssertEqual(sections.map(\.errors), [Data(), Data("fatal".utf8)])
+        for malformed in ["xherdr-section 0 9 0\nshort", "garbage\n", "xherdr-section 0 1", "xherdr-section 0 -1 0\n"] {
+            XCTAssertThrowsError(try WorkspaceFiles.parseBatchOutput(Data(malformed.utf8)), malformed)
+        }
+        XCTAssertEqual(try WorkspaceFiles.parseBatchOutput(Data()).count, 0)
+    }
+
+    /// A failed SSH command is recorded with its exit status; its stderr goes to the log
+    /// without credentials.
+    func testFailedSSHCommandsRecordTheirStatus() throws {
+        let (_, processes) = WorkspaceProcessLog.collect {
+            _ = try? WorkspaceFiles.remoteOutput(machine, script: "echo partial; echo oops >&2; exit 7", label: "probe")
+        }
+        XCTAssertEqual(processes.map(\.label), ["probe"])
+        XCTAssertEqual(processes.map(\.status), [7])
+        XCTAssertEqual(processes.map(\.succeeded), [false])
+        XCTAssertEqual(processes.map(\.remote), [true])
+        XCTAssertEqual(WorkspaceProcessLog.summary(of: "fatal: unable to access 'https://me:s3cret@git.example/x.git/'\n"),
+                       "fatal: unable to access 'https://<redacted>@git.example/x.git/'")
+        XCTAssertEqual(WorkspaceProcessLog.summary(of: (1...20).map(String.init).joined(separator: "\n")),
+                       (13...20).map(String.init).joined(separator: " | "))
+    }
+
     func testRemoteSearch() throws {
         try sandbox.repository("repo", files: ["src/a.swift": "let foo = 1\n", "b.txt": "no match\n"])
         let result = try WorkspaceSearch.search(WorkspaceSearchOptions(query: "foo"), at: remote("repo"))

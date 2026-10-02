@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-struct HerdrSnapshot: Decodable {
+struct HerdrSnapshot: Decodable, Equatable {
     let workspaces: [HerdrWorkspace]
     let tabs: [HerdrTab]
     let panes: [HerdrPane]
@@ -19,7 +19,7 @@ struct HerdrSnapshot: Decodable {
     }
 }
 
-struct HerdrWorkspace: Decodable, Identifiable {
+struct HerdrWorkspace: Decodable, Equatable, Identifiable {
     let workspaceID: String
     let label: String
     let agentStatus: String?
@@ -36,7 +36,7 @@ struct HerdrWorkspace: Decodable, Identifiable {
     }
 }
 
-struct HerdrWorktree: Decodable {
+struct HerdrWorktree: Decodable, Equatable {
     let checkoutPath: String
 
     enum CodingKeys: String, CodingKey {
@@ -44,7 +44,7 @@ struct HerdrWorktree: Decodable {
     }
 }
 
-struct HerdrTab: Decodable, Identifiable {
+struct HerdrTab: Decodable, Equatable, Identifiable {
     let tabID: String
     let workspaceID: String
     let label: String
@@ -60,7 +60,7 @@ struct HerdrTab: Decodable, Identifiable {
     }
 }
 
-struct HerdrPane: Decodable, Identifiable {
+struct HerdrPane: Decodable, Equatable, Identifiable {
     let paneID: String
     let workspaceID: String
     let tabID: String
@@ -78,7 +78,7 @@ struct HerdrPane: Decodable, Identifiable {
     }
 }
 
-struct HerdrAgent: Decodable, Identifiable {
+struct HerdrAgent: Decodable, Equatable, Identifiable {
     let paneID: String
     let workspaceID: String?
     let tabID: String?
@@ -116,7 +116,7 @@ struct HerdrAgent: Decodable, Identifiable {
     }
 }
 
-struct HerdrLayout: Decodable {
+struct HerdrLayout: Decodable, Equatable {
     let tabID: String
     let area: HerdrRect
     let panes: [HerdrLayoutPane]
@@ -127,7 +127,7 @@ struct HerdrLayout: Decodable {
     }
 }
 
-struct HerdrLayoutPane: Decodable {
+struct HerdrLayoutPane: Decodable, Equatable {
     let paneID: String
     let rect: HerdrRect
 
@@ -570,8 +570,10 @@ final class HerdrStore: ObservableObject {
                     try stream.run(path: path) { newSnapshot in
                         Task { @MainActor in
                             guard store.generation == currentGeneration else { return }
-                            store.snapshot = newSnapshot
-                            store.errorMessage = nil
+                            // Each event fetches a snapshot, and several events often bring the same one;
+                            // publishing it unchanged would update the whole window for nothing.
+                            if store.snapshot != newSnapshot { store.snapshot = newSnapshot }
+                            if store.errorMessage != nil { store.errorMessage = nil }
                             store.repairSelection()
                         }
                     }
@@ -599,7 +601,8 @@ final class HerdrStore: ObservableObject {
                         let paneResult = await Task.detached(priority: .utility) {
                             Result { try HerdrSocket.paneText(path: path, paneID: paneID) }
                         }.value
-                        if generation == currentGeneration, case .success(let text) = paneResult {
+                        if generation == currentGeneration, case .success(let text) = paneResult,
+                           paneText[paneID] != text {
                             paneText[paneID] = text
                         }
                     }
@@ -650,7 +653,8 @@ final class HerdrStore: ObservableObject {
                     await MainActor.run {
                         guard store.generation == currentGeneration else { return }
                         store.setSurface(nil)
-                        store.surfaceError = String(describing: error)
+                        // Retried every second while the endpoint is missing.
+                        store.setIfChanged(\.surfaceError, String(describing: error))
                     }
                 }
                 if Task.isCancelled { break }
@@ -870,7 +874,8 @@ final class HerdrStore: ObservableObject {
 
     func select(paneID: String) {
         guard snapshot?.panes.contains(where: { $0.paneID == paneID && $0.tabID == selectedTabID }) == true else { return }
-        selectedPaneID = paneID
+        // Every click in a pane selects it; publishing the same pane again would update the whole window.
+        if selectedPaneID != paneID { selectedPaneID = paneID }
         surfaceStream?.focus(paneID: paneID)
     }
 
@@ -904,8 +909,9 @@ final class HerdrStore: ObservableObject {
 
     func setSplitRatio(path: [Bool], ratio: Double) {
         guard let tabID = selectedTabID, ratio.isFinite else { return }
+        // Called up to 30 times a second while a split is dragged, so an unchanged error is not published again.
         if surfaceStream?.setSplitRatio(tabID: tabID, path: path, ratio: ratio) != true {
-            surfaceError = "Herdr split resize is unavailable"
+            setIfChanged(\.surfaceError, "Herdr split resize is unavailable")
         }
     }
 
@@ -921,9 +927,9 @@ final class HerdrStore: ObservableObject {
                 if let stream = surfaceStream, stream.isReady {
                     if stream.sendInput(item.event, to: item.paneID) {
                         // Publishing, even an unchanged nil, would update the whole window on every key.
-                        if inputError != nil { inputError = nil }
+                        setIfChanged(\.inputError, nil)
                     } else {
-                        inputError = "Herdr endpoint input failed; reconnecting"
+                        setIfChanged(\.inputError, "Herdr endpoint input failed; reconnecting")
                     }
                     continue
                 }
@@ -944,13 +950,19 @@ final class HerdrStore: ObservableObject {
                 }.value
                 guard generation == currentGeneration else { break }
                 if case .failure(let error) = result {
-                    inputError = error.localizedDescription
-                } else if inputError != nil {
-                    inputError = nil
+                    setIfChanged(\.inputError, error.localizedDescription)
+                } else {
+                    setIfChanged(\.inputError, nil)
                 }
             }
             if generation == currentGeneration { inputTask = nil }
         }
+    }
+
+    /// Assigns a published value only when it differs: any assignment, even of the same value,
+    /// makes SwiftUI update every view that observes the store.
+    private func setIfChanged<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<HerdrStore, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
     private func repairSelection() {

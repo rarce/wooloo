@@ -372,7 +372,7 @@ final class WorkspaceGitBarModel: ObservableObject {
         let start = TerminalPipelineMetrics.now()
         defer { TerminalPipelineMetrics.spanShown("git-bar", start: start, detail: location.isLocal ? "local" : "ssh") }
         let result = await Task.detached(priority: .utility) {
-            Result { (try WorkspaceFiles.branchStatus(at: location), try? WorkspaceFiles.repository(at: location)) }
+            Result { try WorkspaceFiles.gitBar(at: location) }
         }.value
         guard location.identity == self.location?.identity else { return }
         switch result {

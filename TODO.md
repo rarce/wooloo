@@ -19,7 +19,8 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 
 - [x] Measure keystroke-to-screen latency: the `keys` workload in `terminal-e2e.sh`. Fixing a per-key SwiftUI update brought it from 16.8 to 2.5 ms at p50.
 - [ ] Cut the ~1.3 ms (p50, 3 ms p95) between receiving an echo frame and drawing it. Try `displayIfNeeded()` right after a surface that answers recent input, and check that it does not add work under streaming output.
-- [ ] Find what else publishes on the main thread per event. Mouse drags, scrolling and selection still go through `HerdrStore` and may update SwiftUI the way `inputError` did. Measure them with the `update` events, which have `rev: null`.
+- [x] Find what else publishes on the main thread per event. Every click re-published `selectedPaneID`, a split drag without the endpoint re-published `surfaceError` up to 30 times a second, every Herdr event published its snapshot and a `nil` `errorMessage` even when unchanged, and the pane text poll and endpoint retry re-published each second. All of them now publish only changes (`HerdrStoreTests.testRepeatedEventsThatChangeNothingDoNotPublish`). Scrolling and selection drags did not publish. Checked by reading the code and with the test, not live.
+- [ ] Add a mouse workload to `terminal-e2e.sh` (clicks, scroll wheel, a split drag) that counts `update` events with `rev: null`, to confirm the fix above live.
 - [ ] Measure when a frame reaches the screen, not only when `draw` returns; the compositor adds up to one display refresh.
 - [ ] Add end-to-end workloads for tab switches, resizes, split panes, graphics and a selection drag during output. None of them is covered yet.
 - [ ] Cut the cold layout, about 5 ms at 311×80, which runs after a clear, resize or tab switch. Try caching glyphs per character and font for plain rows, keeping Core Text for rows that need shaping. Fira Code ligatures must still render, and the snapshots will show it if they do not.
@@ -33,10 +34,11 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 
 - [x] Share SSH connections, load the repository once per refresh, and run git without the `/usr/bin/git` shim. A local refresh of a large repository dropped from 631 to about 200 ms, and over SSH from 1.8 s to about 0.8 s.
-- [ ] Batch the SSH commands of one refresh into a single remote script. Each command still costs a round trip, which the local VM hides, but a remote over the internet will not.
-- [ ] Cut the `git rev-parse` calls that `listing` and `repository` each make for the same root.
+- [x] Batch the SSH commands of one refresh. Over SSH the listing runs as one remote script, and the Git bar's status and repository as another, which the repository panel shares (`WorkspaceFiles.gitBatch`): 9 SSH commands per refresh became 2, and a large repository's refresh dropped from 1041 to 283 ms against the OrbStack VM.
+- [ ] Fold the listing into the Git bar's script too, so a refresh is one round trip. The explorer and the Git bar load separately, so they would need to share one load.
+- [x] Cut the `git rev-parse` calls that `listing` and `repository` each make for the same root. The root is kept for 2 s like the repository (`gitRoots`), so a local refresh runs 9 processes instead of 10.
 - [ ] Syntax colors for a large diff take about 0.3–0.5 s of CPU (`parse-big-diff-highlighted`). Profile `ParsedDiff` with old and new sides.
-- [ ] Once, the first SSH command of a benchmark run failed with its output complete but a nonzero exit, and it did not happen again. If it recurs, log SSH's exit status and stderr, and check how shared connections behave when the master expires.
+- [x] Log SSH's exit status and stderr. Failed SSH commands go to the unified log (subsystem `dev.xherdr.workspace`, credentials in URLs removed) and to `proc` events as `status`. An expiring `ControlPersist`, a master killed between commands, and 14 concurrent sessions all worked against the OrbStack VM. A master that dies while a command runs gives that command exit 255 with its output complete and nothing on stderr, which matches the failure seen once.
 
 ## Editor
 

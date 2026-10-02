@@ -1,6 +1,7 @@
 import Darwin
 import CryptoKit
 import Foundation
+import os
 
 struct HerdrMachineProfile: Decodable, Hashable, Identifiable {
     let id: String
@@ -349,23 +350,36 @@ enum WorkspaceFiles {
     }
 
     static func listing(at location: WorkspaceFileLocation) throws -> WorkspaceFileListing {
-        let hasGit = (try? git(location, ["rev-parse", "--is-inside-work-tree"], limit: 100)) != nil
+        // One batch: a single round trip over SSH. The work tree check is skipped when the
+        // repository panel or Git bar just found the root.
+        let knownRoot = gitRoots.recent(for: location.identity)
+        let generation = gitRoots.generation
+        let sections = (knownRoot == nil ? [GitSection.root] : []) + [
+            GitSection(["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."], limit: maximumListingBytes),
+            GitSection(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."],
+                       limit: maximumListingBytes),
+            GitSection(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000),
+        ]
+        var results = try gitBatch(location, sections)[...]
+        let hasGit: Bool
+        if knownRoot == nil, let rootResult = results.popFirst() {
+            hasGit = rememberRoot(rootResult, at: location, generation: generation) != nil
+        } else {
+            hasGit = true
+        }
         let files: [String]
         let changes: [WorkspaceFileChange]
         var totalFiles: Int?
         var ignored = WorkspaceIgnoredEntries()
         if hasGit {
-            let fileData = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."],
-                                   limit: maximumListingBytes)
+            let outputs = Array(results)
+            let fileData = try outputs[0].get()
             let (tracked, untracked) = trackedFirst(nulStrings(fileData))
-            let ignoredData = try git(location, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory",
-                                                 "-z", "--", "."], limit: maximumListingBytes)
-            ignored = WorkspaceIgnoredEntries(gitEntries: nulStrings(ignoredData))
+            ignored = WorkspaceIgnoredEntries(gitEntries: nulStrings(try outputs[1].get()))
             let ignoredFiles = ignored.files.sorted()
             totalFiles = tracked.count + untracked.count + ignoredFiles.count
             files = (tracked + untracked + ignoredFiles).prefix(maximumFiles).sorted()
-            let status = try git(location, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
-            changes = parseStatus(status)
+            changes = parseStatus(try outputs[2].get())
         } else {
             files = try filesWithoutGit(at: location)
             changes = []
@@ -581,11 +595,16 @@ enum WorkspaceFiles {
     /// four git commands twice.
     private static let repositoryLoads = SharedLoads<WorkspaceRepositoryListing>(maxAge: 2)
 
+    /// Recent work tree roots (`git rev-parse --show-toplevel`). The listing and the repository
+    /// load both need one; whichever runs first finds it, and the other skips the command.
+    private static let gitRoots = SharedLoads<String>(maxAge: 2)
+
     /// Forgets recently loaded results, so the next load reads the repository again. Git
     /// operations run here do this themselves; an explicit refresh does it for changes made
     /// elsewhere, such as in a terminal.
     static func forgetRecentResults() {
         repositoryLoads.forget()
+        gitRoots.forget()
         NotificationCenter.default.post(name: repositoryDidChange, object: nil)
     }
 
@@ -612,17 +631,74 @@ enum WorkspaceFiles {
     }
 
     static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
-        try repositoryLoads.value(for: location.identity) { try loadRepository(at: location) }
+        try repositoryLoads.value(for: location.identity) { try loadRepository(at: location).repository.get() }
     }
 
-    private static func loadRepository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
-        let rootData = try git(location, ["rev-parse", "--show-toplevel"], limit: 4_000)
-        let root = String(decoding: rootData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let logData = (try? git(location, ["log", "-n", "50", "--format=\(logFormat)"], limit: 200_000)) ?? Data()
-        let refData = try git(location, ["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"], limit: 200_000)
-        let worktreeData = try git(location, ["worktree", "list", "--porcelain", "-z"], limit: 200_000)
-        return WorkspaceRepositoryListing(commits: parseLog(logData), branches: parseBranches(refData),
-                                          worktrees: parseWorktrees(worktreeData), root: root)
+    /// The Git bar's branch status and the repository, which it shows together. Over SSH, when
+    /// the repository is not loaded yet, both come from one remote script.
+    static func gitBar(at location: WorkspaceFileLocation) throws -> (status: WorkspaceBranchStatus,
+                                                                      repository: WorkspaceRepositoryListing?) {
+        var status: Result<WorkspaceBranchStatus, Error>?
+        let repository = try? repositoryLoads.value(for: location.identity) {
+            let loaded = try loadRepository(at: location, withBranchStatus: true)
+            status = loaded.status
+            return try loaded.repository.get()
+        }
+        // The repository came from a load already done or running: the status is read alone.
+        return (try status?.get() ?? branchStatus(at: location), repository)
+    }
+
+    /// The commands of a branch status, for `branchStatus` and `parseBranchStatus`.
+    private static let branchStatusSections = [
+        GitSection(["status", "--porcelain=v2", "--branch", "--untracked-files=no"], limit: 4_000_000),
+        GitSection(["remote"], limit: 20_000),
+    ]
+
+    private static func branchStatus(from results: ArraySlice<Result<Data, Error>>) throws -> WorkspaceBranchStatus {
+        let outputs = Array(results)
+        let remoteData = (try? outputs[1].get()) ?? Data()
+        let remotes = String(decoding: remoteData, as: UTF8.self).split(separator: "\n").map(String.init)
+        return parseBranchStatus(try outputs[0].get(), remotes: remotes)
+    }
+
+    private static func loadRepository(at location: WorkspaceFileLocation, withBranchStatus: Bool = false)
+        throws -> (repository: Result<WorkspaceRepositoryListing, Error>, status: Result<WorkspaceBranchStatus, Error>?) {
+        let knownRoot = gitRoots.recent(for: location.identity)
+        let generation = gitRoots.generation
+        // The branch status goes first, since a failed root check stops the commands after it.
+        let sections = (withBranchStatus ? branchStatusSections : [])
+            + (knownRoot == nil ? [GitSection.root] : [])
+            + [GitSection(["log", "-n", "50", "--format=\(logFormat)"], limit: 200_000),
+               GitSection(["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"],
+                          limit: 200_000),
+               GitSection(["worktree", "list", "--porcelain", "-z"], limit: 200_000)]
+        var results = try gitBatch(location, sections)[...]
+        let status = withBranchStatus ? Result { try branchStatus(from: results.prefix(2)) } : nil
+        if withBranchStatus { results = results.dropFirst(2) }
+        let repository = Result { () throws -> WorkspaceRepositoryListing in
+            var root = knownRoot
+            if root == nil, let rootResult = results.popFirst() {
+                root = rememberRoot(rootResult, at: location, generation: generation)
+                _ = try rootResult.get()
+            }
+            let outputs = Array(results)
+            let logData = (try? outputs[0].get()) ?? Data()
+            let refData = try outputs[1].get()
+            let worktreeData = try outputs[2].get()
+            return WorkspaceRepositoryListing(commits: parseLog(logData), branches: parseBranches(refData),
+                                              worktrees: parseWorktrees(worktreeData), root: root ?? "")
+        }
+        return (repository, status)
+    }
+
+    /// Keeps the root a root check found, unless results were forgotten since `generation`;
+    /// nil when the check failed, outside a work tree.
+    private static func rememberRoot(_ result: Result<Data, Error>, at location: WorkspaceFileLocation,
+                                     generation: Int) -> String? {
+        guard case .success(let data) = result else { return nil }
+        let root = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        gitRoots.store(root, for: location.identity, generation: generation)
+        return root
     }
 
     /// Fields of `git log` records: hash, short hash, subject, author and commit time.
@@ -818,10 +894,7 @@ enum WorkspaceFiles {
     }
 
     static func branchStatus(at location: WorkspaceFileLocation) throws -> WorkspaceBranchStatus {
-        let data = try git(location, ["status", "--porcelain=v2", "--branch", "--untracked-files=no"], limit: 4_000_000)
-        let remoteData = (try? git(location, ["remote"], limit: 20_000)) ?? Data()
-        let remotes = String(decoding: remoteData, as: UTF8.self).split(separator: "\n").map(String.init)
-        return parseBranchStatus(data, remotes: remotes)
+        try branchStatus(from: gitBatch(location, branchStatusSections)[...])
     }
 
     /// Reads the `# branch.*` headers of `git status --porcelain=v2 --branch`.
@@ -917,6 +990,113 @@ enum WorkspaceFiles {
         }
         return try run(localGit, ["-C", location.root] + args, environment: ["GIT_TERMINAL_PROMPT": "0"],
                        input: input, limit: limit, timeout: timeout, label: label)
+    }
+
+    /// One git command of a batch. A failed `gate` stops the batch: the commands after it need
+    /// what it checks, so they fail with its error instead of running.
+    struct GitSection {
+        let args: [String]
+        let limit: Int
+        var gate = false
+
+        init(_ args: [String], limit: Int, gate: Bool = false) {
+            self.args = args
+            self.limit = limit
+            self.gate = gate
+        }
+
+        /// The work tree root; fails outside a work tree, including inside a `.git` folder.
+        static let root = GitSection(["rev-parse", "--show-toplevel"], limit: 4_000, gate: true)
+    }
+
+    /// Runs git commands in order and returns each one's output or error. Locally each is its
+    /// own process, as `git` runs it. Over SSH they run in one remote script, which costs one
+    /// round trip instead of one per command. Throws only when the batch as a whole fails, for
+    /// example when SSH cannot connect.
+    static func gitBatch(_ location: WorkspaceFileLocation, _ sections: [GitSection],
+                         timeout: TimeInterval = 15) throws -> [Result<Data, Error>] {
+        guard let machine = location.machine else {
+            var stopped: Error?
+            return sections.map { section in
+                if let stopped { return .failure(stopped) }
+                let result = Result { try git(location, section.args, limit: section.limit, timeout: timeout) }
+                if section.gate, case .failure(let error) = result { stopped = error }
+                return result
+            }
+        }
+        let commands = sections.map { section in
+            (words: ["env", "GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + section.args, gate: section.gate)
+        }
+        let limit = sections.reduce(1_000) { $0 + $1.limit + 100 }
+        let output = try ssh(machine, "sh -c " + quote(remoteBatchScript(commands)), limit: limit,
+                             timeout: timeout * Double(max(1, sections.count)), label: "git batch")
+        let parsed = try parseBatchOutput(output)
+        var stopped: Error?
+        return sections.indices.map { index in
+            guard index < parsed.count else {
+                return .failure(stopped ?? WorkspaceFileError.message("Remote command output is incomplete"))
+            }
+            let section = parsed[index]
+            let result: Result<Data, Error>
+            if section.output.count > sections[index].limit {
+                result = .failure(WorkspaceFileError.message("Output is too large"))
+            } else if section.status != 0 {
+                result = .failure(WorkspaceFileError.message(failureMessage(errors: section.errors, output: section.output)))
+            } else {
+                result = .success(section.output)
+            }
+            if sections[index].gate, case .failure(let error) = result { stopped = error }
+            return result
+        }
+    }
+
+    /// A POSIX shell script that runs each command with its output and errors in temporary
+    /// files, then prints a header line, `xherdr-section <status> <output bytes> <error bytes>`,
+    /// followed by both. The lengths delimit them, so no output can be mistaken for a header.
+    /// After a failed gate, the script stops.
+    static func remoteBatchScript(_ commands: [(words: [String], gate: Bool)]) -> String {
+        var lines = [
+            #"d=$(mktemp -d) || exit 1"#,
+            #"trap 'rm -rf "$d"' EXIT"#,
+            #"trap 'exit 1' HUP INT TERM"#,
+            #"section() { "$@" >"$d/o" 2>"$d/e"; r=$?; "#
+                + #"printf 'xherdr-section %s %s %s\n' "$r" $(wc -c <"$d/o") $(wc -c <"$d/e"); "#
+                + #"cat "$d/o" "$d/e"; return $r; }"#,
+        ]
+        for command in commands {
+            lines.append("section " + command.words.map(quote).joined(separator: " ") + (command.gate ? " || exit 0" : ""))
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Splits the output of `remoteBatchScript` into each command's exit status, output and errors.
+    static func parseBatchOutput(_ data: Data) throws -> [(status: Int32, output: Data, errors: Data)] {
+        let bytes = [UInt8](data)
+        var sections: [(status: Int32, output: Data, errors: Data)] = []
+        var index = 0
+        while index < bytes.count {
+            guard let newline = bytes[index...].firstIndex(of: 0x0A) else {
+                throw WorkspaceFileError.message("Remote command output is malformed")
+            }
+            let fields = String(decoding: bytes[index..<newline], as: UTF8.self).split(separator: " ")
+            guard fields.count == 4, fields[0] == "xherdr-section", let status = Int32(fields[1]),
+                  let outputCount = Int(fields[2]), let errorCount = Int(fields[3]), outputCount >= 0, errorCount >= 0,
+                  newline + 1 + outputCount + errorCount <= bytes.count else {
+                throw WorkspaceFileError.message("Remote command output is malformed")
+            }
+            let outputStart = newline + 1
+            let errorStart = outputStart + outputCount
+            sections.append((status, Data(bytes[outputStart..<errorStart]), Data(bytes[errorStart..<errorStart + errorCount])))
+            index = errorStart + errorCount
+        }
+        return sections
+    }
+
+    /// What a failed command reports: its errors, or its output when it wrote no errors.
+    private static func failureMessage(errors: Data, output: Data) -> String {
+        [errors, output].lazy
+            .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? "Command failed"
     }
 
     /// The git that `/usr/bin/git` forwards to. The shim looks it up again on every call, which
@@ -1061,10 +1241,11 @@ enum WorkspaceFiles {
                             label: String? = nil, remote: Bool = false) throws -> Data {
         let start = TerminalPipelineMetrics.now()
         var outputBytes = 0
-        var succeeded = false
+        var status: Int32?
+        var errorText: String?
         defer {
             WorkspaceProcessLog.record(label: label ?? (executable as NSString).lastPathComponent, remote: remote,
-                                       start: start, bytes: outputBytes, succeeded: succeeded)
+                                       start: start, bytes: outputBytes, status: status, errors: errorText)
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -1111,13 +1292,12 @@ enum WorkspaceFiles {
         timer.cancel()
         errorsRead.wait()
         outputBytes = data.count
-        succeeded = process.terminationStatus == 0
+        // A signal means the timeout or the output limit stopped the process.
+        status = process.terminationReason == .exit ? process.terminationStatus : -process.terminationStatus
+        if status != 0 { errorText = String(decoding: errorData, as: UTF8.self) }
         guard data.count <= limit else { throw WorkspaceFileError.message("Output is too large") }
         guard process.terminationStatus == 0 else {
-            let message = [errorData, data].lazy
-                .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .first { !$0.isEmpty }
-            throw WorkspaceFileError.message(message ?? "Command failed")
+            throw WorkspaceFileError.message(failureMessage(errors: errorData, output: data))
         }
         if let inputError { throw inputError }
         return data
@@ -1434,19 +1614,39 @@ enum WorkspaceProcessLog {
         let remote: Bool
         let nanos: UInt64
         let bytes: Int
-        let succeeded: Bool
+        /// The exit status; the negated signal when one stopped the process; nil when it never ran.
+        let status: Int32?
+        var succeeded: Bool { status == 0 }
     }
 
     private static let lock = NSLock()
     private static var collected: [Record]?
+    private static let logger = Logger(subsystem: "dev.xherdr.workspace", category: "process")
 
-    static func record(label: String, remote: Bool, start: UInt64, bytes: Int, succeeded: Bool) {
+    /// Records a finished process. `errors` is its stderr, given only when it failed; failed SSH
+    /// commands are logged with it, since SSH reports there why a connection or command failed.
+    static func record(label: String, remote: Bool, start: UInt64, bytes: Int, status: Int32?, errors: String? = nil) {
         let nanos = TerminalPipelineMetrics.now() - start
         TerminalPipelineMetrics.shared?.process(label: label, remote: remote, start: start, nanos: nanos,
-                                                bytes: bytes, succeeded: succeeded)
+                                                bytes: bytes, status: status)
+        if remote, status != 0 {
+            // 255 is SSH's own failure (connection, shared connection or authentication);
+            // other statuses come from the remote command.
+            let statusText = status.map(String.init) ?? "none"
+            let reason = summary(of: errors ?? "")
+            logger.error("SSH \(label, privacy: .public) failed: status \(statusText, privacy: .public) after \(nanos / 1_000_000) ms, \(bytes) output bytes; stderr: \(reason, privacy: .public)")
+        }
         lock.lock()
-        collected?.append(Record(label: label, remote: remote, nanos: nanos, bytes: bytes, succeeded: succeeded))
+        collected?.append(Record(label: label, remote: remote, nanos: nanos, bytes: bytes, status: status))
         lock.unlock()
+    }
+
+    /// Stderr for the log: the last lines, cut to 1,000 characters, with credentials in URLs
+    /// (`https://user:token@host`) removed.
+    static func summary(of errors: String) -> String {
+        let lines = errors.split(whereSeparator: \.isNewline).suffix(8).joined(separator: " | ")
+        let redacted = lines.replacingOccurrences(of: #"://[^/@\s]+@"#, with: "://<redacted>@", options: .regularExpression)
+        return String(redacted.suffix(1_000))
     }
 
     /// Runs `body` and returns the processes started meanwhile, from any thread.
@@ -1475,7 +1675,7 @@ final class SharedLoads<Value> {
     private let condition = NSCondition()
     private var results: [String: (time: TimeInterval, value: Value)] = [:]
     private var running: Set<String> = []
-    private var generation = 0
+    private var generationCount = 0
 
     init(maxAge: TimeInterval) { self.maxAge = maxAge }
 
@@ -1487,13 +1687,13 @@ final class SharedLoads<Value> {
             return recent.value
         }
         running.insert(key)
-        let startedGeneration = generation
+        let startedGeneration = generationCount
         condition.unlock()
 
         let result = Result { try load() }
         condition.lock()
         running.remove(key)
-        if case .success(let value) = result, generation == startedGeneration {
+        if case .success(let value) = result, generationCount == startedGeneration {
             results[key] = (ProcessInfo.processInfo.systemUptime, value)
         }
         condition.broadcast()
@@ -1504,7 +1704,30 @@ final class SharedLoads<Value> {
     func forget() {
         condition.lock()
         results.removeAll()
-        generation += 1
+        generationCount += 1
+        condition.unlock()
+    }
+
+    /// Counts `forget()` calls; read before a load whose result is kept with `store`.
+    var generation: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return generationCount
+    }
+
+    /// A result younger than `maxAge`, without loading or waiting for a running load.
+    func recent(for key: String) -> Value? {
+        condition.lock()
+        defer { condition.unlock() }
+        guard let recent = results[key], ProcessInfo.processInfo.systemUptime - recent.time < maxAge else { return nil }
+        return recent.value
+    }
+
+    /// Keeps a value found by other work, as if a load had returned it, unless `forget()` ran
+    /// since `generation` was read.
+    func store(_ value: Value, for key: String, generation: Int) {
+        condition.lock()
+        if generationCount == generation { results[key] = (ProcessInfo.processInfo.systemUptime, value) }
         condition.unlock()
     }
 }
