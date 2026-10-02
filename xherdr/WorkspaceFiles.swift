@@ -800,7 +800,7 @@ enum WorkspaceFiles {
                 _ = try git(location, ["restore", "--source=HEAD", "--staged", "--worktree", "--", path], limit: 20_000)
             } else {
                 _ = try git(location, ["rm", "--cached", "--force", "--quiet", "--ignore-unmatch", "--", path], limit: 20_000)
-                _ = try shell("rm -f \(quote("./" + path))", at: location, limit: 4_000)
+                _ = try shell("p=\(quote("./" + path)); " + refuseOutside("p") + "rm -f \"$p\"", at: location, limit: 4_000)
             }
         }
     }
@@ -1142,14 +1142,15 @@ extension WorkspaceFiles {
     static func createFile(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
-        _ = try shell("p=\(quote("./" + path)); " + refuseExisting("p")
+        _ = try shell("p=\(quote("./" + path)); " + refuseOutside("p") + refuseExisting("p")
                       + "mkdir -p \"$(dirname \"$p\")\" && : > \"$p\"", at: location, limit: 4_000)
     }
 
     static func createFolder(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
-        _ = try shell("p=\(quote("./" + path)); " + refuseExisting("p") + "mkdir -p \"$p\"", at: location, limit: 4_000)
+        _ = try shell("p=\(quote("./" + path)); " + refuseOutside("p") + refuseExisting("p") + "mkdir -p \"$p\"",
+                      at: location, limit: 4_000)
     }
 
     /// Renames a file or folder in place and returns its new path.
@@ -1162,8 +1163,8 @@ extension WorkspaceFiles {
         guard destination != path else { return path }
         // A case-only rename finds the file itself on a case-insensitive disk.
         let check = destination.lowercased() == path.lowercased() ? "" : refuseExisting("d")
-        _ = try shell("p=\(quote("./" + path)); d=\(quote("./" + destination)); " + check + "mv \"$p\" \"$d\"",
-                      at: location, limit: 4_000)
+        _ = try shell("p=\(quote("./" + path)); d=\(quote("./" + destination)); " + refuseOutside("p", "d") + check
+                      + "mv \"$p\" \"$d\"", at: location, limit: 4_000)
         return destination
     }
 
@@ -1171,7 +1172,7 @@ extension WorkspaceFiles {
     static func delete(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
-        _ = try shell("rm -rf \(quote("./" + path))", at: location, limit: 4_000)
+        _ = try shell("p=\(quote("./" + path)); " + refuseOutside("p") + "rm -rf \"$p\"", at: location, limit: 4_000)
     }
 
     /// Moves a file or folder of a local Space to the Trash and returns where it went there.
@@ -1218,7 +1219,7 @@ extension WorkspaceFiles {
         guard destination != path else { return }
         // A case-only rename finds the file itself on a case-insensitive disk.
         let check = destination.lowercased() == path.lowercased() ? "" : refuseExisting("d")
-        _ = try shell("p=\(quote("./" + path)); d=\(quote("./" + destination)); " + check
+        _ = try shell("p=\(quote("./" + path)); d=\(quote("./" + destination)); " + refuseOutside("p", "d") + check
                       + "mkdir -p \"$(dirname \"$d\")\" && mv \"$p\" \"$d\"", at: location, limit: 4_000)
     }
 
@@ -1245,12 +1246,12 @@ extension WorkspaceFiles {
                     throw WorkspaceFileError.message("Cannot move \(name) into itself")
                 }
                 if sameFolder { results.append(String(prefix.dropFirst(2)) + name); continue }
-                _ = try shell("s=\(quote(source)); d=\(quote(prefix + name)); " + refuseExisting("d") + "mv \"$s\" \"$d\"",
-                              at: location, limit: 4_000)
+                _ = try shell("s=\(quote(source)); d=\(quote(prefix + name)); " + refuseOutside("d") + refuseExisting("d")
+                              + "mv \"$s\" \"$d\"", at: location, limit: 4_000)
                 results.append(String(prefix.dropFirst(2)) + name)
             } else {
                 let candidates = copyNames(for: name, includingOriginal: !sameFolder).map(quote).joined(separator: " ")
-                let output = try shell("s=\(quote(source)); for c in \(candidates); do d=\(quote(prefix))\"$c\"; "
+                let output = try shell("t=\(quote(prefix + name)); " + refuseOutside("t") + "s=\(quote(source)); for c in \(candidates); do d=\(quote(prefix))\"$c\"; "
                                        + "if [ ! -e \"$d\" ] && [ ! -L \"$d\" ]; then cp -R \"$s\" \"$d\" && printf '%s' \"$c\"; exit; fi; "
                                        + "done; echo 'No free name for the copy' >&2; exit 1",
                                        at: location, limit: 4_000)
@@ -1399,6 +1400,18 @@ extension WorkspaceFiles {
     }
 
     /// Stops a script when the path in `variable` exists, even as a broken link.
+    /// Refuses paths whose folders lead out of the Space, for example through a linked folder.
+    /// The item itself may be a link, since `rm` and `mv` act on the link. A folder that does not
+    /// exist yet is judged by the nearest one above it that does. Runs from the Space root.
+    private static func refuseOutside(_ variables: String...) -> String {
+        // Its own variable names, since the caller's script uses short ones such as `d`.
+        "space_root=$(pwd -P) || exit 3; inside_space() { space_dir=$(dirname \"$1\"); "
+            + "while [ ! -d \"$space_dir\" ]; do space_dir=$(dirname \"$space_dir\"); done; "
+            + "space_dir=$(cd \"$space_dir\" && pwd -P) || return 1; "
+            + "case \"$space_dir/\" in \"$space_root\"/*) return 0;; esac; return 1; }; "
+            + variables.map { "inside_space \"$\($0)\" || { echo 'Path is outside the selected Space' >&2; exit 1; }; " }.joined()
+    }
+
     private static func refuseExisting(_ variable: String) -> String {
         "if [ -e \"$\(variable)\" ] || [ -L \"$\(variable)\" ]; then echo \"${\(variable)##*/} already exists\" >&2; exit 1; fi; "
     }

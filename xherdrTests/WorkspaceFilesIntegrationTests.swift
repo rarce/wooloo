@@ -387,6 +387,33 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sandbox.path("repo")))
     }
 
+    func testFileOperationsStayInsideTheSpaceThroughLinkedFolders() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.write(["outside/secret.txt": "s"], in: ".")
+        try sandbox.sh("ln -s ../outside escape", in: "repo")
+        let a = sandbox.path("repo/a.txt")
+
+        XCTAssertThrowsError(try WorkspaceFiles.delete("escape/secret.txt", at: repo)) {
+            XCTAssertEqual($0.localizedDescription, "Path is outside the selected Space")
+        }
+        XCTAssertThrowsError(try WorkspaceFiles.renameItem("escape/secret.txt", to: "s.txt", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.moveItem("escape/secret.txt", to: "s.txt", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.moveItem("a.txt", to: "escape/new/a.txt", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.createFile("escape/new.txt", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.createFolder("escape/new", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.paste([a], into: "escape", move: false, at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.paste([a], into: "escape", move: true, at: repo))
+        XCTAssertEqual(try sandbox.read("outside/secret.txt", in: "."), "s")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("outside")), ["secret.txt"])
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\n")
+
+        // The link itself is an item of the Space.
+        XCTAssertEqual(try WorkspaceFiles.renameItem("escape", to: "away", at: repo), "away")
+        try WorkspaceFiles.delete("away", at: repo)
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: sandbox.path("repo/away")))
+        XCTAssertEqual(try sandbox.read("outside/secret.txt", in: "."), "s")
+    }
+
     func testPasteCopiesWithFreeNamesAndMoves() throws {
         let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "dir/b.txt": "b\n", "out/c.txt": "c\n"])
         let a = sandbox.path("repo/a.txt")
