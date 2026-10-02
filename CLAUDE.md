@@ -53,7 +53,7 @@ The Xcode project lists sources explicitly: adding a Swift file requires editing
 
 **Models vs. views.** Logic is kept in testable models beside their views: `WorkspaceDocumentStore` (per-Space editor tabs, single preview tab, save/close), `WorkspaceExplorerModel` (multi-selection, create/rename/move/trash with undo and redo), `QuickOpen` (Go to File index and fuzzy matching), `WorkspaceSearch` (project search and replace), `HerdrNotifier` (Herdr's `[ui.sound]`/`[ui.toast]` alerts), `AgentQuota` (Claude Code / Codex subscription limits from undocumented endpoints; parse every field as optional) and `HostStats` (local or SSH CPU/memory sampling).
 
-**Instrumentation env vars** (read by the app): `XHERDR_METRICS_FILE`, `XHERDR_SURFACE_TRACE`, `XHERDR_WINDOW_SIZE`, `XHERDR_TYPING_PROBE*`. Signposts use subsystem `dev.xherdr.terminal`.
+**Instrumentation env vars** (read by the app): `XHERDR_METRICS_FILE`, `XHERDR_SURFACE_TRACE`, `XHERDR_WINDOW_SIZE`, and `XHERDR_TYPING_PROBE*`, which works only in builds with the `XHERDR_PROBES` compilation condition (set by `scripts/terminal-e2e.sh`). Trace files are created with mode 0600. Signposts use subsystem `dev.xherdr.terminal`.
 
 ## Working here
 

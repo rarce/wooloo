@@ -42,6 +42,7 @@ echo "Building xherdr (Release) — run directory: $run"
 if ! xcodebuild build-for-testing -project $root/xherdr.xcodeproj -scheme xherdr -configuration Release \
         -destination 'platform=macOS,arch=arm64' -derivedDataPath $derived \
         CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= ENABLE_TESTABILITY=YES \
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) XHERDR_PROBES' \
         > $run/build.log 2>&1; then
     grep -E "error:" $run/build.log | head -20
     echo "Build failed; see $run/build.log" >&2

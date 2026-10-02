@@ -49,7 +49,7 @@ final class TerminalPipelineMetrics {
     private let recordsDigests = ProcessInfo.processInfo.environment["XHERDR_METRICS_DIGESTS"] != "0"
 
     private init?(path: String) {
-        guard FileManager.default.createFile(atPath: path, contents: nil),
+        guard FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600]),
               let handle = FileHandle(forWritingAtPath: path) else { return nil }
         self.handle = handle
         timer = DispatchSource.makeTimerSource(queue: queue)
@@ -179,7 +179,7 @@ final class TerminalSurfaceTraceRecorder {
 
     static let shared: TerminalSurfaceTraceRecorder? = {
         guard let path = ProcessInfo.processInfo.environment["XHERDR_SURFACE_TRACE"], !path.isEmpty,
-              FileManager.default.createFile(atPath: path, contents: magic),
+              FileManager.default.createFile(atPath: path, contents: magic, attributes: [.posixPermissions: 0o600]),
               let handle = FileHandle(forWritingAtPath: path) else { return nil }
         handle.seekToEndOfFile()
         return TerminalSurfaceTraceRecorder(handle: handle)
@@ -264,8 +264,10 @@ extension HerdrSurface {
 /// keyboard, so `scripts/terminal-e2e.sh` can measure keystroke-to-screen latency without
 /// accessibility access. Enabled with the metrics file and `XHERDR_TYPING_PROBE=1`; each
 /// `notifyutil -p dev.xherdr.typing-probe` types `XHERDR_TYPING_PROBE_KEYS` letters (100),
-/// one every `XHERDR_TYPING_PROBE_INTERVAL_MS` (100). `XHERDR_WINDOW_SIZE` (for example
-/// `1400x900`) fixes the window's content size, with or without the probe.
+/// one every `XHERDR_TYPING_PROBE_INTERVAL_MS` (100). Any local process can post that
+/// notification, so the probe is compiled only with the `XHERDR_PROBES` condition, which the
+/// script sets. `XHERDR_WINDOW_SIZE` (for example `1400x900`) fixes the window's content size,
+/// in every build.
 @MainActor
 enum TerminalTypingProbe {
     /// The terminal view showing the live surface.
@@ -275,6 +277,7 @@ enum TerminalTypingProbe {
     static func start() {
         let environment = ProcessInfo.processInfo.environment
         if let size = environment["XHERDR_WINDOW_SIZE"] { resizeWindow(to: size, attempts: 50) }
+        #if XHERDR_PROBES
         guard TerminalPipelineMetrics.shared != nil, environment["XHERDR_TYPING_PROBE"] == "1", token == 0 else { return }
 
         let keys = Int(environment["XHERDR_TYPING_PROBE_KEYS"] ?? "") ?? 100
@@ -282,6 +285,7 @@ enum TerminalTypingProbe {
         notify_register_dispatch("dev.xherdr.typing-probe", &token, .main) { _ in
             MainActor.assumeIsolated { type(keys, every: interval / 1000) }
         }
+        #endif
     }
 
     private static var timer: DispatchSourceTimer?

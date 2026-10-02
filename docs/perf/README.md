@@ -28,7 +28,7 @@ This script starts a dedicated `xherdr-perf` Herdr session and opens a Release b
 - `ascii`, `color` and `unicode`: 250 lines/s for 5 s
 - `typing`: 40 characters/s
 - `burst`: `cat` of 60,000 lines
-- `keys`: 100 letters typed into `cat`, one every 100 ms. The keys go through xherdr's own `keyDown`, sent by the typing probe (`XHERDR_TYPING_PROBE`, triggered with `notifyutil -p dev.xherdr.typing-probe`), so no accessibility access is needed.
+- `keys`: 100 letters typed into `cat`, one every 100 ms. The keys go through xherdr's own `keyDown`, sent by the typing probe (`XHERDR_TYPING_PROBE`, triggered with `notifyutil -p dev.xherdr.typing-probe`), so no accessibility access is needed. The probe is compiled only with the `XHERDR_PROBES` condition, which the script sets.
 
 For each workload, the script reports:
 
