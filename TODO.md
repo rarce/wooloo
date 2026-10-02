@@ -13,14 +13,6 @@
 - [ ] Confirm the bundle identifier `dev.xherdr.app`: it implies the `xherdr.dev` domain. Change it if that domain is not ours.
 - [ ] Before shipping binaries, turn on the hardened runtime (`ENABLE_HARDENED_RUNTIME`), sign with a Developer ID and notarize. Check that the test bundle still loads, since library validation may reject an ad hoc signed bundle.
 
-## UI responsiveness
-
-- [ ] Investigate intermittent input latency when switching tabs quickly. It occurs in both **Files / Changes** and **History / Branches**, so diagnose it as an app-wide responsiveness issue rather than a Repository-specific problem.
-  - Reproduce by alternating either pair of tabs rapidly; some clicks appear delayed or do not take effect immediately.
-  - Profile the main thread during the delay and check whether live Herdr surface updates, SwiftUI view recomputation, or file and Git refreshes are occupying it. Compare a quiet session with one receiving frequent terminal updates.
-  - Keep all Git, filesystem, and SSH work off the main thread, and verify that switching tabs responds consistently under live updates.
-  - Since `ee67e20`, live surfaces no longer update SwiftUI on every frame (`HerdrSurfaceFeed`), and the terminal keeps the main thread 5–13% busy under streaming output. Re-check whether the delay remains.
-
 ## Terminal performance
 
 Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.sh`; see `docs/perf/README.md`. xherdr now draws every frame Herdr sends (about 43 fps). Arrival to draw takes about 3 ms at p50 and 15–18 ms at worst.
@@ -45,13 +37,6 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 - [ ] Cut the `git rev-parse` calls that `listing` and `repository` each make for the same root.
 - [ ] Syntax colors for a large diff take about 0.3–0.5 s of CPU (`parse-big-diff-highlighted`). Profile `ParsedDiff` with old and new sides.
 - [ ] Once, the first SSH command of a benchmark run failed with its output complete but a nonzero exit, and it did not happen again. If it recurs, log SSH's exit status and stderr, and check how shared connections behave when the master expires.
-
-## Terminal
-
-- [ ] Fix mouse text selection in panes running Claude Code. Selection works in a plain shell (for example after `ls`) but is still unreliable while Claude Code is running.
-  - Already in place: rows are pinned to the cell height, each glyph is kerned to its cell width so fallback-font symbols (⏺ ✻ ⎿, emoji, CJK) stay on Herdr's grid, and surface frames are deferred while `NSTextView` tracks a selection drag.
-  - Next: confirm whether Claude Code enables mouse reporting for its pane (`mouseReportingPaneIDs`). If it does, clicks are forwarded to Herdr and selection needs Shift+drag or a Herdr-side selection; if it does not, check how selection behaves when frames resume after the drag and when Claude scrolls content under an existing selection.
-  - Capture exactly how it fails (no highlight, wrong range, or highlight lost on release), in both windowed and full-screen modes.
 
 ## Editor
 
