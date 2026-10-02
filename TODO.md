@@ -1,5 +1,12 @@
 # TODO
 
+## Open-source release
+
+- [ ] Decide whether to rewrite history to hide the personal commit email. Every commit so far is authored with a personal Gmail address, and only a history rewrite removes it. Future commits can use the GitHub noreply address.
+- [ ] Check the use of the "herdr" name with Herdr's maintainers before announcing the project.
+- [ ] Confirm the bundle identifier `dev.xherdr.app`: it implies the `xherdr.dev` domain. Change it if that domain is not ours.
+- [ ] Before shipping binaries, turn on the hardened runtime (`ENABLE_HARDENED_RUNTIME`), sign with a Developer ID and notarize. Check that the test bundle still loads, since library validation may reject an ad hoc signed bundle.
+
 ## UI responsiveness
 
 - [ ] Investigate intermittent input latency when switching tabs quickly. It occurs in both **Files / Changes** and **History / Branches**, so diagnose it as an app-wide responsiveness issue rather than a Repository-specific problem.
