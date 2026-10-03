@@ -284,9 +284,7 @@ struct ContentView: View {
                                 activeDocumentID = nil
                             } label: {
                                 HStack(spacing: 7) {
-                                    Circle()
-                                        .fill(statusColor(workspace.agentStatus))
-                                        .frame(width: 6, height: 6)
+                                    AgentStatusDot(status: workspace.agentStatus)
                                     Text(workspace.label)
                                         .lineLimit(1)
                                     Spacer(minLength: 0)
@@ -336,9 +334,7 @@ struct ContentView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 7) {
-                                        Circle()
-                                            .fill(statusColor(agent.agentStatus))
-                                            .frame(width: 6, height: 6)
+                                        AgentStatusDot(status: agent.agentStatus)
                                         Text(agentLocation(agent))
                                             .lineLimit(1)
                                         Spacer(minLength: 0)
@@ -1074,10 +1070,6 @@ struct ContentView: View {
         .padding(.vertical, 3)
     }
 
-    private func statusColor(_ status: String?) -> Color {
-        theme.agentStatus(status)
-    }
-
     private func agentLocation(_ agent: HerdrAgent) -> String {
         let workspace = herdr.snapshot?.workspaces.first { $0.workspaceID == agent.workspaceID }?.label
             ?? agent.workspaceID ?? "Space"
@@ -1174,5 +1166,25 @@ private struct SidebarResizeHandle: View {
                 width = min(max(width, range.lowerBound), range.upperBound)
             }
             .onDisappear { if isHovering { NSCursor.pop() } }
+    }
+}
+
+/// A Space's or agent's state as Herdr's sidebar draws it: a dot while working, blocked or
+/// finished and unseen, a ring once seen. Herdr marks panes seen when their tab is focused,
+/// which selecting a Space, tab or pane here does.
+struct AgentStatusDot: View {
+    let status: String?
+    @Environment(\.xherdrTheme) private var theme
+
+    var body: some View {
+        let color = theme.agentStatus(status)
+        Group {
+            switch XherdrTheme.agentStatusMark(status) {
+            case .dot: Circle().fill(color)
+            case .ring: Circle().strokeBorder(color, lineWidth: 1.25)
+            case .faint: Circle().fill(color).padding(1.5)
+            }
+        }
+        .frame(width: 6, height: 6)
     }
 }

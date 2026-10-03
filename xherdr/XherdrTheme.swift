@@ -177,14 +177,27 @@ extension XherdrTheme {
     var matchHighlight: Color { Self.color(herdr.yellow, opacity: 0.3) }
     var activeMatchHighlight: Color { Self.color(herdr.peach, opacity: 0.8) }
 
-    /// Herdr agent states: working, blocked, done, idle.
+    /// Herdr agent states: working, blocked, done (finished, not yet seen), idle (seen).
+    /// Colors follow Herdr's `status_color` (herdr src/client/shell.rs, v0.9.3).
     func agentStatus(_ status: String?) -> Color {
         switch status {
         case "working": return Self.color(herdr.yellow)
         case "blocked": return Self.color(herdr.red)
-        case "done": return Self.color(herdr.blue)
+        case "done": return Self.color(herdr.teal)
         case "idle": return Self.color(herdr.green)
         default: return muted
+        }
+    }
+
+    /// How Herdr's default `dots` indicators draw a state (`status_icon`, same file): a dot,
+    /// a ring once a finished agent has been seen (`idle`), or a faint dot when unknown.
+    enum AgentStatusMark: Equatable { case dot, ring, faint }
+
+    static func agentStatusMark(_ status: String?) -> AgentStatusMark {
+        switch status {
+        case "working", "blocked", "done": return .dot
+        case "idle": return .ring
+        default: return .faint
         }
     }
 

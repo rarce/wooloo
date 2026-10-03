@@ -293,12 +293,9 @@ final class XherdrThemeTests: XCTestCase {
     func testStatusColorsFollowThePalette() {
         for theme in XherdrTheme.all {
             let states = ["working", "blocked", "done", "idle"].map(theme.agentStatus)
-            XCTAssertEqual(states, [theme.herdr.yellow, theme.herdr.red, theme.herdr.blue, theme.herdr.green].map { XherdrTheme.color($0) }, theme.id)
-            // Herdr's Rosé Pine palettes use pine for both green and blue, so done and idle
-            // agents look alike there, as they do in Herdr itself.
-            let expected = theme.id.hasPrefix("rose-pine") ? 3 : 4
-            XCTAssertEqual(Set([theme.herdr.yellow, theme.herdr.red, theme.herdr.blue, theme.herdr.green]).count, expected,
-                           "\(theme.id): agent states share a color")
+            let palette = [theme.herdr.yellow, theme.herdr.red, theme.herdr.teal, theme.herdr.green]
+            XCTAssertEqual(states, palette.map { XherdrTheme.color($0) }, theme.id)
+            XCTAssertEqual(Set(palette).count, 4, "\(theme.id): agent states share a color")
             XCTAssertEqual(theme.agentStatus(nil), theme.muted, theme.id)
             XCTAssertEqual(theme.agentStatus("unknown"), theme.muted, theme.id)
 

@@ -62,6 +62,16 @@ final class HerdrSnapshotTests: XCTestCase {
         XCTAssertEqual(agents[2].displayStatus, "unknown")
     }
 
+    /// Herdr's dots: finished agents keep a dot until seen (`done`), then show a ring (`idle`).
+    func testAgentStatusMarksFollowHerdrDots() {
+        for status in ["working", "blocked", "done"] {
+            XCTAssertEqual(XherdrTheme.agentStatusMark(status), .dot, status)
+        }
+        XCTAssertEqual(XherdrTheme.agentStatusMark("idle"), .ring)
+        XCTAssertEqual(XherdrTheme.agentStatusMark("unknown"), .faint)
+        XCTAssertEqual(XherdrTheme.agentStatusMark(nil), .faint)
+    }
+
     /// The Space's files come from its worktree, else the focused pane's directory, else any pane's.
     func testFileLocationFollowsWorktreeThenFocusedPane() throws {
         let snapshot = try snapshot()
