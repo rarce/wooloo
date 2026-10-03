@@ -88,15 +88,8 @@ struct HostStatsSection: View {
         } else if let stats = monitor.stats {
             VStack(alignment: .leading, spacing: 5) {
                 SidebarMeter(label: "CPU", fraction: stats.cpuUsage,
-                             value: stats.cpuUsage.map { "\(Int(($0 * 100).rounded()))%" } ?? "…")
-                if !stats.sample.loadAverage.isEmpty {
-                    Text("load " + stats.sample.loadAverage.map { String(format: "%.2f", $0) }.joined(separator: " ")
-                         + (stats.sample.cpuCount.map { " · \($0) cores" } ?? ""))
-                        .font(.system(size: typography.caption, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .padding(.leading, 38)
-                }
+                             value: (stats.cpuUsage.map { "\(Int(($0 * 100).rounded()))%" } ?? "…")
+                                 + (stats.sample.cpuCount.map { " / \($0) cores" } ?? ""))
                 if let used = stats.sample.memoryUsed, let total = stats.sample.memoryTotal {
                     SidebarMeter(label: "MEM", fraction: stats.memoryFraction,
                                  value: "\(HostStats.bytesText(used)) / \(HostStats.bytesText(total))")
