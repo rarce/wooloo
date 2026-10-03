@@ -53,7 +53,7 @@ struct ContentView: View {
         if let documents { _documentStore = StateObject(wrappedValue: documents) }
     }
 
-    var body: some View {
+    private var windowContent: some View {
         GeometryReader { geometry in
             content(totalWidth: geometry.size.width)
         }
@@ -72,6 +72,11 @@ struct ContentView: View {
         .onDisappear { herdr.stop() }
         .overlay { pickers }
         .overlay { HerdrToastStack(notifier: notifier) }
+        .overlay { InactiveWindowOverlay(background: theme.contentBackground) }
+    }
+
+    var body: some View {
+        windowContent
         .onAppear {
             notifier.onOpenPane = { focusPane($0) }
             notifier.reloadSettings()
@@ -1107,6 +1112,22 @@ private struct SidebarRowModifier: ViewModifier {
             )
             // Plain buttons only hit-test drawn pixels; make the whole row clickable.
             .contentShape(Rectangle())
+    }
+}
+
+/// Dim the whole window when another app or window is active, keeping live output readable.
+/// Observe activity here so focus changes do not invalidate the terminal/editor hierarchy.
+private struct InactiveWindowOverlay: View {
+    @Environment(\.controlActiveState) private var activeState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let background: Color
+
+    var body: some View {
+        background
+            .opacity(activeState == .inactive ? 0.35 : 0)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: activeState)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
