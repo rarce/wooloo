@@ -134,7 +134,8 @@ final class EditorLineChangeCoordinator: TextViewCoordinator {
 
     func prepareCoordinator(controller: TextViewController) {
         self.controller = controller
-        if let colors { controller.gutterView.lineChangeColors = colors }
+        // CodeEdit calls this before loadView creates the gutter. Restore cached colors
+        // on the next main-queue turn, after the editor has finished loading.
         update(after: 0)
     }
 
@@ -155,7 +156,7 @@ final class EditorLineChangeCoordinator: TextViewCoordinator {
 
     func setColors(added: NSColor, modified: NSColor, deleted: NSColor) {
         colors = (added, modified, deleted)
-        controller?.gutterView.lineChangeColors = (added, modified, deleted)
+        controller?.gutterView?.lineChangeColors = (added, modified, deleted)
     }
 
     private func update(after delay: TimeInterval) {
@@ -164,12 +165,15 @@ final class EditorLineChangeCoordinator: TextViewCoordinator {
         let generation = generation
         // Reading the text copies it, so wait until typing pauses.
         let item = DispatchWorkItem { [weak self] in
-            guard let self, let bases, let text = controller?.textView.string else { return }
+            guard let self, self.generation == generation, let controller = self.controller else { return }
+            if let colors { controller.gutterView?.lineChangeColors = colors }
+            guard let bases else { return }
+            let text = controller.textView.string
             Self.queue.async {
                 let changes = EditorLineChanges.changes(text: text, head: bases.head, index: bases.index)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.generation == generation else { return }
-                    controller?.gutterView.lineChanges = changes
+                    self.controller?.gutterView?.lineChanges = changes
                 }
             }
         }

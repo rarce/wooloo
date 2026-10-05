@@ -1,10 +1,67 @@
 import XCTest
+import SwiftUI
 import CodeEditSourceEditor
 @testable import xherdr
 
 /// The editor's Git change bars: line hunks against the index, and staged hunks against HEAD.
 final class EditorLineChangesTests: XCTestCase {
     private typealias Change = GutterView.LineChange
+
+    private final class ControllerSpy: TextViewCoordinator {
+        weak var controller: TextViewController?
+        func prepareCoordinator(controller: TextViewController) { self.controller = controller }
+    }
+
+    func testRecreatedSplitEditorRestoresCachedGutterColorsAndChanges() throws {
+        let coordinator = EditorLineChangeCoordinator()
+        let spy = ControllerSpy()
+        let theme = try XCTUnwrap(XherdrTheme.named(XherdrTheme.fallbackID))
+        let colors = (added: NSColor.systemGreen, modified: NSColor.systemOrange, deleted: NSColor.systemRed)
+        coordinator.setColors(added: colors.added, modified: colors.modified, deleted: colors.deleted)
+        coordinator.setBases(head: "original\n", index: "original\n")
+        let editor = CodeEditSourceEditor(
+            .constant("changed\n"), language: .markdown, theme: theme.editorTheme,
+            font: .monospacedSystemFont(ofSize: 13, weight: .regular), tabWidth: 4,
+            lineHeight: 1.15, wrapLines: false, cursorPositions: .constant([]),
+            coordinators: [spy, coordinator]
+        )
+        let size = NSSize(width: 700, height: 300)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+
+        // Source -> Preview -> Split recreates the controller with the same coordinator.
+        let source = NSHostingView(rootView: editor.frame(width: size.width, height: size.height))
+        source.frame = NSRect(origin: .zero, size: size)
+        window.contentView = source
+        source.layoutSubtreeIfNeeded()
+        XCTAssertNotNil(spy.controller?.gutterView)
+        window.contentView = NSView(frame: source.frame)
+        coordinator.destroy()
+
+        let split = NSHostingView(rootView: HSplitView {
+            editor.frame(minWidth: 200)
+            Text("Preview").frame(minWidth: 200)
+        }.frame(width: size.width, height: size.height))
+        split.frame = NSRect(origin: .zero, size: size)
+        window.contentView = split
+        split.layoutSubtreeIfNeeded()
+        let controller = try XCTUnwrap(spy.controller)
+        let gutter = try XCTUnwrap(controller.gutterView)
+        XCTAssertEqual(controller.textView.string, "changed\n")
+
+        let expected = [Change(line: 0, count: 1, kind: .modified, isStaged: false)]
+        let deadline = Date().addingTimeInterval(5)
+        while gutter.lineChanges != expected && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(gutter.lineChanges, expected)
+        XCTAssertEqual(gutter.lineChangeColors.added, colors.added)
+        XCTAssertEqual(gutter.lineChangeColors.modified, colors.modified)
+        XCTAssertEqual(gutter.lineChangeColors.deleted, colors.deleted)
+        withExtendedLifetime([spy, coordinator] as [any TextViewCoordinator]) {}
+    }
 
     func testIdenticalTextHasNoChanges() {
         XCTAssertEqual(EditorLineChanges.hunks(from: "a\nb\n", to: "a\nb\n"), [])
