@@ -14,3 +14,7 @@ Vendor/*/Package.resolved
 
 # Coverage
 *.profraw
+
+# Notebook development environment (generated fixtures live under build/).
+.venv-notebooks/
+__pycache__/

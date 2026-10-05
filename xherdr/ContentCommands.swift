@@ -114,7 +114,7 @@ struct ContentCommands {
         let document = documents.activeID.flatMap(documents.document)
         let hasFileDocument = document.map { $0.kind == .file && !$0.isLoading && ($0.version != nil || $0.isUntitled) } ?? false
         let showsSource = document.map {
-            !MarkdownDisplayMode.supports($0.path) || $0.markdownMode != .preview
+            !$0.supportsPreview || $0.markdownMode != .preview
         } ?? false
         return XherdrCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
                                          tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil && herdr.surfaceLayout?.popupTerminalID == nil,

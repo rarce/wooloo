@@ -2459,3 +2459,13 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
 LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+------------------------------------------------------------------------------
+Notebook preview browser libraries
+------------------------------------------------------------------------------
+
+markdown-it 15.0.2 (MIT), DOMPurify 3.4.16 (Apache-2.0 OR MPL-2.0),
+KaTeX 0.19.0 (MIT), and highlight.js CDN assets 11.12.0 (BSD-3-Clause).
+The complete licenses are in Vendor/NotebookPreview/*-LICENSE and are
+shipped alongside these libraries in the app bundle. Pinned archive URLs,
+versions, and integrity hashes are recorded in Vendor/NotebookPreview/sources.json.

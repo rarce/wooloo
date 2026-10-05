@@ -305,6 +305,10 @@ enum WorkspaceFileError: LocalizedError {
 
 enum WorkspaceFiles {
     static let maximumFileBytes = 1_000_000
+
+    static func fileByteLimit(for path: String) -> Int {
+        NotebookDocument.supports(path) ? NotebookDocument.maximumFileBytes : maximumFileBytes
+    }
     static let maximumDiffBytes = 2_000_000
     /// Files the explorer lists; it builds their tree once per listing, so this bounds memory and load time only.
     static let maximumFiles = 200_000
@@ -484,7 +488,7 @@ enum WorkspaceFiles {
     }
 
     static func read(_ path: String, at location: WorkspaceFileLocation) throws -> WorkspaceFileContents {
-        let data = try readData(path, at: location, limit: maximumFileBytes)
+        let data = try readData(path, at: location, limit: fileByteLimit(for: path))
         guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
             throw WorkspaceFileError.message("Only UTF-8 text files can be edited")
         }
@@ -511,7 +515,7 @@ enum WorkspaceFiles {
     static func save(_ text: String, path: String, expectedVersion: String,
                      at location: WorkspaceFileLocation) throws -> String {
         let data = Data(text.utf8)
-        guard data.count <= maximumFileBytes else { throw WorkspaceFileError.message("File is too large") }
+        guard data.count <= fileByteLimit(for: path) else { throw WorkspaceFileError.message("File is too large") }
         if let machine = location.machine {
             guard expectedVersion.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil else {
                 throw WorkspaceFileError.message("Invalid file version")
@@ -596,7 +600,7 @@ enum WorkspaceFiles {
     }
 
     private static func blob(_ revision: String, at location: WorkspaceFileLocation) -> String? {
-        guard let data = try? git(location, ["cat-file", "blob", revision], limit: maximumFileBytes),
+        guard let data = try? git(location, ["cat-file", "blob", revision], limit: fileByteLimit(for: revision)),
               !data.contains(0) else { return nil }
         return String(data: data, encoding: .utf8)
     }

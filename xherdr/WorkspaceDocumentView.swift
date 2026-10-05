@@ -45,8 +45,9 @@ struct WorkspaceDocument: Identifiable {
     var reveal: WorkspaceDocumentReveal? {
         didSet { if reveal != nil, markdownMode == .preview { markdownMode = .source } }
     }
-    /// Markdown files open as a rendered preview; a reveal (e.g. a search match) shows the source.
+    /// Markdown and notebooks open as rendered previews; a search reveal shows the source.
     var markdownMode: MarkdownDisplayMode = .preview
+    var supportsPreview: Bool { MarkdownDisplayMode.supports(path) || NotebookDocument.supports(path) }
     /// A `.change` document's patches; more than one when the file has staged and unstaged changes.
     var diffPatches: [WorkspaceDiffScope: String] = [:]
     var diffScope: WorkspaceDiffScope = .all
@@ -99,13 +100,15 @@ struct WorkspaceDocumentView: View {
     /// Not private so snapshot tests can open the find bar with a query.
     @StateObject var find = DocumentFindModel()
     @State private var previewFocus: MarkdownFindFocus?
+    @State private var notebookSearchText: [String] = []
     /// Set by Replace so the next match is selected once the edited text comes back.
     @State private var revealsAfterEdit = false
     @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
 
     private var language: CodeLanguage {
-        CodeLanguage.detectLanguageFrom(
+        if NotebookDocument.supports(document.path) { return .json }
+        return CodeLanguage.detectLanguageFrom(
             url: URL(fileURLWithPath: document.path),
             prefixBuffer: String(document.text.prefix(512)),
             suffixBuffer: String(document.text.suffix(512))
@@ -116,7 +119,7 @@ struct WorkspaceDocumentView: View {
 
     /// A Markdown preview searches its rendered text; the source and split views search the source.
     private var findTarget: DocumentFindModel.Target {
-        MarkdownDisplayMode.supports(document.path) && document.markdownMode == .preview ? .preview : .source
+        document.supportsPreview && document.markdownMode == .preview ? .preview : .source
     }
 
     var body: some View {
@@ -136,7 +139,7 @@ struct WorkspaceDocumentView: View {
                 Text("\(document.location.machineLabel) · \(document.location.workspaceLabel)")
                     .lineLimit(1)
                     .foregroundStyle(.secondary)
-                if document.kind == .file && MarkdownDisplayMode.supports(document.path) {
+                if document.kind == .file && document.supportsPreview {
                     Picker("View", selection: $document.markdownMode) {
                         ForEach(MarkdownDisplayMode.allCases) { mode in
                             Label(mode.rawValue, systemImage: mode.icon).tag(mode)
@@ -145,7 +148,7 @@ struct WorkspaceDocumentView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(width: 210)
-                    .help("Show the Markdown source, the rendered preview, or both")
+                    .help("Show the source, the rendered preview, or both")
                     if document.markdownMode != .source {
                         Toggle(isOn: Binding(get: { previewStyle == .document },
                                              set: { previewStyle = $0 ? .document : .theme })) {
@@ -212,11 +215,11 @@ struct WorkspaceDocumentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                     }
-                    if MarkdownDisplayMode.supports(document.path) {
+                    if document.supportsPreview {
                         switch document.markdownMode {
                         case .source: editor
-                        case .preview: preview
-                        case .split: HSplitView { editor; preview }
+                        case .preview: documentPreview
+                        case .split: HSplitView { editor; documentPreview }
                         }
                     } else {
                         editor
@@ -227,7 +230,7 @@ struct WorkspaceDocumentView: View {
             }
             Divider()
             HStack {
-                Text(document.kind == .file ? (document.isDirty ? "Unsaved changes" : "UTF-8 text")
+                Text(document.kind == .file ? (document.isDirty ? "Unsaved changes" : NotebookDocument.supports(document.path) ? "Notebook · Saved output" : "UTF-8 text")
                      : (document.kind == .commit ? "Commit diff" : "Git diff"))
                 Spacer()
                 if document.kind == .file, cursorPositions.count > 1 {
@@ -329,6 +332,26 @@ struct WorkspaceDocumentView: View {
             .frame(minWidth: 200)
     }
 
+    @ViewBuilder
+    private var documentPreview: some View {
+        if NotebookDocument.supports(document.path) {
+            NotebookPreviewView(text: document.text, path: document.path, location: document.location,
+                                onOpenFile: onOpenFile, style: previewStyle,
+                                matches: find.isVisible && findTarget == .preview ? find.previewMatches : [],
+                                currentMatch: find.current, revealRequest: find.revealRequest,
+                                onSearchText: { text in
+                                    guard text != notebookSearchText else { return }
+                                    notebookSearchText = text
+                                    updateFind(anchor: nil)
+                                }, onFindCommand: { key, shift, option in
+                                    if key == "escape" { find.close() }
+                                    else if key == "f" { openFind(replace: option) }
+                                    else if key == "g" { find.isVisible ? find.move(shift ? -1 : 1) : openFind(replace: false) }
+                                })
+                .frame(minWidth: 200)
+        } else { preview }
+    }
+
     /// A checkbox clicked in the preview. The change is unsaved, like an edit in the source; in
     /// Split it goes through the editor so ⌘Z undoes it.
     private func toggleTask(line: Int, checked: Bool) {
@@ -388,6 +411,9 @@ struct WorkspaceDocumentView: View {
     }
 
     private func openFind(replace: Bool) {
+        if replace, NotebookDocument.supports(document.path), document.markdownMode == .preview {
+            document.markdownMode = .source
+        }
         var selected: String?
         if findTarget == .source, let range = cursorPositions.first?.range, range.length > 0,
            NSMaxRange(range) <= (document.text as NSString).length {
@@ -398,7 +424,8 @@ struct WorkspaceDocumentView: View {
     }
 
     private func updateFind(anchor: Int?) {
-        find.update(text: document.text, target: findTarget, anchor: anchor)
+        find.update(text: document.text, target: findTarget, anchor: anchor,
+                    previewTextNodes: NotebookDocument.supports(document.path) ? notebookSearchText : nil)
         syncEditorMatches()
     }
 

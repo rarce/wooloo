@@ -1,0 +1,5 @@
+# Used only to generate and validate development fixtures; not an app dependency.
+nbformat==5.10.4
+nbconvert==7.17.1
+matplotlib==3.10.7
+pandas==2.3.3

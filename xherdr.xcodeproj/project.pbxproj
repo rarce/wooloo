@@ -100,6 +100,11 @@
 		C3000000000000000000004E /* DiffHighlighterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004F /* DiffHighlighterTests.swift */; };
 		C3000000000000000000004C /* WorkspaceSearchModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004D /* WorkspaceSearchModelTests.swift */; };
 		C3000000000000000000004A /* SurfaceLayersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004B /* SurfaceLayersTests.swift */; };
+		A1000000000000000000AD01 /* NotebookDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AD02 /* NotebookDocument.swift */; };
+		A1000000000000000000AD03 /* NotebookPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AD04 /* NotebookPreviewView.swift */; };
+		C3000000000000000000AD01 /* NotebookTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000AD02 /* NotebookTests.swift */; };
+		A1000000000000000000AD05 /* NotebookAssets in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AD06 /* NotebookAssets */; };
+		A1000000000000000000AD07 /* NotebookPreview in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AD08 /* NotebookPreview */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -204,6 +209,11 @@
 		C3000000000000000000004F /* DiffHighlighterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffHighlighterTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000004D /* WorkspaceSearchModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearchModelTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000004B /* SurfaceLayersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceLayersTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000AD02 /* NotebookDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookDocument.swift; sourceTree = "<group>"; };
+		A1000000000000000000AD04 /* NotebookPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookPreviewView.swift; sourceTree = "<group>"; };
+		C3000000000000000000AD02 /* NotebookTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000AD06 /* NotebookAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = NotebookAssets; sourceTree = "<group>"; };
+		A1000000000000000000AD08 /* NotebookPreview */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor/NotebookPreview; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -211,6 +221,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000007 /* xherdr */,
+				A1000000000000000000AD08 /* NotebookPreview */,
 				B20000000000000000000031 /* xherdrTests */,
 				C30000000000000000000002 /* THIRD_PARTY_NOTICES.txt */,
 				A10000000000000000000008 /* Products */,
@@ -236,6 +247,9 @@
 				A10000000000000000000027 /* WorkspaceFiles.swift */,
 				A10000000000000000000029 /* WorkspaceBrowserView.swift */,
 				A10000000000000000000031 /* WorkspaceDocumentView.swift */,
+				A1000000000000000000AD06 /* NotebookAssets */,
+				A1000000000000000000AD04 /* NotebookPreviewView.swift */,
+				A1000000000000000000AD02 /* NotebookDocument.swift */,
 				A10000000000000000000039 /* WorkspaceRepositoryView.swift */,
 				A10000000000000000000051 /* MarkdownPreviewView.swift */,
 				A10000000000000000000049 /* ThemeSettingsView.swift */,
@@ -319,6 +333,7 @@
 				C3000000000000000000005D /* WorkspaceExplorerTreeTests.swift */,
 				C30000000000000000000059 /* TerminalInputTests.swift */,
 				C30000000000000000000057 /* WorkspaceDocumentStoreTests.swift */,
+				C3000000000000000000AD02 /* NotebookTests.swift */,
 				C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */,
 				C30000000000000000000051 /* WorkspaceGitBarTests.swift */,
 				C3000000000000000000004F /* DiffHighlighterTests.swift */,
@@ -422,6 +437,8 @@
 			files = (
 				A10000000000000000000040 /* Assets.xcassets in Resources */,
 				C30000000000000000000001 /* THIRD_PARTY_NOTICES.txt in Resources */,
+				A1000000000000000000AD07 /* NotebookPreview in Resources */,
+				A1000000000000000000AD05 /* NotebookAssets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -455,6 +472,8 @@
 				A10000000000000000000026 /* WorkspaceFiles.swift in Sources */,
 				A10000000000000000000028 /* WorkspaceBrowserView.swift in Sources */,
 				A10000000000000000000030 /* WorkspaceDocumentView.swift in Sources */,
+				A1000000000000000000AD03 /* NotebookPreviewView.swift in Sources */,
+				A1000000000000000000AD01 /* NotebookDocument.swift in Sources */,
 				A10000000000000000000038 /* WorkspaceRepositoryView.swift in Sources */,
 				A10000000000000000000050 /* MarkdownPreviewView.swift in Sources */,
 				A10000000000000000000048 /* ThemeSettingsView.swift in Sources */,
@@ -528,6 +547,7 @@
 				C3000000000000000000005C /* WorkspaceExplorerTreeTests.swift in Sources */,
 				C30000000000000000000058 /* TerminalInputTests.swift in Sources */,
 				C30000000000000000000056 /* WorkspaceDocumentStoreTests.swift in Sources */,
+				C3000000000000000000AD01 /* NotebookTests.swift in Sources */,
 				C30000000000000000000052 /* WorkspaceRepositoryModelTests.swift in Sources */,
 				C30000000000000000000050 /* WorkspaceGitBarTests.swift in Sources */,
 				C3000000000000000000004E /* DiffHighlighterTests.swift in Sources */,

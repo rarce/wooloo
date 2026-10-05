@@ -49,3 +49,8 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 
 - [ ] Symbol search in the open file (⇧⌘O) and across the Space (⌘T), or as `@` and `#` prefixes in Go to File. Postponed until there is a document outline panel to share its symbols with.
 - [ ] Go to File without Git walks the whole folder up to `maximumFiles`, which is slow in a large non-repository folder such as `/private/tmp`; consider a time or depth limit, or reading only to the depth already listed.
+
+## Notebook preview
+
+- [ ] Virtualize large notebook cell/output DOMs if profiling shows that the bounded static preview still pauses during loading or searching.
+- [ ] Add semantic notebook diffs and structured cell editing with metadata/attachment round-trip preservation and native undo. The current Source mode edits the original JSON.

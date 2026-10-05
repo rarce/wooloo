@@ -61,7 +61,7 @@ final class DocumentFindModel: ObservableObject {
 
     /// Recomputes matches. With `anchor`, the current match becomes the first one at or after it;
     /// otherwise the current index is kept, so after a replacement it points at the next match.
-    func update(text: String, target: Target, anchor: Int?) {
+    func update(text: String, target: Target, anchor: Int?, previewTextNodes: [String]? = nil) {
         self.target = target
         guard isVisible, !options.query.isEmpty else {
             expression = nil
@@ -86,7 +86,18 @@ final class DocumentFindModel: ObservableObject {
                 sourceMatches = matches
                 previewMatches = []
             case .preview:
-                previewMatches = Self.markdownMatches(in: text, expression: expression)
+                if let previewTextNodes {
+                    var matches: [MarkdownFindMatch] = []
+                    for (block, string) in previewTextNodes.enumerated() {
+                        expression.enumerateMatches(in: string, range: NSRange(location: 0, length: (string as NSString).length)) { match, _, stop in
+                            guard let match, match.range.length > 0 else { return }
+                            matches.append(MarkdownFindMatch(key: "notebook-\(block)", range: match.range.location..<NSMaxRange(match.range), block: block))
+                            if matches.count >= Self.maximumMatches { stop.pointee = true }
+                        }
+                        if matches.count >= Self.maximumMatches { break }
+                    }
+                    previewMatches = matches
+                } else { previewMatches = Self.markdownMatches(in: text, expression: expression) }
                 sourceMatches = []
             }
         } catch {
