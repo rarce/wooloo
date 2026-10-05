@@ -274,6 +274,23 @@ extension HerdrSurface {
             mix(UInt64(graphic.cols) << 32 | UInt64(graphic.rows))
             mix(UInt64(bitPattern: Int64(graphic.z)))
         }
+        if let popup {
+            mixByte(0xfe)
+            for byte in (popup.terminalID + "\0" + popup.title).utf8 { mixByte(byte) }
+            for size in [popup.width, popup.height] {
+                switch size {
+                case .cells(let value): mix(0); mix(UInt64(value))
+                case .percent(let value): mix(1); mix(UInt64(value))
+                case nil: mix(UInt64.max)
+                }
+            }
+            let frame = HerdrSurface(bootID: bootID, projectionRevision: projectionRevision, revision: revision,
+                                     width: popup.cols, height: popup.rows, cells: popup.cells, cursor: popup.cursor,
+                                     paneIDs: [], paneRects: [:], paneInnerRects: [:], mouseReportingPaneIDs: [], splits: [], graphics: [])
+            mix(frame.contentDigest)
+            for link in popup.hyperlinks { for byte in link.utf8 { mixByte(byte) }; mixByte(0xff) }
+            mix(popup.mouseReporting ? 1 : 0)
+        }
         return hash
     }
 }

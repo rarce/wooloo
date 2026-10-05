@@ -662,6 +662,44 @@ final class HerdrStoreTests: XCTestCase {
         await waitUntil("view discarded after disconnect") { store.agentViewState == nil }
     }
 
+    func testPopupInputNeverFallsBackToPaneAndRejectsReplacedTargets() async throws {
+        func frame(_ id: String?, revision: UInt64) -> Data {
+            var model = SurfaceModel(width: 30, height: 12)
+            model.revision = revision
+            let popup = id.map { id in
+                HerdrPopup(terminalID: id, title: "Fixture", width: nil, height: nil, cols: 9, rows: 4,
+                           cells: Array(repeating: SurfaceModel.blank, count: 36), cursor: nil, hyperlinks: [],
+                           mouseReporting: true, pixelMouse: false, pixelWidth: 0, pixelHeight: 0)
+            }
+            return model.surfaceFrame { writer in
+                writer.number(0); writer.popup(popup)
+                writer.number(0); writer.number(0); writer.number(0)
+            }
+        }
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath, afterHello: [frame("popup-a", revision: 1)])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("popup") { store.surface?.popup?.terminalID == "popup-a" }
+        store.sendText("must not reach pane", to: "w1:p1")
+        store.sendPopupInput(.text("first"), terminalID: "popup-a", bootID: "boot-test")
+        store.sendPopupInput(.text("wrong boot"), terminalID: "popup-a", bootID: "old-boot")
+        await waitUntil("popup input") { endpoint.received.filter { $0.first == 14 }.count == 1 }
+        XCTAssertFalse(endpoint.received.contains { $0.first == 13 })
+        store.closePopup(terminalID: "popup-a", bootID: "boot-test")
+        await waitUntil("popup close") { Self.requests(in: endpoint).contains { $0.method == "popup.close" } }
+        endpoint.send(frame("popup-b", revision: 2))
+        await waitUntil("replacement popup") { store.surface?.popup?.terminalID == "popup-b" }
+        store.sendPopupInput(.key("esc"), terminalID: "popup-a", bootID: "boot-test")
+        store.sendPopupInput(.key("esc"), terminalID: "popup-b", bootID: "boot-test")
+        await waitUntil("replacement input") { endpoint.received.filter { $0.first == 14 }.count == 2 }
+        endpoint.stop()
+        await waitUntil("popup disconnected") { store.surface == nil }
+        store.sendText("no fallback", to: "w1:p1")
+        store.sendPopupInput(.text("no fallback"), terminalID: "popup-b", bootID: "boot-test")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.send_input" })
+    }
+
     /// The JSON requests (tag 15) the store sent through the endpoint.
     private static func requests(in endpoint: FakeSurfaceEndpoint) -> [(method: String, params: [String: Any])] {
         endpoint.received.filter { $0.first == 15 }.compactMap { frame in

@@ -117,7 +117,7 @@ struct ContentCommands {
             !MarkdownDisplayMode.supports($0.path) || $0.markdownMode != .preview
         } ?? false
         return XherdrCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
-                                         tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil,
+                                         tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil && herdr.surfaceLayout?.popupTerminalID == nil,
                                          hasFiles: explorerLocation != nil, hasFileDocument: hasFileDocument,
                                          showsSource: showsSource,
                                          explorerActions: Set(ExplorerFileCommand.paletteCommands
@@ -130,6 +130,12 @@ struct ContentCommands {
     }
 
     func perform(_ command: HerdrCommand) {
+        if herdr.surfaceLayout?.popupTerminalID != nil {
+            switch command {
+            case .focusPane, .splitPane, .zoom, .closePane: return
+            default: break
+            }
+        }
         let tabs = herdr.selectedTabs
         switch command {
         case .help:

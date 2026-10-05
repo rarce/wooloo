@@ -476,6 +476,7 @@ final class HerdrEventStream {
 struct HerdrSurfaceLayout: Equatable {
     let bootID: String
     let paneIDs: [String]
+    var popupTerminalID: String? = nil
 }
 
 /// Hands the newest surface from the stream thread to the main thread.
@@ -578,7 +579,15 @@ final class HerdrStore: ObservableObject {
     private var eventStream: HerdrEventStream?
     private var surfaceStream: HerdrSurfaceStream?
     private var generation = 0
-    private var pendingInput: [(paneID: String, event: HerdrInputEvent)] = []
+    private struct PendingInput {
+        let paneID: String
+        let event: HerdrInputEvent
+        var popup: (bootID: String, terminalID: String)? = nil
+    }
+    private var pendingInput: [PendingInput] = []
+    /// Keep the modal guard across an endpoint interruption, until a fresh surface
+    /// confirms the popup closed. The JSON pane fallback cannot address a popup.
+    private var popupBlocksPaneInput = false
     private var inputTask: Task<Void, Never>?
     private var surfaceCols = 80
     private var surfaceRows = 24
@@ -771,8 +780,9 @@ final class HerdrStore: ObservableObject {
     }
 
     private func setSurface(_ surface: HerdrSurface?) {
+        if let surface { popupBlocksPaneInput = surface.popup != nil }
         surfaceFeed.publish(surface)
-        let layout = surface.map { HerdrSurfaceLayout(bootID: $0.bootID, paneIDs: $0.paneIDs) }
+        let layout = surface.map { HerdrSurfaceLayout(bootID: $0.bootID, paneIDs: $0.paneIDs, popupTerminalID: $0.popup?.terminalID) }
         if layout != surfaceLayout { surfaceLayout = layout }
     }
 
@@ -812,6 +822,7 @@ final class HerdrStore: ObservableObject {
     }
 
     func stop() {
+        popupBlocksPaneInput = false
         generation += 1
         eventStream?.cancel()
         eventStream = nil
@@ -1146,6 +1157,18 @@ final class HerdrStore: ObservableObject {
         enqueueInput(paneID: paneID, event: .mouse(mouse))
     }
 
+    func sendPopupInput(_ event: HerdrInputEvent, terminalID: String, bootID: String) {
+        guard surface?.bootID == bootID, surface?.popup?.terminalID == terminalID else { return }
+        enqueueInput(PendingInput(paneID: "", event: event, popup: (bootID, terminalID)))
+    }
+
+    func closePopup(terminalID: String, bootID: String) {
+        guard surface?.bootID == bootID, surface?.popup?.terminalID == terminalID else { return }
+        if surfaceStream?.closePopup() != true {
+            setIfChanged(\.inputError, "Herdr popup close is unavailable")
+        }
+    }
+
     func setSplitRatio(path: [Bool], ratio: Double) {
         guard let tabID = selectedTabID, ratio.isFinite else { return }
         // Called up to 30 times a second while a split is dragged, so an unchanged error is not published again.
@@ -1155,14 +1178,26 @@ final class HerdrStore: ObservableObject {
     }
 
     private func enqueueInput(paneID: String, event: HerdrInputEvent) {
+        guard !popupBlocksPaneInput else { return }
+        enqueueInput(PendingInput(paneID: paneID, event: event))
+    }
+
+    private func enqueueInput(_ input: PendingInput) {
         guard isConnected else { return }
-        pendingInput.append((paneID, event))
+        pendingInput.append(input)
         guard inputTask == nil else { return }
         let path = socketPath
         let currentGeneration = generation
         inputTask = Task {
             while !pendingInput.isEmpty && !Task.isCancelled {
                 let item = pendingInput.removeFirst()
+                if let popup = item.popup {
+                    guard surface?.bootID == popup.bootID, surface?.popup?.terminalID == popup.terminalID else { continue }
+                    let sent = surfaceStream?.sendPopupInput(item.event, terminalID: popup.terminalID) == true
+                    setIfChanged(\.inputError, sent ? nil : "Herdr popup input is unavailable; reconnecting")
+                    continue
+                }
+                guard !popupBlocksPaneInput else { continue }
                 if let stream = surfaceStream, stream.isReady {
                     if stream.sendInput(item.event, to: item.paneID) {
                         // Publishing, even an unchanged nil, would update the whole window on every key.

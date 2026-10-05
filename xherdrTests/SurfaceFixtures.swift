@@ -54,6 +54,28 @@ struct SurfaceWireWriter {
         byte(cursor.shape)
     }
 
+    mutating func popup(_ popup: HerdrPopup?) {
+        guard let popup else { byte(0); return }
+        byte(1)
+        string(popup.terminalID); string(popup.title)
+        for size in [popup.width, popup.height] {
+            guard let size else { byte(0); continue }
+            byte(1)
+            switch size {
+            case .cells(let value): number(0); number(value)
+            case .percent(let value): number(1); number(value)
+            }
+        }
+        number(popup.cells.count)
+        for value in popup.cells { cell(value) }
+        number(popup.cols); number(popup.rows); cursor(popup.cursor)
+        number(popup.hyperlinks.count)
+        for link in popup.hyperlinks { string(link) }
+        number(0)
+        byte(popup.mouseReporting ? 1 : 0); byte(popup.pixelMouse ? 1 : 0)
+        number(popup.pixelWidth); number(popup.pixelHeight)
+    }
+
     mutating func pane(_ model: SurfaceModel) {
         string(model.paneID)
         number(model.revision) // content revision

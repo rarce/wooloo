@@ -44,7 +44,19 @@ The pane surface supplies its inner rectangle and `mouse_reporting` flag. When m
 
 The surface also supplies split handle areas, hit rectangles, and paths. Dragging a handle sends `layout.set_split_ratio` over the endpoint, capped at about 30 updates per second with a final update on release. The server owns the layout; xherdr redraws from the next surface. In `xherdr-ui-test`, dragging both split orientations changed the ratios reported by `session.snapshot`. See [Protocol stability](https://herdr.dev/docs/socket-api/#protocol-stability) and [Reading panes](https://herdr.dev/docs/socket-api/#reading-panes).
 
-Complete surfaces also carry native graphics assets and placements. xherdr decodes PNG, RGB, and RGBA bytes, caches assets by the protocol key while the server retains them, and draws pane placements in z order with source cropping. Graphics survive incremental cell patches because patches update only text and cursor state. Popup graphics are parsed but are not displayed until popup layers are implemented. A four-color PNG sent with `pane.graphics.set` to pane `w1:p6` in `xherdr-ui-test` appeared in the live surface.
+Complete surfaces also carry native graphics assets and placements. xherdr decodes PNG, RGB, and RGBA bytes, caches assets by the protocol key while the server retains them, and draws pane placements in z order with source cropping. Graphics survive incremental cell patches because patches update only text and cursor state. Popup placements use their own terminal identity and are clipped to the popup content rectangle. A four-color PNG sent with `pane.graphics.set` to pane `w1:p6` in `xherdr-ui-test` appeared in the live surface.
+
+## Popup terminals
+
+A complete surface can carry a separate popup terminal with its ID, title, size hints, cells, cursor, links, and mouse modes. xherdr retains that model and composes it in the existing AppKit terminal grid, with a centered border, title, accessible Close Popup button, and dimmed background. Geometry follows Herdr's cell and percentage sizing, minimum dimensions, viewport clamping, and reserved right gutter. The raw pane surface stays intact for patches and independent trace verification. See [Herdr's popup composition](https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/src/client/shell/composition.rs).
+
+Keyboard input, IME text, text paste, file-path drops, and mouse reporting address the popup terminal through `ClientShellPopupInput`. Escape reaches the program. The close button and popup context menu send `popup.close`. Input, pane menus, split drags, tab drops, and pane shortcuts cannot act on the covered terminal. Selection and link activation stay within the popup content; popup graphics are clipped there, and underlying pane graphics are clipped around the popup. Pane input resumes when a surface confirms the popup closed.
+
+Herdr permits one popup per session and projects it to clients showing its owning tab. xherdr follows that projection without changing its Space, tab, pane selection, or agent filter. Opening a popup brings the terminal forward when a document or Search tab is active; closing restores that tab if the user stayed in the same session, Space, and terminal tab. Popup appearance and identity changes publish a structural update; subsequent terminal frames use the normal surface feed without publishing the whole window.
+
+Input carries the popup's boot ID and terminal ID locally and is discarded when either no longer matches the current surface. During an endpoint interruption, popup input never falls back to JSON `pane.send_input`, and the pane input guard remains until a fresh surface confirms the modal state. Changing sessions resets that guard. A reconnect rebuilds popup state from the server; closing the client does not close the server's popup process.
+
+Unit and socket tests cover decoding, replacement, malformed frames, geometry, cursor placement, selection, keyboard and IME routing, mouse hit testing, graphics clipping, explicit close, and disconnected input. A temporary plugin in the isolated `xherdr-ui-test` session displayed live terminal content and a Kitty graphic in the native app. Eight letters sent through the native keyboard probe reached the popup's PTY as `abcdefgh`; closing restored the covered pane, with Space, tab, and pane focus unchanged. The plugin registry and state were kept under temporary XDG roots. The terminal benchmark and all E2E workloads completed, and the E2E trace matched the independent decoder. The native plugin catalog remains deferred; popups opened through Herdr's CLI, API, or plugins appear automatically.
 
 The live renderer records UTF-16 offsets at cell boundaries. Before replacing the attributed text for a new surface, it maps the selected range to cells, then restores the range in the new render. Copy uses a snapshot of the selected text so subsequent screen updates do not change clipboard content, and trims terminal row padding. In `xherdr-ui-test`, selection remained active through about 200 updates from another pane, and Command-C/Command-V reproduced the selected text.
 
@@ -74,7 +86,6 @@ The surface decoder follows the frozen generation-1 field order in Herdr 0.9.1. 
 
 ## Implementation order
 
-1. Render popup layers and their graphics.
-2. Add optional remote sessions after local behavior is stable.
+1. Add optional remote sessions after local behavior is stable.
 
 Validate against a running Herdr server with `herdr status`, `herdr api schema --json`, and `herdr api snapshot`. These commands should be used as local diagnostics; no server state needs to be changed for the initial connection.

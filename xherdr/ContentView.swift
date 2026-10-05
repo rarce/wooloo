@@ -29,6 +29,7 @@ struct ContentView: View {
     @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
     @AppStorage("AgentsInSelectedSpaceOnly") private var agentsInSelectedSpaceOnly = false
     @State private var followsHerdrAgentView = true
+    @State private var popupDocument: (session: String, space: String?, tab: String?, document: String)?
 
     @StateObject private var themes = ThemeStore()
     @StateObject private var notifier = HerdrNotifier()
@@ -47,6 +48,23 @@ struct ContentView: View {
     private var selectedPanes: [HerdrPane] { herdr.selectedPanes }
 
     init() {}
+
+    private func presentPopup(_ terminalID: String?) {
+        if terminalID != nil {
+            if let activeDocumentID {
+                popupDocument = (herdr.sessionName, herdr.selectedWorkspaceID, herdr.selectedTabID, activeDocumentID)
+                self.activeDocumentID = nil
+            }
+            window.quickOpen.dismiss()
+            window.commandPalette.dismiss()
+        } else if let previous = popupDocument {
+            popupDocument = nil
+            guard activeDocumentID == nil, herdr.sessionName == previous.session,
+                  herdr.selectedWorkspaceID == previous.space, herdr.selectedTabID == previous.tab,
+                  documentStore.document(previous.document) != nil || previous.document == WorkspaceSearchModel.tabID else { return }
+            activeDocumentID = previous.document
+        }
+    }
 
     /// Tests pass a store for a fake Herdr session and documents opened beforehand.
     init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil) {
@@ -86,6 +104,7 @@ struct ContentView: View {
             notifier.process(snapshot, selectedPaneID: herdr.selectedPaneID)
         }
         .onChange(of: herdr.selectedPaneID) { _, paneID in notifier.acknowledge(paneID: paneID) }
+        .onChange(of: herdr.surfaceLayout?.popupTerminalID) { _, terminalID in presentPopup(terminalID) }
         .onChange(of: herdr.sessionName) { _, _ in
             notifier.reset()
             followsHerdrAgentView = true
@@ -633,6 +652,8 @@ struct ContentView: View {
                             paneID: herdr.selectedPaneID ?? selectedPanes[0].paneID,
                             surfaceFeed: herdr.surfaceFeed,
                             onPresentSurface: { herdr.acknowledgeAgentSurface($0) },
+                            sendPopupInput: { event, id, boot in herdr.sendPopupInput(event, terminalID: id, bootID: boot) },
+                            closePopup: { id, boot in herdr.closePopup(terminalID: id, bootID: boot) },
                             shortcutMap: shortcutMap,
                             onShortcut: handleShortcut,
                             onPrefixChanged: { shortcutPrefixActive = $0 },

@@ -132,19 +132,29 @@ struct ReferenceSurfaceDecoder {
             return (Data(bytes[start..<offset]), isPopup)
         }
 
-        mutating func skipPopup() throws {
-            _ = try text(); _ = try text()
-            for _ in 0..<2 {
-                if try flag() { _ = try number(); _ = try number() } // size constraint kind and value
+        mutating func popup() throws -> HerdrPopup {
+            let id = try text(), title = try text()
+            func size(_ input: inout Input) throws -> HerdrPopup.Size? {
+                guard try input.flag() else { return nil }
+                let kind = try input.number(), value = try input.int()
+                return kind == 0 ? .cells(value) : .percent(value)
             }
-            for _ in 0..<(try int()) { _ = try cell() }
-            _ = try number(); _ = try number()
-            _ = try cursor()
-            for _ in 0..<(try int()) { _ = try text() }
+            let width = try size(&self), height = try size(&self)
+            var cells: [HerdrCell] = []
+            for _ in 0..<(try int()) { cells.append(try cell()) }
+            let cols = try int(), rows = try int()
+            guard cols > 0, rows > 0, cols * rows == cells.count else { throw Failure.invalid("popup cell count") }
+            let cursor = try cursor()
+            var links: [String] = []
+            for _ in 0..<(try int()) { links.append(try text()) }
             _ = try raw()
-            _ = try byte(); _ = try byte()
-            _ = try number(); _ = try number()
+            let mouse = try flag(), pixels = try flag()
+            let pixelWidth = try int(), pixelHeight = try int()
+            return HerdrPopup(terminalID: id, title: title, width: width, height: height, cols: cols, rows: rows,
+                              cells: cells, cursor: cursor, hyperlinks: links, mouseReporting: mouse,
+                              pixelMouse: pixels, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
         }
+
     }
 
     private mutating func readSurface(_ input: inout Input) throws -> HerdrSurface {
@@ -179,7 +189,7 @@ struct ReferenceSurfaceDecoder {
             for _ in 0..<(try input.int()) { path.append(try input.flag()) }
             splits.append(HerdrSplit(direction: direction, pos: pos, area: area, hitRect: hit, path: path))
         }
-        if try input.flag() { try input.skipPopup() }
+        let popup = try input.flag() ? input.popup() : nil
         for _ in 0..<(try input.int()) {
             let key = try input.graphicKey()
             assets[key.identity] = Data(try input.raw())
@@ -195,9 +205,9 @@ struct ReferenceSurfaceDecoder {
             let z = encodedZ & 1 == 0 ? Int(encodedZ / 2) : -Int(encodedZ / 2) - 1
             _ = try input.number() // scrollback offset
             keep.insert(key.identity)
-            guard !key.isPopup, let bytes = assets[key.identity] else { continue }
+            guard let bytes = assets[key.identity] else { continue }
             let graphicKey = HerdrGraphicKey(identity: key.identity, width: 0, height: 0, format: .png,
-                                             isPopup: false, dataLength: bytes.count)
+                                             isPopup: key.isPopup, dataLength: bytes.count)
             graphics.append(HerdrGraphic(key: graphicKey, data: bytes, x: values[0], y: values[1],
                                          cols: values[2], rows: values[3], sourceX: values[4], sourceY: values[5],
                                          sourceWidth: values[6], sourceHeight: values[7],
@@ -208,7 +218,7 @@ struct ReferenceSurfaceDecoder {
         return HerdrSurface(bootID: bootID, projectionRevision: projectionRevision, revision: revision,
                             width: width, height: height, cells: cells, cursor: cursor, paneIDs: paneIDs,
                             paneRects: rects, paneInnerRects: inner, mouseReportingPaneIDs: mouse,
-                            splits: splits, graphics: graphics, hyperlinks: hyperlinks)
+                            splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup)
     }
 
     private func readPatch(_ input: inout Input, into surface: inout HerdrSurface) throws {

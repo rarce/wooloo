@@ -77,16 +77,16 @@ final class SurfaceLayersTests: XCTestCase {
         assertRejected(path)
     }
 
-    /// A popup is read past, including its own cells, so the rest of the frame still decodes;
-    /// graphics that belong to the popup are not shown in the pane.
-    func testPopupIsSkippedAndItsGraphicsAreHidden() throws {
+    func testPopupAndItsGraphicsRemainSeparateFromThePane() throws {
         let pane = GraphicKey.image(id: 1)
         let popup = GraphicKey.image(id: 2, isPopup: true)
         let surface = try decode(frame(popup: true,
                                        assets: [(pane, Data(count: 16)), (popup, Data(count: 16))],
                                        placements: [Placement(key: pane), Placement(key: popup)]))
         XCTAssertEqual(surface.cells, model.cells)
-        XCTAssertEqual(surface.graphics.map(\.key.isPopup), [false])
+        XCTAssertEqual(surface.graphics.map(\.key.isPopup), [false, true])
+        XCTAssertEqual(surface.popup?.terminalID, "popup-terminal")
+        XCTAssertEqual(surface.popup?.cols, 1)
     }
 
     func testPlacementResolvesItsAssetAndFields() throws {
@@ -219,7 +219,7 @@ private extension SurfaceWireWriter {
         case .image(let id, let isPopup):
             number(0)
             number(isPopup ? 1 : 0)
-            string("w1:p1")
+            string(isPopup ? "popup-terminal" : "w1:p1")
             number(id)
         case .layer(let pane, let layer):
             number(1)
@@ -243,5 +243,154 @@ private extension SurfaceWireWriter {
         }
         number(placement.z >= 0 ? placement.z * 2 : -placement.z * 2 - 1)
         number(0) // scrollback offset
+    }
+}
+
+@MainActor
+final class HerdrPopupTests: XCTestCase {
+    private func popup(id: String = "popup-test", width: HerdrPopup.Size? = .cells(12),
+                       height: HerdrPopup.Size? = .cells(6), mouse: Bool = true) -> HerdrPopup {
+        var row = RowBuilder(width: 9)
+        row.put("POPUP", foreground: Color.ansi(2))
+        return HerdrPopup(terminalID: id, title: "Test Popup", width: width, height: height, cols: 9, rows: 4,
+                          cells: row.cells + Array(repeating: SurfaceModel.blank, count: 27),
+                          cursor: HerdrCursor(x: 2, y: 1, visible: true, shape: 0), hyperlinks: ["https://example.com"],
+                          mouseReporting: mouse, pixelMouse: false, pixelWidth: 0, pixelHeight: 0)
+    }
+
+    private func frame(_ popup: HerdrPopup?, revision: UInt64 = 1) -> Data {
+        var model = SurfaceModel(width: 30, height: 12)
+        model.revision = revision
+        return model.surfaceFrame { writer in
+            writer.number(0)
+            writer.popup(popup)
+            writer.number(0); writer.number(0); writer.number(0)
+        }
+    }
+
+    func testPopupFramesDecodeIndependentlyAndCloseReplacesTheState() throws {
+        var actual = HerdrSurfaceDecoder(), reference = ReferenceSurfaceDecoder()
+        for (index, value) in [popup(), popup(id: "replacement"), popup(width: .cells(0), height: .cells(0)), nil].enumerated() {
+            let wire = frame(value, revision: UInt64(index + 1))
+            let surface = try XCTUnwrap(actual.apply(frame: wire))
+            let expected = try XCTUnwrap(reference.apply(wire))
+            XCTAssertEqual(surface.popup, value)
+            XCTAssertEqual(surface.contentDigest, expected.contentDigest)
+            XCTAssertEqual(surface.cells, SurfaceModel(width: 30, height: 12).cells)
+        }
+        let wire = frame(popup())
+        for count in [1, wire.count / 2, wire.count - 1] {
+            var decoder = HerdrSurfaceDecoder()
+            XCTAssertThrowsError(try decoder.apply(frame: wire.prefix(count)))
+        }
+    }
+
+    func testGeometryMatchesHerdrAndClampsCellsAndPercentSizes() throws {
+        let defaultSize = try XCTUnwrap(popup(width: nil, height: nil).geometry(cols: 100, rows: 24))
+        XCTAssertEqual(defaultSize.outer, HerdrRect(x: 25, y: 6, width: 50, height: 12))
+        XCTAssertEqual(defaultSize.inner, HerdrRect(x: 26, y: 7, width: 47, height: 10))
+        let percent = try XCTUnwrap(popup(width: .percent(80), height: .percent(50)).geometry(cols: 100, rows: 24))
+        XCTAssertEqual(percent.outer, HerdrRect(x: 10, y: 6, width: 80, height: 12))
+        let small = try XCTUnwrap(popup(width: .cells(2), height: .cells(2)).geometry(cols: 6, rows: 4))
+        XCTAssertEqual(small.inner, HerdrRect(x: 1, y: 1, width: 4, height: 2))
+        let zero = try XCTUnwrap(popup(width: .cells(0), height: .cells(0)).geometry(cols: 30, rows: 12))
+        XCTAssertEqual(zero.outer, HerdrRect(x: 12, y: 4, width: 6, height: 4))
+        XCTAssertNil(popup().geometry(cols: 5, rows: 3))
+    }
+
+    func testCompositionMovesCursorAndRestrictsSelectionToPopupContent() throws {
+        var decoder = HerdrSurfaceDecoder()
+        let raw = try XCTUnwrap(decoder.apply(frame: frame(popup())))
+        let display = raw.displayingPopup(theme: TerminalRenderHarness.theme)
+        let inner = try XCTUnwrap(raw.popup?.geometry(cols: raw.width, rows: raw.height)?.inner)
+        XCTAssertEqual(display.cells[inner.y * display.width + inner.x].symbol, "P")
+        XCTAssertEqual(display.cursor?.x, inner.x + 2)
+        XCTAssertEqual(display.cursor?.y, inner.y + 1)
+        XCTAssertNotEqual(display.cells, raw.cells)
+        let view = TerminalRenderHarness.makeView(width: raw.width, height: raw.height)
+        view.show(raw)
+        view.selectAll(nil)
+        let text = try XCTUnwrap(view.selectedCellText())
+        XCTAssertTrue(text.contains("POPUP"))
+        XCTAssertFalse(text.contains("Test Popup"))
+        XCTAssertFalse(text.contains("╭"))
+        let shown = TerminalRenderHarness.pixels(of: TerminalRenderHarness.render(raw))
+        let closed = TerminalRenderHarness.pixels(of: TerminalRenderHarness.render(SurfaceModel(width: 30, height: 12).surface))
+        XCTAssertNotEqual(shown?.bytes, closed?.bytes)
+        view.show(nil)
+        XCTAssertNil(view.surface)
+        XCTAssertNil(view.terminalGrid)
+    }
+
+    func testKeyboardImeMouseAndCloseStayOnPopupAndPaneResumesAfterClose() throws {
+        var decoder = HerdrSurfaceDecoder()
+        let raw = try XCTUnwrap(decoder.apply(frame: frame(popup())))
+        let view = TerminalRenderHarness.makeView(width: raw.width, height: raw.height)
+        var popupEvents: [HerdrInputEvent] = [], paneEvents = 0, shortcuts = 0, closes = 0
+        view.sendPopupInput = { event, id, boot in
+            XCTAssertEqual(id, "popup-test"); XCTAssertEqual(boot, "boot-test")
+            popupEvents.append(event)
+        }
+        view.sendText = { _, _ in paneEvents += 1 }
+        view.sendKey = { _, _ in paneEvents += 1 }
+        view.selectPane = { _ in paneEvents += 1 }
+        view.setSplitRatio = { _, _ in paneEvents += 1 }
+        view.onShortcut = { _ in shortcuts += 1 }
+        view.closePopup = { id, _ in XCTAssertEqual(id, "popup-test"); closes += 1 }
+        view.show(raw)
+        view.insertText("IME 日本語", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                   windowNumber: 0, context: nil, characters: "\u{1b}",
+                                                   charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        view.keyDown(with: escape)
+        let prefix = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .control, timestamp: 0,
+                                                   windowNumber: 0, context: nil, characters: "\u{2}",
+                                                   charactersIgnoringModifiers: "b", isARepeat: false, keyCode: 11))
+        view.keyDown(with: prefix)
+        let inner = try XCTUnwrap(raw.popup?.geometry(cols: raw.width, rows: raw.height)?.inner)
+        let location = NSPoint(x: view.textContainerInset.width + CGFloat(inner.x + 1) * TerminalPaneView.cellWidth,
+                               y: view.textContainerInset.height + CGFloat(inner.y + 1) * TerminalPaneView.cellHeight)
+        XCTAssertTrue(view.scrollPane(at: location, deltaX: 0, deltaY: 3, precise: false, modifiers: []))
+        XCTAssertTrue(view.scrollPane(at: .zero, deltaX: 0, deltaY: 3, precise: false, modifiers: []))
+        XCTAssertEqual(paneEvents, 0)
+        XCTAssertEqual(shortcuts, 0)
+        XCTAssertEqual(closes, 0, "Escape belongs to the terminal program")
+        XCTAssertEqual(popupEvents.count, 4)
+        if case .key("esc") = popupEvents[1] {} else { XCTFail("Escape was not forwarded") }
+        let menu = try XCTUnwrap(view.menu(for: escape))
+        let close = try XCTUnwrap(menu.items.first { $0.title == "Close Popup" })
+        _ = view.perform(try XCTUnwrap(close.action), with: close)
+        XCTAssertEqual(closes, 1)
+        view.show(SurfaceModel(width: 30, height: 12).surface)
+        view.insertText("pane", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(paneEvents, 1)
+    }
+
+    func testPopupInputUsesItsOwnWireTagAndStableTerminalID() throws {
+        let popup = try XCTUnwrap(SurfaceWriter.popupInput(terminalID: "popup-id", event: .key("esc")))
+        let pane = try XCTUnwrap(SurfaceWriter.paneInput(paneID: "popup-id", event: .key("esc")))
+        XCTAssertEqual(popup.first, 14)
+        XCTAssertEqual(pane.first, 13)
+        XCTAssertEqual(popup.dropFirst(), pane.dropFirst())
+    }
+
+    func testGraphicsAreClippedToTheMatchingPopupAndOccludePaneImages() throws {
+        var decoder = HerdrSurfaceDecoder()
+        var surface = try XCTUnwrap(decoder.apply(frame: frame(popup())))
+        let plain = TerminalRenderHarness.pixels(of: TerminalRenderHarness.render(surface))?.bytes
+        func image(popupID: String?, x: Int = 0, y: Int = 0) -> HerdrGraphic {
+            let key = HerdrGraphicKey(identity: Data([1]), width: 1, height: 1, format: .rgb,
+                                      isPopup: popupID != nil, dataLength: 3, popupTerminalID: popupID)
+            return HerdrGraphic(key: key, data: Data([255, 0, 0]), x: x, y: y, cols: 2, rows: 1,
+                                sourceX: 0, sourceY: 0, sourceWidth: 1, sourceHeight: 1,
+                                xOffset: 0, yOffset: 0, z: 0)
+        }
+        surface.graphics = [image(popupID: "old-popup")]
+        XCTAssertEqual(TerminalRenderHarness.pixels(of: TerminalRenderHarness.render(surface))?.bytes, plain)
+        surface.graphics = [image(popupID: "popup-test")]
+        XCTAssertNotEqual(TerminalRenderHarness.pixels(of: TerminalRenderHarness.render(surface))?.bytes, plain)
+        let inner = try XCTUnwrap(surface.popup?.geometry(cols: surface.width, rows: surface.height)?.inner)
+        surface.graphics = [image(popupID: nil, x: inner.x, y: inner.y)]
+        XCTAssertEqual(TerminalRenderHarness.pixels(of: TerminalRenderHarness.render(surface))?.bytes, plain)
     }
 }

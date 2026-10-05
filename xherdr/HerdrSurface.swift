@@ -45,6 +45,50 @@ struct HerdrGraphicKey: Hashable {
     let format: Format
     let isPopup: Bool
     let dataLength: Int
+    var popupTerminalID: String? = nil
+}
+
+struct HerdrPopup: Equatable {
+    enum Size: Equatable { case cells(Int), percent(Int) }
+    let terminalID: String
+    let title: String
+    let width: Size?
+    let height: Size?
+    let cols: Int
+    let rows: Int
+    let cells: [HerdrCell]
+    let cursor: HerdrCursor?
+    let hyperlinks: [String]
+    let mouseReporting: Bool
+    let pixelMouse: Bool
+    let pixelWidth: Int
+    let pixelHeight: Int
+
+    /// Matches Herdr's popup_size::resolve_popup_geometry, including its right gutter.
+    func geometry(cols: Int, rows: Int) -> (outer: HerdrRect, inner: HerdrRect)? {
+        func resolve(_ size: Size?, available: Int, minimum: Int) -> Int {
+            let value: Int
+            switch size {
+            case .cells(let cells): value = cells
+            case .percent(let percent): value = available * percent / 100
+            case nil: value = available / 2
+            }
+            return min(available, max(minimum, value))
+        }
+        let width = resolve(width, available: cols, minimum: 6)
+        let height = resolve(height, available: rows, minimum: 4)
+        guard width >= 6, height >= 4 else { return nil }
+        let outer = HerdrRect(x: (cols - width) / 2, y: (rows - height) / 2, width: width, height: height)
+        let innerWidth = width - 2
+        return (outer, HerdrRect(x: outer.x + 1, y: outer.y + 1,
+                                width: innerWidth > 4 ? innerWidth - 1 : innerWidth, height: height - 2))
+    }
+}
+
+extension HerdrRect {
+    func contains(column: Int, row: Int) -> Bool {
+        column >= x && row >= y && column < x + width && row < y + height
+    }
 }
 
 struct HerdrGraphic: Equatable {
@@ -102,6 +146,57 @@ struct HerdrSurface: Equatable {
     /// OSC 8 hyperlink URIs of a complete surface. Herdr sends a complete surface instead of a
     /// patch whenever changed cells touch a hyperlink, so patches keep these indices valid.
     var hyperlinks: [String] = []
+    var popup: HerdrPopup? = nil
+
+    /// The raw surface stays intact for patches and trace verification. Only the view
+    /// composes popup chrome and cells into the grid it draws.
+    func displayingPopup(theme: XherdrTheme) -> HerdrSurface {
+        guard let popup, let geometry = popup.geometry(cols: width, rows: height) else { return self }
+        var result = self
+        let outer = geometry.outer, inner = geometry.inner
+        let panel = UInt32(0x02000000) | theme.herdr.panel
+        let accent = UInt32(0x02000000) | theme.herdr.accent
+        func cell(_ symbol: String) -> HerdrCell {
+            HerdrCell(symbol: symbol, foreground: accent, background: panel, modifier: 0, skip: false)
+        }
+        for y in outer.y..<(outer.y + outer.height) {
+            for x in outer.x..<(outer.x + outer.width) {
+                let top = y == outer.y, bottom = y == outer.y + outer.height - 1
+                let left = x == outer.x, right = x == outer.x + outer.width - 1
+                let symbol = top ? (left ? "╭" : right ? "╮" : "─")
+                    : bottom ? (left ? "╰" : right ? "╯" : "─") : (left || right ? "│" : " ")
+                result.cells[y * width + x] = cell(symbol)
+            }
+        }
+        // Keep title glyphs inside the border and leave the close control at the right.
+        var x = outer.x + 2
+        for character in popup.title where !character.isNewline {
+            let symbol = String(character)
+            let scalarWidth = symbol.unicodeScalars.map { wcwidth(wchar_t($0.value)) }.max() ?? 1
+            let span = max(1, Int(scalarWidth))
+            guard x + span <= outer.x + outer.width - 3 else { break }
+            result.cells[outer.y * width + x] = cell(symbol)
+            if span == 2 { result.cells[outer.y * width + x + 1] = HerdrCell(symbol: "", foreground: accent, background: panel, modifier: 0, skip: true) }
+            x += span
+        }
+        result.cells[outer.y * width + outer.x + outer.width - 2] = cell(" ")
+        let linkOffset = result.hyperlinks.count
+        result.hyperlinks += popup.hyperlinks
+        for y in 0..<min(inner.height, popup.rows) {
+            for x in 0..<min(inner.width, popup.cols) {
+                var value = popup.cells[y * popup.cols + x]
+                if let link = value.hyperlink {
+                    value.hyperlink = Int(link) < popup.hyperlinks.count ? UInt32(linkOffset + Int(link)) : nil
+                }
+                result.cells[(inner.y + y) * width + inner.x + x] = value
+            }
+        }
+        result.cursor = popup.cursor.flatMap { cursor in
+            guard cursor.x < inner.width, cursor.y < inner.height else { return nil }
+            return HerdrCursor(x: inner.x + cursor.x, y: inner.y + cursor.y, visible: cursor.visible, shape: cursor.shape)
+        }
+        return result
+    }
 }
 
 private enum SurfaceProtocolError: Error {
@@ -256,27 +351,41 @@ private struct SurfaceReader {
         _ = try data() // legacy graphics bytes
     }
 
-    mutating func skipPopup() throws {
-        _ = try string() // terminal ID
-        _ = try string() // title
-        for _ in 0..<2 {
-            _ = try optional { reader in
-                switch try reader.number() {
-                case 0, 1: _ = try reader.number()
-                default: throw SurfaceProtocolError.invalidFrame
-                }
+    mutating func popup() throws -> HerdrPopup {
+        let id = try string(), title = try string()
+        func size(_ reader: inout SurfaceReader) throws -> HerdrPopup.Size {
+            let kind = try reader.number(), value = try reader.number()
+            switch kind {
+            case 0 where value <= UInt16.max: return .cells(Int(value))
+            case 1 where value > 0 && value <= 100: return .percent(Int(value))
+            default: throw SurfaceProtocolError.invalidFrame
             }
         }
-        try skipFrame()
-        _ = try byte() // mouse reporting
-        _ = try byte() // pixel mouse
-        _ = try number() // pixel width
-        _ = try number() // pixel height
+        let width = try optional(size), height = try optional(size)
+        let length = try count()
+        guard length <= 200_000 else { throw SurfaceProtocolError.invalidFrame }
+        var cells: [HerdrCell] = []
+        for _ in 0..<length { cells.append(try cell()) }
+        let cols = try number(), rows = try number()
+        guard !id.isEmpty, cols > 0, rows > 0, cols <= 200_000, rows <= 200_000,
+              cols * rows == UInt64(length) else { throw SurfaceProtocolError.invalidFrame }
+        let cursor = try optional { try $0.cursor() }
+        var links: [String] = []
+        for _ in 0..<(try count()) { links.append(try string()) }
+        _ = try data()
+        let mouse = try byte(), pixels = try byte()
+        guard mouse <= 1, pixels <= 1 else { throw SurfaceProtocolError.invalidFrame }
+        let pixelWidth = try number(), pixelHeight = try number()
+        guard pixelWidth <= UInt32.max, pixelHeight <= UInt32.max else { throw SurfaceProtocolError.invalidFrame }
+        return HerdrPopup(terminalID: id, title: title, width: width, height: height, cols: Int(cols), rows: Int(rows),
+                          cells: cells, cursor: cursor, hyperlinks: links, mouseReporting: mouse == 1,
+                          pixelMouse: pixels == 1, pixelWidth: Int(pixelWidth), pixelHeight: Int(pixelHeight))
     }
 
     mutating func graphicKey() throws -> HerdrGraphicKey {
         let start = position
         let isPopup: Bool
+        var popupID: String?
         switch try number() {
         case 0:
             switch try number() {
@@ -284,7 +393,8 @@ private struct SurfaceReader {
             case 1: isPopup = true
             default: throw SurfaceProtocolError.invalidFrame
             }
-            _ = try string() // target ID
+            let targetID = try string()
+            if isPopup { popupID = targetID }
             _ = try number() // image ID
         case 1:
             isPopup = false
@@ -303,7 +413,7 @@ private struct SurfaceReader {
         _ = try number() // fingerprint
         return HerdrGraphicKey(identity: Data(bytes[start..<position]), width: Int(width),
                                height: Int(height), format: format, isPopup: isPopup,
-                               dataLength: Int(dataLength))
+                               dataLength: Int(dataLength), popupTerminalID: popupID)
     }
 
     mutating func graphicPlacement() throws -> HerdrGraphicPlacement {
@@ -355,7 +465,7 @@ private struct SurfaceReader {
         }
         var splits: [HerdrSplit] = []
         for _ in 0..<(try count()) { splits.append(try split()) }
-        _ = try optional { reader in try reader.skipPopup() }
+        let popup = try optional { reader in try reader.popup() }
         var delivered: [Data: Data] = [:]
         for _ in 0..<(try count()) {
             let key = try graphicKey()
@@ -371,14 +481,14 @@ private struct SurfaceReader {
         graphicsCache = graphicsCache.filter { retained.contains($0.key) }
         graphicsCache.merge(delivered) { _, new in new }
         let graphics = placements.compactMap { placement -> HerdrGraphic? in
-            guard !placement.key.isPopup, let bytes = graphicsCache[placement.key.identity] else { return nil }
+            guard let bytes = graphicsCache[placement.key.identity] else { return nil }
             return placement.resolved(with: bytes)
         }
         return HerdrSurface(bootID: bootID, projectionRevision: projectionRevision,
                             revision: revision, width: width, height: height,
                             cells: cells, cursor: cursor, paneIDs: paneIDs, paneRects: paneRects,
                             paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs,
-                            splits: splits, graphics: graphics, hyperlinks: hyperlinks)
+                            splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup)
     }
 
     mutating func applyPatch(to surface: inout HerdrSurface) throws {
@@ -468,7 +578,15 @@ enum SurfaceWriter {
     }
 
     static func paneInput(paneID: String, event: HerdrInputEvent) -> Data? {
-        var payload = number(13) + string(paneID) + number(1)
+        input(tag: 13, id: paneID, event: event)
+    }
+
+    static func popupInput(terminalID: String, event: HerdrInputEvent) -> Data? {
+        input(tag: 14, id: terminalID, event: event)
+    }
+
+    private static func input(tag: UInt64, id: String, event: HerdrInputEvent) -> Data? {
+        var payload = number(tag) + string(id) + number(1)
         switch event {
         case .text(let value):
             payload += number(1) + string(value)
@@ -628,6 +746,13 @@ final class HerdrSurfaceStream {
         if sent { TerminalPipelineMetrics.shared?.inputSent(bytes: payload.count) }
         return sent
     }
+
+    func sendPopupInput(_ event: HerdrInputEvent, terminalID: String) -> Bool {
+        guard isReady, let payload = SurfaceWriter.popupInput(terminalID: terminalID, event: event) else { return false }
+        return send(payload)
+    }
+
+    func closePopup() -> Bool { request(method: "popup.close", params: [:]) }
 
     @discardableResult
     private func send(_ payload: Data) -> Bool {

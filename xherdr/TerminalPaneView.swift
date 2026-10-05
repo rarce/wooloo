@@ -90,6 +90,8 @@ struct TerminalPaneView: NSViewRepresentable {
     let paneID: String
     var surfaceFeed: HerdrSurfaceFeed? = nil
     var onPresentSurface: ((HerdrSurface) -> Void)? = nil
+    var sendPopupInput: ((HerdrInputEvent, String, String) -> Void)? = nil
+    var closePopup: ((String, String) -> Void)? = nil
     let shortcutMap: HerdrShortcutMap
     let onShortcut: (String) -> Void
     let onPrefixChanged: (Bool) -> Void
@@ -130,6 +132,8 @@ struct TerminalPaneView: NSViewRepresentable {
         view.selectPane = selectPane
         view.tabDrop = tabDrop
         view.onPresentSurface = onPresentSurface
+        view.sendPopupInput = sendPopupInput
+        view.closePopup = closePopup
         view.isRichText = false
         view.isEditable = true
         view.registerForDraggedTypes([.fileURL, .string, TerminalTabDrop.pasteboardType])
@@ -177,6 +181,8 @@ struct TerminalPaneView: NSViewRepresentable {
         view.selectPane = selectPane
         view.tabDrop = tabDrop
         view.onPresentSurface = onPresentSurface
+        view.sendPopupInput = sendPopupInput
+        view.closePopup = closePopup
         let theme = context.environment.xherdrTheme
         if view.themeID != theme.id {
             view.themeID = theme.id
@@ -199,6 +205,8 @@ struct TerminalPaneView: NSViewRepresentable {
             return
         }
         view.surface = nil
+        view.displaySurface = nil
+        view.popupCloseButton.isHidden = true
         view.surfaceRevision = nil
         view.terminalGrid = nil
         guard view.string != text else { return }
@@ -691,6 +699,30 @@ final class HerdrTerminalTextView: NSTextView {
     private var lastPresentedAgentRevision: (bootID: String, revision: UInt64)?
     var surfaceBootID: String?
     var surface: HerdrSurface?
+    fileprivate(set) var displaySurface: HerdrSurface?
+    var sendPopupInput: ((HerdrInputEvent, String, String) -> Void)?
+    var closePopup: ((String, String) -> Void)?
+    fileprivate lazy var popupCloseButton: NSButton = {
+        let button = NSButton(title: "×", target: self, action: #selector(closeActivePopup))
+        button.isBordered = false
+        button.font = TerminalPaneView.terminalFont
+        button.toolTip = "Close Popup"
+        button.setAccessibilityLabel("Close Popup")
+        button.setAccessibilityIdentifier("herdr-popup-close")
+        button.isHidden = true
+        return button
+    }()
+
+    @objc private func closeActivePopup() {
+        guard let surface, let popup = surface.popup else { return }
+        closePopup?(popup.terminalID, surface.bootID)
+    }
+
+    private func popupInput(_ event: HerdrInputEvent) -> Bool {
+        guard let surface, let popup = surface.popup else { return false }
+        sendPopupInput?(event, popup.terminalID, surface.bootID)
+        return true
+    }
     var selectPane: ((String) -> Void)?
     var paneID = ""
     var shortcutMap = HerdrShortcutMap(document: HerdrConfigDocument(text: ""))
@@ -756,6 +788,7 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     private func handleShortcut(_ event: NSEvent) -> Bool {
+        guard surface?.popup == nil else { return false }
         switch shortcutMap.match(event, prefixPending: shortcutPrefixPending) {
         case .pass: return false
         case .prefix:
@@ -904,16 +937,35 @@ final class HerdrTerminalTextView: NSTextView {
             }
         }
         drawGraphics(in: dirtyRect, behindText: false)
+        if let surface, let popup = surface.popup, let geometry = popup.geometry(cols: surface.width, rows: surface.height) {
+            context.saveGState()
+            context.addRect(bounds)
+            context.addRect(pixelRect(geometry.outer))
+            context.clip(using: .evenOdd)
+            context.setFillColor(NSColor.black.withAlphaComponent(0.3).cgColor)
+            context.fill(bounds)
+            context.restoreGState()
+        }
+    }
+
+    private func pixelRect(_ rect: HerdrRect) -> NSRect {
+        NSRect(x: textContainerInset.width + CGFloat(rect.x) * TerminalPaneView.cellWidth,
+               y: textContainerInset.height + CGFloat(rect.y) * TerminalPaneView.cellHeight,
+               width: CGFloat(rect.width) * TerminalPaneView.cellWidth,
+               height: CGFloat(rect.height) * TerminalPaneView.cellHeight)
     }
 
     private func drawGraphics(in dirtyRect: NSRect, behindText: Bool) {
         guard let surface else { return }
-        let viewport = NSRect(x: textContainerInset.width, y: textContainerInset.height,
-                              width: CGFloat(surface.width) * TerminalPaneView.cellWidth,
-                              height: CGFloat(surface.height) * TerminalPaneView.cellHeight)
-        NSGraphicsContext.current?.saveGraphicsState()
-        viewport.intersection(dirtyRect).clip()
+        let popupGeometry = surface.popup?.geometry(cols: surface.width, rows: surface.height)
         for graphic in surface.graphics.sorted(by: { $0.z < $1.z }) where (graphic.z < 0) == behindText {
+            let viewport: NSRect
+            if graphic.key.isPopup {
+                guard graphic.key.popupTerminalID == surface.popup?.terminalID, let popupGeometry else { continue }
+                viewport = pixelRect(popupGeometry.inner)
+            } else {
+                viewport = pixelRect(HerdrRect(x: 0, y: 0, width: surface.width, height: surface.height))
+            }
             guard let image = decodedGraphics[graphic.key.identity],
                   graphic.cols > 0, graphic.rows > 0,
                   graphic.sourceWidth > 0, graphic.sourceHeight > 0 else { continue }
@@ -922,13 +974,21 @@ final class HerdrTerminalTextView: NSTextView {
                                      width: CGFloat(graphic.cols) * TerminalPaneView.cellWidth,
                                      height: CGFloat(graphic.rows) * TerminalPaneView.cellHeight)
             guard destination.intersects(dirtyRect) else { continue }
+            NSGraphicsContext.current?.saveGraphicsState()
+            viewport.intersection(dirtyRect).clip()
+            if !graphic.key.isPopup, let popupGeometry,
+               let context = NSGraphicsContext.current?.cgContext {
+                context.addRect(viewport)
+                context.addRect(pixelRect(popupGeometry.outer))
+                context.clip(using: .evenOdd)
+            }
             let source = NSRect(x: graphic.sourceX,
                                 y: graphic.key.height - graphic.sourceY - graphic.sourceHeight,
                                 width: graphic.sourceWidth, height: graphic.sourceHeight)
             image.draw(in: destination, from: source, operation: .sourceOver,
                        fraction: 1, respectFlipped: true, hints: nil)
+            NSGraphicsContext.current?.restoreGraphicsState()
         }
-        NSGraphicsContext.current?.restoreGraphicsState()
     }
 
     func clearTerminalSelection() {
@@ -942,23 +1002,50 @@ final class HerdrTerminalTextView: NSTextView {
 
     /// Shows a live surface, laying the grid out again only when its content changed.
     func show(_ surface: HerdrSurface?) {
-        guard let surface else { return }
+        guard let surface else {
+            self.surface = nil
+            displaySurface = nil
+            terminalGrid = nil
+            surfaceRevision = nil
+            popupCloseButton.isHidden = true
+            needsDisplay = true
+            return
+        }
         TerminalTypingProbe.target = self
         let start = TerminalPipelineMetrics.now()
         let splitsChanged = self.surface?.splits != surface.splits
+        let popupChanged = self.surface?.popup?.terminalID != surface.popup?.terminalID
+        if popupChanged {
+            clearTerminalSelection()
+            clearShortcutPrefix()
+            splitDrag = nil
+            heldMouse = nil
+            scroll = TerminalScrollAccumulator()
+            showTabDrop(nil)
+            claimKeyboardFocusIfIdle()
+        }
         self.surface = surface
+        displaySurface = surface.displayingPopup(theme: theme)
+        if popupCloseButton.superview == nil { addSubview(popupCloseButton) }
+        if let geometry = surface.popup?.geometry(cols: surface.width, rows: surface.height) {
+            popupCloseButton.frame = pixelRect(HerdrRect(x: geometry.outer.x + geometry.outer.width - 2,
+                                                        y: geometry.outer.y, width: 1, height: 1))
+            popupCloseButton.contentTintColor = XherdrTheme.nsColor(theme.herdr.accent)
+            popupCloseButton.isHidden = false
+        } else { popupCloseButton.isHidden = true }
         prepareGraphics(surface.graphics)
-        if splitsChanged { window?.invalidateCursorRects(for: self) }
+        if splitsChanged || popupChanged { window?.invalidateCursorRects(for: self) }
         guard surfaceRevision != surface.revision || surfaceBootID != surface.bootID else { return }
         if surfaceBootID != nil && surfaceBootID != surface.bootID { clearTerminalSelection() }
         surfaceRevision = surface.revision
         surfaceBootID = surface.bootID
         let layoutStart = TerminalPipelineMetrics.now()
         let grid = TerminalPipelineMetrics.signposter.withIntervalSignpost("layout") {
-            TerminalPaneView.layoutGrid(surface, theme: theme, previous: terminalGrid)
+            TerminalPaneView.layoutGrid(displaySurface!, theme: theme, previous: terminalGrid)
         }
         let layoutNanos = TerminalPipelineMetrics.now() - layoutStart
         applySurfaceGrid(grid)
+        if popupChanged { needsDisplay = true }
         if hoveredLink != nil { updateHoveredLink() }
         TerminalPipelineMetrics.shared?.updated(revision: surface.revision, start: start, layoutNanos: layoutNanos)
     }
@@ -1000,6 +1087,11 @@ final class HerdrTerminalTextView: NSTextView {
         guard row >= selection.start.row, row <= selection.end.row else { return 0..<0 }
         let lower = row == selection.start.row ? selection.start.column : 0
         let upper = row == selection.end.row ? selection.end.column : width
+        if let surface, let inner = surface.popup?.geometry(cols: surface.width, rows: surface.height)?.inner {
+            guard row >= inner.y, row < inner.y + inner.height else { return 0..<0 }
+            let start = max(lower, inner.x), end = min(upper, inner.x + inner.width)
+            return start < end ? start..<end : 0..<0
+        }
         return lower < upper ? lower..<upper : 0..<0
     }
 
@@ -1016,6 +1108,10 @@ final class HerdrTerminalTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         let row = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
         let column = Int(((point.x - textContainerInset.width) / TerminalPaneView.cellWidth).rounded())
+        if let surface, let inner = surface.popup?.geometry(cols: surface.width, rows: surface.height)?.inner {
+            return GridPoint(row: min(max(inner.y, row), inner.y + inner.height - 1),
+                             column: min(max(inner.x, column), inner.x + inner.width))
+        }
         return GridPoint(row: min(max(0, row), grid.height - 1), column: min(max(0, column), grid.width))
     }
 
@@ -1091,8 +1187,13 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func selectAll(_ sender: Any?) {
         if let grid = terminalGrid {
-            selectionAnchor = GridPoint(row: 0, column: 0)
-            selectionHead = GridPoint(row: grid.height - 1, column: grid.width)
+            if let surface, let inner = surface.popup?.geometry(cols: surface.width, rows: surface.height)?.inner {
+                selectionAnchor = GridPoint(row: inner.y, column: inner.x)
+                selectionHead = GridPoint(row: inner.y + inner.height - 1, column: inner.x + inner.width)
+            } else {
+                selectionAnchor = GridPoint(row: 0, column: 0)
+                selectionHead = GridPoint(row: grid.height - 1, column: grid.width)
+            }
             selectedSnapshot = selectedCellText()
             needsDisplay = true
             return
@@ -1132,12 +1233,16 @@ final class HerdrTerminalTextView: NSTextView {
 
     /// The live surface's link at a window location.
     private func link(at windowPoint: NSPoint) -> TerminalLink? {
-        guard let surface, terminalGrid != nil else { return nil }
+        guard let surface = displaySurface, terminalGrid != nil else { return nil }
         let point = convert(windowPoint, from: nil)
         guard visibleRect.contains(point) else { return nil }
         let x = Int(floor((point.x - textContainerInset.width) / TerminalPaneView.cellWidth))
         let y = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
         guard x >= 0, y >= 0, x < surface.width, y < surface.height else { return nil }
+        if let popup = surface.popup {
+            guard let inner = popup.geometry(cols: surface.width, rows: surface.height)?.inner,
+                  inner.contains(column: x, row: y) else { return nil }
+        }
         return TerminalLinks.link(atColumn: x, row: y, in: surface)
     }
 
@@ -1159,7 +1264,7 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        guard let surface else { return }
+        guard let surface, surface.popup == nil else { return }
         for split in surface.splits {
             let rect = split.hitRect
             guard rect.width > 0, rect.height > 0 else { continue }
@@ -1172,6 +1277,23 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if let surface, let popup = surface.popup {
+            window?.makeFirstResponder(self)
+            let (x, y) = surfacePoint(event)
+            guard let geometry = popup.geometry(cols: surface.width, rows: surface.height) else { return }
+            if y == geometry.outer.y, x == geometry.outer.x + geometry.outer.width - 2 {
+                closeActivePopup()
+                return
+            }
+            guard geometry.inner.contains(column: x, row: y) else { return }
+            if event.modifierFlags.contains(.command), let link = link(at: event.locationInWindow) {
+                NSWorkspace.shared.open(link.url)
+                return
+            }
+            if !event.modifierFlags.contains(.shift), forwardMouse(.down(0), event: event, hold: true) { return }
+            if let terminalGrid { beginCellSelection(with: event, in: terminalGrid) }
+            return
+        }
         if event.modifierFlags.contains(.command), let link = link(at: event.locationInWindow) {
             NSWorkspace.shared.open(link.url)
             return
@@ -1272,6 +1394,10 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        if surface?.popup != nil {
+            if !forwardMouse(.down(1), event: event, hold: true) { super.rightMouseDown(with: event) }
+            return
+        }
         // Right-click opens the pane menu; Option-right-click still reaches mouse-aware programs.
         if event.modifierFlags.contains(.option),
            forwardMouse(.down(1), event: event, hold: true) { return }
@@ -1286,6 +1412,11 @@ final class HerdrTerminalTextView: NSTextView {
         menu.addItem(standardItem("Paste", #selector(paste(_:)),
                                   enabled: NSPasteboard.general.string(forType: .string) != nil))
         menu.addItem(standardItem("Select All", #selector(selectAll(_:)), enabled: true))
+        if surface?.popup != nil {
+            menu.addItem(.separator())
+            menu.addItem(standardItem("Close Popup", #selector(closeActivePopup), enabled: true))
+            return menu
+        }
         menu.addItem(.separator())
         menu.addItem(herdrItem("Split Right", "split_vertical", symbol: "rectangle.split.2x1"))
         menu.addItem(herdrItem("Split Down", "split_horizontal", symbol: "rectangle.split.1x2"))
@@ -1361,6 +1492,7 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func otherMouseDown(with event: NSEvent) {
         if event.buttonNumber == 2, forwardMouse(.down(2), event: event, hold: true) { return }
+        if surface?.popup != nil { return }
         super.otherMouseDown(with: event)
     }
 
@@ -1388,16 +1520,18 @@ final class HerdrTerminalTextView: NSTextView {
     /// cannot make a scroll `NSEvent` at a window location.
     func scrollPane(at location: NSPoint, deltaX: CGFloat, deltaY: CGFloat, precise: Bool,
                     modifiers: NSEvent.ModifierFlags) -> Bool {
-        guard let surface, let (id, column, row) = mouseHit(at: location, in: surface),
-              surface.mouseReportingPaneIDs.contains(id) else { return false }
+        guard let surface else { return false }
+        guard let (id, column, row) = mouseHit(at: location, in: surface), reportsMouse(id, in: surface) else {
+            return surface.popup != nil
+        }
         let vertical = abs(deltaY) >= abs(deltaX)
         let delta = vertical ? deltaY : deltaX
         guard let lines = scroll.lines(for: delta, precise: precise, lineHeight: TerminalPaneView.cellHeight) else { return true }
         let kind: HerdrMouseEvent.Kind = vertical
             ? (delta > 0 ? .scrollUp : .scrollDown)
             : (delta > 0 ? .scrollLeft : .scrollRight)
-        sendMouse?(HerdrMouseEvent(kind: kind, column: column, row: row,
-                                   modifiers: TerminalPointer.modifiers(modifiers), lines: lines), id)
+        emitMouse(HerdrMouseEvent(kind: kind, column: column, row: row,
+                                 modifiers: TerminalPointer.modifiers(modifiers), lines: lines), id: id)
         return true
     }
 
@@ -1407,7 +1541,22 @@ final class HerdrTerminalTextView: NSTextView {
 
     private func mouseHit(at location: NSPoint, in surface: HerdrSurface) -> (String, UInt16, UInt16)? {
         let (x, y) = surfacePoint(at: location)
+        if let popup = surface.popup {
+            guard let geometry = popup.geometry(cols: surface.width, rows: surface.height),
+                  geometry.inner.contains(column: x, row: y),
+                  let cell = TerminalPointer.cell(column: x, row: y, inside: geometry.inner) else { return nil }
+            return (popup.terminalID, cell.column, cell.row)
+        }
         return TerminalPointer.pane(atColumn: x, row: y, in: surface).map { ($0.id, $0.column, $0.row) }
+    }
+
+    private func reportsMouse(_ id: String, in surface: HerdrSurface) -> Bool {
+        surface.popup.map { $0.terminalID == id && $0.mouseReporting } ?? surface.mouseReportingPaneIDs.contains(id)
+    }
+
+    private func emitMouse(_ event: HerdrMouseEvent, id: String) {
+        if popupInput(.mouse(event)) { return }
+        sendMouse?(event, id)
     }
 
     private func mouseModifiers(_ event: NSEvent) -> UInt8 {
@@ -1416,11 +1565,11 @@ final class HerdrTerminalTextView: NSTextView {
 
     private func forwardMouse(_ kind: HerdrMouseEvent.Kind, event: NSEvent, hold: Bool) -> Bool {
         guard let surface, let (id, column, row) = mouseHit(event, in: surface),
-              surface.mouseReportingPaneIDs.contains(id) else { return false }
+              reportsMouse(id, in: surface) else { return false }
         window?.makeFirstResponder(self)
         if hold, case .down(let button) = kind { heldMouse = (id, button) }
-        sendMouse?(HerdrMouseEvent(kind: kind, column: column, row: row,
-                                   modifiers: mouseModifiers(event), lines: 1), id)
+        emitMouse(HerdrMouseEvent(kind: kind, column: column, row: row,
+                                 modifiers: mouseModifiers(event), lines: 1), id: id)
         return true
     }
 
@@ -1437,11 +1586,17 @@ final class HerdrTerminalTextView: NSTextView {
 
     private func forwardHeldMouse(_ kind: HerdrMouseEvent.Kind, event: NSEvent, to id: String) -> Bool {
         let (x, y) = surfacePoint(event)
-        guard let inner = surface?.paneInnerRects[id], let cell = TerminalPointer.cell(column: x, row: y, inside: inner) else {
+        let inner = surface.flatMap { surface in
+            if let popup = surface.popup {
+                return popup.terminalID == id ? popup.geometry(cols: surface.width, rows: surface.height)?.inner : nil
+            }
+            return surface.paneInnerRects[id]
+        }
+        guard let inner, let cell = TerminalPointer.cell(column: x, row: y, inside: inner) else {
             return true
         }
-        sendMouse?(HerdrMouseEvent(kind: kind, column: cell.column, row: cell.row,
-                                   modifiers: mouseModifiers(event), lines: 1), id)
+        emitMouse(HerdrMouseEvent(kind: kind, column: cell.column, row: cell.row,
+                                 modifiers: mouseModifiers(event), lines: 1), id: id)
         return true
     }
 
@@ -1462,19 +1617,19 @@ final class HerdrTerminalTextView: NSTextView {
         if let key = special[event.keyCode] {
             // Shift reaches Herdr so programs can tell Shift-Enter from Enter, as Claude Code does.
             let prefix = modifiers.contains(.shift) ? "shift+" : ""
-            sendKey?(prefix + key, paneID)
+            if !popupInput(.key(prefix + key)) { sendKey?(prefix + key, paneID) }
             return
         }
         if modifiers.contains(.control),
            let character = event.charactersIgnoringModifiers?.lowercased(),
            character.count == 1 {
-            sendKey?("ctrl+\(character)", paneID)
+            if !popupInput(.key("ctrl+\(character)")) { sendKey?("ctrl+\(character)", paneID) }
             return
         }
         if modifiers.contains(.option),
            let character = event.charactersIgnoringModifiers?.lowercased(),
            character.count == 1 {
-            sendKey?("alt+\(character)", paneID)
+            if !popupInput(.key("alt+\(character)")) { sendKey?("alt+\(character)", paneID) }
             return
         }
         interpretKeyEvents([event])
@@ -1487,12 +1642,12 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let value = (insertString as? NSAttributedString)?.string ?? (insertString as? String) ?? ""
-        if !value.isEmpty { sendText?(value, paneID) }
+        if !value.isEmpty, !popupInput(.text(value)) { sendText?(value, paneID) }
     }
 
     override func paste(_ sender: Any?) {
         if let value = NSPasteboard.general.string(forType: .string), !value.isEmpty {
-            sendPaste?(value, paneID)
+            if !popupInput(.paste(value)) { sendPaste?(value, paneID) }
         }
     }
 
@@ -1500,6 +1655,9 @@ final class HerdrTerminalTextView: NSTextView {
     // as Terminal and iTerm do; dropped text pastes as is. A terminal tab dragged from the
     // tab bar splits next to the pane under the pointer instead, and never pastes.
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if surface?.popup != nil {
+            return TerminalTabDrop.carriesTab(sender.draggingPasteboard) || droppedText(sender.draggingPasteboard) == nil ? [] : .copy
+        }
         if TerminalTabDrop.carriesTab(sender.draggingPasteboard) {
             let target = tabDropTarget(sender)
             showTabDrop(target)
@@ -1532,6 +1690,10 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if surface?.popup != nil {
+            guard !TerminalTabDrop.carriesTab(sender.draggingPasteboard), let text = droppedText(sender.draggingPasteboard) else { return false }
+            return popupInput(.paste(text))
+        }
         if TerminalTabDrop.carriesTab(sender.draggingPasteboard) {
             let target = tabDropTarget(sender)
             showTabDrop(nil)
