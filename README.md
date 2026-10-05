@@ -88,6 +88,7 @@ Replace `build` with `test` to run the unit tests.
 ## Documentation
 
 - [Herdr connection](docs/herdr-connection.md): sockets, events and the client endpoint
+- [Herdr plugins](docs/herdr-plugins.md): manifests, lifecycle, APIs and native integration
 - [Git and file editing](docs/git-and-files-research.md): local and SSH implementation
 - [Terminal performance](docs/perf/README.md): pipeline, benchmarks and baselines
 - [SwiftTerm evaluation](docs/swiftterm-evaluation.md): why the terminal is drawn natively
