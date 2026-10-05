@@ -110,13 +110,14 @@ final class NotebookRenderingTests: XCTestCase {
         window?.contentView = nil; window?.close(); window = nil
     }
 
-    private func render(_ source: String, search: @escaping ([String]) -> Void = { _ in }) async throws -> WKWebView {
+    private func render(_ source: String, matches: [MarkdownFindMatch] = [], currentMatch: Int? = nil,
+                        search: @escaping ([String]) -> Void = { _ in }) async throws -> WKWebView {
         let location = WorkspaceFileLocation(machine: nil, session: "xherdr-ui-test", workspaceID: "test",
                                              workspaceLabel: "Notebook test", root: "/private/tmp")
         let model = try NotebookDocument.parse(source)
         let view = NotebookWebView(notebook: model, path: "preview.ipynb", location: location,
-                                   theme: XherdrTheme.all[0], typography: XherdrTypography(), matches: [],
-                                   currentMatch: nil, revealRequest: 0, onOpenFile: { _ in },
+                                   theme: XherdrTheme.all[0], typography: XherdrTypography(), matches: matches,
+                                   currentMatch: currentMatch, revealRequest: 0, onOpenFile: { _ in },
                                    onSearchText: search, onFindCommand: { _, _, _ in })
         let host = NSHostingView(rootView: view)
         window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 650),
@@ -172,6 +173,50 @@ final class NotebookRenderingTests: XCTestCase {
         _ = try await web.evaluateJavaScript("window.notebook.find([{block:\(match.block),lower:\(match.range.lowerBound),upper:\(match.range.upperBound),index:0}],0,true)")
         let active = try await web.evaluateJavaScript("document.querySelector('.find-active').textContent") as? String
         XCTAssertEqual(active, "Recovered saved output")
+    }
+
+    func testMissingAttachmentsNamedLikeObjectPropertiesDoNotStopRendering() async throws {
+        var attached = NotebookParsingTests.cell("markdown", source: "![present](attachment:constructor)", id: "attached")
+        attached["attachments"] = ["constructor": ["image/svg+xml": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\"><rect width=\"40\" height=\"40\"/></svg>"]]
+        let source = try NotebookParsingTests.source(cells: [
+            NotebookParsingTests.cell("markdown", source: "![missing](attachment:constructor)\n\n![missing](attachment:toString)\n\n![missing](attachment:__proto__)"),
+            attached,
+            NotebookParsingTests.cell("code", source: "print('after attachments')", id: "following")
+        ])
+        let web = try await render(source)
+        let unavailable = try await web.evaluateJavaScript("Array.from(document.querySelectorAll('.image-failure')).map(element=>element.textContent)") as? [String]
+        XCTAssertEqual(unavailable, ["Attachment unavailable: constructor", "Attachment unavailable: toString", "Attachment unavailable: __proto__"])
+        let svgCount = try await web.evaluateJavaScript("document.querySelectorAll('.markdown svg').length") as? Int
+        let followingSource = try await web.evaluateJavaScript("document.querySelector('.source').textContent") as? String
+        XCTAssertEqual(svgCount, 1)
+        XCTAssertEqual(followingSource, "print('after attachments')")
+    }
+
+    func testMIMESwitchRebuildsFindHighlightsWhenMatchPositionsStayTheSame() async throws {
+        for alternate in ["saved result", "saved alternate"] {
+            window?.contentView = nil; window?.close(); window = nil
+            let source = try NotebookParsingTests.source(cells: [NotebookParsingTests.cell("code", source: "x", outputs: [
+                ["output_type": "display_data", "data": ["text/html": "<pre>saved result</pre>", "text/plain": alternate], "metadata": [:]]])])
+            let find = DocumentFindModel(); find.open(replace: false, query: "saved")
+            find.update(text: source, target: .preview, anchor: 0, previewTextNodes: ["x", "saved result"])
+            let web = try await render(source, matches: find.previewMatches, currentMatch: find.current)
+            let highlightedText = "CSS.highlights?.get('notebook-current') ? Array.from(CSS.highlights.get('notebook-current')).map(range=>range.toString()).join('') : ''"
+            for _ in 0..<100 {
+                if (try await web.evaluateJavaScript(highlightedText)) as? String == "saved" { break }
+                try await Task.sleep(for: .milliseconds(30))
+            }
+            let initialHighlight = try await web.evaluateJavaScript(highlightedText) as? String
+            XCTAssertEqual(initialHighlight, "saved")
+            _ = try await web.evaluateJavaScript("const picker=document.querySelector('.mime-picker select');picker.value='1';picker.dispatchEvent(new Event('change'))")
+            for _ in 0..<100 {
+                if (try await web.evaluateJavaScript(highlightedText)) as? String == "saved" { break }
+                try await Task.sleep(for: .milliseconds(30))
+            }
+            let alternateHighlight = try await web.evaluateJavaScript(highlightedText) as? String
+            let activeText = try await web.evaluateJavaScript("document.querySelector('.find-active')?.textContent") as? String
+            XCTAssertEqual(alternateHighlight, "saved", alternate)
+            XCTAssertEqual(activeText, alternate)
+        }
     }
 
     /// Generated by the optional Python development environment; CI still covers the renderer above.

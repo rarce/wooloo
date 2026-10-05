@@ -109,7 +109,8 @@
             if (target.startsWith("attachment:")) {
                 let name;
                 try { name = decodeURIComponent(target.slice(11)); } catch { name = target.slice(11); }
-                const bundle = cell.attachments[name] || [];
+                const bundle = Object.hasOwn(cell.attachments, name) && Array.isArray(cell.attachments[name])
+                    ? cell.attachments[name] : [];
                 const representation = bundle.find(item => item.imageID) || bundle.find(item => item.mime === "image/svg+xml");
                 if (representation?.imageID) image.src = imagePrefix + representation.imageID;
                 else if (representation?.mime === "image/svg+xml") image.replaceWith(sanitized(representation.text, true));

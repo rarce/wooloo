@@ -169,6 +169,10 @@ struct NotebookWebView: NSViewRepresentable {
                 guard let text = body["text"] as? [String], text.count <= 50_000,
                       text.reduce(0, { $0 + $1.utf8.count }) <= NotebookDocument.maximumFileBytes * 2 else { return }
                 owner.onSearchText(text)
+                // MIME switches replace text nodes even when their text and match ranges stay
+                // identical. Rebuild DOM ranges without waiting for a SwiftUI state change.
+                lastFind = ""
+                updateFind()
             case "copy":
                 guard let text = body["text"] as? String, text.count <= NotebookDocument.maximumTextCharacters else { return }
                 NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
