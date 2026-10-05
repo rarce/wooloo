@@ -657,7 +657,8 @@ final class HerdrSurfaceStream {
     }
 
     func run(path: String, cols: Int, rows: Int, cellWidth: Int, cellHeight: Int,
-             onReady: () -> Void, onSurface: (HerdrSurface) -> Void) throws {
+             onReady: () -> Void, onSurface: (HerdrSurface) -> Void,
+             onAgents: ((HerdrAgentProjection) -> Void)? = nil) throws {
         let connected = try HerdrSocket.open(path: path)
         lock.lock()
         fd = connected
@@ -688,7 +689,9 @@ final class HerdrSurfaceStream {
             throw SurfaceProtocolError.unexpectedEnd
         }
         var decoder = HerdrSurfaceDecoder()
+        var agents = HerdrAgentProjectionDecoder()
         var welcomed = false
+        var supportsAgentView = false
         let metrics = TerminalPipelineMetrics.shared
         let recorder = TerminalSurfaceTraceRecorder.shared
         while !isCancelled {
@@ -712,14 +715,19 @@ final class HerdrSurfaceStream {
                         throw SurfaceProtocolError.incompatible("Herdr rejected surface endpoint")
                     }
                     welcomed = true
+                    supportsAgentView = (welcome["capabilities"] as? [String] ?? []).contains("agent_view_projection")
                 } else if welcomed, kind == "shell.snapshot.v1",
                           let json = data.data(using: .utf8),
                           let snapshot = try JSONSerialization.jsonObject(with: json) as? [String: Any],
                           let boot = snapshot["boot_id"] as? String {
                     lock.lock()
+                    let changedBoot = bootID != boot
                     bootID = boot
                     lock.unlock()
-                    onReady()
+                    if changedBoot { onReady() }
+                }
+                if welcomed, supportsAgentView, let onAgents {
+                    if let projection = agents.receive(kind: kind, data: Data(data.utf8)) { onAgents(projection) }
                 }
             case 13 where welcomed, 19 where welcomed:
                 recorder?.record(frame, at: receivedAt)

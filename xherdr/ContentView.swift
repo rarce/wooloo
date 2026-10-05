@@ -28,6 +28,7 @@ struct ContentView: View {
     @AppStorage("SidebarWidth") private var sidebarWidth = 206.0
     @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
     @AppStorage("AgentsInSelectedSpaceOnly") private var agentsInSelectedSpaceOnly = false
+    @State private var followsHerdrAgentView = true
 
     @StateObject private var themes = ThemeStore()
     @StateObject private var notifier = HerdrNotifier()
@@ -85,7 +86,10 @@ struct ContentView: View {
             notifier.process(snapshot, selectedPaneID: herdr.selectedPaneID)
         }
         .onChange(of: herdr.selectedPaneID) { _, paneID in notifier.acknowledge(paneID: paneID) }
-        .onChange(of: herdr.sessionName) { _, _ in notifier.reset() }
+        .onChange(of: herdr.sessionName) { _, _ in
+            notifier.reset()
+            followsHerdrAgentView = true
+        }
         // Documents belong to the Space they were opened in.
         .onChange(of: herdr.selectedWorkspaceID.map { "\(herdr.sessionName)|\($0)" }, initial: true) { _, space in
             documentStore.showSpace(space)
@@ -101,6 +105,7 @@ struct ContentView: View {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               showShortcuts: window.settingsShowShortcuts) {
                 shortcutMap = HerdrShortcutMap.load()
+                herdr.reloadAgentViewSettings()
                 themes.reload()
                 notifier.reloadSettings()
                 notifier.refreshDockBadge()
@@ -309,6 +314,28 @@ struct ContentView: View {
                         HStack(spacing: 0) {
                             sectionTitle("AGENTS", icon: "sparkles")
                             Spacer()
+                            if let state = herdr.agentViewState, let label = state.label {
+                                Menu {
+                                    if let source = state.view?.source { Text("View from \(source)") }
+                                    if state.unavailable {
+                                        Text("This Herdr view is unavailable. Showing all agents.")
+                                    } else {
+                                        Toggle("Follow Herdr View", isOn: $followsHerdrAgentView)
+                                    }
+                                } label: {
+                                    Text(state.unavailable ? "Unavailable" : label)
+                                        .font(.system(size: typography.caption))
+                                        .foregroundStyle(state.unavailable || !followsHerdrAgentView ? .secondary : theme.accent)
+                                        .lineLimit(1)
+                                        .frame(maxWidth: 75)
+                                }
+                                .menuStyle(.borderlessButton)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .help(state.unavailable ? "Herdr's agent view could not be applied. The Space filter still applies."
+                                      : "\(label) — \(state.view?.source ?? "Herdr"). \(followsHerdrAgentView ? "Following Herdr's view." : "Showing all agents in this window.")")
+                                .accessibilityLabel("Herdr Agent View: \(label)")
+                                .accessibilityIdentifier("herdr-agent-view")
+                            }
                             Button {
                                 agentsInSelectedSpaceOnly.toggle()
                             } label: {
@@ -320,14 +347,16 @@ struct ContentView: View {
                                     .frame(width: 23, height: typography.metric(20))
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("agents-space-filter")
                             .help(agentsInSelectedSpaceOnly ? "Show Agents in All Spaces"
                                                             : "Show Agents in Selected Space Only")
                         }
-                        let agents = (herdr.snapshot?.agents ?? []).filter {
-                            !agentsInSelectedSpaceOnly || $0.workspaceID == herdr.selectedWorkspaceID
-                        }
+                        let agents = herdr.visibleAgents(inSelectedSpaceOnly: agentsInSelectedSpaceOnly,
+                                                         followHerdrView: followsHerdrAgentView)
                         if agents.isEmpty {
-                            Text(agentsInSelectedSpaceOnly ? "No agents in this Space" : "No agents")
+                            Text(followsHerdrAgentView && herdr.agentViewState?.view != nil
+                                 ? (agentsInSelectedSpaceOnly ? "No agents match this view in this Space" : "No agents match this view")
+                                 : (agentsInSelectedSpaceOnly ? "No agents in this Space" : "No agents"))
                                 .font(.system(size: typography.body))
                                 .foregroundStyle(.tertiary)
                                 .padding(.horizontal, 8)
@@ -603,6 +632,7 @@ struct ContentView: View {
                             text: "",
                             paneID: herdr.selectedPaneID ?? selectedPanes[0].paneID,
                             surfaceFeed: herdr.surfaceFeed,
+                            onPresentSurface: { herdr.acknowledgeAgentSurface($0) },
                             shortcutMap: shortcutMap,
                             onShortcut: handleShortcut,
                             onPrefixChanged: { shortcutPrefixActive = $0 },

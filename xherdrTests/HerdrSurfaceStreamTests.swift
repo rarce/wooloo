@@ -64,6 +64,7 @@ final class FakeSurfaceEndpoint {
 
     func stop() {
         lock.lock()
+        guard !stopped else { lock.unlock(); return }
         stopped = true
         if connection >= 0 { shutdown(connection, SHUT_RDWR) }
         lock.unlock()

@@ -625,6 +625,43 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 2)
     }
 
+    func testEndpointViewsUpdateIndependentlyOfLifecycleEventsAndClearOnDisconnect() async throws {
+        let agents = [AgentViewFixture.agent("w1:p1"),
+                      AgentViewFixture.agent("w2:p1", workspace: "w2", tab: "w2:t1", status: "blocked")]
+        func control(_ kind: String, _ value: Any) throws -> Data {
+            FakeSurfaceEndpoint.control(kind, String(decoding: try AgentViewFixture.data(value), as: UTF8.self))
+        }
+        let view = AgentViewFixture.view(filter: ["op": "eq", "field": "status", "value": "blocked"])
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               welcome: ["capabilities": ["agent_view_projection"]], afterHello: [
+            control("endpoint.agent-view.v1", ["boot_id": "boot-test", "revision": 1, "view": view]),
+            control("shell.snapshot.v1", AgentViewFixture.snapshot(agents)),
+            SurfaceModel(width: 4, height: 2).surfaceFrame()
+        ])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("agent view") { store.agentViewState?.view != nil }
+        XCTAssertEqual(store.visibleAgents(inSelectedSpaceOnly: false).map(\.paneID), ["w2:p1"])
+        XCTAssertTrue(store.visibleAgents(inSelectedSpaceOnly: true).isEmpty)
+        XCTAssertEqual(store.selectedPaneID, "w1:p1")
+        // An unsupported replacement falls back to the unfiltered list; terminal decoding continues.
+        endpoint.send(try control("endpoint.agent-view.v1", ["boot_id": "boot-test", "revision": 2,
+                                                            "view": AgentViewFixture.view(filter: ["op": "future"])]))
+        endpoint.send(try control("shell.snapshot.v1", AgentViewFixture.snapshot(agents, revision: 2)))
+        await waitUntil("unsupported query") { store.agentViewState?.unavailable == true }
+        XCTAssertEqual(store.visibleAgents(inSelectedSpaceOnly: false).count, 2)
+        XCTAssertEqual(store.visibleAgents(inSelectedSpaceOnly: true).map(\.paneID), ["w1:p1"])
+        XCTAssertNil(store.surfaceError)
+        endpoint.send(try control("endpoint.agent-view.v1", ["boot_id": "boot-test", "revision": 3, "view": NSNull()]))
+        endpoint.send(try control("shell.snapshot.v1", AgentViewFixture.snapshot(agents, revision: 3, label: nil)))
+        await waitUntil("view cleared") { store.agentViewState == nil }
+        endpoint.send(try control("endpoint.agent-view.v1", ["boot_id": "boot-test", "revision": 4, "view": view]))
+        endpoint.send(try control("shell.snapshot.v1", AgentViewFixture.snapshot(agents, revision: 4)))
+        await waitUntil("view reapplied") { store.agentViewState?.view != nil }
+        endpoint.stop()
+        await waitUntil("view discarded after disconnect") { store.agentViewState == nil }
+    }
+
     /// The JSON requests (tag 15) the store sent through the endpoint.
     private static func requests(in endpoint: FakeSurfaceEndpoint) -> [(method: String, params: [String: Any])] {
         endpoint.received.filter { $0.first == 15 }.compactMap { frame in

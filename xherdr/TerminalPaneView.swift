@@ -89,6 +89,7 @@ struct TerminalPaneView: NSViewRepresentable {
     let text: String
     let paneID: String
     var surfaceFeed: HerdrSurfaceFeed? = nil
+    var onPresentSurface: ((HerdrSurface) -> Void)? = nil
     let shortcutMap: HerdrShortcutMap
     let onShortcut: (String) -> Void
     let onPrefixChanged: (Bool) -> Void
@@ -128,6 +129,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
         view.tabDrop = tabDrop
+        view.onPresentSurface = onPresentSurface
         view.isRichText = false
         view.isEditable = true
         view.registerForDraggedTypes([.fileURL, .string, TerminalTabDrop.pasteboardType])
@@ -174,6 +176,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
         view.tabDrop = tabDrop
+        view.onPresentSurface = onPresentSurface
         let theme = context.environment.xherdrTheme
         if view.themeID != theme.id {
             view.themeID = theme.id
@@ -683,6 +686,9 @@ final class HerdrTerminalTextView: NSTextView {
     var themeID: String?
     var theme = XherdrTheme.named(XherdrTheme.fallbackID)!
     var surfaceFeed: HerdrSurfaceFeed?
+    var onPresentSurface: ((HerdrSurface) -> Void)?
+    private var keyWindowObserver: NSObjectProtocol?
+    private var lastPresentedAgentRevision: (bootID: String, revision: UInt64)?
     var surfaceBootID: String?
     var surface: HerdrSurface?
     var selectPane: ((String) -> Void)?
@@ -719,8 +725,21 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let keyWindowObserver { NotificationCenter.default.removeObserver(keyWindowObserver) }
+        keyWindowObserver = window.map { window in
+            NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.lastPresentedAgentRevision = nil
+                    self?.needsDisplay = true
+                }
+            }
+        }
         // Switching tabs rebuilds this view; give it the keyboard like a terminal would.
         DispatchQueue.main.async { [weak self] in self?.claimKeyboardFocusIfIdle() }
+    }
+
+    deinit {
+        if let keyWindowObserver { NotificationCenter.default.removeObserver(keyWindowObserver) }
     }
 
     /// Takes keyboard focus unless another text input in this window is being used.
@@ -806,6 +825,17 @@ final class HerdrTerminalTextView: NSTextView {
         defer {
             TerminalPipelineMetrics.signposter.endInterval("draw", signpost)
             if let surface { TerminalPipelineMetrics.shared?.drawn(surface, start: drawStart) }
+            if let surface, let callback = onPresentSurface, NSApp.isActive,
+               window?.isKeyWindow == true, !isHiddenOrHasHiddenAncestor,
+               lastPresentedAgentRevision?.bootID != surface.bootID || lastPresentedAgentRevision?.revision != surface.projectionRevision {
+                // Publishing seen state during AppKit drawing can reenter SwiftUI layout.
+                lastPresentedAgentRevision = (surface.bootID, surface.projectionRevision)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, NSApp.isActive, self.window?.isKeyWindow == true,
+                          !self.isHiddenOrHasHiddenAncestor else { return }
+                    callback(surface)
+                }
+            }
         }
         let cellWidth = TerminalPaneView.cellWidth
         let cellHeight = TerminalPaneView.cellHeight

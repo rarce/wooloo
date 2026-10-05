@@ -112,7 +112,7 @@ struct HerdrPane: Decodable, Equatable, Identifiable {
     }
 }
 
-struct HerdrAgent: Decodable, Equatable, Identifiable {
+struct HerdrAgent: Decodable, Equatable, Identifiable, Sendable {
     let paneID: String
     let workspaceID: String?
     let tabID: String?
@@ -121,9 +121,10 @@ struct HerdrAgent: Decodable, Equatable, Identifiable {
     let title: String?
     let terminalTitleStripped: String?
     let displayAgent: String?
-    let agentStatus: String?
+    var agentStatus: String?
     let stateLabels: [String: String]?
     let tokens: [String: String]?
+    var stateChangeSeq: UInt64 = 0
 
     var id: String { paneID }
     var displayName: String { displayAgent ?? name ?? agent ?? title ?? paneID }
@@ -147,6 +148,40 @@ struct HerdrAgent: Decodable, Equatable, Identifiable {
         case displayAgent = "display_agent"
         case agentStatus = "agent_status"
         case stateLabels = "state_labels"
+        case stateChangeSeq = "state_change_seq"
+    }
+}
+
+extension HerdrAgent {
+    /// The JSON API uses dictionaries, while shell.snapshot.v1 uses arrays of string pairs.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        paneID = try values.decode(String.self, forKey: .paneID)
+        workspaceID = try values.decodeIfPresent(String.self, forKey: .workspaceID)
+        tabID = try values.decodeIfPresent(String.self, forKey: .tabID)
+        agent = try values.decodeIfPresent(String.self, forKey: .agent)
+        name = try values.decodeIfPresent(String.self, forKey: .name)
+        title = try values.decodeIfPresent(String.self, forKey: .title)
+        terminalTitleStripped = try values.decodeIfPresent(String.self, forKey: .terminalTitleStripped)
+        displayAgent = try values.decodeIfPresent(String.self, forKey: .displayAgent)
+        agentStatus = try values.decodeIfPresent(String.self, forKey: .agentStatus)
+        stateLabels = try values.decodeIfPresent(AgentMetadata.self, forKey: .stateLabels)?.values
+        tokens = try values.decodeIfPresent(AgentMetadata.self, forKey: .tokens)?.values
+        stateChangeSeq = try values.decodeIfPresent(UInt64.self, forKey: .stateChangeSeq) ?? 0
+    }
+
+    private struct AgentMetadata: Decodable {
+        let values: [String: String]
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let dictionary = try? container.decode([String: String].self) { values = dictionary; return }
+            let pairs = try container.decode([[String]].self)
+            guard pairs.allSatisfy({ $0.count == 2 }) else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Expected metadata string pairs")
+            }
+            values = Dictionary(pairs.map { ($0[0], $0[1]) }, uniquingKeysWith: { first, _ in first })
+        }
     }
 }
 
@@ -516,6 +551,9 @@ final class HerdrStore: ObservableObject {
     @Published private(set) var inputError: String?
     @Published private(set) var actionError: String?
     @Published private(set) var sessionSelectionError: String?
+    @Published private(set) var agentViewState: HerdrAgentViewState?
+    @Published private var agentPrioritySort = false
+    private var agentPresentation = HerdrAgentPresentation()
     @Published var selectedWorkspaceID: String?
     @Published var selectedTabID: String?
     @Published var selectedPaneID: String? {
@@ -552,6 +590,7 @@ final class HerdrStore: ObservableObject {
 
     init() {
         snapshotPublisher = publishedSnapshots.eraseToAnyPublisher()
+        reloadAgentViewSettings()
         if let metrics = TerminalPipelineMetrics.shared {
             publishRecorder = objectWillChange.sink { _ in metrics.published() }
         }
@@ -679,6 +718,7 @@ final class HerdrStore: ObservableObject {
                     guard store.generation == currentGeneration else { return nil }
                     store.surfaceStream = stream
                     store.setSurface(nil)
+                    store.resetAgentView()
                     return (store.surfaceCols, store.surfaceRows, store.cellWidth, store.cellHeight)
                 }
                 guard let size, !Task.isCancelled else { stream.cancel(); break }
@@ -707,11 +747,19 @@ final class HerdrStore: ObservableObject {
                                 TerminalPipelineMetrics.shared?.delivered(latest)
                             }
                         }
+                    } onAgents: { projection in
+                        DispatchQueue.main.async {
+                            MainActor.assumeIsolated {
+                                guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
+                                store.receiveAgentProjection(projection)
+                            }
+                        }
                     }
                 } catch {
                     await MainActor.run {
                         guard store.generation == currentGeneration else { return }
                         store.setSurface(nil)
+                        store.resetAgentView()
                         // Retried every second while the endpoint is missing.
                         store.setIfChanged(\.surfaceError, String(describing: error))
                     }
@@ -728,6 +776,41 @@ final class HerdrStore: ObservableObject {
         if layout != surfaceLayout { surfaceLayout = layout }
     }
 
+    func visibleAgents(inSelectedSpaceOnly spaceOnly: Bool, followHerdrView: Bool = true) -> [HerdrAgent] {
+        if let state = agentViewState, state.label != nil || state.view != nil {
+            return state.agents(workspaceID: selectedWorkspaceID, tabID: selectedTabID,
+                                spaceOnly: spaceOnly, followView: followHerdrView, prioritySort: agentPrioritySort)
+        }
+        return (snapshot?.agents ?? []).filter { !spaceOnly || $0.workspaceID == selectedWorkspaceID }
+    }
+
+    func reloadAgentViewSettings() {
+        let text = (try? HerdrConfigFile.read(at: HerdrConfigFile.url)) ?? ""
+        let priority = HerdrConfigDocument(text: text).string(section: "ui", key: "agent_panel_sort", default: "spaces") == "priority"
+        if agentPrioritySort != priority { agentPrioritySort = priority }
+    }
+
+    func receiveAgentProjection(_ projection: HerdrAgentProjection) {
+        publishAgentView(agentPresentation.receive(projection))
+    }
+
+    /// The terminal view only calls this after drawing in the active window.
+    func acknowledgeAgentSurface(_ surface: HerdrSurface) {
+        if let state = agentPresentation.acknowledge(surface) { publishAgentView(state) }
+    }
+
+    private func publishAgentView(_ state: HerdrAgentViewState) {
+        // Agent facts still track completions without an active query, but the JSON snapshot
+        // already updates the normal sidebar. Avoid publishing the same changes twice.
+        let next = state.view != nil || state.label != nil || state.unavailable ? state : nil
+        if agentViewState != next { agentViewState = next }
+    }
+
+    private func resetAgentView() {
+        agentPresentation = HerdrAgentPresentation()
+        if agentViewState != nil { agentViewState = nil }
+    }
+
     func stop() {
         generation += 1
         eventStream?.cancel()
@@ -741,6 +824,7 @@ final class HerdrStore: ObservableObject {
         surfaceTask?.cancel()
         surfaceTask = nil
         setSurface(nil)
+        resetAgentView()
         inputTask?.cancel()
         inputTask = nil
         pendingInput = []
