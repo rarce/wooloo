@@ -11,6 +11,8 @@ struct XherdrCommandAvailability: Equatable {
     var hasFiles = false
     /// The main panel shows a loaded file in the editor or, for Markdown, its preview.
     var hasFileDocument = false
+    /// The loaded file is a preview-only binary document.
+    var hasReadOnlyDocument = false
     /// That file's source is shown, so its editor can take cursors.
     var showsSource = false
     /// The palette actions of the explorer commands that apply to its selection; empty unless
@@ -195,6 +197,8 @@ struct XherdrCommandItem: Identifiable, Equatable {
     }
 
     func isAvailable(_ availability: XherdrCommandAvailability) -> Bool {
+        if availability.hasReadOnlyDocument,
+           action == EditorCommand.save.rawValue || action == EditorCommand.findAndReplace.rawValue { return false }
         switch requirement {
         case .window: return true
         case .connected: return availability.isConnected

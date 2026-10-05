@@ -90,6 +90,18 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertFalse(XherdrCommandItem.named("explorer_trash")!.isAvailable(focused))
     }
 
+    func testPDFCommandsOfferFindWithoutSaveReplaceOrCursors() {
+        var pdf = everything
+        pdf.hasFileDocument = true
+        pdf.hasReadOnlyDocument = true
+        pdf.showsSource = false
+        let available = Set(XherdrCommandItem.all.filter { $0.isAvailable(pdf) }.map(\.action))
+        XCTAssertTrue(available.isSuperset(of: ["editor_find", "editor_find_next", "editor_find_previous"]))
+        XCTAssertFalse(available.contains("editor_save"))
+        XCTAssertFalse(available.contains("editor_find_replace"))
+        XCTAssertFalse(available.contains("editor_add_cursor_below"))
+    }
+
     // MARK: Model
 
     private func presented(_ availability: XherdrCommandAvailability? = nil,
@@ -240,4 +252,3 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertEqual(window.commandPalette.recentActions.first, "toggle_sidebar")
     }
 }
-

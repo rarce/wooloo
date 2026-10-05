@@ -114,11 +114,12 @@ struct ContentCommands {
         let document = documents.activeID.flatMap(documents.document)
         let hasFileDocument = document.map { $0.kind == .file && !$0.isLoading && ($0.version != nil || $0.isUntitled) } ?? false
         let showsSource = document.map {
-            !$0.supportsPreview || $0.markdownMode != .preview
+            $0.isEditable && (!$0.supportsPreview || $0.markdownMode != .preview)
         } ?? false
         return XherdrCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
                                          tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil && herdr.surfaceLayout?.popupTerminalID == nil,
                                          hasFiles: explorerLocation != nil, hasFileDocument: hasFileDocument,
+                                         hasReadOnlyDocument: document?.isPDF ?? false,
                                          showsSource: showsSource,
                                          explorerActions: Set(ExplorerFileCommand.paletteCommands
                                              .filter(window.explorer.isAvailable).map(\.paletteAction)))
@@ -210,7 +211,7 @@ struct ContentCommands {
                                          current: current?.location == explorerLocation ? current?.path : nil)
             }
         case .editor(let command):
-            guard availability.hasFileDocument else { return }
+            guard XherdrCommandItem.named(command.rawValue)?.isAvailable(availability) == true else { return }
             window.editor.perform(command)
         // Listed only while the tree had focus; the explorer checks its selection again.
         case .explorer(let command):

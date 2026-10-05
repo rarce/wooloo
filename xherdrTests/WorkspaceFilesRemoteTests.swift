@@ -167,6 +167,24 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.trash("a.txt", at: repo))
     }
 
+    @MainActor
+    func testRemotePDFReadsBinaryBytesWithSpaceBoundariesAndSizeLimits() throws {
+        try sandbox.repository("repo")
+        let bytes = try PDFFixtures.data()
+        let path = "it's a preview.PDF"
+        try bytes.write(to: URL(fileURLWithPath: sandbox.path("repo/" + path)))
+        let contents = try WorkspacePDF.read(path, at: remote("repo"))
+        XCTAssertEqual(contents.document.pageCount, 3)
+        XCTAssertEqual(contents.version, WorkspaceFiles.gitBlobHash(bytes))
+        XCTAssertEqual(try WorkspaceFiles.readData(path, at: remote("repo"), limit: bytes.count), bytes)
+        XCTAssertThrowsError(try WorkspaceFiles.readData(path, at: remote("repo"), limit: bytes.count - 1))
+        XCTAssertThrowsError(try WorkspacePDF.read("../repo/" + path, at: remote("repo")))
+        try bytes.write(to: URL(fileURLWithPath: sandbox.path("outside.pdf")))
+        try FileManager.default.createSymbolicLink(atPath: sandbox.path("repo/link.pdf"),
+                                                   withDestinationPath: sandbox.path("outside.pdf"))
+        XCTAssertThrowsError(try WorkspacePDF.read("link.pdf", at: remote("repo")))
+    }
+
     func testFilesOfThisMacAreSentToTheMachine() throws {
         try sandbox.repository("repo")
         try sandbox.write(["-notes/todo.txt": "todo\n", "-notes/deep/x.txt": "x\n", "a.txt": "mine\n"], in: "mac")

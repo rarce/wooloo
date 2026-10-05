@@ -637,6 +637,8 @@ struct ContentView: View {
                    let index = documentStore.documents.firstIndex(where: { $0.id == activeDocumentID }) {
                     WorkspaceDocumentView(document: $documentStore.documents[index], onSave: {
                         saveDocument(activeDocumentID)
+                    }, onReload: {
+                        documentStore.load(activeDocumentID)
                     }, onOpenFile: { [location = documentStore.documents[index].location] path in
                         openDocument(.file, path: path, at: location)
                     }, commandTarget: window.editor)

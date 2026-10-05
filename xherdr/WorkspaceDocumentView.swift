@@ -39,6 +39,10 @@ struct WorkspaceDocument: Identifiable {
     var text = ""
     var savedText = ""
     var version: String?
+    /// PDFKit state lives with the tab so switching tabs preserves its position and zoom.
+    var pdf: PDFPreviewModel?
+    /// Identifies the latest load, including a close/reopen of a tab with the same ID.
+    var loadRequest = UUID()
     var isLoading = true
     var isSaving = false
     var error: String?
@@ -61,11 +65,13 @@ struct WorkspaceDocument: Identifiable {
     var untitledNumber: Int?
 
     var isUntitled: Bool { untitledNumber != nil }
+    var isPDF: Bool { kind == .file && !isUntitled && WorkspacePDF.supports(path) }
+    var isEditable: Bool { kind == .file && !isPDF }
     var id: String {
         if let untitledNumber { return "\(space ?? "")|\(location.identity)|untitled|\(untitledNumber)" }
         return "\(space ?? "")|\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)"
     }
-    var isDirty: Bool { kind == .file && text != savedText }
+    var isDirty: Bool { isEditable && text != savedText }
     /// The patch a diff document shows.
     var patch: String { diffPatches[diffScope] ?? text }
     var diffSource: DiffSource {
@@ -86,6 +92,7 @@ struct WorkspaceDocumentView: View {
     @Environment(\.xherdrTheme) private var theme
     @Binding var document: WorkspaceDocument
     let onSave: () -> Void
+    var onReload: () -> Void = {}
     var onOpenFile: (String) -> Void = { _ in }
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
@@ -125,7 +132,7 @@ struct WorkspaceDocumentView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
-                Image(systemName: document.kind.icon)
+                Image(systemName: document.isPDF ? "doc.richtext" : document.kind.icon)
                     .foregroundStyle(theme.accent)
                 Text(document.displayPath)
                     .lineLimit(1)
@@ -181,17 +188,22 @@ struct WorkspaceDocumentView: View {
                     .frame(width: 160)
                     .help("Show changes in one column or old and new side by side")
                 }
-                if document.kind == .file {
+                if document.isEditable {
                     Button(document.isUntitled ? "Save As…" : "Save") { onSave() }
                         .keyboardShortcut("s", modifiers: .command)
                         .disabled(document.isLoading || document.isSaving || !(document.isDirty || document.isUntitled))
+                }
+                if document.isPDF {
+                    Button("Reload", action: onReload)
+                        .disabled(document.isLoading)
+                        .help("Reload the PDF from its local or SSH Space")
                 }
             }
             .font(.system(size: typography.body))
             .padding(.horizontal, 12)
             .frame(height: 33)
             Divider()
-            if document.kind == .file && find.isVisible {
+            if document.kind == .file && !document.isPDF && find.isVisible {
                 DocumentFindBar(model: find, allowsReplace: findTarget == .source,
                                 onReplace: replaceCurrentMatch, onReplaceAll: replaceAllMatches,
                                 onSelectAll: selectAllMatches)
@@ -215,7 +227,10 @@ struct WorkspaceDocumentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                     }
-                    if document.supportsPreview {
+                    if document.isPDF, let pdf = document.pdf {
+                        PDFPreviewView(model: pdf, focusRequest: document.focusRequest,
+                                       onFocus: { document.focusRequest = nil })
+                    } else if document.supportsPreview {
                         switch document.markdownMode {
                         case .source: editor
                         case .preview: documentPreview
@@ -230,12 +245,12 @@ struct WorkspaceDocumentView: View {
             }
             Divider()
             HStack {
-                Text(document.kind == .file ? (document.isDirty ? "Unsaved changes" : NotebookDocument.supports(document.path) ? "Notebook · Saved output" : "UTF-8 text")
+                Text(document.kind == .file ? (document.isPDF ? "PDF · Read only" : document.isDirty ? "Unsaved changes" : NotebookDocument.supports(document.path) ? "Notebook · Saved output" : "UTF-8 text")
                      : (document.kind == .commit ? "Commit diff" : "Git diff"))
                 Spacer()
-                if document.kind == .file, cursorPositions.count > 1 {
+                if document.isEditable, cursorPositions.count > 1 {
                     Text("\(cursorPositions.count) cursors")
-                } else if document.kind == .file, let cursor = cursorPositions.first {
+                } else if document.isEditable, let cursor = cursorPositions.first {
                     Text("Ln \(cursor.line), Col \(cursor.column)")
                 }
                 if document.isSaving { ProgressView().controlSize(.small) }
@@ -271,6 +286,16 @@ struct WorkspaceDocumentView: View {
     /// An editor command from the command palette.
     private func run(_ command: EditorCommand) {
         guard document.kind == .file else { return }
+        if document.isPDF {
+            guard let pdf = document.pdf, !pdf.isLocked else { return }
+            switch command {
+            case .find: pdf.openFind()
+            case .findNext: pdf.showsFind ? pdf.moveMatch(1) : pdf.openFind()
+            case .findPrevious: pdf.showsFind ? pdf.moveMatch(-1) : pdf.openFind()
+            default: break
+            }
+            return
+        }
         switch command {
         case .save:
             if (document.isDirty || document.isUntitled) && !document.isSaving { onSave() }
@@ -286,13 +311,15 @@ struct WorkspaceDocumentView: View {
     /// ⌘F, ⌥⌘F, ⌘G and ⇧⌘G, handled here so they reach the document rather than the terminal.
     private var findShortcuts: some View {
         Group {
-            Button("Find") { openFind(replace: false) }
+            Button("Find") { run(.find) }
                 .keyboardShortcut("f", modifiers: .command)
-            Button("Find and Replace") { openFind(replace: true) }
-                .keyboardShortcut("f", modifiers: [.command, .option])
-            Button("Find Next") { find.isVisible ? find.move(1) : openFind(replace: false) }
+            if !document.isPDF {
+                Button("Find and Replace") { openFind(replace: true) }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+            }
+            Button("Find Next") { run(.findNext) }
                 .keyboardShortcut("g", modifiers: .command)
-            Button("Find Previous") { find.isVisible ? find.move(-1) : openFind(replace: false) }
+            Button("Find Previous") { run(.findPrevious) }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
         }
         .opacity(0)

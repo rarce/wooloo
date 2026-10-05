@@ -4,6 +4,10 @@ import Foundation
 /// and loading, saving and closing them. Each Space has its own tabs.
 @MainActor
 final class WorkspaceDocumentStore: ObservableObject {
+    private enum LoadedContents {
+        case text(WorkspaceFileContents)
+        case pdf(WorkspacePDF.Contents)
+    }
     /// Every Space's documents; `visibleDocuments` are the shown Space's.
     @Published var documents: [WorkspaceDocument] = []
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
@@ -130,6 +134,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         case .success(let value): path = value
         case .failure(let failure): return failure.localizedDescription
         }
+        guard !WorkspacePDF.supports(path) else { return "PDF files can only be previewed; choose a text file extension" }
         let (text, location) = (document.text, document.location)
         documents[index].isSaving = true
         let result = await Task.detached(priority: .userInitiated) {
@@ -203,35 +208,49 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     /// Reads a document's file, diff or commit diff from disk or over SSH.
     func load(_ id: String) {
-        guard let document = document(id) else { return }
+        guard let initialIndex = documents.firstIndex(where: { $0.id == id }) else { return }
+        let request = UUID()
+        documents[initialIndex].loadRequest = request
+        let document = documents[initialIndex]
         let (kind, path, location) = (document.kind, document.path, document.location)
         let (commit, originalPath) = (document.commit, document.originalPath)
+        let isPDF = document.isPDF
         let start = TerminalPipelineMetrics.now()
         Task {
             defer {
                 TerminalPipelineMetrics.spanShown("open-\(kind)", start: start, detail: location.isLocal ? "local" : "ssh")
             }
             let result = await Task.detached(priority: .userInitiated) {
-                Result { () throws -> WorkspaceFileContents in
+                Result { () throws -> LoadedContents in
                     if kind == .commit, let commit {
-                        return WorkspaceFileContents(text: try WorkspaceFiles.commitDiff(
-                            commit, path: path, originalPath: originalPath, at: location), version: "")
+                        return .text(WorkspaceFileContents(text: try WorkspaceFiles.commitDiff(
+                            commit, path: path, originalPath: originalPath, at: location), version: ""))
                     }
                     if kind == .change {
                         let patches = try WorkspaceFiles.diff(path, at: location)
-                        return WorkspaceFileContents(text: patches[.all] ?? "", version: "", patches: patches)
+                        return .text(WorkspaceFileContents(text: patches[.all] ?? "", version: "", patches: patches))
                     }
-                    return try WorkspaceFiles.read(path, at: location)
+                    if isPDF { return .pdf(try WorkspacePDF.read(path, at: location)) }
+                    return .text(try WorkspaceFiles.read(path, at: location))
                 }
             }.value
-            guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+            guard let index = documents.firstIndex(where: { $0.id == id && $0.loadRequest == request }) else { return }
             documents[index].isLoading = false
             switch result {
-            case .success(let content):
+            case .success(.pdf(let content)):
+                if let pdf = documents[index].pdf {
+                    pdf.replace(with: content.document)
+                } else {
+                    documents[index].pdf = PDFPreviewModel(document: content.document)
+                }
+                documents[index].version = content.version
+                documents[index].error = nil
+            case .success(.text(let content)):
                 documents[index].text = content.text
                 documents[index].savedText = content.text
                 documents[index].version = content.version
                 documents[index].diffPatches = content.patches
+                documents[index].error = nil
                 if content.patches[documents[index].diffScope] == nil { documents[index].diffScope = .all }
             case .failure(let failure):
                 documents[index].error = failure.localizedDescription
@@ -242,6 +261,7 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// Saves a file with unsaved edits, unless it changed on disk since it was read.
     func save(_ id: String, onSaved: @escaping () -> Void = {}) {
         guard let index = documents.firstIndex(where: { $0.id == id }),
+              documents[index].isEditable,
               let version = documents[index].version,
               documents[index].isDirty else { return }
         let document = documents[index]
