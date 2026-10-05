@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C3000000000000000000AF01 /* WorkspaceSessionPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000AF02 /* WorkspaceSessionPersistenceTests.swift */; };
+		A1000000000000000000AF01 /* WorkspaceSessionPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */; };
 		C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000AE02 /* PDFPreviewTests.swift */; };
 		A1000000000000000000AE01 /* PDFPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AE02 /* PDFPreviewView.swift */; };
 		A10000000000000000000001 /* XherdrApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* XherdrApp.swift */; };
@@ -120,6 +122,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C3000000000000000000AF02 /* WorkspaceSessionPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionPersistenceTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionPersistence.swift; sourceTree = "<group>"; };
 		C3000000000000000000AE02 /* PDFPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFPreviewTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000AE02 /* PDFPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFPreviewView.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* XherdrApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XherdrApp.swift; sourceTree = "<group>"; };
@@ -263,6 +267,7 @@
 				A10000000000000000000053 /* WorkspaceGitBar.swift */,
 				C3000000000000000000005B /* WorkspaceExplorerTree.swift */,
 				C30000000000000000000055 /* WorkspaceDocumentStore.swift */,
+				A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */,
 				A10000000000000000000055 /* HerdrNotifications.swift */,
 				A10000000000000000000057 /* XherdrTypography.swift */,
 				A10000000000000000000059 /* WorkspaceDiffView.swift */,
@@ -338,6 +343,7 @@
 				C3000000000000000000005D /* WorkspaceExplorerTreeTests.swift */,
 				C30000000000000000000059 /* TerminalInputTests.swift */,
 				C30000000000000000000057 /* WorkspaceDocumentStoreTests.swift */,
+				C3000000000000000000AF02 /* WorkspaceSessionPersistenceTests.swift */,
 				C3000000000000000000AD02 /* NotebookTests.swift */,
 				C3000000000000000000AE02 /* PDFPreviewTests.swift */,
 				C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */,
@@ -489,6 +495,7 @@
 				A10000000000000000000052 /* WorkspaceGitBar.swift in Sources */,
 				C3000000000000000000005A /* WorkspaceExplorerTree.swift in Sources */,
 				C30000000000000000000054 /* WorkspaceDocumentStore.swift in Sources */,
+				A1000000000000000000AF01 /* WorkspaceSessionPersistence.swift in Sources */,
 				A10000000000000000000054 /* HerdrNotifications.swift in Sources */,
 				A10000000000000000000056 /* XherdrTypography.swift in Sources */,
 				A10000000000000000000058 /* WorkspaceDiffView.swift in Sources */,
@@ -554,6 +561,7 @@
 				C3000000000000000000005C /* WorkspaceExplorerTreeTests.swift in Sources */,
 				C30000000000000000000058 /* TerminalInputTests.swift in Sources */,
 				C30000000000000000000056 /* WorkspaceDocumentStoreTests.swift in Sources */,
+				C3000000000000000000AF01 /* WorkspaceSessionPersistenceTests.swift in Sources */,
 				C3000000000000000000AD01 /* NotebookTests.swift in Sources */,
 				C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */,
 				C30000000000000000000052 /* WorkspaceRepositoryModelTests.swift in Sources */,

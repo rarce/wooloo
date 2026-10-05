@@ -9,12 +9,20 @@ final class WorkspaceDocumentStore: ObservableObject {
         case pdf(WorkspacePDF.Contents)
     }
     /// Every Space's documents; `visibleDocuments` are the shown Space's.
-    @Published var documents: [WorkspaceDocument] = []
+    @Published var documents: [WorkspaceDocument] = [] {
+        didSet { schedulePersistence() }
+    }
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
     @Published var activeID: String? {
         didSet {
             if let activeID, let document = document(activeID), document.kind == .file, !document.isUntitled {
                 remember(document)
+            }
+            if !switchingSpace && !applyingRestoration {
+                let key = WorkspaceSessionPersistence.key(for: space)
+                activeBySpace[key] = activeID.flatMap { document($0)?.backupID }
+                selectionChanged.insert(key)
+                schedulePersistence()
             }
         }
     }
@@ -22,6 +30,159 @@ final class WorkspaceDocumentStore: ObservableObject {
     private var recentFiles: [(space: String?, location: String, path: String)] = []
     /// The Space whose documents are shown and where new ones open.
     @Published private(set) var space: String?
+
+    @Published var persistenceError: String?
+    var backsUpSessions: Bool { persistence != nil }
+    private let persistence: WorkspaceSessionPersistence?
+    private let backupDelay: UInt64
+    private let persistenceOwner = UUID()
+    private var persistenceTask: Task<Void, Never>?
+    private var restorations: [String: Task<Void, Never>] = [:]
+    private var managedSpaces: [String: String?] = [:]
+    private var failedRestorations: Set<String> = []
+    private var activeBySpace: [String: UUID] = [:]
+    private var selectionChanged: Set<String> = []
+    private var closedBeforeRestoration: Set<String> = []
+    private var discardedBySpace: [String: Set<UUID>] = [:]
+    private var applyingRestoration = false
+    private var switchingSpace = false
+    private var changeRevision: UInt64 = 0
+
+    init(persistence: WorkspaceSessionPersistence? = XherdrApp.isHostingTests ? nil : .shared,
+         backupDelay: UInt64 = 500_000_000) {
+        self.persistence = persistence
+        self.backupDelay = backupDelay
+        if persistence != nil {
+            WorkspaceSessionRegistry.shared.register(self)
+            restoreSpace(nil)
+        }
+    }
+
+    deinit {
+        persistenceTask?.cancel()
+        if let persistence {
+            let owner = persistenceOwner
+            Task { await persistence.release(owner) }
+        }
+    }
+
+    private func restoreSpace(_ space: String?) {
+        guard let persistence else { return }
+        let key = WorkspaceSessionPersistence.key(for: space)
+        guard !managedSpaces.keys.contains(key) else { return }
+        managedSpaces.updateValue(space, forKey: key)
+        let owner = persistenceOwner
+        restorations[key] = Task { [weak self] in
+            do {
+                guard let self else { return }
+                let restored = try await persistence.restore(space, owner: owner)
+                self.applyingRestoration = true
+                defer { self.applyingRestoration = false }
+                var warnings = restored.warnings
+                var reload: [String] = []
+                for snapshot in restored.session.documents {
+                    do {
+                        var document = try snapshot.document()
+                        if document.space == nil, self.space != nil { document.space = self.space }
+                        if let number = document.untitledNumber, self.documents.contains(where: {
+                            $0.space == document.space && $0.untitledNumber == number && $0.backupID != document.backupID
+                        }) {
+                            document.untitledNumber = (1...).first { number in
+                                !self.documents.contains { $0.space == document.space && $0.untitledNumber == number }
+                            }
+                        }
+                        guard !self.closedBeforeRestoration.contains(document.id) else { continue }
+                        if let existing = self.documents.firstIndex(where: { $0.id == document.id }) {
+                            if document.isDirty && !self.documents[existing].isDirty {
+                                document.reveal = self.documents[existing].reveal
+                                document.focusRequest = self.documents[existing].focusRequest
+                                self.documents[existing] = document
+                                if self.activeID == document.id { self.activeBySpace[key] = document.backupID }
+                            } else if document.isDirty && self.documents[existing].text != document.text {
+                                // Two windows edited the same file independently. Preserve both buffers.
+                                var recovered = snapshot
+                                recovered.path = ""
+                                recovered.originalPath = snapshot.path
+                                recovered.kind = .file
+                                recovered.untitledNumber = (1...).first { number in
+                                    !self.documents.contains { $0.space == document.space && $0.untitledNumber == number }
+                                }
+                                recovered.savedText = ""
+                                recovered.version = nil
+                                recovered.isPreview = false
+                                document = try recovered.document()
+                                self.documents.append(document)
+                                warnings.append("Another buffer for \(snapshot.path) was recovered as \(document.title).")
+                            }
+                            continue
+                        }
+                        self.documents.append(document)
+                        if document.isLoading { reload.append(document.id) }
+                    } catch { warnings.append(error.localizedDescription) }
+                }
+                if !self.selectionChanged.contains(key) {
+                    self.activeBySpace[key] = restored.session.activeDocument
+                    if self.space == space {
+                        self.activeID = restored.session.activeDocument.flatMap { id in
+                            self.visibleDocuments.first { $0.backupID == id }?.id
+                        }
+                    }
+                }
+                if !warnings.isEmpty { self.persistenceError = warnings.joined(separator: "\n") }
+                for id in reload { self.load(id) }
+            } catch {
+                self?.failedRestorations.insert(key)
+                self?.persistenceError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Exposed for deterministic restoration/quit checks; ordinary editing need not wait.
+    func waitForRestoration() async {
+        for task in Array(restorations.values) { await task.value }
+    }
+
+    private func schedulePersistence(immediately: Bool = false) {
+        guard persistence != nil else { return }
+        changeRevision &+= 1
+        guard !applyingRestoration, !switchingSpace else { return }
+        persistenceTask?.cancel()
+        let delay = immediately ? 0 : backupDelay
+        persistenceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled, let self else { return }
+                try await self.flushPersistence()
+            } catch is CancellationError {
+                // A newer edit owns the next snapshot.
+            } catch { self?.persistenceError = error.localizedDescription }
+        }
+    }
+
+    /// Capture the latest buffer state after restoration, then await ordered disk writes.
+    /// A window disappearing also calls this, retaining its store until writes complete.
+    func flushPersistence() async throws {
+        guard let persistence else { return }
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        await waitForRestoration()
+        guard failedRestorations.isEmpty else {
+            throw WorkspaceFileError.message(persistenceError ?? "Could not restore editor session")
+        }
+        while true {
+            let revision = changeRevision
+            for (key, space) in managedSpaces.sorted(by: { $0.key < $1.key }) {
+                let snapshot = WorkspaceSessionSnapshot(space: space, activeDocument: activeBySpace[key],
+                    documents: documents.filter { $0.space == space }.map(WorkspaceDocumentSnapshot.init),
+                    discardedBackups: discardedBySpace[key] ?? [])
+                try await persistence.save(snapshot, owner: persistenceOwner)
+                discardedBySpace[key]?.subtract(snapshot.discardedBackups)
+            }
+            // An edit or in-flight file save may finish while disk I/O is running. Quit and
+            // window close must wait for that newer state as well, not just the first snapshot.
+            if revision == changeRevision { return }
+        }
+    }
 
     var visibleDocuments: [WorkspaceDocument] {
         documents.filter { $0.space == space }
@@ -34,7 +195,10 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// Shows another Space's tabs; the previous Space's stay open, hidden, until it is shown
     /// again. Documents opened before any Space was known join the first one shown.
     func showSpace(_ space: String?) {
+        restoreSpace(space)
         guard space != self.space else { return }
+        switchingSpace = true
+        defer { switchingSpace = false; schedulePersistence() }
         if self.space == nil, space != nil {
             for index in documents.indices where documents[index].space == nil {
                 let previousID = documents[index].id
@@ -43,9 +207,11 @@ final class WorkspaceDocumentStore: ObservableObject {
             }
         }
         self.space = space
-        if let activeID, activeID != WorkspaceSearchModel.tabID,
-           document(activeID)?.space != space {
-            self.activeID = nil
+        let key = WorkspaceSessionPersistence.key(for: space)
+        if let activeID, document(activeID)?.space == space {
+            activeBySpace[key] = document(activeID)?.backupID
+        } else {
+            activeID = activeBySpace[key].flatMap { id in visibleDocuments.first { $0.backupID == id }?.id }
         }
     }
 
@@ -149,6 +315,9 @@ final class WorkspaceDocumentStore: ObservableObject {
         switch result {
         case .success(let version):
             var saved = WorkspaceDocument(space: document.space, location: location, path: path, kind: .file)
+            saved.backupID = document.backupID
+            saved.cursorPositions = documents[currentIndex].cursorPositions
+            saved.scrollPosition = documents[currentIndex].scrollPosition
             // Edits made while saving stay unsaved.
             saved.text = documents[currentIndex].text
             saved.savedText = text
@@ -161,6 +330,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             guard let replaced = documents.firstIndex(where: { $0.id == id }) else { return nil }
             documents[replaced] = saved
             if activeID == id { activeID = saved.id }
+            schedulePersistence(immediately: true)
             return nil
         case .failure(let failure):
             return failure.localizedDescription
@@ -246,11 +416,18 @@ final class WorkspaceDocumentStore: ObservableObject {
                 documents[index].version = content.version
                 documents[index].error = nil
             case .success(.text(let content)):
-                documents[index].text = content.text
+                // A slow local/SSH read must not replace work entered after it started.
+                if documents[index].text == document.text { documents[index].text = content.text }
                 documents[index].savedText = content.text
                 documents[index].version = content.version
                 documents[index].diffPatches = content.patches
                 documents[index].error = nil
+                let length = (documents[index].text as NSString).length
+                documents[index].cursorPositions = documents[index].cursorPositions.map { position in
+                    guard position.range.location != NSNotFound else { return position }
+                    let start = min(max(position.range.location, 0), length)
+                    return .init(range: NSRange(location: start, length: min(max(position.range.length, 0), length - start)))
+                }
                 if content.patches[documents[index].diffScope] == nil { documents[index].diffScope = .all }
             case .failure(let failure):
                 documents[index].error = failure.localizedDescription
@@ -271,13 +448,14 @@ final class WorkspaceDocumentStore: ObservableObject {
                 Result { try WorkspaceFiles.save(document.text, path: document.path,
                                                  expectedVersion: version, at: document.location) }
             }.value
-            guard let currentIndex = documents.firstIndex(where: { $0.id == id }) else { return }
+            guard let currentIndex = documents.firstIndex(where: { $0.id == id && $0.backupID == document.backupID }) else { return }
             documents[currentIndex].isSaving = false
             switch result {
             case .success(let nextVersion):
                 documents[currentIndex].version = nextVersion
                 documents[currentIndex].savedText = document.text
                 documents[currentIndex].error = nil
+                schedulePersistence(immediately: true)
                 onSaved()
             case .failure(let failure):
                 documents[currentIndex].error = failure.localizedDescription
@@ -291,8 +469,12 @@ final class WorkspaceDocumentStore: ObservableObject {
     func close(_ id: String, force: Bool = false) -> Bool {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return true }
         if documents[index].isDirty && !force { return false }
+        let key = WorkspaceSessionPersistence.key(for: documents[index].space)
+        discardedBySpace[key, default: []].insert(documents[index].backupID)
+        closedBeforeRestoration.insert(id)
         documents.remove(at: index)
         if activeID == id { activeID = nil }
+        schedulePersistence(immediately: true)
         return true
     }
 

@@ -88,10 +88,17 @@ struct ContentView: View {
             showsFilesSidebar: window.showsFilesSidebar,
             perform: handleShortcut
         ))
-        .onDisappear { herdr.stop() }
+        .onDisappear {
+            herdr.stop()
+            Task {
+                do { try await documentStore.flushPersistence() }
+                catch { documentStore.persistenceError = error.localizedDescription }
+            }
+        }
         .overlay { pickers }
         .overlay { HerdrToastStack(notifier: notifier) }
         .overlay { InactiveWindowOverlay(background: theme.contentBackground) }
+        .background { WorkspaceSessionWindowGuard(store: documentStore).frame(width: 0, height: 0) }
     }
 
     var body: some View {
@@ -139,6 +146,14 @@ struct ContentView: View {
             Button("OK", role: .cancel) { herdr.clearActionError() }
         } message: {
             Text(herdr.actionError ?? "")
+        }
+        .alert("Editor session recovery", isPresented: Binding(
+            get: { documentStore.persistenceError != nil },
+            set: { if !$0 { documentStore.persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { documentStore.persistenceError = nil }
+        } message: {
+            Text(documentStore.persistenceError ?? "")
         }
         .confirmationDialog("Discard unsaved changes?", isPresented: Binding(
             get: { window.pendingCloseDocumentID != nil },
@@ -310,7 +325,6 @@ struct ContentView: View {
                         ForEach(herdr.snapshot?.workspaces ?? []) { workspace in
                             Button {
                                 herdr.select(workspaceID: workspace.workspaceID)
-                                activeDocumentID = nil
                             } label: {
                                 HStack(spacing: 7) {
                                     AgentStatusDot(status: workspace.agentStatus)

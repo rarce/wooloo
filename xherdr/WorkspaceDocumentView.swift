@@ -3,7 +3,7 @@ import CodeEditSourceEditor
 import CodeEditLanguages
 import MarkdownView
 
-enum WorkspaceDocumentKind: String {
+enum WorkspaceDocumentKind: String, Codable {
     case file
     case change
     /// A file's diff within a past commit.
@@ -27,6 +27,10 @@ struct WorkspaceDocumentReveal: Equatable {
 }
 
 struct WorkspaceDocument: Identifiable {
+    /// Stable backup identity, including across Save As and changes to a draft's display number.
+    var backupID = UUID()
+    var cursorPositions = [CursorPosition(line: 1, column: 1)]
+    var scrollPosition = CGPoint.zero
     /// The Space whose tab row shows this document; see `WorkspaceDocumentStore.showSpace`.
     var space: String?
     let location: WorkspaceFileLocation
@@ -68,7 +72,7 @@ struct WorkspaceDocument: Identifiable {
     var isPDF: Bool { kind == .file && !isUntitled && WorkspacePDF.supports(path) }
     var isEditable: Bool { kind == .file && !isPDF }
     var id: String {
-        if let untitledNumber { return "\(space ?? "")|\(location.identity)|untitled|\(untitledNumber)" }
+        if isUntitled { return "\(space ?? "")|\(location.identity)|untitled|\(backupID.uuidString)" }
         return "\(space ?? "")|\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)"
     }
     var isDirty: Bool { isEditable && text != savedText }
@@ -97,7 +101,11 @@ struct WorkspaceDocumentView: View {
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
     @State private var commandToken = UUID()
-    @State private var cursorPositions = [CursorPosition(line: 1, column: 1)]
+    private var cursorPositions: [CursorPosition] {
+        get { document.cursorPositions }
+        nonmutating set { document.cursorPositions = newValue }
+    }
+    @State private var sessionCoordinator = EditorSessionCoordinator()
     @State private var revealCoordinator = EditorRevealCoordinator()
     @State private var lineChangeCoordinator = EditorLineChangeCoordinator()
     @State private var multiCursorCoordinator = EditorMultiCursorCoordinator()
@@ -335,9 +343,14 @@ struct WorkspaceDocumentView: View {
             tabWidth: 4,
             lineHeight: 1.15,
             wrapLines: false,
-            cursorPositions: $cursorPositions,
-            coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator]
+            cursorPositions: $document.cursorPositions,
+            coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator]
         )
+        .onAppear {
+            sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil) { position in
+                if document.scrollPosition != position { document.scrollPosition = position }
+            }
+        }
         .onAppear { applyReveal() }
         .onChange(of: document.reveal) { _, _ in applyReveal() }
         .onAppear { applyFocusRequest() }

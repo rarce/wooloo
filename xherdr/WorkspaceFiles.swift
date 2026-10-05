@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 import os
 
-struct HerdrMachineProfile: Decodable, Hashable, Identifiable {
+struct HerdrMachineProfile: Codable, Hashable, Identifiable {
     let id: String
     let label: String
     let target: String
@@ -11,7 +11,7 @@ struct HerdrMachineProfile: Decodable, Hashable, Identifiable {
     let enabled: Bool
 }
 
-struct WorkspaceFileLocation: Hashable {
+struct WorkspaceFileLocation: Codable, Hashable {
     let machine: HerdrMachineProfile?
     let session: String
     let workspaceID: String

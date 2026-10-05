@@ -2,8 +2,9 @@ import SwiftUI
 
 @main
 struct XherdrApp: App {
+    @NSApplicationDelegateAdaptor(XherdrAppDelegate.self) private var appDelegate
     /// Unit tests run inside the app; they must not connect to a Herdr session.
-    static let isHostingTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    nonisolated static let isHostingTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
     init() {
         // Opens the metrics file at launch, so a run that never shows a surface still records its start.
