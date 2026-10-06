@@ -59,21 +59,62 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         let repo = try sandbox.repository("repo")
         try sandbox.write(["outside/secret.txt": "s"], in: ".")
         try sandbox.sh("ln -s ../outside escape && ln -s a.txt link.txt", in: "repo")
-        for path in ["../outside", "escape", "/etc"] {
+        for path in ["../outside", "escape", "escape/..", "/etc"] {
             XCTAssertThrowsError(try WorkspaceFiles.folderContents(path, at: repo), path)
         }
         let root = try WorkspaceFiles.folderContents("", at: repo)
-        XCTAssertTrue(root.files.contains("link.txt"), "links are listed as files")
-        XCTAssertTrue(root.files.contains("escape"))
+        XCTAssertTrue(root.files.contains("link.txt"))
+        XCTAssertTrue(root.directories.contains("escape"))
+        XCTAssertEqual(root.symbolicLinks["escape"], WorkspaceSymbolicLink(target: "../outside", isDirectory: true))
     }
 
-    func testListingWithoutGitSkipsLinksOutsideTheFolder() throws {
+    func testListingWithoutGitIncludesSymbolicLinksWithoutFollowingDirectories() throws {
         try sandbox.write(["plain/a.txt": "a", "plain/sub/c.txt": "c"], in: ".")
-        try sandbox.sh("ln -s /etc/hosts outside", in: "plain")
+        try sandbox.sh("ln -s /etc/hosts outside && ln -s sub alias && ln -s missing broken", in: "plain")
         let listing = try WorkspaceFiles.listing(at: sandbox.location("plain"))
         XCTAssertFalse(listing.hasGit)
-        XCTAssertEqual(listing.files, ["a.txt", "sub/c.txt"])
+        XCTAssertEqual(listing.files, ["a.txt", "alias", "broken", "outside", "sub/c.txt"])
+        XCTAssertEqual(listing.symbolicLinks["alias"], WorkspaceSymbolicLink(target: "sub", isDirectory: true))
+        XCTAssertEqual(listing.symbolicLinks["broken"], WorkspaceSymbolicLink(target: "missing", isDirectory: false))
         XCTAssertTrue(listing.changes.isEmpty)
+    }
+
+    func testListingIdentifiesTrackedIgnoredAndBrokenLinks() throws {
+        let repo = try sandbox.repository("repo", files: [".gitignore": "ignored*\n", "dir/a.txt": "a\n"])
+        try sandbox.sh("ln -s dir/a.txt tracked && git add tracked && git commit -qm Link"
+                       + " && ln -s dir folder && ln -s missing broken && ln -s dir ignored-folder", in: "repo")
+        let listing = try WorkspaceFiles.listing(at: repo)
+        XCTAssertEqual(listing.symbolicLinks, [
+            "tracked": WorkspaceSymbolicLink(target: "dir/a.txt", isDirectory: false),
+            "folder": WorkspaceSymbolicLink(target: "dir", isDirectory: true),
+            "broken": WorkspaceSymbolicLink(target: "missing", isDirectory: false),
+            "ignored-folder": WorkspaceSymbolicLink(target: "dir", isDirectory: true),
+        ])
+        XCTAssertFalse(listing.files.contains("folder/a.txt"), "Linked folders load only when expanded")
+    }
+
+    func testSavingThroughLinksPreservesTheLinkAndUpdatesTheTarget() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.write(["outside/secret.txt": "s\n"], in: ".")
+        try sandbox.write(["dir/b.txt": "b\n"], in: "repo")
+        try sandbox.sh("ln -s a.txt link.txt && ln -s dir internal && ln -s ../outside folder && ln -s missing broken", in: "repo")
+        for (path, target) in [("link.txt", "a.txt"), ("internal/b.txt", "dir/b.txt")] {
+            let file = try WorkspaceFiles.read(path, at: repo)
+            _ = try WorkspaceFiles.save("new\n", path: path, expectedVersion: file.version, at: repo)
+            XCTAssertEqual(try sandbox.read(target, in: "repo"), "new\n")
+            XCTAssertThrowsError(try WorkspaceFiles.save("stale", path: path, expectedVersion: file.version, at: repo))
+        }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: sandbox.path("repo/link.txt")), "a.txt")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: sandbox.path("repo/folder")), "../outside")
+        XCTAssertThrowsError(try WorkspaceFiles.read("folder/secret.txt", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.save("escape", path: "folder/secret.txt",
+                                                    expectedVersion: WorkspaceFiles.gitBlobHash(Data("s\n".utf8)), at: repo))
+        XCTAssertEqual(try sandbox.read("outside/secret.txt", in: "."), "s\n")
+        XCTAssertThrowsError(try WorkspaceFiles.read("broken", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.read("../outside/secret.txt", at: repo))
+        try sandbox.sh("ln -s . loop && ln -s loop loop-again", in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.folderContents("loop", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.folderContents("loop-again", at: repo))
     }
 
     // MARK: Staging and commits

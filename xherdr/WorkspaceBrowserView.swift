@@ -539,6 +539,12 @@ struct WorkspaceBrowserView: View {
                     .font(.system(size: typography.body))
                     .frame(width: 17)
                     .foregroundStyle(node.isDirectory ? Color.secondary : (model.showsChanges ? theme.accent : .secondary))
+                if node.symbolicLink != nil {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.system(size: typography.caption))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Symbolic link")
+                }
                 Text(node.displayName)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -587,7 +593,8 @@ struct WorkspaceBrowserView: View {
         .onDrag { model.startDrag(node.path, in: location) }
         .onDrop(of: ExplorerDropDelegate.types,
                 delegate: ExplorerDropDelegate(row: node.path, folder: dropFolder, location: location, model: model))
-        .help(isIgnored ? node.path + " (ignored by Git)" : node.path)
+        .help((node.symbolicLink.map { node.path + " → " + $0.target } ?? node.path)
+              + (isIgnored ? " (ignored by Git)" : ""))
         .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
         .contextMenu {
             let targets = model.menuTargets(node.path, in: location)
@@ -959,6 +966,7 @@ struct WorkspaceTreeNode {
     let path: String
     let isDirectory: Bool
     let children: [WorkspaceTreeNode]
+    var symbolicLink: WorkspaceSymbolicLink? = nil
 }
 
 /// A folder tree built once from a listing, off the main thread for the Files tree: folders
@@ -972,7 +980,7 @@ struct WorkspaceTree {
     var isEmpty: Bool { nodes.isEmpty }
 
     /// `directories` adds folders that hold no listed file, such as one just created in the explorer.
-    init(paths: [String], directories: Set<String> = []) {
+    init(paths: [String], directories: Set<String> = [], symbolicLinks: [String: WorkspaceSymbolicLink] = [:]) {
         let root = WorkspaceTreeBuilderNode(name: "", path: "")
         func insert(_ path: String, isDirectory: Bool) {
             let components = path.split(separator: "/").map(String.init)
@@ -998,9 +1006,9 @@ struct WorkspaceTree {
         func compact(_ source: WorkspaceTreeBuilderNode) -> WorkspaceTreeNode {
             var node = source
             var names = [node.name]
-            while node.children.count == 1,
+            while node.children.count == 1, symbolicLinks[node.path] == nil,
                   let child = node.children.values.first,
-                  !child.children.isEmpty {
+                  !child.children.isEmpty, symbolicLinks[child.path] == nil {
                 folders.insert(node.path)
                 node = child
                 names.append(node.name)
@@ -1009,7 +1017,7 @@ struct WorkspaceTree {
             let isDirectory = node.isDirectory || !children.isEmpty
             if isDirectory { folders.insert(node.path) }
             return WorkspaceTreeNode(displayName: names.joined(separator: " / "), path: node.path,
-                                     isDirectory: isDirectory, children: children)
+                                     isDirectory: isDirectory, children: children, symbolicLink: symbolicLinks[node.path])
         }
         nodes = root.children.values.map(compact).sorted(by: Self.ordered)
         self.directories = folders

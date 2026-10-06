@@ -229,20 +229,27 @@ enum WorkspaceExplorer {
     /// The files and folders of the Files tree: the listing's, the ignored folders Git lists
     /// without contents, what was read of the expanded ones, and folders created empty.
     static func filesTreeEntries(_ listing: WorkspaceFileListing, ignoredContents: [String: WorkspaceFolderContents],
-                                 created: Set<String>) -> (paths: [String], directories: Set<String>) {
+                                 created: Set<String>) -> (paths: [String], directories: Set<String>, symbolicLinks: [String: WorkspaceSymbolicLink]) {
+        var symbolicLinks = listing.symbolicLinks
         var paths = listing.files
         var directories = created.union(listing.ignored.directories)
         for contents in ignoredContents.values {
             paths += contents.files
             directories.formUnion(contents.directories)
+            symbolicLinks.merge(contents.symbolicLinks) { _, new in new }
         }
-        return (paths, directories)
+        directories.formUnion(symbolicLinks.filter { $0.value.isDirectory }.keys)
+        return (paths, directories, symbolicLinks)
     }
 
-    /// Ignored folders among `expanded` whose contents have not been read yet, parents first.
+    /// Ignored or linked folders among `expanded` whose contents have not been read yet, parents first.
     static func ignoredFoldersToRead(expanded: [String], ignored: WorkspaceIgnoredEntries,
-                                     read: Set<String>, limit: Int = 50) -> [String] {
-        Array(expanded.filter { !read.contains($0) && ignored.contains($0) }.sorted().prefix(limit))
+                                     read: Set<String>, symbolicLinkDirectories: Set<String> = [], limit: Int = 50) -> [String] {
+        Array(expanded.filter { path in
+            !read.contains(path) && (ignored.contains(path) || symbolicLinkDirectories.contains { link in
+                path == link || path.hasPrefix(link + "/")
+            })
+        }.sorted().prefix(limit))
     }
 
     /// Whether `path` is a folder: the root, a folder created empty, or one with listed files.

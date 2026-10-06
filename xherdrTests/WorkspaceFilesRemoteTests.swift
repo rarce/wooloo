@@ -102,7 +102,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         try sandbox.write(["secret.txt": "secret\n"], in: ".")
         try sandbox.sh("ln -s ../secret.txt escape.txt && mkdir dir", in: "repo")
         let location = remote("repo")
-        for path in ["escape.txt", "dir", "missing.txt", "../secret.txt"] {
+        for path in ["escape.txt", "dir", "missing.txt", "../secret.txt", "/etc/hosts"] {
             XCTAssertThrowsError(try WorkspaceFiles.read(path, at: location), path)
         }
         XCTAssertThrowsError(try WorkspaceFiles.readData("a.txt", at: location, limit: 2)) {
@@ -117,8 +117,10 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let location = remote("repo")
         XCTAssertEqual(try WorkspaceFiles.listing(at: location).ignored.directories, ["build"])
         let contents = try WorkspaceFiles.folderContents("build", at: location)
-        XCTAssertEqual(contents.directories, ["build/out"])
-        XCTAssertEqual(contents.files.sorted(), ["build/.hidden", "build/it's here.o", "build/latest"])
+        XCTAssertEqual(contents.directories.sorted(), ["build/latest", "build/out"])
+        XCTAssertEqual(contents.files.sorted(), ["build/.hidden", "build/it's here.o"])
+        XCTAssertEqual(contents.symbolicLinks["build/latest"], WorkspaceSymbolicLink(target: "out", isDirectory: true))
+        XCTAssertEqual(try WorkspaceFiles.folderContents("build/latest", at: location).files, ["build/latest/app"])
         XCTAssertEqual(try WorkspaceFiles.folderContents("build/out", at: location).files, ["build/out/app"])
         try sandbox.sh("ln -s .. up", in: "repo/build")
         XCTAssertThrowsError(try WorkspaceFiles.folderContents("../..", at: location))
@@ -127,9 +129,40 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
 
     func testRemoteFolderWithoutGitIsListedWithFind() throws {
         try sandbox.write(["plain/a.txt": "a", "plain/sub/c.txt": "c", "plain/.git/config": "not a repo"], in: ".")
+        try sandbox.sh("ln -s sub alias && ln -s missing broken", in: "plain")
         let listing = try WorkspaceFiles.listing(at: remote("plain"))
         XCTAssertFalse(listing.hasGit)
-        XCTAssertEqual(listing.files, ["a.txt", "sub/c.txt"])
+        XCTAssertEqual(listing.files, ["a.txt", "alias", "broken", "sub/c.txt"])
+        XCTAssertEqual(listing.symbolicLinks["alias"], WorkspaceSymbolicLink(target: "sub", isDirectory: true))
+    }
+
+    func testRemoteLinksPreserveNamesTargetsAndSaveTheTarget() throws {
+        try sandbox.repository("repo", files: ["dir/a.txt": "a\n", "-target\n.txt": "t\n"])
+        try sandbox.write(["outside/file.txt": "external\n"], in: ".")
+        try sandbox.sh("ln -s dir alias && ln -s ../outside external && ln -s missing broken && ln -s . loop", in: "repo")
+        let name = "-$(touch pwned) it's\nlink"
+        let target = "-target\n.txt"
+        try FileManager.default.createSymbolicLink(atPath: sandbox.path("repo/" + name), withDestinationPath: target)
+        let location = remote("repo")
+        let listing = try WorkspaceFiles.listing(at: location)
+        XCTAssertEqual(listing.symbolicLinks[name], WorkspaceSymbolicLink(target: target, isDirectory: false))
+        XCTAssertEqual(listing.symbolicLinks["broken"], WorkspaceSymbolicLink(target: "missing", isDirectory: false))
+        XCTAssertEqual(listing.symbolicLinks["alias"], WorkspaceSymbolicLink(target: "dir", isDirectory: true))
+        XCTAssertThrowsError(try WorkspaceFiles.folderContents("external", at: location))
+        XCTAssertThrowsError(try WorkspaceFiles.read("external/file.txt", at: location))
+        XCTAssertThrowsError(try WorkspaceFiles.save("escape", path: "external/file.txt",
+                                                    expectedVersion: WorkspaceFiles.gitBlobHash(Data("external\n".utf8)), at: location))
+        XCTAssertEqual(try sandbox.read("outside/file.txt", in: "."), "external\n")
+        XCTAssertThrowsError(try WorkspaceFiles.folderContents("loop", at: location))
+        for path in [name, "alias/a.txt"] {
+            let file = try WorkspaceFiles.read(path, at: location)
+            _ = try WorkspaceFiles.save("new\n", path: path, expectedVersion: file.version, at: location)
+            XCTAssertEqual(try WorkspaceFiles.read(path, at: location).text, "new\n")
+        }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: sandbox.path("repo/" + name)), target)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: sandbox.path("repo/external")), "../outside")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("repo/pwned")))
+        XCTAssertThrowsError(try WorkspaceFiles.read("broken", at: location))
     }
 
     /// Commit messages travel on stdin and paths as quoted words, so neither reaches the shell as code.

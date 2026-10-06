@@ -53,6 +53,16 @@ final class WorkspaceTreeTests: XCTestCase {
         XCTAssertTrue(WorkspaceTree(paths: []).isEmpty)
     }
 
+    func testSymbolicLinkFoldersKeepTheirOwnRowWhenExpanded() {
+        let link = WorkspaceSymbolicLink(target: "../elsewhere", isDirectory: true)
+        let tree = WorkspaceTree(paths: ["parent/link/child/file.txt"], directories: ["parent/link"],
+                                 symbolicLinks: ["parent/link": link])
+        let rows = tree.visibleRows(expanded: ["space|parent", "space|parent/link"], identity: "space")
+        XCTAssertEqual(rows.map(\.node.path), ["parent", "parent/link", "parent/link/child"])
+        XCTAssertEqual(rows[1].node.symbolicLink, link)
+        XCTAssertEqual(rows[1].node.displayName, "link")
+    }
+
     func testPathsOutsideTheSpaceAreIgnored() {
         let all = rows(expanded: ["space|docs", "space|src/app"]).map(\.path)
         XCTAssertFalse(all.contains { $0.contains("etc") || $0.contains("outside") || $0.hasPrefix("a") })

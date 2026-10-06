@@ -118,7 +118,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     @Published var pendingDelete: WorkspaceFileTarget?
     /// Bumped on every listing load so the Git bar refreshes with the explorer.
     @Published private(set) var listingVersion = 0
-    /// What was read of expanded ignored folders, by folder path, for the current listing.
+    /// What was read of expanded ignored or linked folders, by folder path, for the current listing.
     @Published private(set) var ignoredContents: [String: WorkspaceFolderContents] = [:]
     /// Bumped when `ignoredContents` changes, so the Files tree is rebuilt.
     @Published private(set) var ignoredContentsVersion = 0
@@ -165,11 +165,12 @@ final class WorkspaceExplorerModel: ObservableObject {
                 Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>, [String: WorkspaceFolderContents]) in
                     let listing = try WorkspaceFiles.listing(at: location)
                     let kept = created.filter(exists)
-                    // Expanded ignored folders are read again, so they stay open across reloads.
-                    let folders = WorkspaceExplorer.ignoredFoldersToRead(expanded: expanded, ignored: listing.ignored, read: [])
+                    // Expanded ignored and linked folders are read again, so they stay open across reloads.
+                    let folders = WorkspaceExplorer.ignoredFoldersToRead(expanded: expanded, ignored: listing.ignored, read: [],
+                                                                          symbolicLinkDirectories: Set(listing.symbolicLinks.filter { $0.value.isDirectory }.keys))
                     let contents = Self.readFolders(folders, at: location)
                     let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: contents, created: kept)
-                    return (listing, WorkspaceTree(paths: entries.paths, directories: entries.directories), kept, contents)
+                    return (listing, WorkspaceTree(paths: entries.paths, directories: entries.directories, symbolicLinks: entries.symbolicLinks), kept, contents)
                 }
             }.value
             guard self.location?.identity == location.identity else { return }
@@ -222,11 +223,11 @@ final class WorkspaceExplorerModel: ObservableObject {
         let created = tree.createdDirectories[location.identity] ?? []
         return treeCache.tree(.files, listing: listingVersion, contents: ignoredContentsVersion, directories: created) {
             let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: ignoredContents, created: created)
-            return WorkspaceTree(paths: entries.paths, directories: entries.directories)
+            return WorkspaceTree(paths: entries.paths, directories: entries.directories, symbolicLinks: entries.symbolicLinks)
         }
     }
 
-    /// Opens or closes a folder; an ignored folder opened in the Files tree has its contents read.
+    /// Opens or closes a folder; an ignored or linked folder opened in the Files tree has its contents read.
     @discardableResult
     func toggleDirectory(_ identity: String, path: String, isExpanded: Bool,
                          location: WorkspaceFileLocation) -> Task<Void, Never>? {
@@ -235,18 +236,29 @@ final class WorkspaceExplorerModel: ObservableObject {
         return readIgnoredFolders([path], at: location)
     }
 
-    /// Reads the contents of expanded ignored folders, which the listing leaves out.
+    /// Reads the contents of expanded ignored and linked folders, which the listing leaves out.
     @discardableResult
     func readIgnoredFolders(_ folders: [String], at location: WorkspaceFileLocation) -> Task<Void, Never>? {
         guard let listing else { return nil }
         let toRead = WorkspaceExplorer.ignoredFoldersToRead(expanded: folders, ignored: listing.ignored,
-                                                           read: Set(ignoredContents.keys))
+                                                           read: Set(ignoredContents.keys),
+                                                           symbolicLinkDirectories: Set(listing.symbolicLinks.filter { $0.value.isDirectory }.keys)
+                                                               .union(ignoredContents.values.flatMap { $0.symbolicLinks.filter { $0.value.isDirectory }.keys }))
         guard !toRead.isEmpty else { return nil }
         let version = listingVersion
         return Task {
-            let read = await Task.detached { Self.readFolders(toRead, at: location) }.value
+            let results = await Task.detached {
+                toRead.map { folder in (folder, Result { try WorkspaceFiles.folderContents(folder, at: location) }) }
+            }.value
             guard self.location?.identity == location.identity, listingVersion == version else { return }
-            ignoredContents.merge(read) { _, new in new }
+            for (folder, result) in results {
+                switch result {
+                case .success(let contents): ignoredContents[folder] = contents
+                case .failure(let failure):
+                    tree.expanded.remove("\(location.identity)|files|" + folder)
+                    operationError = "\(folder): \(failure.localizedDescription)"
+                }
+            }
             ignoredContentsVersion += 1
         }
     }
@@ -267,7 +279,8 @@ final class WorkspaceExplorerModel: ObservableObject {
     func revealActiveFile(_ file: WorkspaceActiveFile) {
         guard let listing, listedIdentity == file.location.identity, draft == nil else { return }
         let isChanged = { listing.changes.contains { $0.path == file.path } }
-        let isListed = showsChanges ? isChanged() : listing.files.contains(file.path) && (!modifiedOnly || isChanged())
+        let isListed = showsChanges ? isChanged() : (listing.files.contains(file.path) || ignoredContents.values.contains { $0.files.contains(file.path) })
+            && (!modifiedOnly || isChanged())
         guard isListed else { return }
         tree.reveal(file.path, in: treeIdentity(file.location))
     }

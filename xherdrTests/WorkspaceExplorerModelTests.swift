@@ -174,6 +174,34 @@ final class WorkspaceExplorerModelTests: XCTestCase {
                        ["build", "build/out.o", "empty", "src"])
     }
 
+    func testLinkedFoldersOutsideTheSpaceReportAnErrorWithoutExpanding() async throws {
+        try sandbox.write(["outside/file.txt": "external\n"], in: ".")
+        try sandbox.sh("ln -s ../outside external", in: "repo")
+        await load()
+        await model.toggleDirectory(files + "|external", path: "external", isExpanded: false, location: repo)?.value
+        XCTAssertNil(model.ignoredContents["external"])
+        XCTAssertFalse(model.tree.expanded.contains(files + "|external"))
+        XCTAssertTrue(model.operationError?.contains("outside the selected Space") == true)
+    }
+
+    func testLinkedFoldersLoadLazilyAndRereadExpandedDescendants() async throws {
+        try sandbox.write(["repo/linked/sub/file.txt": "linked\n"], in: ".")
+        try sandbox.sh("ln -s linked alias", in: "repo")
+        await load()
+        let initial = model.filesTree(try XCTUnwrap(model.listing), location: repo)
+        XCTAssertTrue(initial.directories.contains("alias"))
+        XCTAssertNil(model.ignoredContents["alias"])
+        await model.toggleDirectory(files + "|alias", path: "alias", isExpanded: false, location: repo)?.value
+        XCTAssertEqual(model.ignoredContents["alias"]?.directories, ["alias/sub"])
+        await model.toggleDirectory(files + "|alias/sub", path: "alias/sub", isExpanded: false, location: repo)?.value
+        XCTAssertEqual(model.ignoredContents["alias/sub"]?.files, ["alias/sub/file.txt"])
+        model.revealActiveFile(WorkspaceActiveFile(location: repo, path: "alias/sub/file.txt"))
+        XCTAssertEqual(model.tree.selected, files + "|alias/sub/file.txt")
+        try sandbox.write(["repo/linked/sub/new.txt": "new\n"], in: ".")
+        await load()
+        XCTAssertEqual(model.ignoredContents["alias/sub"]?.files.sorted(), ["alias/sub/file.txt", "alias/sub/new.txt"])
+    }
+
     func testOpeningAnIgnoredFolderReadsItsContentsOnce() async throws {
         try sandbox.write([".gitignore": "build/\n", "build/out.o": "x\n"], in: "repo")
         await load()

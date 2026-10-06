@@ -94,6 +94,12 @@ struct WorkspaceFileListing {
     /// What Git ignores: its files are in `files`, after tracked and untracked ones; its folders
     /// are listed without their contents, which the explorer reads when one is expanded.
     var ignored = WorkspaceIgnoredEntries()
+    var symbolicLinks: [String: WorkspaceSymbolicLink] = [:]
+}
+
+struct WorkspaceSymbolicLink: Equatable {
+    let target: String
+    let isDirectory: Bool
 }
 
 /// Ignored files and folders of a repository, as `git ls-files --ignored --directory` lists them.
@@ -148,6 +154,7 @@ struct WorkspaceIgnoredEntries: Equatable {
 struct WorkspaceFolderContents: Equatable {
     var files: [String] = []
     var directories: [String] = []
+    var symbolicLinks: [String: WorkspaceSymbolicLink] = [:]
 }
 
 struct WorkspaceFileContents {
@@ -363,23 +370,27 @@ enum WorkspaceFiles {
         // The work tree check is skipped when the repository panel or Git bar just found the root.
         let knownRoot = gitRoots.recent(for: location.identity)
         let generation = gitRoots.generation
-        var results = try gitBatch(location, (knownRoot == nil ? [GitSection.root] : []) + listingSections)[...]
+        var results = try gitBatch(location, (knownRoot == nil ? [GitSection.root] : []) + listingGitSections)[...]
         let hasGit: Bool
         if knownRoot == nil, let rootResult = results.popFirst() {
             hasGit = rememberRoot(rootResult, at: location, generation: generation) != nil
         } else {
             hasGit = true
         }
-        return try makeListing(hasGit ? results : nil) { try filesWithoutGit(at: location) }
+        var listing = try makeListing(hasGit ? results : nil) { try filesWithoutGit(at: location) }
+        listing.symbolicLinks = try localSymbolicLinks(listing.files + listing.ignored.directories, root: location.root)
+        return listing
     }
 
-    /// The commands of a listing in a work tree, for `makeListing`.
-    private static let listingSections = [
+    /// The Git commands of a listing; SSH adds link metadata within the same batch.
+    private static let listingGitSections = [
         GitSection(["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."], limit: maximumListingBytes),
         GitSection(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."],
                    limit: maximumListingBytes),
         GitSection(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000),
     ]
+    private static let listingSections = listingGitSections
+        + [GitSection([], limit: maximumListingBytes, script: symbolicLinkListingScript)]
 
     /// A listing from the outputs of `listingSections`, or, outside a work tree (nil), from
     /// the files `withoutGit` finds.
@@ -395,8 +406,10 @@ enum WorkspaceFiles {
         let ignored = WorkspaceIgnoredEntries(gitEntries: nulStrings(try outputs[1].get()))
         let ignoredFiles = ignored.files.sorted()
         let files = (tracked + untracked + ignoredFiles).prefix(maximumFiles).sorted()
+        let visible = Set(files).union(ignored.directories)
         return WorkspaceFileListing(files: files, changes: parseStatus(try outputs[2].get()), hasGit: true,
-                                    totalFiles: tracked.count + untracked.count + ignoredFiles.count, ignored: ignored)
+                                    totalFiles: tracked.count + untracked.count + ignoredFiles.count, ignored: ignored,
+                                    symbolicLinks: outputs.count > 3 ? parseSymbolicLinks(try outputs[3].get()).filter { visible.contains($0.key) } : [:])
     }
 
     /// The files Go to File searches: tracked and untracked ones, and with `includeIgnored` those
@@ -433,7 +446,7 @@ enum WorkspaceFiles {
 
     /// The remote command that lists every file under a folder that is not in a repository.
     private static func findWords(_ location: WorkspaceFileLocation) -> [String] {
-        ["sh", "-c", #"cd "$1" && find . -type f -not -path './.git/*' -print0"#, "sh", location.root]
+        ["sh", "-c", #"cd "$1" && find . -name .git -prune -o \( -type f -o -type l \) -print0"#, "sh", location.root]
     }
 
     /// The files of `findWords`'s output.
@@ -442,7 +455,6 @@ enum WorkspaceFiles {
     }
 
     /// What is directly inside `folder` ("" is the root), for an ignored folder being expanded.
-    /// Symbolic links are listed as files.
     static func folderContents(_ folder: String, at location: WorkspaceFileLocation) throws -> WorkspaceFolderContents {
         if !folder.isEmpty { try validateRelativePath(folder) }
         var contents = WorkspaceFolderContents()
@@ -453,15 +465,26 @@ enum WorkspaceFiles {
             if isDirectory { contents.directories.append(path) } else { contents.files.append(path) }
         }
         if let machine = location.machine {
-            let script = "root=$(realpath \(quote(location.root))) || exit 70; "
-                + "dir=$(realpath \(quote(location.absolutePath(folder)))) || exit 71; "
-                + "case \"$dir\" in \"$root\"|\"$root\"/*) ;; *) echo 'Folder is outside the selected Space' >&2; exit 72;; esac; "
+            let script = "root=\(quote(location.root)); dir=\(quote(location.absolutePath(folder))); "
+                + "root=$(realpath \"$root\") || exit 70; resolved=$(realpath \"$dir\") || exit 71; "
+                + "case \"$resolved/\" in \"$root/\"*) ;; *) echo 'Folder is outside the selected Space' >&2; exit 72;; esac; "
+                + "parent=\(quote(folder)); "
+                + "while [ -n \"$parent\" ]; do parent=$(dirname \"$parent\"); [ \"$parent\" = . ] && parent=''; "
+                + "ancestor=$(realpath \"$root${parent:+/$parent}\") || exit 71; "
+                + "[ \"$ancestor\" != \"$resolved\" ] || { echo 'Symbolic link points to an ancestor folder' >&2; exit 72; }; done; "
                 + "cd \"$dir\" || exit 73; "
-                + "for f in .* *; do case \"$f\" in .|..) continue;; esac; "
-                + "if [ -d \"$f\" ] && [ ! -L \"$f\" ]; then printf 'd%s\\0' \"$f\"; "
-                + "elif [ -e \"$f\" ] || [ -L \"$f\" ]; then printf 'f%s\\0' \"$f\"; fi; done"
-            for entry in nulStrings(try ssh(machine, script, limit: maximumListingBytes, label: "ls")) {
+                + "for f in .* *; do case \"$f\" in .|..|.git) continue;; esac; "
+                + "if [ -d \"$f\" ]; then printf 'd%s\\0' \"$f\"; "
+                + "elif [ -e \"$f\" ] || [ -L \"$f\" ]; then printf 'f%s\\0' \"$f\"; fi; done; "
+                + "printf 'xherdr-symbolic-links\\0'; " + symbolicLinkMetadataScript.replacingOccurrences(of: "for p do", with: "for p in .* *; do")
+            let records = nulStrings(try ssh(machine, script, limit: maximumListingBytes, label: "ls"))
+            let separator = records.firstIndex(of: "xherdr-symbolic-links") ?? records.count
+            for entry in records.prefix(separator) {
                 add(String(entry.dropFirst()), isDirectory: entry.hasPrefix("d"))
+            }
+            let metadata = Data((records.dropFirst(separator + 1).joined(separator: "\0") + "\0").utf8)
+            for (name, link) in parseSymbolicLinks(metadata) where name != ".git" {
+                contents.symbolicLinks[WorkspaceExplorer.path(of: name, in: folder)] = link
             }
         } else {
             let base = URL(fileURLWithPath: location.root).resolvingSymlinksInPath()
@@ -469,11 +492,26 @@ enum WorkspaceFiles {
             guard url.path == base.path || url.path.hasPrefix(base.path + "/") else {
                 throw WorkspaceFileError.message("Folder is outside the selected Space")
             }
+            var ancestor = folder
+            while !ancestor.isEmpty {
+                ancestor = (ancestor as NSString).deletingLastPathComponent
+                let parent = base.appendingPathComponent(ancestor).resolvingSymlinksInPath()
+                guard url.path != parent.path else {
+                    throw WorkspaceFileError.message("Symbolic link points to an ancestor folder")
+                }
+            }
             let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
             for item in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys) {
                 let values = try? item.resourceValues(forKeys: Set(keys))
-                add(item.lastPathComponent, isDirectory: values?.isDirectory == true && values?.isSymbolicLink != true)
+                var isDirectory: ObjCBool = false
+                if values?.isSymbolicLink == true {
+                    _ = FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory)
+                } else {
+                    isDirectory = ObjCBool(values?.isDirectory == true)
+                }
+                add(item.lastPathComponent, isDirectory: isDirectory.boolValue)
             }
+            contents.symbolicLinks = try localSymbolicLinks(contents.files + contents.directories, root: location.root)
         }
         return contents
     }
@@ -756,7 +794,8 @@ enum WorkspaceFiles {
         let sections = branchStatusSections + (knownRoot == nil ? [GitSection.root] : []) + listingSections
             + repositorySections
         let batch = try remoteGitBatch(machine, location, sections,
-                                       otherwise: knownRoot == nil ? (findWords(location), maximumListingBytes) : nil)
+                                       otherwise: knownRoot == nil ? (["sh", "-c", "cd " + quote(location.root)
+                                           + " && " + plainListingScript], maximumListingBytes) : nil)
         var results = batch.results[...]
         let status = Result { try branchStatus(from: results.prefix(branchStatusSections.count)) }
         results = results.dropFirst(branchStatusSections.count)
@@ -767,10 +806,17 @@ enum WorkspaceFiles {
             if case .failure(let error) = rootResult { rootError = error }
         }
         let listingResults = results.prefix(listingSections.count)
-        let listing = Result {
-            try makeListing(rootError == nil ? listingResults : nil) {
-                filesFound(try (batch.otherwise ?? .failure(WorkspaceFileError.message("Remote command output is incomplete"))).get())
+        let listing = Result { () throws -> WorkspaceFileListing in
+            if rootError != nil {
+                let data = try (batch.otherwise ?? .failure(WorkspaceFileError.message("Remote command output is incomplete"))).get()
+                let records = nulStrings(data)
+                let separator = records.firstIndex(of: "xherdr-symbolic-links") ?? records.count
+                let files = filesFound(Data((records.prefix(separator).joined(separator: "\0") + "\0").utf8))
+                let metadata = Data((records.dropFirst(separator + 1).joined(separator: "\0") + "\0").utf8)
+                return WorkspaceFileListing(files: files, changes: [], hasGit: false, totalFiles: files.count,
+                                            symbolicLinks: parseSymbolicLinks(metadata))
             }
+            return try makeListing(listingResults) { [] }
         }
         let repository = Result { () throws -> WorkspaceRepositoryListing in
             if let rootError { throw rootError }
@@ -1079,17 +1125,19 @@ enum WorkspaceFiles {
                        input: input, limit: limit, timeout: timeout, label: label)
     }
 
-    /// One git command of a batch. A failed `gate` stops the batch: the commands after it need
+    /// One Git command or listing script of a batch. A failed `gate` stops the batch: the commands after it need
     /// what it checks, so they fail with its error instead of running.
     struct GitSection {
         let args: [String]
         let limit: Int
         var gate = false
+        var script: String?
 
-        init(_ args: [String], limit: Int, gate: Bool = false) {
+        init(_ args: [String], limit: Int, gate: Bool = false, script: String? = nil) {
             self.args = args
             self.limit = limit
             self.gate = gate
+            self.script = script
         }
 
         /// The work tree root; fails outside a work tree, including inside a `.git` folder.
@@ -1106,7 +1154,10 @@ enum WorkspaceFiles {
             var stopped: Error?
             return sections.map { section in
                 if let stopped { return .failure(stopped) }
-                let result = Result { try git(location, section.args, limit: section.limit, timeout: timeout) }
+                let result = Result {
+                    if let script = section.script { return try shell(script, at: location, limit: section.limit) }
+                    return try git(location, section.args, limit: section.limit, timeout: timeout)
+                }
                 if section.gate, case .failure(let error) = result { stopped = error }
                 return result
             }
@@ -1121,7 +1172,8 @@ enum WorkspaceFiles {
                                        timeout: TimeInterval = 15)
         throws -> (results: [Result<Data, Error>], otherwise: Result<Data, Error>?) {
         let commands = sections.map { section in
-            (words: ["env", "GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + section.args, gate: section.gate)
+            (words: section.script.map { ["sh", "-c", "cd " + quote(location.root) + " && " + $0] }
+                ?? (["env", "GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + section.args), gate: section.gate)
         }
         let limit = sections.reduce(1_000) { $0 + $1.limit + 100 } + (otherwise.map { $0.limit + 100 } ?? 0)
         let output = try ssh(machine, "sh -c " + quote(remoteBatchScript(commands, otherwise: otherwise?.words)),
@@ -1214,17 +1266,55 @@ enum WorkspaceFiles {
         }
     }()
 
+    /// NUL-delimited metadata keeps spaces, quotes and newlines in link names intact.
+    private static let symbolicLinkMetadataScript = #"for p do p=./${p#./}; if [ -L "$p" ]; then target=$(readlink "$p"; printf .); target=${target%?}; target=${target%?}; kind=f; [ -d "$p" ] && kind=d; printf '%s\0%s\0%s\0' "${p#./}" "$target" "$kind"; fi; done"#
+
+    private static let symbolicLinkListingScript =
+        "{ git ls-files --cached --others --exclude-standard -z -- .; "
+        + "git ls-files --others --ignored --exclude-standard --directory -z -- .; } | xargs -0 sh -c "
+        + quote(symbolicLinkMetadataScript) + " sh"
+
+    private static let plainListingScript =
+        #"find . -name .git -prune -o \( -type f -o -type l \) -print0; printf 'xherdr-symbolic-links\0'; "#
+        + #"find . -name .git -prune -o -type l -print0 | xargs -0 sh -c "#
+        + quote(symbolicLinkMetadataScript) + " sh"
+
+    private static func parseSymbolicLinks(_ data: Data) -> [String: WorkspaceSymbolicLink] {
+        let entries = nulStrings(data)
+        var links: [String: WorkspaceSymbolicLink] = [:]
+        for index in stride(from: 0, to: entries.count - entries.count % 3, by: 3) {
+            links[entries[index]] = WorkspaceSymbolicLink(target: entries[index + 1], isDirectory: entries[index + 2] == "d")
+        }
+        return links
+    }
+
+    private static func localSymbolicLinks(_ paths: [String], root: String) throws -> [String: WorkspaceSymbolicLink] {
+        var links: [String: WorkspaceSymbolicLink] = [:]
+        for path in paths {
+            try validateRelativePath(path)
+            let absolute = (root as NSString).appendingPathComponent(path)
+            guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: absolute) else { continue }
+            var isDirectory: ObjCBool = false
+            _ = FileManager.default.fileExists(atPath: absolute, isDirectory: &isDirectory)
+            links[path] = WorkspaceSymbolicLink(target: target, isDirectory: isDirectory.boolValue)
+        }
+        return links
+    }
+
     private static func localFiles(root: String) throws -> [String] {
         let rootURL = URL(fileURLWithPath: root).resolvingSymlinksInPath()
-        guard let enumerator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isRegularFileKey],
+        guard let enumerator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
                                                                options: [.skipsPackageDescendants]) else { return [] }
         var files: [String] = []
         for case let url as URL in enumerator {
             if url.lastPathComponent == ".git" { enumerator.skipDescendants(); continue }
-            if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
-                let resolved = url.resolvingSymlinksInPath().path
-                guard resolved.hasPrefix(rootURL.path + "/") else { continue }
-                let path = String(resolved.dropFirst(rootURL.path.count + 1))
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            if values?.isRegularFile == true || values?.isSymbolicLink == true {
+                // Foundation may enumerate /private/tmp while its resolved root uses /tmp.
+                // Normalize only the parent so the final component keeps the link's name.
+                let item = url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent)
+                guard item.path.hasPrefix(rootURL.path + "/") else { continue }
+                let path = String(item.path.dropFirst(rootURL.path.count + 1))
                 files.append(path)
                 if files.count >= maximumFiles { break }
             }
