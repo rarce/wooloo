@@ -237,10 +237,13 @@ private struct PaneRead: Decodable {
 
 enum HerdrSocketError: LocalizedError {
     case message(String)
+    /// No server listens on the socket: it is missing, or left behind by a server that exited.
+    case notRunning(path: String, reason: String)
 
     var errorDescription: String? {
         switch self {
         case .message(let text): return text
+        case .notRunning(let path, let reason): return "Cannot connect to \(path): \(reason)"
         }
     }
 }
@@ -271,8 +274,12 @@ enum HerdrSocket {
             }
         }
         guard connectionResult == 0 else {
-            let message = String(cString: strerror(errno))
+            let code = errno
+            let message = String(cString: strerror(code))
             close(fd)
+            if code == ENOENT || code == ECONNREFUSED {
+                throw HerdrSocketError.notRunning(path: path, reason: message)
+            }
             throw HerdrSocketError.message("Cannot connect to \(path): \(message)")
         }
         return fd
@@ -558,6 +565,8 @@ final class HerdrStore: ObservableObject {
     var surface: HerdrSurface? { surfaceFeed.surface }
     @Published private(set) var surfaceError: String?
     @Published private(set) var errorMessage: String?
+    /// The last connection attempt found no server for the session, so it can be started.
+    @Published private(set) var isServerStopped = false
     @Published private(set) var inputError: String?
     @Published private(set) var actionError: String?
     @Published private(set) var sessionSelectionError: String?
@@ -671,6 +680,7 @@ final class HerdrStore: ObservableObject {
         selectedTabID = nil
         selectedPaneID = nil
         errorMessage = nil
+        isServerStopped = false
         inputError = nil
         actionError = nil
         pendingInput = []
@@ -700,15 +710,19 @@ final class HerdrStore: ObservableObject {
                             guard store.generation == currentGeneration else { return }
                             store.receive(newSnapshot)
                             if store.errorMessage != nil { store.errorMessage = nil }
+                            if store.isServerStopped { store.isServerStopped = false }
                             store.repairSelection()
                         }
                     }
                 } catch {
                     let message = error.localizedDescription
+                    let stopped: Bool
+                    if case HerdrSocketError.notRunning = error { stopped = true } else { stopped = false }
                     await MainActor.run {
                         guard store.generation == currentGeneration else { return }
                         store.snapshot = nil
-                        store.errorMessage = message
+                        if store.errorMessage != message { store.errorMessage = message }
+                        if store.isServerStopped != stopped { store.isServerStopped = stopped }
                     }
                 }
                 if Task.isCancelled { break }

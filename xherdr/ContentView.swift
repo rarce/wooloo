@@ -685,7 +685,7 @@ struct ContentView: View {
                     }, commandTarget: window.editor)
                     .id(activeDocumentID)
                 } else if !herdr.isConnected {
-                    emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")
+                    connectionState
                 } else if herdr.showsLiveSurface {
                     GeometryReader { geometry in
                         TerminalPaneView(
@@ -730,7 +730,7 @@ struct ContentView: View {
                     emptyState("This tab has no panes")
                 }
             } else {
-                emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")
+                connectionState
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -985,6 +985,7 @@ struct ContentView: View {
 
     private func connect() {
         let name = window.requestedSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        runtime.clearServerStartError()
         Task {
             if managesRuntime {
                 guard await runtime.prepare(session: name) else { return }
@@ -1141,6 +1142,54 @@ struct ContentView: View {
         herdr.resizeSurface(cols: cols, rows: rows,
                             cellWidth: Int(TerminalPaneView.cellWidth.rounded()),
                             cellHeight: Int(TerminalPaneView.cellHeight.rounded()))
+    }
+
+    /// Shown until the session connects. A stopped server can be started from here.
+    @ViewBuilder
+    private var connectionState: some View {
+        if managesRuntime && herdr.isServerStopped {
+            VStack(spacing: 8) {
+                Image(systemName: "power")
+                    .font(.system(size: 24, weight: .light))
+                Text("The \(herdr.sessionName) session is not running")
+                    .font(.headline)
+                Text("Start its Herdr server, or choose another session in the sidebar.")
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+                Button {
+                    let session = herdr.sessionName
+                    Task { await runtime.startServer(session: session) }
+                } label: {
+                    if runtime.isStartingServer {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Starting Herdr…")
+                        }
+                    } else {
+                        Text("Start Herdr")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(runtime.isStartingServer)
+                .padding(.top, 4)
+                if let error = runtime.serverStartError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 440)
+                        .textSelection(.enabled)
+                }
+                Text(herdr.socketPath)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")
+        }
     }
 
     private func emptyState(_ message: String) -> some View {

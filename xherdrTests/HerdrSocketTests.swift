@@ -66,6 +66,7 @@ final class HerdrSocketTests: XCTestCase {
     func testUnreachableSockets() {
         XCTAssertThrowsError(try HerdrSocket.open(path: server.directory + "/missing.sock")) {
             XCTAssertTrue($0.localizedDescription.hasPrefix("Cannot connect to"))
+            guard case HerdrSocketError.notRunning = $0 else { return XCTFail("\($0) is not notRunning") }
         }
         XCTAssertThrowsError(try HerdrSocket.open(path: "/tmp/" + String(repeating: "x", count: 120))) {
             XCTAssertEqual($0.localizedDescription, "Herdr socket path is too long")

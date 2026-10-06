@@ -253,6 +253,8 @@ final class HerdrRuntimeModel: ObservableObject {
     @Published private(set) var progress = ""
     @Published private(set) var error: String?
     @Published private(set) var connectedSession: String?
+    @Published private(set) var isStartingServer = false
+    @Published private(set) var serverStartError: String?
     private let defaults: UserDefaults
     private let service: HerdrRuntimeService
     private var startup: Task<Bool, Never>?
@@ -297,6 +299,33 @@ final class HerdrRuntimeModel: ObservableObject {
         }
         startup = operation
         return await operation.value
+    }
+
+    /// Starts a session whose server is not running, with the user's Herdr or else the included
+    /// one. launchd keeps it running after xherdr quits; the store reconnects on its own.
+    func startServer(session: String) async {
+        guard !isBusy, !isStartingServer else { return }
+        isStartingServer = true
+        serverStartError = nil
+        defer { isStartingServer = false }
+        do {
+            let bundled = HerdrRuntimePaths.bundledExecutable.path
+            let executable: URL
+            if let path = HerdrRuntimePaths.executableCandidates.first(where: {
+                $0 != bundled && FileManager.default.isExecutableFile(atPath: $0)
+            }) {
+                executable = URL(fileURLWithPath: path)
+            } else {
+                executable = try await service.installBundledExecutable()
+            }
+            try await service.ensureServer(executable: executable, session: session)
+        } catch {
+            serverStartError = error.localizedDescription
+        }
+    }
+
+    func clearServerStartError() {
+        serverStartError = nil
     }
 
     func finish(useBundled: Bool, executable: URL?, session: String, folder: URL?) async {
