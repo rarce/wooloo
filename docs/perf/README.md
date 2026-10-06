@@ -42,6 +42,8 @@ For each workload, the script reports:
 - main-thread latency from receive to deliver
 - layout and draw time
 - latency from arrival to draw
+- for workloads that stream (over 15 frames a second), the longest pause between draws of new revisions and the number of pauses over 50 ms, leaving out the first and last 5 draws
+- the longest decode; decoding takes well under 1 ms, so a longer one means the stream thread was not running
 - latency from arrival to screen, estimated (see below)
 - main-thread busy share
 - for `keys`, keystroke-to-screen latency, split into:
@@ -58,6 +60,8 @@ For each workload, the script reports:
   - `screen`: the latency from the same timestamp to the estimated refresh that shows it
 
 **When a draw reaches the screen.** `draw` returns once the view has drawn into its layer. Core Animation commits the layer when the main thread's turn ends; the window server composites the commit at the next display refresh and shows it at the one after. The metrics record a `commit` event on the main thread's next turn after each draw and a `vsync` event for each refresh the terminal view's display link reports (`TerminalVsyncRecorder`, macOS 14 `NSView.displayLink`), with the time that refresh's frame reaches the screen. `terminal-perf.py` takes the first `commit` after a draw, the first refresh at or after it (extrapolated from the refresh period when the display link missed some while the main thread was busy) and that refresh's target time. macOS exposes no commit or presentation callback to an `NSView`, so this is an estimate, good to about one refresh. On the 120 Hz display measured below it adds 12–15 ms at p50 to every draw: about half a refresh waiting for the next one, plus the refresh the window server takes to show it.
+
+`XHERDR_E2E_LOAD=N` keeps N busy processes (`yes > /dev/null`) running during the workloads, to see how xherdr holds up on a loaded machine. These runs are not compared with the baseline.
 
 The window's content size is fixed with `XHERDR_E2E_WINDOW` (default 1600x1000), so runs compare the same grid whatever size your own xherdr window was saved at. The live results below before this option used a 311×80 window. `e2e-baseline.json` now uses the fixed size, a 120×48 grid on the machine below.
 
@@ -158,6 +162,20 @@ The window showed the terminal view only while the live surface's panes were the
 | publishes / terminal view updates per switch | 3 / 4 | 2 / 1 |
 
 In the last run, Herdr answered in 2.7–4.2 ms and the surface was drawn 8–10 ms after it arrived. Delivering it waits for the SwiftUI update that the selection's two publishes cause (until about 6.5 ms after the click), and the draw then waits for the next display pass. In another run, three switches waited 114–134 ms for Herdr's answer.
+
+### The stream thread under load (2026-10-06)
+
+The surface stream, a blocking read loop, ran in a `.utility` task. On a loaded machine, the system ran other work first, and the thread stood still for up to 0.4 s while the main thread was idle. A frame read after such a pause was usually replaced in the mailbox by the next one before it was drawn, so arrival-to-draw latency did not show it. The pauses between draws and the keystroke echo did. The stream now runs on its own thread at `.userInteractive` priority (`HerdrSurfaceStream.onOwnThread`), which also stops it from holding a thread of Swift's cooperative pool. Decoding still takes about 0.1–0.3 ms a frame.
+
+Measured with `XHERDR_E2E_LOAD=16` on a 16-core machine, with the load average reaching 24–123 because other work was running too:
+
+| phase | before: pauses >50 ms, longest | after: pauses >50 ms, longest | drawn fps, before → after |
+|---|---|---|---|
+| ascii | 21–29, 163–192 ms | 0–1, 39–108 ms | 17–22 → 22–26 |
+| color | 21–22, 394–443 ms | 0–3, 41–72 ms | 26 → 40–42 |
+| keys, write → echo received, p50 | 21–32 ms | 0.2 ms | — |
+
+Earlier, a `.userInitiated` task was tried on an idle machine and showed no difference in frame rate, which is expected: priority only matters when the cores are busy.
 
 ### Layout and scrolled patches (2026-10-06)
 

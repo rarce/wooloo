@@ -751,35 +751,37 @@ final class HerdrStore: ObservableObject {
                 }
                 guard let size, !Task.isCancelled else { stream.cancel(); break }
                 do {
-                    try stream.run(path: surfacePath, cols: size.0, rows: size.1,
-                                   cellWidth: size.2, cellHeight: size.3) {
-                        Task { @MainActor in
-                            guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
-                            if let tabID = store.selectedTabID {
-                                stream.focus(tabID: tabID)
-                            } else if let workspaceID = store.selectedWorkspaceID {
-                                stream.focus(workspaceID: workspaceID)
-                            }
-                            if let paneID = store.selectedPaneID { stream.focus(paneID: paneID) }
-                        }
-                    } onSurface: { newSurface in
-                        // Surfaces that arrive while the main thread is busy replace each other,
-                        // so it only ever shows the newest one.
-                        guard mailbox.put(newSurface) else { return }
-                        DispatchQueue.main.async {
-                            MainActor.assumeIsolated {
-                                guard let latest = mailbox.take(), store.generation == currentGeneration,
-                                      store.surfaceStream === stream else { return }
-                                store.setSurface(latest)
-                                if store.surfaceError != nil { store.surfaceError = nil }
-                                TerminalPipelineMetrics.shared?.delivered(latest)
-                            }
-                        }
-                    } onAgents: { projection in
-                        DispatchQueue.main.async {
-                            MainActor.assumeIsolated {
+                    try await HerdrSurfaceStream.onOwnThread {
+                        try stream.run(path: surfacePath, cols: size.0, rows: size.1,
+                                       cellWidth: size.2, cellHeight: size.3) {
+                            Task { @MainActor in
                                 guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
-                                store.receiveAgentProjection(projection)
+                                if let tabID = store.selectedTabID {
+                                    stream.focus(tabID: tabID)
+                                } else if let workspaceID = store.selectedWorkspaceID {
+                                    stream.focus(workspaceID: workspaceID)
+                                }
+                                if let paneID = store.selectedPaneID { stream.focus(paneID: paneID) }
+                            }
+                        } onSurface: { newSurface in
+                            // Surfaces that arrive while the main thread is busy replace each other,
+                            // so it only ever shows the newest one.
+                            guard mailbox.put(newSurface) else { return }
+                            DispatchQueue.main.async {
+                                MainActor.assumeIsolated {
+                                    guard let latest = mailbox.take(), store.generation == currentGeneration,
+                                          store.surfaceStream === stream else { return }
+                                    store.setSurface(latest)
+                                    if store.surfaceError != nil { store.surfaceError = nil }
+                                    TerminalPipelineMetrics.shared?.delivered(latest)
+                                }
+                            }
+                        } onAgents: { projection in
+                            DispatchQueue.main.async {
+                                MainActor.assumeIsolated {
+                                    guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
+                                    store.receiveAgentProjection(projection)
+                                }
                             }
                         }
                     }

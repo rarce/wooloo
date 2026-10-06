@@ -762,6 +762,19 @@ final class HerdrSurfaceStream {
     private var cancelled = false
     private var bootID: String?
 
+    /// Runs `body`, a blocking `run`, on a thread of its own at user-interactive priority. The
+    /// surfaces it reads are what the user is watching: in a `.utility` task, a loaded machine
+    /// starved the thread for up to 0.4 s at a time, and a blocking read also holds a thread of
+    /// Swift's small cooperative pool.
+    static func onOwnThread(_ body: @escaping () throws -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let thread = Thread { continuation.resume(with: Result { try body() }) }
+            thread.name = "dev.xherdr.surface-stream"
+            thread.qualityOfService = .userInteractive
+            thread.start()
+        }
+    }
+
     func cancel() {
         lock.lock()
         cancelled = true
@@ -920,11 +933,12 @@ final class HerdrSurfaceStream {
                     supportsAgentView = (welcome["capabilities"] as? [String] ?? []).contains("agent_view_projection")
                 } else if welcomed, kind == HerdrSurfaceDecoder.scrollKind {
                     recorder?.record(Data(frame), at: receivedAt)
+                    let decodeStart = TerminalPipelineMetrics.now()
                     let surface = try TerminalPipelineMetrics.signposter.withIntervalSignpost("decode") {
                         try decoder.applyScroll(data)
                     }
                     metrics?.received(surface, isPatch: true, bytes: frame.count, at: receivedAt,
-                                      decodeNanos: TerminalPipelineMetrics.now() - receivedAt)
+                                      decodeNanos: TerminalPipelineMetrics.now() - decodeStart)
                     onSurface(surface)
                     continue
                 } else if welcomed, kind == "shell.snapshot.v1",
@@ -942,11 +956,12 @@ final class HerdrSurfaceStream {
                 }
             case 13 where welcomed, 19 where welcomed:
                 recorder?.record(Data(frame), at: receivedAt)
+                let decodeStart = TerminalPipelineMetrics.now()
                 let surface = try TerminalPipelineMetrics.signposter.withIntervalSignpost("decode") {
                     try decoder.apply(tag: tag, from: &reader)
                 }
                 metrics?.received(surface, isPatch: tag == 19, bytes: frame.count, at: receivedAt,
-                                  decodeNanos: TerminalPipelineMetrics.now() - receivedAt)
+                                  decodeNanos: TerminalPipelineMetrics.now() - decodeStart)
                 onSurface(surface)
             default: break
             }

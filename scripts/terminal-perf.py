@@ -255,6 +255,7 @@ def e2e_summary(metrics_path, phases_path):
             "mb_in": round(sum(e["bytes"] for e in recv) / 1e6, 2),
             "decode_p50_us": percentile([e["decode"] / 1e3 for e in recv], 0.5),
             "decode_p95_us": percentile([e["decode"] / 1e3 for e in recv], 0.95),
+            "decode_max_ms": max(e["decode"] for e in recv) / 1e6 if recv else None,
             "deliver_p50_ms": percentile(deliver_latency, 0.5),
             "deliver_p95_ms": percentile(deliver_latency, 0.95),
             "updates": len(updates),
@@ -269,6 +270,9 @@ def e2e_summary(metrics_path, phases_path):
             "e2e_p50_ms": percentile(e2e, 0.5),
             "e2e_p95_ms": percentile(e2e, 0.95),
             "e2e_max_ms": max(e2e) if e2e else None,
+            # Steady output draws a frame every 20-30 ms; a longer gap is a stall someone sees.
+            "draw_gap_max_ms": max(gaps) if (gaps := draw_gaps(draws, received, len(recv) / seconds)) else None,
+            "draw_gaps_50ms": sum(1 for gap in gaps if gap > 50) if gaps else None,
             "screen_p50_ms": percentile(shown, 0.5),
             "screen_p95_ms": percentile(shown, 0.95),
             "main_busy_pct": round(100 * busy / (seconds * 1e9), 1),
@@ -278,6 +282,23 @@ def e2e_summary(metrics_path, phases_path):
                                 {(e["boot"], e["proj"], e["rev"]) for e in events if e["e"] == "draw"},
         })
     return summaries
+
+
+def draw_gaps(draws, received, fps_in):
+    """Milliseconds between consecutive first draws of new revisions while output streams: how
+    long the screen stood still. Only for phases that stream (over 15 frames a second); the
+    first and last 5 draws, the command starting and the prompt after it, are left out."""
+    if fps_in < 15:
+        return []
+    times, seen = [], set()
+    for event in draws:
+        key = (event["boot"], event["proj"], event["rev"])
+        if key in seen or key not in received:
+            continue
+        seen.add(key)
+        times.append(event["t"])
+    times = times[5:-5]
+    return [(b - a) / 1e6 for a, b in zip(times, times[1:])]
 
 
 def keystrokes(events, lo, hi, screen):
@@ -392,7 +413,9 @@ def e2e_report(metrics_path, phases_path, baseline_path, json_path):
                ("revisions_skipped", "skipped", None), ("deliver_p95_ms", "deliver p95 ms", True),
                ("layout_p50_ms", "layout p50 ms", True), ("draw_p50_ms", "draw p50 ms", True),
                ("e2e_p50_ms", "e2e p50 ms", True), ("e2e_p95_ms", "e2e p95 ms", True),
-               ("e2e_max_ms", "e2e max ms", True), ("screen_p50_ms", "screen p50 ms", True),
+               ("e2e_max_ms", "e2e max ms", True), ("draw_gap_max_ms", "max gap ms", True),
+               ("draw_gaps_50ms", "gaps >50 ms", True),
+               ("decode_max_ms", "decode max ms", True), ("screen_p50_ms", "screen p50 ms", True),
                ("screen_p95_ms", "screen p95 ms", True), ("main_busy_pct", "main busy %", True)]
     rows = []
     for summary in summaries:

@@ -23,7 +23,9 @@
 #
 # The xherdr window opens and must stay visible while it runs. XHERDR_E2E_WINDOW sets its
 # content size (default 1600x1000). XHERDR_E2E_SESSION changes the
-# session (default xherdr-perf); the primary session is refused.
+# session (default xherdr-perf); the primary session is refused. XHERDR_E2E_LOAD=N keeps N
+# busy processes running during the workloads, to measure how xherdr holds up on a loaded
+# machine; such runs are not compared with the baseline.
 set -euo pipefail
 
 root=${0:A:h:h}
@@ -61,8 +63,10 @@ python3 $root/scripts/terminal-perf.py workloads $run
 
 started_server=0
 app_pid=
+load_pids=()
 previous_session=$(defaults read dev.xherdr.app HerdrLastSession 2>/dev/null || true)
 cleanup() {
+    (( ${#load_pids} )) && kill $load_pids 2>/dev/null || true
     [[ -n $app_pid ]] && kill $app_pid 2>/dev/null || true
     # xherdr remembers the session it connected to; give the developer's own choice back.
     if [[ -n $previous_session ]]; then
@@ -98,6 +102,14 @@ for _ in {1..300}; do
     python3 -c 'import time; time.sleep(0.1)'
 done
 grep -q '"e":"draw"' $metrics 2>/dev/null || { echo "xherdr never drew a live surface" >&2; exit 1; }
+load=${XHERDR_E2E_LOAD:-0}
+if (( load > 0 )); then
+    echo "Loading the machine with $load busy processes"
+    for _ in {1..$load}; do
+        yes > /dev/null &
+        load_pids+=($!)
+    done
+fi
 python3 -c 'import time; time.sleep(1.5)'
 
 for workload in $workloads; do
@@ -192,12 +204,17 @@ for workload in $workloads; do
     echo "{\"name\":\"$workload\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
 done
 python3 -c 'import time; time.sleep(1)' # metrics flush every 0.5 s
+(( ${#load_pids} )) && kill $load_pids 2>/dev/null || true
+load_pids=()
 kill $app_pid 2>/dev/null || true
 wait $app_pid 2>/dev/null || true
 app_pid=
 
 echo
-if [[ $save_baseline == 1 ]]; then
+if (( load > 0 )); then
+    [[ $save_baseline == 1 ]] && echo "Not saving a baseline from a loaded run" >&2
+    python3 $root/scripts/terminal-perf.py e2e $metrics $phases --json $run/summary.json
+elif [[ $save_baseline == 1 ]]; then
     python3 $root/scripts/terminal-perf.py e2e $metrics $phases --json $run/summary.json
     mkdir -p ${baseline:h}
     cp $run/summary.json $baseline
