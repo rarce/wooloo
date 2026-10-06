@@ -545,7 +545,16 @@ final class HerdrStore: ObservableObject {
     /// SwiftUI update the whole window at Herdr's frame rate.
     let surfaceFeed = HerdrSurfaceFeed()
     /// What the window needs to know about the live surface; it changes only with its panes.
-    @Published private(set) var surfaceLayout: HerdrSurfaceLayout?
+    /// Every assignment publishes, except when the first surface of a tab switched to arrives
+    /// (see `setSurface`).
+    private(set) var surfaceLayout: HerdrSurfaceLayout? {
+        get { surfaceLayoutValue }
+        set {
+            objectWillChange.send()
+            surfaceLayoutValue = newValue
+        }
+    }
+    private var surfaceLayoutValue: HerdrSurfaceLayout?
     var surface: HerdrSurface? { surfaceFeed.surface }
     @Published private(set) var surfaceError: String?
     @Published private(set) var errorMessage: String?
@@ -567,6 +576,13 @@ final class HerdrStore: ObservableObject {
     }
     /// The pane last used in each tab, so returning to a tab types into the same pane.
     private var lastPaneByTab: [String: String] = [:]
+    /// The tab the live surface is switching to. Until its first surface arrives, the window
+    /// keeps the terminal view on the previous tab's surface rather than showing the pane text
+    /// and then building a new terminal view, which made a switch take about 30 ms to draw.
+    private var surfaceSwitchTabID: String?
+    private var surfaceSwitchTimeout: Task<Void, Never>?
+    /// How long a switch keeps the previous tab's surface if Herdr sends none for the new tab.
+    static var surfaceSwitchGrace: Duration = .milliseconds(500)
 
     static let defaultSessionName = "default"
     private static let lastSessionKey = "HerdrLastSession"
@@ -782,11 +798,54 @@ final class HerdrStore: ObservableObject {
         }
     }
 
+    /// Whether the window shows the live surface for the selected tab: it shows the tab's panes,
+    /// or the tab was just selected and its first surface has not arrived yet.
+    var showsLiveSurface: Bool {
+        guard let surfaceLayout else { return false }
+        let panes = Set(selectedPanes.map(\.paneID))
+        guard !panes.isEmpty else { return false }
+        return Set(surfaceLayout.paneIDs) == panes || (surfaceSwitchTabID != nil && surfaceSwitchTabID == selectedTabID)
+    }
+
+    /// Keeps the terminal view while the live surface switches to the selected tab.
+    private func beginSurfaceSwitch() {
+        guard surfaceStream != nil, let surfaceLayout, let selectedTabID,
+              Set(surfaceLayout.paneIDs) != Set(selectedPanes.map(\.paneID)) else {
+            endSurfaceSwitch()
+            return
+        }
+        surfaceSwitchTabID = selectedTabID
+        surfaceSwitchTimeout?.cancel()
+        surfaceSwitchTimeout = Task { [weak self] in
+            try? await Task.sleep(for: Self.surfaceSwitchGrace)
+            guard !Task.isCancelled, let self, surfaceSwitchTabID != nil else { return }
+            // The window falls back to the pane text until the tab's surface arrives.
+            objectWillChange.send()
+            endSurfaceSwitch()
+        }
+    }
+
+    private func endSurfaceSwitch() {
+        surfaceSwitchTabID = nil
+        surfaceSwitchTimeout?.cancel()
+        surfaceSwitchTimeout = nil
+    }
+
     private func setSurface(_ surface: HerdrSurface?) {
+        let showsTab = surface.map { Set($0.paneIDs) == Set(selectedPanes.map(\.paneID)) } ?? false
+        let completesSwitch = showsTab && surfaceSwitchTabID != nil
+        if surface == nil || showsTab { endSurfaceSwitch() }
         if let surface { popupBlocksPaneInput = surface.popup != nil }
         surfaceFeed.publish(surface)
         let layout = surface.map { HerdrSurfaceLayout(bootID: $0.bootID, paneIDs: $0.paneIDs, popupTerminalID: $0.popup?.terminalID) }
-        if layout != surfaceLayout { surfaceLayout = layout }
+        guard layout != surfaceLayout else { return }
+        // The first surface of a tab switched to changes nothing the window shows: it already
+        // shows the live surface. Publishing would delay its draw by a SwiftUI update.
+        if completesSwitch, layout?.popupTerminalID == surfaceLayout?.popupTerminalID {
+            surfaceLayoutValue = layout
+        } else {
+            surfaceLayout = layout
+        }
     }
 
     func visibleAgents(inSelectedSpaceOnly spaceOnly: Bool, followHerdrView: Bool = true) -> [HerdrAgent] {
@@ -850,6 +909,7 @@ final class HerdrStore: ObservableObject {
         let activeTabID = snapshot?.workspaces.first { $0.workspaceID == workspaceID }?.activeTabID
         selectedTabID = tabID ?? tabs.first { $0.tabID == activeTabID }?.tabID ?? tabs.first?.tabID
         selectedPaneID = paneID ?? preferredPane(in: selectedTabID)
+        beginSurfaceSwitch()
         // `tab.focus` also switches the workspace; sending `workspace.focus` first can race
         // and leave the surface on the workspace's previously active tab.
         if let selectedTabID {
@@ -1107,6 +1167,7 @@ final class HerdrStore: ObservableObject {
     func select(tabID: String) {
         selectedTabID = tabID
         selectedPaneID = preferredPane(in: tabID)
+        beginSurfaceSwitch()
         surfaceStream?.focus(tabID: tabID)
         if let selectedPaneID { surfaceStream?.focus(paneID: selectedPaneID) }
     }

@@ -686,9 +686,7 @@ struct ContentView: View {
                     .id(activeDocumentID)
                 } else if !herdr.isConnected {
                     emptyState(herdr.errorMessage ?? "Connecting to \(herdr.sessionName) session…")
-                } else if let surfaceLayout = herdr.surfaceLayout,
-                   !selectedPanes.isEmpty,
-                   Set(surfaceLayout.paneIDs) == Set(selectedPanes.map(\.paneID)) {
+                } else if herdr.showsLiveSurface {
                     GeometryReader { geometry in
                         TerminalPaneView(
                             text: "",

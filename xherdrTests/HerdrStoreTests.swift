@@ -429,6 +429,42 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(store.selectedPaneID, "w1:p2")
     }
 
+    /// A tab switch keeps the terminal view on the previous tab's surface until Herdr sends the
+    /// new tab's, instead of falling back to the pane text and building a new view for it; if
+    /// none comes, the window falls back after a grace period.
+    func testTabSwitchKeepsTheLiveSurfaceUntilTheNewTabsArrives() async throws {
+        state.update { $0.panes.removeAll { $0["pane_id"] as? String == "w1:p2" } }
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        let grace = HerdrStore.surfaceSwitchGrace
+        defer { HerdrStore.surfaceSwitchGrace = grace }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        XCTAssertTrue(store.showsLiveSurface)
+
+        var published = 0
+        let subscription = store.objectWillChange.sink { published += 1 }
+        defer { subscription.cancel() }
+        store.select(tabID: "w1:t2")
+        XCTAssertTrue(store.showsLiveSurface, "the previous tab's surface stays until the new one arrives")
+        let switched = published
+        var other = SurfaceModel(width: 4, height: 2)
+        other.paneID = "w1:p3"
+        other.revision = 2
+        endpoint.send(other.surfaceFrame())
+        await waitUntil("new tab shown") { store.surfaceLayout?.paneIDs == ["w1:p3"] }
+        XCTAssertTrue(store.showsLiveSurface)
+        XCTAssertEqual(published, switched, "the new tab's surface changes nothing the window shows")
+
+        HerdrStore.surfaceSwitchGrace = .milliseconds(100)
+        store.select(tabID: "w1:t1")
+        XCTAssertTrue(store.showsLiveSurface)
+        let selected = published
+        await waitUntil("fell back to the pane text") { !store.showsLiveSurface }
+        XCTAssertGreaterThan(published, selected, "the fallback is published")
+    }
+
     /// A split drag changes only the snapshot's layouts, which the window reads only for panes
     /// the live surface does not show: then they are kept without publishing.
     func testLayoutOnlyChangesUnderTheLiveSurfaceDoNotPublish() async throws {

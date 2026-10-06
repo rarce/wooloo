@@ -147,6 +147,18 @@ Measured on a 113×48 grid at 120 Hz, under machine load 5–11. The two runs ag
 
 The graphics workload is not written yet.
 
+### Tab switches (2026-10-06)
+
+The window showed the terminal view only while the live surface's panes were the selected tab's. A switch changed the selected tab at once, but Herdr's surface for the new tab came 2–7 ms later, so in between SwiftUI replaced the terminal view with the pane text. When the surface arrived, its `surfaceLayout` publish made SwiftUI build a new terminal view, lay the surface out again from scratch and wait for another display pass before drawing it. `HerdrStore.showsLiveSurface` now keeps the terminal view, still showing the previous tab, until the new tab's surface arrives, for at most 0.5 s. That first surface no longer publishes, since the window already shows it (`HerdrStoreTests.testTabSwitchKeepsTheLiveSurfaceUntilTheNewTabsArrives`).
+
+| | before | after (3 runs) |
+|---|---|---|
+| event → draw, p50 | 25–31 ms | 7–13 ms |
+| event → screen, p50 | 40–45 ms | 21–28 ms |
+| publishes / terminal view updates per switch | 3 / 4 | 2 / 1 |
+
+In the last run, Herdr answered in 2.7–4.2 ms and the surface was drawn 8–10 ms after it arrived. Delivering it waits for the SwiftUI update that the selection's two publishes cause (until about 6.5 ms after the click), and the draw then waits for the next display pass. In another run, three switches waited 114–134 ms for Herdr's answer.
+
 ### Layout and scrolled patches (2026-10-06)
 
 Profiles of the layout (`sample` on a benchmark loop) found:
