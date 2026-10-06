@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import xherdr
 
 /// `WorkspaceExplorerModel` against disposable folders and repositories.
@@ -35,6 +36,7 @@ final class WorkspaceExplorerModelTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        model.stopMonitoring()
         if let savedTrash { WorkspaceFiles.trashItem = savedTrash }
         sandbox.tearDown()
     }
@@ -76,6 +78,177 @@ final class WorkspaceExplorerModelTests: XCTestCase {
     }
 
     // MARK: Listing
+
+    func testVisibleBrowserKeepsMonitoringAfterLoadsAndChangingSegments() async throws {
+        let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: [
+            "workspaces": [["workspace_id": "repo", "label": "repo", "worktree": ["checkout_path": repo.root]]],
+            "panes": [], "tabs": [], "agents": [], "layouts": []
+        ] as [String: Any]))
+        let view = WorkspaceBrowserView(localSnapshot: snapshot, localWorkspaceID: "repo", localSession: "test",
+            machine: nil, refreshVersion: 0, onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in },
+            onNewTab: { _ in }, onNewSpace: { _, _ in }, onLocationChange: { _ in },
+            onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in }, onOpenCommitFile: { _, _, _ in }, model: self.model)
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 700),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.close(); model.stopMonitoring() }
+        try await waitUntil("The mounted browser loads and installs its watcher") {
+            model.listedIdentity == repo.identity && model.isWatchingFiles
+        }
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApplication.shared)
+        try await Task.sleep(for: .milliseconds(600))
+        try sandbox.write(["visible.txt": "first\n"], in: "repo")
+        try await waitUntil("The visible explorer receives external changes") { model.listing?.files.contains("visible.txt") == true }
+        model.showsChanges = true
+        try await externalGit(["add", "visible.txt"], at: repo)
+        try await waitUntil("Switching segments and publishing a listing keep the watcher alive") {
+            model.listing?.changes.first { $0.path == "visible.txt" }?.stageState == .all
+        }
+        model.showsChanges = false
+        try sandbox.write(["second.txt": "second\n"], in: "repo")
+        try await waitUntil("Subsequent updates still arrive in Files") { model.listing?.files.contains("second.txt") == true }
+    }
+
+    private func waitUntil(_ message: String, _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(condition(), message)
+    }
+
+    /// Bypasses WorkspaceFiles and its cache invalidation, just like a terminal command.
+    private func externalGit(_ arguments: [String], at location: WorkspaceFileLocation) async throws {
+        try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", location.root] + arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { throw WorkspaceFileError.message("External git failed") }
+        }.value
+    }
+
+    func testExternalEditsCreationDeletionAndStagingRefreshAutomatically() async throws {
+        await load()
+        model.tree.expanded.insert(files + "|src")
+        model.tree.selected = files + "|src/main.swift"
+        let monitoring = Task { await model.monitor(at: repo) }
+        defer { monitoring.cancel(); model.stopMonitoring() }
+        try await waitUntil("Recursive watcher starts") { model.isWatchingFiles }
+        try sandbox.write(["src/main.swift": "print(2)\n", "src/nested/new.txt": "new\n"], in: "repo")
+        try FileManager.default.removeItem(atPath: repo.absolutePath("a.txt"))
+        try await waitUntil("External filesystem changes appear") {
+            Set(model.listing?.changes.map(\.path) ?? []) == ["a.txt", "src/main.swift", "src/nested/new.txt"]
+        }
+        XCTAssertTrue(model.listing?.files.contains("src/nested/new.txt") == true)
+        XCTAssertEqual(model.tree.selected, files + "|src/main.swift")
+        XCTAssertTrue(model.tree.expanded.contains(files + "|src"))
+        try await externalGit(["add", "src/main.swift"], at: repo)
+        try await waitUntil("External staging appears") {
+            model.listing?.changes.first { $0.path == "src/main.swift" }?.stageState == .all
+        }
+        let version = model.listingVersion
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertEqual(model.listingVersion, version, "Reading git status must not trigger an endless refresh loop")
+    }
+
+    func testLinkedWorktreeWatchesSharedRefsOutsideTheSpace() async throws {
+        try sandbox.sh("git worktree add -q -b linked ../linked", in: "repo")
+        let linked = sandbox.location("linked")
+        await load(linked)
+        let monitoring = Task { await model.monitor(at: linked) }
+        defer { monitoring.cancel(); model.stopMonitoring() }
+        try await waitUntil("Worktree watcher starts") { model.isWatchingFiles }
+        // Wait for the initial reconciliation, then prime the repository cache.
+        try await Task.sleep(for: .milliseconds(600))
+        _ = try await Task.detached { try WorkspaceFiles.repository(at: linked) }.value
+        let version = model.listingVersion
+        try await externalGit(["branch", "external-branch"], at: repo)
+        try await waitUntil("Shared refs refresh the linked worktree") { model.listingVersion > version }
+        let repository = try await Task.detached { try WorkspaceFiles.repository(at: linked) }.value
+        XCTAssertTrue(repository.branches.contains { $0.name == "external-branch" })
+        try sandbox.write(["a.txt": "linked edit\n"], in: "linked")
+        try await waitUntil("Linked worktree edit appears") { model.listing?.changes.first?.stageState == .none }
+        try await externalGit(["add", "a.txt"], at: linked)
+        try await waitUntil("Private worktree index appears") { model.listing?.changes.first?.stageState == .all }
+    }
+
+    func testChangesWaitForActivationAndForInlineNamingToFinish() async throws {
+        await load()
+        model.setApplicationActive(false)
+        let monitoring = Task { await model.monitor(at: repo) }
+        defer { monitoring.cancel(); model.stopMonitoring() }
+        try await waitUntil("Watcher starts even when inactive") { model.isWatchingFiles }
+        try sandbox.write(["background.txt": "new\n"], in: "repo")
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertFalse(model.listing?.files.contains("background.txt") == true)
+        model.draft = WorkspaceFileDraft(location: repo, folder: "", isFolder: false, renaming: nil)
+        model.setApplicationActive(true)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(model.listing?.files.contains("background.txt") == true)
+        model.draft = nil
+        model.refreshIfNeeded()
+        try await waitUntil("Deferred changes appear after naming ends") { model.listing?.files.contains("background.txt") == true }
+    }
+
+    func testPlainFolderChangesRefreshWithoutGit() async throws {
+        let plain = sandbox.location("plain")
+        try sandbox.write(["initial.txt": "one\n"], in: "plain")
+        await load(plain)
+        let monitoring = Task { await model.monitor(at: plain) }
+        defer { monitoring.cancel(); model.stopMonitoring() }
+        try await waitUntil("Plain folder watcher starts") { model.isWatchingFiles }
+        try sandbox.write(["deep/new.txt": "new\n"], in: "plain")
+        try await waitUntil("New nested file appears without git") { model.listing?.files.contains("deep/new.txt") == true }
+    }
+
+    func testSSHPollingPausesWhenInactiveAndStopsWithTheBrowser() async throws {
+        let remote = WorkspaceFileLocation(machine: HerdrMachineProfile(id: "fake", label: "Fake", target: "fake",
+            session: "test", enabled: true), session: "test", workspaceID: "remote", workspaceLabel: "remote", root: "/project")
+        model.readListing = { _ in WorkspaceFileListing(files: ["remote.txt"], changes: [], hasGit: false, totalFiles: 1) }
+        await load(remote)
+        model.setApplicationActive(false)
+        let monitoring = Task { await model.monitor(at: remote, pollingInterval: .milliseconds(100)) }
+        defer { monitoring.cancel(); model.stopMonitoring() }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(model.listingVersion, 1)
+        model.setApplicationActive(true)
+        try await waitUntil("Active SSH browser polls") { model.listingVersion >= 3 }
+        monitoring.cancel()
+        await monitoring.value
+        let version = model.listingVersion
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(model.listingVersion, version)
+    }
+
+    func testConcurrentRefreshRequestsRunSeriallyAndKeepTheLatestSpace() async throws {
+        let started = expectation(description: "First load started")
+        let release = DispatchSemaphore(value: 0)
+        let firstRepo = repo!
+        model.readListing = { location in
+            if location.identity == firstRepo.identity {
+                started.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+            }
+            return WorkspaceFileListing(files: [location.workspaceID + ".txt"], changes: [], hasGit: false, totalFiles: 1)
+        }
+        let first = model.loadListing(at: repo)
+        await fulfillment(of: [started], timeout: 3)
+        let other = sandbox.location("other")
+        let second = model.loadListing(at: other)
+        let third = model.loadListing(at: other)
+        release.signal()
+        await first?.value
+        await second?.value
+        await third?.value
+        XCTAssertEqual(model.listedIdentity, other.identity)
+        XCTAssertEqual(model.listing?.files, ["other.txt"])
+        XCTAssertEqual(model.listingVersion, 1, "The old Space's result is not published and repeated requests share one load")
+    }
 
     func testLoadingARepositoryListsFilesChangesAndBuildsTheFilesTree() async throws {
         try sandbox.write(["a.txt": "two\n", "new.txt": "x\n"], in: "repo")

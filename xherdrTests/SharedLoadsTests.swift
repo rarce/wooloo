@@ -4,6 +4,24 @@ import XCTest
 /// `SharedLoads` lets the Git bar and the repository panel share one repository load. These
 /// tests check that sharing never returns a result older than a change the app knows about.
 final class SharedLoadsTests: XCTestCase {
+    func testForgettingOneLocationPreservesOtherLocationsAndRejectsItsOldStores() throws {
+        let loads = SharedLoads<Int>(maxAge: 60)
+        _ = try loads.value(for: "a") { 1 }
+        _ = try loads.value(for: "b") { 2 }
+        let token = loads.generation(for: "a")
+        loads.forget("a")
+        loads.store(9, for: "a", keyGeneration: token)
+        XCTAssertNil(loads.recent(for: "a"))
+        XCTAssertEqual(try loads.value(for: "b") { 99 }, 2)
+        XCTAssertEqual(try loads.value(for: "a") { 3 }, 3)
+    }
+
+    func testForgettingOneLocationDuringItsLoadDoesNotCacheTheOldResult() throws {
+        let loads = SharedLoads<Int>(maxAge: 60)
+        XCTAssertEqual(try loads.value(for: "a") { loads.forget("a"); return 1 }, 1)
+        XCTAssertEqual(try loads.value(for: "a") { 2 }, 2)
+    }
+
     func testReusesRecentResult() throws {
         let loads = SharedLoads<Int>(maxAge: 60)
         var calls = 0

@@ -368,7 +368,12 @@ struct WorkspaceDocumentView: View {
         .task(id: document.location.identity) { await watchGitDirectory() }
         .onReceive(NotificationCenter.default.publisher(for: WorkspaceFiles.repositoryDidChange)
             .merge(with: NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
-            .receive(on: DispatchQueue.main)) { _ in gitBasesVersion += 1 }
+            .receive(on: DispatchQueue.main)) { notification in
+                if notification.name != WorkspaceFiles.repositoryDidChange || notification.object == nil
+                    || notification.object as? String == document.location.identity {
+                    gitBasesVersion += 1
+                }
+            }
         .frame(minWidth: 200)
     }
 

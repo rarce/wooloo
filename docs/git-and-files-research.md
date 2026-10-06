@@ -6,7 +6,36 @@ The first version now includes a right Files / Changes sidebar, document and dif
 
 Library review: [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor) is an MIT SwiftUI editor package, but its README calls it a work in progress and its manifest brings several packages and language parser binaries. [CodeEditTextView](https://github.com/CodeEditApp/CodeEditTextView) is smaller and MIT, but lacks syntax highlighting and still has dependencies. [lite-edit](https://github.com/arietan/lite-edit) is a maintained MIT application built with AppKit `NSTextView`, not an embeddable library. The current UI uses SwiftUI's native `TextEditor` (backed by AppKit text editing) and a small read-only diff view; these meet the simple-editing scope without new dependencies.
 
-## Current boundary
+## Explorer synchronization
+
+The visible `WorkspaceBrowserView` owns a cancellable monitoring task for its location.
+Local Spaces use one recursive FSEvents stream for the Space root, the actual Git directory,
+and the common Git directory of linked worktrees. Paths use POSIX `realpath`, because
+Foundation can normalize `/private/tmp` to `/tmp` while FSEvents reports `/private/tmp`.
+Git lock files, objects, logs, and changes beneath collapsed ignored folders are filtered.
+Events requiring a rescan bypass those filters. Read-only Git batches disable optional locks
+so `git status` cannot rewrite the index and cause repeated refreshes.
+
+Changes share a bounded 300 ms batching window. The explorer runs one listing load at a
+time and coalesces requests arriving during that load into a follow-up. A location generation
+rejects results from a previous Space, including an A → B → A switch. Listing completion
+updates Files, Changes, the Git bar, and the repository panel through `listingVersion`.
+Caches are invalidated per location; stale in-flight results cannot repopulate them.
+Reloading keeps the selected row and expanded folders. Automatic loads wait while an inline
+name field is open and resume when it closes.
+
+SSH Spaces poll every 3 seconds while the browser is visible and the app is active, using the
+existing shared refresh batch. Local Spaces fall back to the same interval if their event stream
+cannot start. Activation reconciles changes, and hiding the browser or changing its location
+stops the old stream and pending refresh. SSH polling is covered with an injected listing
+reader and the existing local SSH-command fixture, rather than a live remote host.
+
+References: [Zed worktree scanner](https://github.com/zed-industries/zed/blob/main/crates/worktree/src/worktree.rs),
+[VS Code explorer](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/files/browser/explorerService.ts),
+[VS Code Git watchers](https://github.com/microsoft/vscode/blob/main/extensions/git/src/repository.ts), and
+[Apple FSEvents guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html).
+
+## Original API boundary research
 
 xherdr connects one named **local** Herdr session through Unix sockets. It has no machine identity or remote workspace selector. Herdr's JSON `session.snapshot` supplies workspace, tab and pane IDs, plus `workspace.worktree.checkout_path` when a Space is a worktree and `pane.cwd` for ordinary panes. It does not expose Git file status, diffs, directory listings, file contents or file writes. `pane.read` returns terminal screen content, not a file. Herdr's `--machine` CLI forwards API commands over its saved SSH bridge, which likewise has no file API.
 

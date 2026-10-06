@@ -369,7 +369,7 @@ enum WorkspaceFiles {
         if location.machine != nil { return try remoteRefresh(at: location, reusingFinished: false).listing.get() }
         // The work tree check is skipped when the repository panel or Git bar just found the root.
         let knownRoot = gitRoots.recent(for: location.identity)
-        let generation = gitRoots.generation
+        let generation = gitRoots.generation(for: location.identity)
         var results = try gitBatch(location, (knownRoot == nil ? [GitSection.root] : []) + listingGitSections)[...]
         let hasGit: Bool
         if knownRoot == nil, let rootResult = results.popFirst() {
@@ -677,6 +677,14 @@ enum WorkspaceFiles {
         NotificationCenter.default.post(name: repositoryDidChange, object: nil)
     }
 
+    /// A refresh of one Space must not invalidate batches being shared by other windows.
+    static func forgetRecentResults(at location: WorkspaceFileLocation) {
+        repositoryLoads.forget(location.identity)
+        gitRoots.forget(location.identity)
+        remoteRefreshes.forget(location.identity)
+        NotificationCenter.default.post(name: repositoryDidChange, object: location.identity)
+    }
+
     /// Posted, on any thread, after a Git or file operation here or an explicit refresh; open
     /// editors reload their change bars' Git bases.
     static let repositoryDidChange = Notification.Name("WorkspaceFiles.repositoryDidChange")
@@ -697,6 +705,14 @@ enum WorkspaceFiles {
               let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
               path.hasPrefix("/") else { return nil }
         return path
+    }
+
+    /// Both paths matter in a linked worktree: index/HEAD are private, refs are shared.
+    static func localGitWatchPaths(at location: WorkspaceFileLocation) -> [String] {
+        guard location.isLocal,
+              let data = try? git(location, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], limit: 16_384)
+        else { return [] }
+        return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init).filter { $0.hasPrefix("/") }
     }
 
     static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
@@ -757,7 +773,7 @@ enum WorkspaceFiles {
     private static func loadRepository(at location: WorkspaceFileLocation, withBranchStatus: Bool = false)
         throws -> (repository: Result<WorkspaceRepositoryListing, Error>, status: Result<WorkspaceBranchStatus, Error>?) {
         let knownRoot = gitRoots.recent(for: location.identity)
-        let generation = gitRoots.generation
+        let generation = gitRoots.generation(for: location.identity)
         // The branch status goes first, since a failed root check stops the commands after it.
         let sections = (withBranchStatus ? branchStatusSections : [])
             + (knownRoot == nil ? [GitSection.root] : []) + repositorySections
@@ -789,7 +805,7 @@ enum WorkspaceFiles {
     private static func loadRemoteRefresh(at location: WorkspaceFileLocation) throws -> RemoteRefresh {
         guard let machine = location.machine else { throw WorkspaceFileError.message("Not an SSH location") }
         let knownRoot = gitRoots.recent(for: location.identity)
-        let generation = gitRoots.generation
+        let generation = gitRoots.generation(for: location.identity)
         // The branch status goes first, since a failed root check stops the commands after it.
         let sections = branchStatusSections + (knownRoot == nil ? [GitSection.root] : []) + listingSections
             + repositorySections
@@ -828,10 +844,10 @@ enum WorkspaceFiles {
     /// Keeps the root a root check found, unless results were forgotten since `generation`;
     /// nil when the check failed, outside a work tree.
     private static func rememberRoot(_ result: Result<Data, Error>, at location: WorkspaceFileLocation,
-                                     generation: Int) -> String? {
+                                     generation: (Int, Int)) -> String? {
         guard case .success(let data) = result else { return nil }
         let root = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        gitRoots.store(root, for: location.identity, generation: generation)
+        gitRoots.store(root, for: location.identity, keyGeneration: generation)
         return root
     }
 
@@ -1111,7 +1127,7 @@ enum WorkspaceFiles {
     }
 
     private static func git(_ location: WorkspaceFileLocation, _ args: [String], input: Data? = nil,
-                            limit: Int, timeout: TimeInterval = 15) throws -> Data {
+                            limit: Int, timeout: TimeInterval = 15, optionalLocks: Bool = true) throws -> Data {
         // No terminal is attached, so credential prompts must fail instead of hanging.
         let label = "git " + (args.first ?? "")
         if let machine = location.machine {
@@ -1121,7 +1137,9 @@ enum WorkspaceFiles {
         guard let localGit else {
             throw WorkspaceFileError.message("Git is not installed. Install Git to use repository features; terminals and the editor work without it.")
         }
-        return try run(localGit, ["-C", location.root] + args, environment: ["GIT_TERMINAL_PROMPT": "0"],
+        var environment = ["GIT_TERMINAL_PROMPT": "0"]
+        if !optionalLocks { environment["GIT_OPTIONAL_LOCKS"] = "0" }
+        return try run(localGit, ["-C", location.root] + args, environment: environment,
                        input: input, limit: limit, timeout: timeout, label: label)
     }
 
@@ -1156,7 +1174,8 @@ enum WorkspaceFiles {
                 if let stopped { return .failure(stopped) }
                 let result = Result {
                     if let script = section.script { return try shell(script, at: location, limit: section.limit) }
-                    return try git(location, section.args, limit: section.limit, timeout: timeout)
+                    // Reading status must not rewrite the index and trigger our own watcher.
+                    return try git(location, section.args, limit: section.limit, timeout: timeout, optionalLocks: false)
                 }
                 if section.gate, case .failure(let error) = result { stopped = error }
                 return result
@@ -1173,7 +1192,7 @@ enum WorkspaceFiles {
         throws -> (results: [Result<Data, Error>], otherwise: Result<Data, Error>?) {
         let commands = sections.map { section in
             (words: section.script.map { ["sh", "-c", "cd " + quote(location.root) + " && " + $0] }
-                ?? (["env", "GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + section.args), gate: section.gate)
+                ?? (["env", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "git", "-C", location.root] + section.args), gate: section.gate)
         }
         let limit = sections.reduce(1_000) { $0 + $1.limit + 100 } + (otherwise.map { $0.limit + 100 } ?? 0)
         let output = try ssh(machine, "sh -c " + quote(remoteBatchScript(commands, otherwise: otherwise?.words)),
@@ -1871,6 +1890,7 @@ final class SharedLoads<Value> {
     private var results: [String: (time: TimeInterval, value: Value)] = [:]
     private var running: Set<String> = []
     private var generationCount = 0
+    private var keyGenerations: [String: Int] = [:]
 
     init(maxAge: TimeInterval) { self.maxAge = maxAge }
 
@@ -1888,12 +1908,14 @@ final class SharedLoads<Value> {
         }
         running.insert(key)
         let startedGeneration = generationCount
+        let startedKeyGeneration = keyGenerations[key, default: 0]
         condition.unlock()
 
         let result = Result { try load() }
         condition.lock()
         running.remove(key)
-        if case .success(let value) = result, generationCount == startedGeneration {
+        if case .success(let value) = result, generationCount == startedGeneration,
+           keyGenerations[key, default: 0] == startedKeyGeneration {
             results[key] = (ProcessInfo.processInfo.systemUptime, value)
         }
         condition.broadcast()
@@ -1908,11 +1930,33 @@ final class SharedLoads<Value> {
         condition.unlock()
     }
 
+    func forget(_ key: String) {
+        condition.lock()
+        results.removeValue(forKey: key)
+        keyGenerations[key, default: 0] += 1
+        condition.unlock()
+    }
+
     /// Counts `forget()` calls; read before a load whose result is kept with `store`.
     var generation: Int {
         condition.lock()
         defer { condition.unlock() }
         return generationCount
+    }
+
+    /// A token for values found outside `value`, such as a root discovered in a batch.
+    func generation(for key: String) -> (Int, Int) {
+        condition.lock()
+        defer { condition.unlock() }
+        return (generationCount, keyGenerations[key, default: 0])
+    }
+
+    func store(_ value: Value, for key: String, keyGeneration: (Int, Int)) {
+        condition.lock()
+        if generationCount == keyGeneration.0, keyGenerations[key, default: 0] == keyGeneration.1 {
+            results[key] = (ProcessInfo.processInfo.systemUptime, value)
+        }
+        condition.unlock()
     }
 
     /// A result younger than `maxAge`, without loading or waiting for a running load.

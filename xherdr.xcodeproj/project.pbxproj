@@ -20,6 +20,7 @@
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* ContentView.swift */; };
 		C30000000000000000000062 /* ContentCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000063 /* ContentCommands.swift */; };
 		C30000000000000000000066 /* WorkspaceExplorerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000067 /* WorkspaceExplorerModel.swift */; };
+		C40000000000000000000001 /* WorkspaceFileWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40000000000000000000002 /* WorkspaceFileWatcher.swift */; };
 		C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000071 /* HerdrSettingsModel.swift */; };
 		A10000000000000000000014 /* HerdrConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* HerdrConnection.swift */; };
 		A10000000000000000000016 /* TerminalPaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* TerminalPaneView.swift */; };
@@ -140,6 +141,7 @@
 		A10000000000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		C30000000000000000000063 /* ContentCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCommands.swift; sourceTree = "<group>"; };
 		C30000000000000000000067 /* WorkspaceExplorerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerModel.swift; sourceTree = "<group>"; };
+		C40000000000000000000002 /* WorkspaceFileWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceFileWatcher.swift; sourceTree = "<group>"; };
 		C30000000000000000000071 /* HerdrSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* HerdrConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConnection.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* TerminalPaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPaneView.swift; sourceTree = "<group>"; };
@@ -255,6 +257,7 @@
 				A10000000000000000000004 /* ContentView.swift */,
 				C30000000000000000000063 /* ContentCommands.swift */,
 				C30000000000000000000067 /* WorkspaceExplorerModel.swift */,
+				C40000000000000000000002 /* WorkspaceFileWatcher.swift */,
 				C30000000000000000000071 /* HerdrSettingsModel.swift */,
 				A10000000000000000000015 /* HerdrConnection.swift */,
 				A10000000000000000000017 /* TerminalPaneView.swift */,
@@ -505,6 +508,7 @@
 				A10000000000000000000002 /* ContentView.swift in Sources */,
 				C30000000000000000000062 /* ContentCommands.swift in Sources */,
 				C30000000000000000000066 /* WorkspaceExplorerModel.swift in Sources */,
+				C40000000000000000000001 /* WorkspaceFileWatcher.swift in Sources */,
 				C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */,
 				A10000000000000000000014 /* HerdrConnection.swift in Sources */,
 				A10000000000000000000016 /* TerminalPaneView.swift in Sources */,

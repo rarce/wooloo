@@ -36,8 +36,6 @@ struct WorkspaceBrowserView: View {
     @FocusState private var treeFocused: Bool
     @State private var keyMonitor: Any?
     @State private var windowBox = WindowBox()
-    /// Bumped by Git bar operations so the repository panel refreshes too.
-    @State private var gitVersion = 0
     @AppStorage("RepositoryCollapsed") private var repositoryCollapsed = false
     /// A file whose history the repository panel shows.
     @State private var historyPath: String?
@@ -89,6 +87,7 @@ struct WorkspaceBrowserView: View {
         .background(WindowReader(box: windowBox))
         .task(id: machine) { machineChanged() }
         .onAppear {
+            model.setApplicationActive(NSApplication.shared.isActive)
             keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 handleFileShortcut(event) ? nil : event
             }
@@ -97,12 +96,23 @@ struct WorkspaceBrowserView: View {
             }
         }
         .onDisappear {
+            model.stopMonitoring()
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
             keyMonitor = nil
             commandTarget?.unregister(commandToken)
         }
         .task(id: listingIdentity) { loadListing() }
+        .task(id: location?.identity) { await model.monitor(at: location) }
         .task(id: location?.identity) { onLocationChange(location) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.setApplicationActive(true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            model.setApplicationActive(false)
+        }
+        .onChange(of: model.draft != nil) { _, editing in
+            if !editing { model.refreshIfNeeded() }
+        }
         // Also once the Space's listing arrives, and when switching between Files and Changes.
         .onChange(of: ActiveFileReveal(file: activeFile, listed: model.listedIdentity, changes: model.showsChanges),
                   initial: true) { _, reveal in
@@ -118,7 +128,7 @@ struct WorkspaceBrowserView: View {
     }
 
     private var repository: some View {
-        WorkspaceRepositoryView(location: location, refreshVersion: refreshVersion + gitVersion,
+        WorkspaceRepositoryView(location: location, refreshVersion: model.listingVersion,
                                 isCollapsed: $repositoryCollapsed,
                                 onChange: { loadListing() },
                                 onNewSpace: location?.isLocal == true ? onNewSpace : nil,
@@ -290,7 +300,6 @@ struct WorkspaceBrowserView: View {
                 WorkspaceGitBar(location: location, reloadToken: model.listingVersion,
                                 changes: model.showsChanges ? model.listing?.changes ?? [] : nil,
                                 onChange: {
-                                    gitVersion += 1
                                     loadListing(quietly: true)
                                 },
                                 onOpenWorktree: location.isLocal ? onOpenWorktree : nil,

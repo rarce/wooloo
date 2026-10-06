@@ -509,6 +509,7 @@ final class WorkspaceRepositoryModel: ObservableObject {
     @Published private(set) var fileHistoryError: String?
     private var fileHistoryKey: String?
     private var location: WorkspaceFileLocation?
+    private var loadGeneration = 0
     /// The commit whose files are wanted, with its location.
     private var commitKey: String?
 
@@ -518,6 +519,8 @@ final class WorkspaceRepositoryModel: ObservableObject {
 
     /// Loads the repository of `location`; reloading the one already shown keeps it on screen.
     func load(_ location: WorkspaceFileLocation?) async {
+        loadGeneration += 1
+        let generation = loadGeneration
         let isReload = listing != nil && self.location?.identity == location?.identity
         self.location = location
         guard let location else { listing = nil; error = nil; return }
@@ -525,7 +528,7 @@ final class WorkspaceRepositoryModel: ObservableObject {
         error = nil
         let start = TerminalPipelineMetrics.now()
         let result = await Task.detached { Result { try WorkspaceFiles.repository(at: location) } }.value
-        guard self.location?.identity == location.identity else { return }
+        guard !Task.isCancelled, loadGeneration == generation, self.location?.identity == location.identity else { return }
         switch result {
         case .success(let value): listing = value
         case .failure(let failure): error = failure.localizedDescription

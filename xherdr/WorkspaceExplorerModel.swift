@@ -129,6 +129,19 @@ final class WorkspaceExplorerModel: ObservableObject {
     /// The last operation started, with the reload that follows it, for tests to wait on.
     private(set) var lastOperation: Task<Void, Never>?
     private let treeCache = WorkspaceTreeCache()
+    private var listingTask: Task<Void, Never>?
+    private var listingRequest = 0
+    private var locationGeneration = 0
+    /// Injectable so concurrency and SSH polling can be checked without a live server.
+    var readListing: (WorkspaceFileLocation) throws -> WorkspaceFileListing = WorkspaceFiles.listing
+    private var watcher: WorkspaceFileWatcher?
+    private var monitoringToken: UUID?
+    private var monitoredLocation: WorkspaceFileLocation?
+    private var gitWatchPaths: [String] = []
+    private var pendingRefresh: Task<Void, Never>?
+    private var needsRefresh = false
+    private var applicationIsActive = true
+    var isWatchingFiles: Bool { watcher != nil }
     var effects = WorkspaceExplorerEffects()
 
     var isFilteredFiles: Bool { !showsChanges && modifiedOnly }
@@ -141,6 +154,9 @@ final class WorkspaceExplorerModel: ObservableObject {
     // MARK: Listing
 
     func clearListing() {
+        locationGeneration += 1
+        listingRequest += 1
+        location = nil
         listing = nil
         listedIdentity = nil
         error = nil
@@ -151,47 +167,170 @@ final class WorkspaceExplorerModel: ObservableObject {
     @discardableResult
     func loadListing(at location: WorkspaceFileLocation?, quietly: Bool = false) -> Task<Void, Never>? {
         let isReload = listing != nil && self.location?.identity == location?.identity
+        if self.location?.identity != location?.identity { locationGeneration += 1 }
         self.location = location
-        guard let location else { listing = nil; listedIdentity = nil; return nil }
+        listingRequest += 1
+        guard location != nil else { clearListing(); isLoading = false; return nil }
         isLoading = !quietly && !isReload
         error = nil
+        // Requests made during a load share its worker, which performs a follow-up load.
+        if let listingTask { return listingTask }
+        let task = Task {
+            defer { listingTask = nil }
+            while let location = self.location {
+                let request = listingRequest
+                let generation = locationGeneration
+                await readAndPublishListing(at: location, generation: generation)
+                if request == listingRequest { break }
+            }
+        }
+        listingTask = task
+        return task
+    }
+
+    private func readAndPublishListing(at location: WorkspaceFileLocation, generation: Int) async {
         let start = TerminalPipelineMetrics.now()
         let created = tree.createdDirectories[location.identity] ?? []
         let expanded = tree.expandedFolders(in: "\(location.identity)|files")
         let exists = { Self.folderExists($0, at: location) }
-        return Task {
-            // The Files tree is built here too, so a large Space is not sorted on the main thread.
-            let result = await Task.detached {
-                Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>, [String: WorkspaceFolderContents]) in
-                    let listing = try WorkspaceFiles.listing(at: location)
-                    let kept = created.filter(exists)
-                    // Expanded ignored and linked folders are read again, so they stay open across reloads.
-                    let folders = WorkspaceExplorer.ignoredFoldersToRead(expanded: expanded, ignored: listing.ignored, read: [],
-                                                                          symbolicLinkDirectories: Set(listing.symbolicLinks.filter { $0.value.isDirectory }.keys))
-                    let contents = Self.readFolders(folders, at: location)
-                    let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: contents, created: kept)
-                    return (listing, WorkspaceTree(paths: entries.paths, directories: entries.directories, symbolicLinks: entries.symbolicLinks), kept, contents)
+        let readListing = readListing
+        // The Files tree is built here too, so a large Space is not sorted on the main thread.
+        let result = await Task.detached {
+            Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>, [String: WorkspaceFolderContents]) in
+                WorkspaceFiles.forgetRecentResults(at: location)
+                let listing = try readListing(location)
+                let kept = created.filter(exists)
+                // Expanded ignored and linked folders are read again, so they stay open across reloads.
+                let folders = WorkspaceExplorer.ignoredFoldersToRead(expanded: expanded, ignored: listing.ignored, read: [],
+                                                                      symbolicLinkDirectories: Set(listing.symbolicLinks.filter { $0.value.isDirectory }.keys))
+                let contents = Self.readFolders(folders, at: location)
+                let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: contents, created: kept)
+                return (listing, WorkspaceTree(paths: entries.paths, directories: entries.directories, symbolicLinks: entries.symbolicLinks), kept, contents)
+            }
+        }.value
+        guard locationGeneration == generation, self.location?.identity == location.identity else { return }
+        var filesTree: (tree: WorkspaceTree, directories: Set<String>)?
+        switch result {
+        case .success(let (value, builtTree, kept, contents)):
+            listing = value
+            listedIdentity = location.identity
+            ignoredContents = contents
+            tree.pruneCreated(location: location.identity, exists: exists)
+            filesTree = (builtTree, kept)
+        case .failure(let failure): error = failure.localizedDescription
+        }
+        isLoading = false
+        listingVersion += 1
+        ignoredContentsVersion += 1
+        if let filesTree {
+            treeCache.store(filesTree.tree, .files, listing: listingVersion, contents: ignoredContentsVersion,
+                            directories: filesTree.directories)
+        }
+        TerminalPipelineMetrics.spanShown("file-list", start: start, detail: location.isLocal ? "local" : "ssh")
+    }
+
+    // MARK: Synchronization
+
+    /// Owned by the visible browser's SwiftUI task. SSH polls only while active; local Spaces
+    /// use recursive events, with polling as a fallback if a stream cannot be started.
+    func monitor(at location: WorkspaceFileLocation?, pollingInterval: Duration = .seconds(3)) async {
+        stopMonitoring()
+        guard let location else { return }
+        let token = UUID()
+        monitoringToken = token
+        monitoredLocation = location
+        defer { if monitoringToken == token { stopMonitoring() } }
+        if location.isLocal {
+            await installLocalWatcher(at: location, token: token)
+        }
+        while !Task.isCancelled, monitoringToken == token {
+            do { try await Task.sleep(for: pollingInterval) } catch { break }
+            guard !Task.isCancelled, monitoringToken == token else { break }
+            // A repository may have been initialized or removed outside the app since the
+            // Space opened. Retry unavailable streams and update newly discovered Git paths.
+            if location.isLocal, watcher == nil
+                || (listedIdentity == location.identity && (listing?.hasGit == true) != !gitWatchPaths.isEmpty) {
+                await installLocalWatcher(at: location, token: token)
+            }
+            if !location.isLocal || watcher == nil { requestRefresh() }
+        }
+    }
+
+    private func installLocalWatcher(at location: WorkspaceFileLocation, token: UUID) async {
+        let paths = await Task.detached(priority: .utility) {
+            WorkspaceFiles.localGitWatchPaths(at: location).map(WorkspaceFileWatcher.canonicalPath)
+        }.value
+        guard !Task.isCancelled, monitoringToken == token else { return }
+        gitWatchPaths = paths
+        let next = WorkspaceFileWatcher(paths: [location.root] + paths) { [weak self] events in
+            guard let self, self.monitoringToken == token else { return }
+            if self.eventsAffectListing(events, at: location) { self.requestRefresh() }
+        }
+        watcher?.stop()
+        watcher = next
+        // Reconcile edits made while discovering the metadata paths and installing the stream.
+        requestRefresh()
+    }
+
+    func stopMonitoring() {
+        monitoringToken = nil
+        monitoredLocation = nil
+        watcher?.stop()
+        watcher = nil
+        gitWatchPaths = []
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
+        needsRefresh = false
+    }
+
+    func setApplicationActive(_ active: Bool) {
+        applicationIsActive = active
+        if active { requestRefresh() }
+    }
+
+    /// A bounded batching window: continuous writes cannot postpone the refresh forever.
+    func requestRefresh() {
+        guard monitoredLocation != nil else { return }
+        needsRefresh = true
+        guard applicationIsActive, draft == nil, pendingRefresh == nil else { return }
+        pendingRefresh = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            guard let self else { return }
+            self.pendingRefresh = nil
+            self.refreshIfNeeded()
+        }
+    }
+
+    /// Also called when the inline name field closes, to apply changes held during editing.
+    func refreshIfNeeded() {
+        guard needsRefresh, applicationIsActive, draft == nil, let location = monitoredLocation else { return }
+        needsRefresh = false
+        loadListing(at: location, quietly: true)
+    }
+
+    private func eventsAffectListing(_ events: [WorkspaceFileWatcher.Event], at location: WorkspaceFileLocation) -> Bool {
+        let root = WorkspaceFileWatcher.canonicalPath(location.root)
+        return events.contains { event in
+            if event.requiresRescan { return true }
+            let path = event.path
+            if let gitPath = gitWatchPaths.filter({ path == $0 || path.hasPrefix($0 + "/") }).max(by: { $0.count < $1.count }) {
+                let relative = String(path.dropFirst(gitPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                // Locks, object writes and logs do not affect the displayed status. Watching
+                // index/HEAD's directory still catches their atomic replacement by Git.
+                if relative.hasSuffix(".lock") { return false }
+                let first = relative.split(separator: "/").first.map(String.init) ?? ""
+                return !["objects", "logs", "hooks", "COMMIT_EDITMSG"].contains(first)
+            }
+            guard path == root || path.hasPrefix(root + "/") else { return false }
+            let relative = path == root ? "" : String(path.dropFirst(root.count + 1))
+            // Ignore build/dependency churn in collapsed ignored folders. Expanded folders
+            // remain live, and events on the folder itself still refresh additions/deletions.
+            if let listing, listedIdentity == location.identity {
+                for folder in listing.ignored.directories where relative.hasPrefix(folder + "/") {
+                    if !tree.expanded.contains("\(location.identity)|files|\(folder)") { return false }
                 }
-            }.value
-            guard self.location?.identity == location.identity else { return }
-            var filesTree: (tree: WorkspaceTree, directories: Set<String>)?
-            switch result {
-            case .success(let (value, builtTree, kept, contents)):
-                listing = value
-                listedIdentity = location.identity
-                ignoredContents = contents
-                tree.pruneCreated(location: location.identity, exists: exists)
-                filesTree = (builtTree, kept)
-            case .failure(let failure): error = failure.localizedDescription
             }
-            isLoading = false
-            listingVersion += 1
-            ignoredContentsVersion += 1
-            if let filesTree {
-                treeCache.store(filesTree.tree, .files, listing: listingVersion, contents: ignoredContentsVersion,
-                                directories: filesTree.directories)
-            }
-            TerminalPipelineMetrics.spanShown("file-list", start: start, detail: location.isLocal ? "local" : "ssh")
+            return true
         }
     }
 

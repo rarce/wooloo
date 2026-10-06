@@ -354,6 +354,7 @@ final class WorkspaceGitBarModel: ObservableObject {
     @Published private(set) var running: String?
     @Published var message = ""
     private var location: WorkspaceFileLocation?
+    private var loadGeneration = 0
 
     var currentWorktree: WorkspaceWorktree? {
         repository?.worktrees.first { $0.path == repository?.root }
@@ -368,13 +369,15 @@ final class WorkspaceGitBarModel: ObservableObject {
     }
 
     func load(_ location: WorkspaceFileLocation) async {
+        loadGeneration += 1
+        let generation = loadGeneration
         self.location = location
         let start = TerminalPipelineMetrics.now()
         defer { TerminalPipelineMetrics.spanShown("git-bar", start: start, detail: location.isLocal ? "local" : "ssh") }
         let result = await Task.detached(priority: .utility) {
             Result { try WorkspaceFiles.gitBar(at: location) }
         }.value
-        guard location.identity == self.location?.identity else { return }
+        guard !Task.isCancelled, loadGeneration == generation, location.identity == self.location?.identity else { return }
         switch result {
         case .success(let (status, repository)):
             self.status = status
