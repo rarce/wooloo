@@ -32,7 +32,7 @@ This script starts a dedicated `xherdr-perf` Herdr session and opens a Release b
 - `mouse`: splits the pane and turns on SGR mouse reporting in the new pane, whose `cat` echoes the reports Herdr writes for it. The mouse probe, enabled by the same flag, then plays three phases through the view's own mouse handlers: `mouse-click`, 40 clicks, one every 100 ms, in the pane without mouse reporting, after one unrecorded click that selects it (`notifyutil -p dev.xherdr.mouse-probe.click`); `mouse-scroll`, 40 wheel events of 3 lines, alternately up and down, over the mouse-aware pane (`.scroll`); and `mouse-drag`, a 2 s drag of the split 6 cells each way and back, one move every 40 ms (`.drag`). Wheel events enter at `HerdrTerminalTextView.scrollPane`, below `scrollWheel`, because AppKit cannot make a scroll `NSEvent` at a window location.
 - `split`: splits the pane and streams the `ascii` output into one pane and the `color` output into the other at the same time, 250 lines/s each for 5 s.
 - `selection`: during `ascii` output, drags a text selection diagonally across a pane without mouse reporting, one move every 40 ms for 4 s (`notifyutil -p dev.xherdr.mouse-probe.select`).
-- `resize`: during `ascii` output, changes the window's content size 16 times, one every 400 ms, alternately shrinking it by 240×160 points and restoring it (`dev.xherdr.ui-probe.resize`).
+- `resize`: during `ascii` output, which starts after a marker the script waits for, changes the window's content size 16 times, one every 400 ms, alternately shrinking it by 240×160 points and restoring it (`dev.xherdr.ui-probe.resize`).
 - `tabs`: opens a second tab showing earlier `unicode` output beside the first tab's `color` output, then switches between them 20 times, one every 300 ms, through `HerdrStore.select(tabID:)` as the tab row does (`dev.xherdr.ui-probe.tabs`).
 
 For each workload, the script reports:
@@ -56,7 +56,7 @@ For each workload, the script reports:
   - `publishes`: `HerdrStore` change notifications (`publish` events), each of which makes SwiftUI update the window
   - `view updates`: `update` events with `rev: null`, the terminal view's SwiftUI updates
   - `frames`: frames Herdr sent
-  - `drawn`: the latency from the event's timestamp to the draw that shows its effect. For clicks, wheel events and split drags, that is the first draw of the next frame Herdr sends, for the events that made Herdr redraw. For `selection`, it is the next draw, since the selection is drawn locally. For `resize`, it is the first frame at a new grid size. For `tabs`, it is the first complete surface, which is the other tab's projection.
+  - `drawn`: the latency from the event's timestamp to the draw that shows its effect. For clicks, wheel events and split drags, that is the first draw of the next frame Herdr sends, for the events that made Herdr redraw. For `selection`, it is the next draw, since the selection is drawn locally. For `resize`, it is the first frame at a new grid size. For `tabs`, it is the first complete surface, which is the other tab's projection. For `resize`, it is also split into `send` (the event to the new size written to the socket, a `resize` event), `herdr` (from there to the first frame at the new size) and `render` (from that frame to its draw).
   - `screen`: the latency from the same timestamp to the estimated refresh that shows it
 
 **When a draw reaches the screen.** `draw` returns once the view has drawn into its layer. Core Animation commits the layer when the main thread's turn ends; the window server composites the commit at the next display refresh and shows it at the one after. The metrics record a `commit` event on the main thread's next turn after each draw and a `vsync` event for each refresh the terminal view's display link reports (`TerminalVsyncRecorder`, macOS 14 `NSView.displayLink`), with the time that refresh's frame reaches the screen. `terminal-perf.py` takes the first `commit` after a draw, the first refresh at or after it (extrapolated from the refresh period when the display link missed some while the main thread was busy) and that refresh's target time. macOS exposes no commit or presentation callback to an `NSView`, so this is an estimate, good to about one refresh. On the 120 Hz display measured below it adds 12–15 ms at p50 to every draw: about half a refresh waiting for the next one, plus the refresh the window server takes to show it.
@@ -176,6 +176,20 @@ Measured with `XHERDR_E2E_LOAD=16` on a 16-core machine, with the load average r
 | keys, write → echo received, p50 | 21–32 ms | 0.2 ms | — |
 
 Earlier, a `.userInitiated` task was tried on an idle machine and showed no difference in frame rate, which is expected: priority only matters when the cores are busy.
+
+### Window resizes (2026-10-06)
+
+A resize took about 25 ms from the window's size change to the first frame at the new size being drawn. The metrics now record when the new size is written to the socket. In a run under load average 44:
+
+| part | p50 | p95 |
+|---|---|---|
+| send: window size change → new size written | 4.9 ms | 10.7 ms |
+| herdr: new size written → first frame at that size received | 73 ms | 318 ms |
+| render: received → drawn | 1.9 ms | 3.9 ms |
+
+xherdr's share is about 7 ms. It writes the new size in the SwiftUI update that reports the new geometry and draws the frame like any other. The rest is Herdr re-laying out the panes and sending a complete surface, which grows with load: an estimated 18 ms under load average 5–11 (the 25 ms measured then, less xherdr's share), 73 ms under 44. The view keeps showing the previous surface until then. Sending the size from the view's own layout would save a few milliseconds at most.
+
+Running `resize` on its own used to start the probe before a new session's shell had run the output command, so the window was resized with no output and the output outlived the app. The script now waits for a start marker and the end marker.
 
 ### Layout and scrolled patches (2026-10-06)
 

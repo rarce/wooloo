@@ -367,7 +367,8 @@ def mouse_events(events, lo, hi, screen):
     draws = [e for e in events if e["e"] == "draw"]
     kind = mice[0]["kind"]
     size = lambda e: (e["cols"], e["rows"])
-    samples, shown = [], []
+    resizes = [e for e in events if e["e"] == "resize"]
+    samples, shown, parts = [], [], []
     for index, event in enumerate(mice):
         limit = mice[index + 1]["t"] if index + 1 < len(mice) else end
         if kind == "select":
@@ -382,11 +383,21 @@ def mouse_events(events, lo, hi, screen):
                 match = lambda e: True
             frame = next((e for e in recvs if event["t"] < e["t"] < limit and match(e)), None)
             drawn = frame and next((e for e in draws if key(e) == key(frame) and e["t"] >= frame["t"]), None)
+            sent = kind == "resize" and next((e for e in resizes if event["t"] <= e["t"] < limit), None)
+            if drawn and sent and sent["t"] <= frame["t"]:
+                parts.append({"send": (sent["t"] - event["t_event"]) / 1e6, "herdr": (frame["t"] - sent["t"]) / 1e6,
+                              "render": (drawn["t"] - frame["t"]) / 1e6})
         if drawn:
             samples.append((drawn["t"] - event["t_event"]) / 1e6)
             if (on_screen := screen.at(drawn["t"])) is not None:
                 shown.append((on_screen - event["t_event"]) / 1e6)
+    split = {}
+    for part in ("send", "herdr", "render"):
+        values = [sample[part] for sample in parts]
+        split[f"{part}_p50_ms"] = percentile(values, 0.5)
+        split[f"{part}_p95_ms"] = percentile(values, 0.95)
     return {
+        "split": split if parts else None,
         "kind": kind,
         "events": len(mice),
         "publishes": publishes,
@@ -467,6 +478,14 @@ def e2e_report(metrics_path, phases_path, baseline_path, json_path):
                          fmt(mouse.get("screen_p50_ms")), fmt(mouse.get("screen_p95_ms"))])
         table(["phase", "events", "publishes", "per event", "view updates", "per event", "frames",
                "matched", "drawn p50", "p95", "max", "screen p50", "p95"], rows)
+        split = [s for s in moused if s["mouse"].get("split")]
+        if split:
+            print()
+            print("Resize, ms: send = event to the new size written to the socket, herdr = written to the")
+            print("first frame at the new size received, render = received to drawn")
+            table(["phase", "send p50", "p95", "herdr p50", "p95", "render p50", "p95"],
+                  [[s["phase"]] + [fmt(s["mouse"]["split"][f"{part}_{p}_ms"]) for part in ("send", "herdr", "render")
+                                   for p in ("p50", "p95")] for s in split])
     for summary in summaries:
         if summary["frames"] and not summary["last_frame_drawn"]:
             print(f"WARNING: {summary['phase']}: the last frame received was never drawn")

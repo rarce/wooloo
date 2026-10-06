@@ -164,14 +164,17 @@ for workload in $workloads; do
     fi
     if [[ $workload == selection || $workload == resize ]]; then
         echo "Running $workload"
-        # The probe plays during 5 s of ascii output.
-        $herdr pane run $pane "clear; $play $run/ascii.txt --lines-per-second 250 --seconds 7" > /dev/null
-        python3 -c 'import time; time.sleep(1)'
+        # The probe plays during 5 s of ascii output, which starts 1 s after the marker: a new
+        # session's shell can take seconds to run the command.
+        $herdr pane run $pane "clear; printf 'XHERDR_%s_%s\\n' START $workload; sleep 1; $play $run/ascii.txt --lines-per-second 250 --seconds 7; printf 'XHERDR_%s_%s\\n' DONE $workload" > /dev/null
+        $herdr pane wait-output $pane --match "XHERDR_START_$workload" --timeout 180000 > /dev/null
+        python3 -c 'import time; time.sleep(1.3)'
         start=$(now_ms)
         [[ $workload == selection ]] && notifyutil -p dev.xherdr.mouse-probe.select || notifyutil -p dev.xherdr.ui-probe.resize
         python3 -c 'import time; time.sleep(5.5)'
         echo "{\"name\":\"$workload\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
-        python3 -c 'import time; time.sleep(1.5)'
+        $herdr pane wait-output $pane --match "XHERDR_DONE_$workload" --timeout 180000 > /dev/null
+        python3 -c 'import time; time.sleep(1)'
         continue
     fi
     if [[ $workload == tabs ]]; then

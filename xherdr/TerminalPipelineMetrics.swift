@@ -17,11 +17,13 @@ import QuartzCore
 /// view's display link reports, with the time its frame reaches the screen; together they
 /// estimate when a draw became visible. Keystrokes add `key` (the event's own time, so waiting
 /// in the main thread's queue counts, and when the view handled it) and `sent` (input written
-/// to the socket). The mouse and UI probes add `mouse` (a click, scroll, split drag, selection
-/// drag, tab switch or window resize they played, with the event's own time), and `publish`
-/// counts the store's change notifications, each of which makes SwiftUI update the window. The workspace side adds `proc` (a git, SSH or shell process that `WorkspaceFiles`
-/// ran) and `span` (a user-visible operation such as loading the file list, from its start
-/// until its result is on screen). Times are nanoseconds since the first event's `start` line.
+/// to the socket); `resize` is a new grid size written to it. The mouse and UI probes add
+/// `mouse` (a click, scroll, split drag, selection drag, tab switch or window resize they
+/// played, with the event's own time), and `publish` counts the store's change notifications,
+/// each of which makes SwiftUI update the window. The workspace side adds `proc` (a git, SSH or
+/// shell process that `WorkspaceFiles` ran) and `span` (a user-visible operation such as
+/// loading the file list, from its start until its result is on screen). Times are nanoseconds
+/// since the first event's `start` line.
 final class TerminalPipelineMetrics {
     static let shared: TerminalPipelineMetrics? = {
         guard let path = ProcessInfo.processInfo.environment["XHERDR_METRICS_FILE"], !path.isEmpty else { return nil }
@@ -37,6 +39,7 @@ final class TerminalPipelineMetrics {
                       bytes: Int, at: UInt64, decode: UInt64, cursor: HerdrCursor?)
         case key(eventAt: UInt64, at: UInt64, cursor: HerdrCursor?)
         case sent(at: UInt64, bytes: Int)
+        case resized(at: UInt64, cols: Int, rows: Int)
         case mouse(kind: String, eventAt: UInt64, at: UInt64)
         case published(at: UInt64)
         case process(label: String, remote: Bool, start: UInt64, nanos: UInt64, bytes: Int, status: Int32?)
@@ -88,6 +91,11 @@ final class TerminalPipelineMetrics {
 
     func inputSent(bytes: Int) {
         append(.sent(at: Self.now(), bytes: bytes))
+    }
+
+    /// A new grid size was written to the socket.
+    func resizeSent(cols: Int, rows: Int) {
+        append(.resized(at: Self.now(), cols: cols, rows: rows))
     }
 
     /// A probe is about to play a `kind` event, due at `eventAt`.
@@ -184,6 +192,8 @@ final class TerminalPipelineMetrics {
             return #"{"e":"key","t_event":\#(time(eventAt)),"t":\#(time(at))\#(position(cursor))}"#
         case let .sent(at, bytes):
             return #"{"e":"sent","t":\#(time(at)),"bytes":\#(bytes)}"#
+        case let .resized(at, cols, rows):
+            return #"{"e":"resize","t":\#(time(at)),"cols":\#(cols),"rows":\#(rows)}"#
         case let .mouse(kind, eventAt, at):
             return #"{"e":"mouse","kind":\#(quoted(kind)),"t_event":\#(time(eventAt)),"t":\#(time(at))}"#
         case let .published(at):

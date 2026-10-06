@@ -790,7 +790,7 @@ final class HerdrSurfaceStream {
         payload += SurfaceWriter.number(UInt64(cols))
         payload += SurfaceWriter.number(UInt64(rows))
         payload.append(0) // pixel mouse
-        _ = send(payload)
+        if send(payload) { TerminalPipelineMetrics.shared?.resizeSent(cols: cols, rows: rows) }
     }
 
     func focus(tabID: String) {
