@@ -2,9 +2,9 @@
 
 A Herdr surface travels this path before it is on screen:
 
-1. **Receive and decode** (stream thread, `HerdrSurfaceStream.run` → `HerdrSurfaceDecoder`): a socket frame becomes a complete `HerdrSurface` or patches the current one.
+1. **Receive and decode** (stream thread, `HerdrSurfaceStream.run` → `HerdrSurfaceDecoder`): a socket frame becomes a complete `HerdrSurface` or patches the current one. With `surface_scroll`, scrolling output arrives as each pane's row shift plus only the rows that still differ.
 2. **Deliver** (`HerdrSurfaceMailbox` → `HerdrSurfaceFeed`): the stream thread keeps only the newest surface and wakes the main thread once. The feed hands the surface straight to the terminal view. SwiftUI sees only `HerdrStore.surfaceLayout`, which changes when panes do.
-3. **Layout** (main thread, `TerminalPaneView.layoutGrid`): cells become fills, glyph runs and underlines, row by row. A row whose cells, cursor and images match a row of the previous grid reuses that row's layout, so scrolled output only lays out new lines.
+3. **Layout** (main thread, `TerminalPaneView.layoutGrid`): cells become fills, glyph runs and underlines, row by row. A row whose cells, cursor and images match a row of the previous grid reuses that row's layout, so scrolled output only lays out new lines; row fingerprints find the match. Core Text shapes a new row's text in pieces split at long runs of blanks, and `TerminalShapeCache` keeps each piece's glyphs.
 4. **Draw** (main thread, `HerdrTerminalTextView.draw`): Core Graphics draws only the rows that changed.
 
 Three tools measure it. All of them also check that no information is lost on the way.
@@ -19,7 +19,7 @@ Run them with `xcodebuild test` and the scheme `xherdr`, using the build flags f
 
 ## Stage benchmarks: `scripts/terminal-bench.sh`
 
-This script times decode, layout and draw per frame over the synthetic workloads (200×60, 240 frames) in a Release build. The `burst` stage pushes every frame through all three stages, with no frames coalesced. `layout` reuses rows from the previous sampled state, as the view does, and `layout-cold` lays out every row. Results go to `build/perf/`, and the script compares them with `bench-baseline.jsonl`. Pass `--save-baseline` to replace the baseline.
+This script times decode, layout and draw per frame over the synthetic workloads (200×60, 240 frames) in a Release build. `scroll-shift` is ASCII output sent as scrolled patches. The `burst` stage pushes every frame through all three stages, with no frames coalesced. `layout` reuses rows from the previous sampled state, as the view does. `layout-cold` lays out every row from text never shaped before, and `layout-seen` lays out every row from text shaped before, as a tab switched back to. Every stage except `layout-seen` starts with an empty shape cache. Results go to `build/perf/`, and the script compares them with `bench-baseline.jsonl`. Pass `--save-baseline` to replace the baseline.
 
 ## End to end: `scripts/terminal-e2e.sh`
 
@@ -114,7 +114,42 @@ Clicks and wheel events published nothing already, which confirms live the fixes
 - **Every click sent `pane.focus`, and Herdr answers it with a complete surface** (45 KB here), even for the pane it already focuses, about 100 ms later. `HerdrStore.select(paneID:)` now skips the request when the snapshot shows Herdr already focuses that pane (`HerdrStoreTests.testClicksInTheFocusedPaneDoNotFocusItAgain`).
 - **A split drag published the snapshot about 8 times a second**: each ratio change changes only its `layouts`, which the window reads only for panes the live surface does not show. `HerdrStore.receive` now keeps such a snapshot without publishing (`HerdrStoreTests.testLayoutOnlyChangesUnderTheLiveSurfaceDoNotPublish`).
 
-Each drag move that changes the ratio still costs a complete surface from Herdr and a cold layout of it, about 5 ms.
+Each drag move that changes the ratio still costs a complete surface from Herdr and a cold layout of it, about 5 ms at the time (0.5–1.4 ms after the changes below).
+
+### Layout and scrolled patches (2026-10-06)
+
+Profiles of the layout (`sample` on a benchmark loop) found:
+
+- **Comparing rows copied every cell.** Reusing a scrolled row checks it against the previous grid's row with `RowKey ==`, and the synthesized `ArraySlice ==` copies each `HerdrCell`, retaining and releasing its symbol: 72% of a scrolling frame's layout. Rows now compare field by field in place.
+- **A new row compared against every previous row** until one matched. Beside an empty pane, every row shares a long prefix with every other, so a screen of new rows cost about 1 ms extra at 200×60 and 2.5 ms at 311×80. Rows now carry a fingerprint (a hash of each cell's bytes read in place), and only rows with the same fingerprint are compared whole. It costs about 20 µs a frame.
+- **Every color lookup copied the theme.** `TerminalPalette` passed one of its own caches `inout` to a method on itself, which made Swift copy the palette and its theme: about 20% of a cold layout.
+- **Appending a glyph copied the run's arrays**, because `runs.last` was bound to a constant first.
+- **Core Text shaping is half of a cold layout**, and it shaped every blank cell too. Rows are now shaped in pieces split at 8 or more blanks, keeping up to 8 blanks around each piece. In Fira Code no substitution starts at or replaces a space, and none looks further than 6 glyphs (a `calt` rule for Greek capitals uses the space as context), so the pieces get exactly the glyphs the whole row gets. `TerminalRenderingTests.testShapingInPiecesMatchesWholeRows` checks ligatures across 1 to 12 blanks against shaping the whole row. Each piece's glyphs are cached by its text and bold/italic ranges.
+
+Herdr 0.9.3 also offers `surface_scroll`: instead of a patch that rewrites every row of a scrolling pane, it sends the pane's row shift and only the rows that still differ (see `docs/herdr-connection.md`). Its `surface_reuse` and `surface_delta` encodings did not change the frames for scrolling output.
+
+Stage benchmarks, 200×60, the same machine, both runs under load 5–15:
+
+| scenario | layout p50 before → after | cold layout p50 before → after | layout of text seen before | burst fps before → after |
+|---|---|---|---|---|
+| ascii-scroll | 577 → 206 µs | 3.8 → 2.1 ms | 0.86 ms | 471 → 639 |
+| color-scroll | 708 → 308 µs | 5.9 → 3.8 ms | 1.09 ms | 293 → 365 |
+| unicode-scroll | 642 → 294 µs | 5.3 → 3.9 ms | 0.94 ms | 502 → 671 |
+| typing | 336 → 119 µs | 5.4 → 3.1 ms | 0.92 ms | 449 → 640 |
+| full-frames | 405 → 122 µs | 6.1 → 3.8 ms | 1.08 ms | 290 → 375 |
+
+`scroll-shift`, the ascii workload sent as scrolled patches, decodes in 63 µs at p50 against 209 µs for the same output as plain patches.
+
+Live, 113×48 grid. Live numbers vary up to threefold between runs on a loaded machine (load 6–28 during these runs), so the first two columns come from back-to-back runs before and after the layout changes; the bytes received do not depend on load:
+
+| workload | layout p50, before → after layout changes | arrival→draw p50, before → after | main busy, before → after | MB received in the run, plain → scrolled patches |
+|---|---|---|---|---|
+| ascii | 1.77 → 0.99 ms | 3.05 → 2.31 ms | 9.1% → 6.1% | 8.0 → 1.3 |
+| color | 1.87 → 1.16 ms | 4.19 → 3.45 ms | 13.8% → 10.7% | 10.9 → 1.9 |
+| unicode | 2.38 → 1.56 ms | 3.93 → 3.25 ms | 13.5% → 10.4% | 5.3 → 0.8 |
+| mouse-drag | 6.80 → 1.43 ms | 7.74 → 2.94 ms | 10.7% → 3.3% | 1.95 → 1.95 |
+
+With scrolled patches as well, two later runs decoded ascii frames in 120–240 µs at p50 instead of about 330 µs, and drew them 0.8–2.3 ms after arrival. Keystroke to screen took 0.7–1.1 ms at p50 in those runs. `e2e-baseline.json` holds the slower of the two.
 
 # Workspace measurements
 

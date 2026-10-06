@@ -187,6 +187,41 @@ struct SurfaceModel {
     }
 }
 
+extension SurfaceModel {
+    /// A scrolled patch (a tag 20 `endpoint.surface-scroll.v1` frame) from `previous` to this
+    /// model: each region's rows move as Herdr's row swaps move them, and the patch carries
+    /// only the rows that still differ, as Herdr's encoder sends them.
+    func scrollFrame(from previous: SurfaceModel, scrolls: [(rect: HerdrRect, shift: Int)]) -> Data {
+        var moved = previous.cells
+        for scroll in scrolls {
+            let rect = scroll.rect, distance = abs(scroll.shift)
+            let pairs = scroll.shift > 0
+                ? (0..<(rect.height - distance)).map { ($0, $0 + distance) }
+                : (distance..<rect.height).reversed().map { ($0, $0 - distance) }
+            for (a, b) in pairs {
+                for x in 0..<rect.width {
+                    moved.swapAt((rect.y + a) * width + rect.x + x, (rect.y + b) * width + rect.x + x)
+                }
+            }
+        }
+        let rows = (0..<height).filter { y in moved[(y * width)..<((y + 1) * width)] != row(y) }
+        var bytes: [UInt8] = [UInt8(scrolls.count)]
+        func word(_ value: Int) { bytes += [UInt8(value & 0xff), UInt8((value >> 8) & 0xff)] }
+        for scroll in scrolls {
+            word(scroll.rect.x); word(scroll.rect.y); word(scroll.rect.width); word(scroll.rect.height)
+            word(Int(UInt16(bitPattern: Int16(scroll.shift))))
+        }
+        let patch = patchFrame(baseRevision: previous.revision, rows: rows)
+        for shift in stride(from: 0, to: 32, by: 8) { bytes.append(UInt8((patch.count >> shift) & 0xff)) }
+        bytes += patch
+        var writer = SurfaceWireWriter()
+        writer.number(20)
+        writer.string(HerdrSurfaceDecoder.scrollKind)
+        writer.string(Data(bytes).base64EncodedString().replacingOccurrences(of: "=", with: ""))
+        return writer.data
+    }
+}
+
 /// A deterministic stream of frames plus the screen expected after each one.
 struct TerminalWorkload {
     let name: String
@@ -268,6 +303,52 @@ struct TerminalWorkload {
             }
             return row.cells
         }
+    }
+
+    /// Log output as Herdr sends it with `surface_scroll`: the pane's shift and only the new
+    /// rows. Most frames append one line, some two, some insert a line at the top (a reverse
+    /// scroll) and some also edit a row in place.
+    static func scrollShift(width: Int, height: Int, frames: Int) -> TerminalWorkload {
+        var random = SplitMix64(seed: 11)
+        func line(_ index: Int) -> [HerdrCell] {
+            var row = RowBuilder(width: width)
+            row.put(String(format: "[%06d] ", index), foreground: Color.ansi(3))
+            while row.column < width - 12, random.next(8) != 0 { row.put(random.word() + " ") }
+            return row.cells
+        }
+        var model = SurfaceModel(width: width, height: height)
+        for y in 0..<height { model.setRow(y, line(y)) }
+        model.cursor = HerdrCursor(x: 0, y: height - 1, visible: true, shape: 0)
+        var workload = TerminalWorkload(name: "scroll-shift", width: width, height: height, final: model)
+        workload.emit(model.surfaceFrame(), model)
+        var next = height
+        for _ in 0..<max(0, frames - 1) {
+            let previous = model
+            model.revision += 1
+            let shift: Int
+            switch random.next(10) {
+            case 0, 1:
+                shift = 2
+                model.scroll(appending: line(next)); model.scroll(appending: line(next + 1))
+                next += 2
+            case 2:
+                shift = -1
+                model.cells.removeLast(width)
+                model.cells.insert(contentsOf: line(next), at: 0)
+                next += 1
+            default:
+                shift = 1
+                model.scroll(appending: line(next))
+                next += 1
+            }
+            if random.next(4) == 0 {
+                var edited = RowBuilder(width: width)
+                edited.put("edited in place \(next)", foreground: Color.ansi(1), modifier: 1)
+                model.setRow(random.next(height), edited.cells)
+            }
+            workload.emit(model.scrollFrame(from: previous, scrolls: [(model.paneRect, shift)]), model)
+        }
+        return workload
     }
 
     /// Keystrokes echoed one cell at a time: small patches and a moving cursor.

@@ -143,6 +143,125 @@ final class TerminalRenderingTests: XCTestCase {
         }
     }
 
+    /// Core Text shapes a row's text in pieces split at long runs of blanks, and remembers each
+    /// piece. Every cell must still get the glyphs, fonts and offsets that shaping the whole row
+    /// at once gives, ligatures included, however far apart their parts are.
+    func testShapingInPiecesMatchesWholeRows() throws {
+        var texts = ["a -> b => c == d != e <= f >= g === h !== i", "0xFF 1920x1080 www.example.com 0o17 0b1010",
+                     "<!-- x --> |> <| :: ::: ... ..< .. /* */ // /// ;; __init__", "fn main() -> Result<T, E> { a?.b ?? c }",
+                     "## ### #{ } #[ ] #( ) <=> <-> <<= >>= |||  |>  <|>  ~~>  -->  <--  ==>  <==  www",
+                     "é ü̈ ñ 漢字 🚀 ✅ → ✓ \u{E0B0} \u{F07C} │   ├── └── ─────", "->", "  ==  ",
+                     // Fira Code picks Greek capitals with tonos by the capital past a space.
+                     "Ά Α ΈΒ Ή Γ  Ό Δ"]
+        for gap in 1...12 {
+            let spaces = String(repeating: " ", count: gap)
+            texts += ["-\(spaces)>", "=\(spaces)=\(spaces)>", "x\(spaces)0x1\(spaces)www", "<\(spaces)!--\(spaces)-->"]
+        }
+        var model = SurfaceModel(width: 90, height: texts.count)
+        model.cursor = nil
+        for (y, text) in texts.enumerated() {
+            var row = RowBuilder(width: model.width)
+            for (index, word) in text.split(separator: " ", omittingEmptySubsequences: false).enumerated() {
+                if index > 0 { row.put(" ", modifier: index % 3 == 0 ? 1 : 0) }
+                for character in word {
+                    if character == "漢" || character == "字" || character == "🚀" || character == "✅" {
+                        row.putWide(String(character))
+                    } else {
+                        row.put(String(character), modifier: index % 3 == 0 ? 1 : index % 5 == 0 ? 4 : 0)
+                    }
+                }
+            }
+            model.setRow(y, row.cells)
+        }
+        let surface = model.surface
+        TerminalShapeCache.shared.removeAll()
+        let shaped = TerminalPaneView.layoutGrid(surface, theme: TerminalRenderHarness.theme)
+        let cached = TerminalPaneView.layoutGrid(surface, theme: TerminalRenderHarness.theme)
+        for y in 0..<surface.height {
+            let expected = Self.wholeRowGlyphs(Array(surface.cells[(y * surface.width)..<((y + 1) * surface.width)]))
+            for grid in [shaped, cached] {
+                var actual: [Int: [String]] = [:]
+                for run in grid.rows[y].runs {
+                    for index in run.glyphs.indices {
+                        actual[run.columns[index], default: []].append(Self.describe(
+                            run.font, run.glyphs[index], run.positions[index], column: run.columns[index]))
+                    }
+                }
+                XCTAssertEqual(actual, expected, "row \(y): \(texts[y].debugDescription)")
+            }
+        }
+    }
+
+    /// Each column's glyphs when Core Text shapes the whole row at once, as layout did before
+    /// it split rows into pieces.
+    private static func wholeRowGlyphs(_ cells: [HerdrCell]) -> [Int: [String]] {
+        let text = NSMutableAttributedString()
+        var columnAt: [Int] = []
+        for (x, cell) in cells.enumerated() where !cell.skip {
+            let symbol = cell.symbol.isEmpty ? " " : cell.symbol
+            let font = switch cell.modifier & 5 {
+            case 1: TerminalPaneView.boldFont
+            case 4: TerminalPaneView.italicFont
+            case 5: TerminalPaneView.boldItalicFont
+            default: TerminalPaneView.terminalFont
+            }
+            text.append(NSAttributedString(string: symbol, attributes: [.font: font]))
+            columnAt += Array(repeating: x, count: symbol.utf16.count)
+        }
+        var glyphs: [Int: [String]] = [:]
+        for run in CTLineGetGlyphRuns(CTLineCreateWithAttributedString(text)) as? [CTRun] ?? [] {
+            let count = CTRunGetGlyphCount(run)
+            let font = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName] as! CTFont
+            var ids = [CGGlyph](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            var indices = [CFIndex](repeating: 0, count: count)
+            CTRunGetGlyphs(run, CFRange(), &ids)
+            CTRunGetPositions(run, CFRange(), &positions)
+            CTRunGetStringIndices(run, CFRange(), &indices)
+            var cellStart: (column: Int, x: CGFloat)?
+            for index in 0..<count {
+                let column = columnAt[indices[index]]
+                if cells[column].symbol.isEmpty || cells[column].symbol == " " { continue }
+                if cellStart?.column != column { cellStart = (column, positions[index].x) }
+                let position = CGPoint(x: CGFloat(column) * TerminalPaneView.cellWidth + (positions[index].x - cellStart!.x),
+                                       y: positions[index].y)
+                glyphs[column, default: []].append(describe(font, ids[index], position, column: column))
+            }
+        }
+        return glyphs
+    }
+
+    private static func describe(_ font: CTFont, _ glyph: CGGlyph, _ position: CGPoint, column: Int) -> String {
+        let x = position.x - CGFloat(column) * TerminalPaneView.cellWidth
+        // Adding zero turns -0 into 0, so rounding noise never shows as a difference.
+        return "\(CTFontCopyPostScriptName(font)) \(glyph) \(String(format: "%.2f %.2f", (x * 100).rounded() / 100 + 0, (position.y * 100).rounded() / 100 + 0))"
+    }
+
+    /// Rows are found again by fingerprint: a row that scrolled up must keep it, wide, combining
+    /// and Nerd Font symbols included, or every frame would lay out the whole screen again.
+    func testScrolledRowsKeepTheirFingerprints() throws {
+        for workload in [TerminalWorkload.unicodeScroll(width: 80, height: 20, frames: 10),
+                         TerminalWorkload.colorScroll(width: 80, height: 20, frames: 10)] {
+            var decoder = HerdrSurfaceDecoder()
+            var previous: TerminalGrid?
+            for (index, frame) in workload.frames.enumerated() {
+                let grid = TerminalPaneView.layoutGrid(try XCTUnwrap(decoder.apply(frame: frame)),
+                                                       theme: TerminalRenderHarness.theme, previous: previous)
+                if let previous {
+                    for row in 0..<(grid.height - 1) {
+                        XCTAssertEqual(grid.keys[row].fingerprint, previous.keys[row + 1].fingerprint,
+                                       "\(workload.name) frame \(index) row \(row)")
+                        // The cursor sat on the last row, so the row above it is laid out again.
+                        guard row < grid.height - 2 else { continue }
+                        XCTAssertEqual(previous.row(matching: grid.keys[row], near: row + 1), row + 1,
+                                       "\(workload.name) frame \(index) row \(row)")
+                    }
+                }
+                previous = grid
+            }
+        }
+    }
+
     /// Every row whose cells or cursor changed between two frames is redrawn.
     func testChangedRowsCoverEveryChange() throws {
         for workload in TerminalWorkload.all(width: 60, height: 20, frames: 24) {

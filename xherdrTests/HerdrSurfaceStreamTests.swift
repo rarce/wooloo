@@ -219,6 +219,7 @@ final class HerdrSurfaceStreamTests: XCTestCase {
         let helloJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(hello.string().utf8)) as? [String: Any])
         XCTAssertEqual(helloJSON["generation"] as? Int, 1)
         XCTAssertEqual(helloJSON["surface_codecs"] as? [String], ["shell.surface.v1"])
+        XCTAssertEqual(helloJSON["surface_scroll"] as? Bool, true, "scrolling output arrives as row shifts")
 
         XCTAssertTrue(stream.sendInput(.text("ls"), to: "w1:p1"))
         stream.resize(cols: 100, rows: 30, cellWidth: 8, cellHeight: 16)
@@ -249,6 +250,26 @@ final class HerdrSurfaceStreamTests: XCTestCase {
         next.setRow(2, row.cells)
         let endpoint = try FakeSurfaceEndpoint(path: directory + "/c.sock",
                                                afterHello: [model.surfaceFrame(), next.patchFrame(baseRevision: 1, rows: [2])])
+        defer { endpoint.stop() }
+        let stream = HerdrSurfaceStream()
+        let run = start(stream, path: endpoint.path)
+        wait(for: [run.ready], timeout: 5)
+        waitUntil { run.surfaces().count == 2 }
+        XCTAssertEqual(run.surfaces().last?.cells, next.surface.cells)
+        XCTAssertEqual(run.surfaces().last?.revision, 2)
+        stream.cancel()
+        wait(for: [run.finished], timeout: 3)
+    }
+
+    func testScrolledPatchesUpdateTheSurface() throws {
+        var next = model
+        next.revision = 2
+        var row = RowBuilder(width: 20)
+        row.put("scrolled in")
+        next.scroll(appending: row.cells)
+        let endpoint = try FakeSurfaceEndpoint(path: directory + "/c.sock", afterHello: [
+            model.surfaceFrame(), next.scrollFrame(from: model, scrolls: [(next.paneRect, 1)])
+        ])
         defer { endpoint.stop() }
         let stream = HerdrSurfaceStream()
         let run = start(stream, path: endpoint.path)

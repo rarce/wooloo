@@ -11,7 +11,7 @@ struct ReferenceSurfaceDecoder {
     private(set) var surface: HerdrSurface?
     private var assets: [Data: Data] = [:]
 
-    /// Applies a tag 13 or 19 frame; returns nil for any other tag.
+    /// Applies a tag 13 or 19 frame, or a tag 20 scrolled patch; returns nil for anything else.
     mutating func apply(_ frame: Data) throws -> HerdrSurface? {
         var input = Input(bytes: [UInt8](frame))
         switch try input.number() {
@@ -21,10 +21,69 @@ struct ReferenceSurfaceDecoder {
             guard var current = surface else { throw Failure.noBaseSurface }
             try readPatch(&input, into: &current)
             surface = current
+        case 20:
+            guard try input.text() == "endpoint.surface-scroll.v1" else { return nil }
+            guard var current = surface else { throw Failure.noBaseSurface }
+            try readScrolledPatch(try input.text(), into: &current)
+            surface = current
         default:
             return nil
         }
         return surface
+    }
+
+    /// Base64 without padding of: a scroll count, each scroll's region and shift as
+    /// little-endian 16-bit values, then a length-prefixed patch frame. Each region's rows are
+    /// reordered by Herdr's swap sequence, computed here as a permutation and copied.
+    private func readScrolledPatch(_ text: String, into surface: inout HerdrSurface) throws {
+        var base64 = text
+        while base64.count % 4 != 0 { base64 += "=" }
+        guard let data = Data(base64Encoded: base64) else { throw Failure.invalid("scroll base64") }
+        let bytes = [UInt8](data)
+        guard let count = bytes.first, count > 0, count <= 64 else { throw Failure.invalid("scroll count") }
+        var offset = 1
+        func word() throws -> Int {
+            guard offset + 2 <= bytes.count else { throw Failure.truncated }
+            offset += 2
+            return Int(bytes[offset - 2]) + Int(bytes[offset - 1]) * 256
+        }
+        var regions: [(rect: HerdrRect, shift: Int)] = []
+        for _ in 0..<count {
+            let rect = HerdrRect(x: try word(), y: try word(), width: try word(), height: try word())
+            let raw = try word()
+            regions.append((rect, raw >= 32768 ? raw - 65536 : raw))
+        }
+        for (index, a) in regions.enumerated() {
+            for b in regions[(index + 1)...] where a.rect.x < b.rect.x + b.rect.width && b.rect.x < a.rect.x + a.rect.width
+                && a.rect.y < b.rect.y + b.rect.height && b.rect.y < a.rect.y + a.rect.height {
+                throw Failure.invalid("overlapping scroll regions")
+            }
+        }
+        guard offset + 4 <= bytes.count else { throw Failure.truncated }
+        let length = (0..<4).reduce(0) { $0 + Int(bytes[offset + $1]) << (8 * $1) }
+        guard offset + 4 + length == bytes.count else { throw Failure.invalid("scroll patch length") }
+        var input = Input(bytes: Array(bytes[(offset + 4)...]))
+        guard try input.number() == 19 else { throw Failure.invalid("scroll without a patch") }
+        let previous = surface.cells
+        for region in regions {
+            let rect = region.rect, distance = abs(region.shift)
+            guard rect.width > 0, rect.height >= 2, distance > 0, distance < rect.height,
+                  rect.x + rect.width <= surface.width, rect.y + rect.height <= surface.height
+            else { throw Failure.invalid("scroll region") }
+            var order = Array(0..<rect.height)
+            if region.shift > 0 {
+                for y in 0..<(rect.height - distance) { order.swapAt(y, y + distance) }
+            } else {
+                for y in (distance..<rect.height).reversed() { order.swapAt(y, y - distance) }
+            }
+            for (y, source) in order.enumerated() {
+                for x in 0..<rect.width {
+                    surface.cells[(rect.y + y) * surface.width + rect.x + x]
+                        = previous[(rect.y + source) * surface.width + rect.x + x]
+                }
+            }
+        }
+        try readPatch(&input, into: &surface)
     }
 
     private struct Input {

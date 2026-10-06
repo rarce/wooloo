@@ -211,6 +211,8 @@ private struct SurfaceReader {
 
     init(_ data: Data) { bytes = Array(data) }
 
+    init(bytes: [UInt8]) { self.bytes = bytes }
+
     mutating func byte() throws -> UInt8 {
         guard position < bytes.count else { throw SurfaceProtocolError.unexpectedEnd }
         defer { position += 1 }
@@ -491,13 +493,17 @@ private struct SurfaceReader {
                             splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup)
     }
 
-    mutating func applyPatch(to surface: inout HerdrSurface) throws {
+    /// Applies a patch; `scrolls` move rows of pane regions first, as a scrolled patch does.
+    mutating func applyPatch(to surface: inout HerdrSurface, scrolls: [HerdrSurfaceScroll] = []) throws {
         let bootID = try string()
         let projectionRevision = try number()
         let baseRevision = try number()
         let revision = try number()
         guard bootID == surface.bootID, projectionRevision == surface.projectionRevision,
               baseRevision == surface.revision else { throw SurfaceProtocolError.invalidFrame }
+        guard scrolls.allSatisfy({ $0.fits(width: surface.width, height: surface.height) }),
+              HerdrSurfaceScroll.disjoint(scrolls) else { throw SurfaceProtocolError.invalidFrame }
+        for scroll in scrolls { scroll.apply(to: &surface.cells, width: surface.width) }
         for _ in 0..<(try count()) {
             let x = try Int(number())
             let y = try Int(number())
@@ -525,18 +531,89 @@ private struct SurfaceReader {
     }
 }
 
+/// Moves the rows of one pane region before a scrolled patch's rows apply (Herdr's
+/// `protocol::surface_scroll`). A positive `shift` moves content up: row `y` shows the previous
+/// row `y + shift`, and rows that scroll out rotate into the vacated rows in the order Herdr's
+/// row swaps leave them, since the patch omits vacated rows that already match.
+struct HerdrSurfaceScroll: Equatable {
+    let rect: HerdrRect
+    let shift: Int
+
+    func fits(width: Int, height: Int) -> Bool {
+        rect.width > 0 && rect.height >= 2 && shift != 0 && abs(shift) < rect.height
+            && rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= width && rect.y + rect.height <= height
+    }
+
+    static func disjoint(_ scrolls: [HerdrSurfaceScroll]) -> Bool {
+        scrolls.indices.allSatisfy { index in
+            scrolls[(index + 1)...].allSatisfy { other in
+                let a = scrolls[index].rect, b = other.rect
+                return !(a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height)
+            }
+        }
+    }
+
+    /// Swaps rows exactly as Herdr's `for_each_swap` does, so both ends agree on the order.
+    func apply(to cells: inout [HerdrCell], width: Int) {
+        let distance = abs(shift)
+        let pairs = shift > 0
+            ? (0..<(rect.height - distance)).map { ($0, $0 + distance) }
+            : (distance..<rect.height).reversed().map { ($0, $0 - distance) }
+        cells.withUnsafeMutableBufferPointer { cells in
+            for (a, b) in pairs {
+                let first = (rect.y + a) * width + rect.x, second = (rect.y + b) * width + rect.x
+                for x in 0..<rect.width { cells.swapAt(first + x, second + x) }
+            }
+        }
+    }
+}
+
 /// Turns endpoint frames into surfaces: a complete surface replaces the current one and a
 /// patch updates it. The live stream and the pipeline tests share it.
 struct HerdrSurfaceDecoder {
+    /// The control frame kind of scrolled patches, sent when the hello asks for `surface_scroll`.
+    static let scrollKind = "endpoint.surface-scroll.v1"
+
     private(set) var surface: HerdrSurface?
     private var graphicsCache: [Data: Data] = [:]
 
-    /// Applies one surface (tag 13) or patch (tag 19) frame; other frames return nil.
+    /// Applies one surface (tag 13), patch (tag 19) or scrolled patch (a tag 20 control frame
+    /// of `scrollKind`); other frames return nil.
     mutating func apply(frame: Data) throws -> HerdrSurface? {
         var reader = SurfaceReader(frame)
         let tag = try reader.number()
+        if tag == 20 {
+            guard try reader.string() == Self.scrollKind else { return nil }
+            return try applyScroll(try reader.string())
+        }
         guard tag == 13 || tag == 19 else { return nil }
         return try apply(tag: tag, from: &reader)
+    }
+
+    /// Applies a scrolled patch: unpadded base64 of a count byte, each scroll's x, y, width
+    /// and height (UInt16 LE) and shift (Int16 LE), then one framed patch (tag 19). Scrolling
+    /// output then carries only the rows that still differ after the shift, not every row.
+    mutating func applyScroll(_ data: String) throws -> HerdrSurface {
+        let padded = data + String(repeating: "=", count: (4 - data.utf8.count % 4) % 4)
+        guard let decoded = Data(base64Encoded: padded) else { throw SurfaceProtocolError.invalidFrame }
+        let bytes = [UInt8](decoded)
+        guard let count = bytes.first.map(Int.init), (1...64).contains(count) else { throw SurfaceProtocolError.invalidFrame }
+        let header = 1 + count * 10
+        guard bytes.count >= header + 4 else { throw SurfaceProtocolError.unexpectedEnd }
+        func value(_ at: Int) -> UInt16 { UInt16(bytes[at]) | UInt16(bytes[at + 1]) << 8 }
+        let scrolls = (0..<count).map { index in
+            let at = 1 + index * 10
+            return HerdrSurfaceScroll(rect: HerdrRect(x: Int(value(at)), y: Int(value(at + 2)),
+                                                      width: Int(value(at + 4)), height: Int(value(at + 6))),
+                                      shift: Int(Int16(bitPattern: value(at + 8))))
+        }
+        let length = (0..<4).reduce(0) { $0 | Int(bytes[header + $1]) << ($1 * 8) }
+        guard header + 4 + length == bytes.count else { throw SurfaceProtocolError.invalidFrame }
+        var reader = SurfaceReader(bytes: Array(bytes[(header + 4)...]))
+        guard try reader.number() == 19, var patched = surface else { throw SurfaceProtocolError.invalidFrame }
+        try reader.applyPatch(to: &patched, scrolls: scrolls)
+        surface = patched
+        return patched
     }
 
     fileprivate mutating func apply(tag: UInt64, from reader: inout SurfaceReader) throws -> HerdrSurface {
@@ -802,7 +879,7 @@ final class HerdrSurfaceStream {
             "surface_size": ["cols": cols, "rows": rows],
             "pixel_mouse": false, "direct_graphics": false,
             "endpoint_keybindings": false, "mouse_capture": false,
-            "surface_active": true, "surface_reuse": false, "surface_delta": false,
+            "surface_active": true, "surface_reuse": false, "surface_delta": false, "surface_scroll": true,
             "snapshot_codecs": ["shell.snapshot.v1"],
             "surface_codecs": ["shell.surface.v1"],
             "input_codecs": ["shell.input.semantic.v1"],
@@ -822,7 +899,7 @@ final class HerdrSurfaceStream {
         while !isCancelled {
             let frame = try readFrame(fd: connected)
             let receivedAt = TerminalPipelineMetrics.now()
-            var reader = SurfaceReader(frame)
+            var reader = SurfaceReader(bytes: frame)
             let tag = try reader.number()
             switch tag {
             case 20:
@@ -841,6 +918,15 @@ final class HerdrSurfaceStream {
                     }
                     welcomed = true
                     supportsAgentView = (welcome["capabilities"] as? [String] ?? []).contains("agent_view_projection")
+                } else if welcomed, kind == HerdrSurfaceDecoder.scrollKind {
+                    recorder?.record(Data(frame), at: receivedAt)
+                    let surface = try TerminalPipelineMetrics.signposter.withIntervalSignpost("decode") {
+                        try decoder.applyScroll(data)
+                    }
+                    metrics?.received(surface, isPatch: true, bytes: frame.count, at: receivedAt,
+                                      decodeNanos: TerminalPipelineMetrics.now() - receivedAt)
+                    onSurface(surface)
+                    continue
                 } else if welcomed, kind == "shell.snapshot.v1",
                           let json = data.data(using: .utf8),
                           let snapshot = try JSONSerialization.jsonObject(with: json) as? [String: Any],
@@ -855,7 +941,7 @@ final class HerdrSurfaceStream {
                     if let projection = agents.receive(kind: kind, data: Data(data.utf8)) { onAgents(projection) }
                 }
             case 13 where welcomed, 19 where welcomed:
-                recorder?.record(frame, at: receivedAt)
+                recorder?.record(Data(frame), at: receivedAt)
                 let surface = try TerminalPipelineMetrics.signposter.withIntervalSignpost("decode") {
                     try decoder.apply(tag: tag, from: &reader)
                 }
@@ -873,24 +959,22 @@ final class HerdrSurfaceStream {
         return cancelled
     }
 
-    private func readFrame(fd: Int32) throws -> Data {
+    /// Reads one frame straight into the bytes the decoder reads, without an intermediate copy.
+    private func readFrame(fd: Int32) throws -> [UInt8] {
         let header = try readExactly(fd: fd, count: 4)
         let length = header.enumerated().reduce(UInt32(0)) { $0 | (UInt32($1.element) << ($1.offset * 8)) }
         guard length > 0, length <= 32 * 1024 * 1024 else { throw SurfaceProtocolError.invalidFrame }
         return try readExactly(fd: fd, count: Int(length))
     }
 
-    private func readExactly(fd: Int32, count: Int) throws -> Data {
-        var data = Data(count: count)
-        try data.withUnsafeMutableBytes { bytes in
+    private func readExactly(fd: Int32, count: Int) throws -> [UInt8] {
+        try [UInt8](unsafeUninitializedCapacity: count) { bytes, initialized in
             guard let base = bytes.baseAddress else { return }
-            var received = 0
-            while received < count {
-                let amount = Darwin.read(fd, base.advanced(by: received), count - received)
+            while initialized < count {
+                let amount = Darwin.read(fd, base.advanced(by: initialized), count - initialized)
                 if amount <= 0 { throw SurfaceProtocolError.unexpectedEnd }
-                received += amount
+                initialized += amount
             }
         }
-        return data
     }
 }

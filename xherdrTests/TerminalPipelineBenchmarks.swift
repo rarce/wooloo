@@ -7,7 +7,9 @@ import XCTest
 /// JSON lines it writes to `XHERDR_BENCH_OUT` with a saved baseline.
 ///
 /// Stages: `decode` (frame bytes to surface, stream thread), `layout` (surface to grid, main
-/// thread, reusing rows from the previous sampled state), `layout-cold` (no rows to reuse), `draw` (grid to pixels at 2x, main thread) and `burst` (every frame of the workload
+/// thread, reusing rows from the previous sampled state), `layout-cold` (no rows to reuse, text
+/// never shaped before), `layout-seen` (no rows to reuse, text shaped before), `draw` (grid to
+/// pixels at 2x, main thread) and `burst` (every frame of the workload
 /// through decode, layout and draw in turn, as the main thread handles a burst of output today).
 @MainActor
 final class TerminalPipelineBenchmarks: XCTestCase {
@@ -53,7 +55,8 @@ final class TerminalPipelineBenchmarks: XCTestCase {
     func testPipelineStages() throws {
         guard environment["XHERDR_BENCH"] == "1" else { throw XCTSkip("Set XHERDR_BENCH=1 to run benchmarks") }
         report(#"{"config":{"cols":\#(columns),"rows":\#(rows),"frames":\#(frameCount),"repeat":\#(repetitions),"font":"\#(TerminalPaneView.terminalFont.fontName)"}}"#)
-        for workload in TerminalWorkload.all(width: columns, height: rows, frames: frameCount) {
+        for workload in TerminalWorkload.all(width: columns, height: rows, frames: frameCount)
+            + [TerminalWorkload.scrollShift(width: columns, height: rows, frames: frameCount)] {
             try measure(workload)
         }
     }
@@ -77,7 +80,9 @@ final class TerminalPipelineBenchmarks: XCTestCase {
         var layout = Samples()
         var grids: [TerminalGrid] = []
         for repetition in 0..<repetitions {
-            // Rows carry over between consecutive states as they do in the view.
+            // Rows carry over between consecutive states as they do in the view, but every
+            // repetition shapes its text anew, as output the pane never showed before.
+            TerminalShapeCache.shared.removeAll()
             var previous: TerminalGrid?
             for state in states {
                 let grid = layout.time {
@@ -89,14 +94,19 @@ final class TerminalPipelineBenchmarks: XCTestCase {
         }
         report(layout.json(scenario: workload.name, stage: "layout"))
 
-        // Every row laid out anew, as after a clear, a resize or a tab switch.
+        // Every row laid out anew, as after a clear, a resize or a tab switch: `layout-cold`
+        // shapes text never shown before, `layout-seen` text the pane showed earlier.
         var cold = Samples()
+        var seen = Samples()
         for _ in 0..<repetitions {
             for state in states.prefix(20) {
+                TerminalShapeCache.shared.removeAll()
                 _ = cold.time { TerminalPaneView.layoutGrid(state, theme: TerminalRenderHarness.theme) }
+                _ = seen.time { TerminalPaneView.layoutGrid(state, theme: TerminalRenderHarness.theme) }
             }
         }
         report(cold.json(scenario: workload.name, stage: "layout-cold"))
+        report(seen.json(scenario: workload.name, stage: "layout-seen"))
 
         var draw = Samples()
         let view = TerminalRenderHarness.makeView(width: workload.width, height: workload.height)
@@ -114,6 +124,7 @@ final class TerminalPipelineBenchmarks: XCTestCase {
         var frame = Samples()
         for _ in 0..<repetitions {
             var decoder = HerdrSurfaceDecoder()
+            TerminalShapeCache.shared.removeAll()
             burst.time {
                 for payload in workload.frames {
                     frame.time {

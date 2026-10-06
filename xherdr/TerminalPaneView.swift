@@ -34,6 +34,67 @@ struct TerminalGrid {
         let cursorColumn: Int?
         /// Column ranges covered by images drawn behind the text.
         let imageColumns: [Range<Int>]
+        /// A hash of the cells, so finding a row compares whole rows only when it matches.
+        /// Equal rows have equal fingerprints except where a symbol is a long string stored
+        /// apart, which at worst lays that row out again.
+        let fingerprint: UInt64
+
+        init(cells: ArraySlice<HerdrCell>, cursorColumn: Int?, imageColumns: [Range<Int>]) {
+            self.cells = cells
+            self.cursorColumn = cursorColumn
+            self.imageColumns = imageColumns
+            fingerprint = Self.fingerprint(of: cells)
+        }
+
+        /// A multiplicative hash of each cell's bytes, read in place: the symbol's two words (a
+        /// short symbol is stored inline, so equal ones have equal words) and its attributes,
+        /// folded into one word so the chain costs one multiplication per cell.
+        private static func fingerprint(of cells: ArraySlice<HerdrCell>) -> UInt64 {
+            let symbol = MemoryLayout<HerdrCell>.offset(of: \HerdrCell.symbol)!
+            let foreground = MemoryLayout<HerdrCell>.offset(of: \HerdrCell.foreground)!
+            let background = MemoryLayout<HerdrCell>.offset(of: \HerdrCell.background)!
+            let modifier = MemoryLayout<HerdrCell>.offset(of: \HerdrCell.modifier)!
+            return cells.withUnsafeBytes { bytes in
+                var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+                for start in stride(from: 0, to: bytes.count, by: MemoryLayout<HerdrCell>.stride) {
+                    let colors = UInt64(bytes.loadUnaligned(fromByteOffset: start + foreground, as: UInt32.self)) << 32
+                        | UInt64(bytes.loadUnaligned(fromByteOffset: start + background, as: UInt32.self))
+                    let attributes = (colors ^ UInt64(bytes.loadUnaligned(fromByteOffset: start + modifier, as: UInt16.self)))
+                        &* 0x9e37_79b9_7f4a_7c15
+                    let high = bytes.loadUnaligned(fromByteOffset: start + symbol + 8, as: UInt64.self)
+                    let word = bytes.loadUnaligned(fromByteOffset: start + symbol, as: UInt64.self)
+                        ^ (high << 23 | high >> 41) ^ attributes
+                    hash = (hash ^ word) &* 0x0000_0100_0000_01b3
+                }
+                return hash ^ hash >> 29
+            }
+        }
+
+        /// Compares cells field by field in place: the synthesized comparison copies every cell,
+        /// retaining and releasing its symbol, which made matching scrolled rows the main cost
+        /// of a layout.
+        static func == (lhs: RowKey, rhs: RowKey) -> Bool {
+            guard lhs.cursorColumn == rhs.cursorColumn, lhs.imageColumns == rhs.imageColumns,
+                  lhs.cells.count == rhs.cells.count else { return false }
+            return lhs.cells.withUnsafeBufferPointer { left in
+                rhs.cells.withUnsafeBufferPointer { right in
+                    for index in left.indices {
+                        guard left[index].foreground == right[index].foreground,
+                              left[index].background == right[index].background,
+                              left[index].modifier == right[index].modifier,
+                              left[index].skip == right[index].skip,
+                              left[index].hyperlink == right[index].hyperlink,
+                              left[index].symbol == right[index].symbol else { return false }
+                    }
+                    return true
+                }
+            }
+        }
+
+        /// Whether `other` shows the same thing, compared whole only if the fingerprints match.
+        func matches(_ other: RowKey) -> Bool {
+            fingerprint == other.fingerprint && self == other
+        }
     }
 
     let width: Int
@@ -44,15 +105,17 @@ struct TerminalGrid {
     let selectionText: CGColor
 
     /// The index of a row laid out for `key`, checking `hint` first, then every other row.
+    /// Fingerprints rule out other rows first, so a new row sharing a long prefix with every
+    /// row of the previous screen (beside an empty pane, in a table) is not compared whole.
     func row(matching key: RowKey, near hint: Int) -> Int? {
-        if hint >= 0, hint < height, keys[hint] == key { return hint }
-        return keys.indices.first { $0 != hint && keys[$0] == key }
+        if hint >= 0, hint < height, keys[hint].matches(key) { return hint }
+        return keys.indices.first { $0 != hint && keys[$0].matches(key) }
     }
 
     /// Runs of rows that show something different from `previous`, which has the same size.
     func changedRows(since previous: TerminalGrid) -> [Range<Int>] {
         var ranges: [Range<Int>] = []
-        for row in 0..<height where previous.keys[row] != keys[row] {
+        for row in 0..<height where !previous.keys[row].matches(keys[row]) {
             if let last = ranges.last, last.upperBound == row {
                 ranges[ranges.count - 1] = last.lowerBound..<(row + 1)
             } else {
@@ -60,6 +123,78 @@ struct TerminalGrid {
             }
         }
         return ranges
+    }
+}
+
+/// Core Text's glyphs for pieces of row text, so text shown before (after a tab switch, a
+/// resize or a split drag) is not shaped again. Shaping depends only on the text and its bold
+/// and italic ranges, never on colors or the theme.
+final class TerminalShapeCache {
+    struct Key: Hashable {
+        /// UTF-16, as Core Text indexes it.
+        let units: [UInt16]
+        /// Location, length and Ratatui bold/italic bits (1, 4 or 5) of each styled range.
+        let styles: [Int]
+    }
+
+    struct Run {
+        let font: CTFont
+        let glyphs: [CGGlyph]
+        /// Positions from Core Text's layout of the piece, and UTF-16 offsets into it.
+        let positions: [CGPoint]
+        let indices: [Int]
+    }
+
+    static let shared = TerminalShapeCache()
+    /// About 20 screens of text; the cache starts over once it holds more pieces.
+    static let capacity = 2048
+
+    private let lock = NSLock()
+    private var pieces: [Key: [Run]] = [:]
+
+    func runs(for key: Key) -> [Run] {
+        lock.lock()
+        let cached = pieces[key]
+        lock.unlock()
+        if let cached { return cached }
+        let shaped = Self.shape(key)
+        lock.lock()
+        if pieces.count >= Self.capacity { pieces.removeAll(keepingCapacity: true) }
+        pieces[key] = shaped
+        lock.unlock()
+        return shaped
+    }
+
+    func removeAll() {
+        lock.lock()
+        pieces.removeAll()
+        lock.unlock()
+    }
+
+    private static func shape(_ key: Key) -> [Run] {
+        let line = NSMutableAttributedString(string: String(decoding: key.units, as: UTF16.self),
+                                             attributes: [.font: TerminalPaneView.terminalFont])
+        for index in stride(from: 0, to: key.styles.count - 2, by: 3) {
+            let font = switch key.styles[index + 2] {
+            case 1: TerminalPaneView.boldFont
+            case 4: TerminalPaneView.italicFont
+            default: TerminalPaneView.boldItalicFont
+            }
+            line.addAttribute(.font, value: font, range: NSRange(location: key.styles[index], length: key.styles[index + 1]))
+        }
+        return (CTLineGetGlyphRuns(CTLineCreateWithAttributedString(line)) as? [CTRun] ?? []).compactMap { ctRun in
+            let count = CTRunGetGlyphCount(ctRun)
+            guard count > 0 else { return nil }
+            let attributes = CTRunGetAttributes(ctRun) as NSDictionary
+            var glyphs = [CGGlyph](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            var indices = [CFIndex](repeating: 0, count: count)
+            CTRunGetGlyphs(ctRun, CFRange(), &glyphs)
+            CTRunGetPositions(ctRun, CFRange(), &positions)
+            CTRunGetStringIndices(ctRun, CFRange(), &indices)
+            return Run(font: attributes[kCTFontAttributeName] as! CTFont, glyphs: glyphs,
+                       positions: positions, indices: indices)
+        }
     }
 }
 
@@ -271,27 +406,39 @@ struct TerminalPaneView: NSViewRepresentable {
                             selectionText: readableText(on: selectionFill, theme: theme).cgColor)
     }
 
-    /// Places each cell's glyphs at the cell origin. Core Text still shapes a whole row, so
-    /// font fallback and ligatures work, but its advances never move the next column.
+    /// Blank cells kept around the text Core Text shapes. No substitution in Fira Code looks
+    /// further than 6 glyphs, and none starts at or replaces a space, so text separated by at
+    /// least this many blanks shapes alike apart; `TerminalRenderingTests` checks it.
+    static let shapingContext = 8
+
+    /// Places each cell's glyphs at the cell origin. Core Text shapes the row's text, so font
+    /// fallback and ligatures work, but its advances never move the next column. Runs of blanks
+    /// longer than `shapingContext` split the text, so padding and blank rows cost no shaping.
     private static func layoutRow(_ key: TerminalGrid.RowKey, theme: XherdrTheme,
                                   palette: inout TerminalPalette) -> TerminalGrid.Row {
-        let regularFont = terminalFont
         let underlineY = -terminalFont.underlinePosition
         let underlineHeight = max(1, terminalFont.underlineThickness)
         let cells = key.cells
         let width = cells.count
         var backgrounds: [TerminalGrid.Fill] = []
         var underlines: [TerminalGrid.Fill] = []
-        var text = ""
-        text.reserveCapacity(width)
+        /// The row's text in UTF-16, as Core Text indexes it.
+        var units: [UInt16] = []
+        units.reserveCapacity(width)
         var fontRanges: [(range: NSRange, font: NSFont)] = []
         var rowSymbols: [String] = []
         rowSymbols.reserveCapacity(width)
         var foregrounds: [CGColor] = []
         foregrounds.reserveCapacity(width)
-        /// The cell column of every UTF-16 unit in `text`.
+        /// The cell column of every unit in `units`.
         var columnAt: [Int] = []
         columnAt.reserveCapacity(width)
+        /// The first unit in `units` of every column.
+        var unitAt: [Int] = []
+        unitAt.reserveCapacity(width)
+        /// Columns from the first to the last non-blank cell of each piece of text to shape.
+        var segments: [Range<Int>] = []
+        var lastText = -1
         var fill: (start: Int, color: CGColor)?
 
         func closeFill(at end: Int) {
@@ -327,12 +474,21 @@ struct TerminalPaneView: NSViewRepresentable {
             }
             let textColor = isCursor ? background : foreground
             foregrounds.append(textColor)
+            unitAt.append(columnAt.count)
             if cell.skip {
                 rowSymbols.append("")
                 continue
             }
             let symbol = cell.symbol.isEmpty ? " " : cell.symbol
             rowSymbols.append(symbol)
+            if symbol != " " {
+                if let last = segments.last, x - lastText <= shapingContext {
+                    segments[segments.count - 1] = last.lowerBound..<(x + 1)
+                } else {
+                    segments.append(x..<(x + 1))
+                }
+                lastText = x
+            }
             let length = symbol.utf16.count
             let styledFont: NSFont? = switch modifier & 5 {
             case 1: boldFont
@@ -348,7 +504,7 @@ struct TerminalPaneView: NSViewRepresentable {
                     fontRanges.append((NSRange(location: columnAt.count, length: length), styledFont))
                 }
             }
-            text += symbol
+            units.append(contentsOf: symbol.utf16)
             columnAt.append(contentsOf: repeatElement(x, count: length))
             // Underlines and strikethroughs share the row's line fills.
             for (flag, lineY) in [(UInt16(8), baseline + underlineY), (256, cellHeight / 2)] where modifier & flag != 0 {
@@ -360,41 +516,59 @@ struct TerminalPaneView: NSViewRepresentable {
             }
         }
         closeFill(at: width)
-        let line = NSMutableAttributedString(string: text, attributes: [.font: regularFont])
-        for (range, font) in fontRanges { line.addAttribute(.font, value: font, range: range) }
-
         var runs: [TerminalGrid.GlyphRun] = []
-        let ctLine = CTLineCreateWithAttributedString(line)
-        for ctRun in CTLineGetGlyphRuns(ctLine) as? [CTRun] ?? [] {
-            let count = CTRunGetGlyphCount(ctRun)
-            guard count > 0 else { continue }
-            let attributes = CTRunGetAttributes(ctRun) as NSDictionary
-            let font = attributes[kCTFontAttributeName] as! CTFont
-            var glyphs = [CGGlyph](repeating: 0, count: count)
-            var positions = [CGPoint](repeating: .zero, count: count)
-            var indices = [CFIndex](repeating: 0, count: count)
-            CTRunGetGlyphs(ctRun, CFRange(), &glyphs)
-            CTRunGetPositions(ctRun, CFRange(), &positions)
-            CTRunGetStringIndices(ctRun, CFRange(), &indices)
-            // Glyphs sharing a cell (combining marks, clusters) keep their offsets from
-            // the cell's first glyph.
-            var cellStart: (column: Int, x: CGFloat)?
-            for index in 0..<count {
-                let column = columnAt[min(max(0, indices[index]), columnAt.count - 1)]
-                if rowSymbols[column] == " " { continue }
-                if cellStart?.column != column { cellStart = (column, positions[index].x) }
-                let position = CGPoint(x: CGFloat(column) * cellWidth + positions[index].x - (cellStart?.x ?? 0),
-                                       y: positions[index].y)
-                let textColor = foregrounds[column]
-                if let last = runs.last, last.font == font, last.color === textColor {
-                    runs[runs.count - 1].glyphs.append(glyphs[index])
-                    runs[runs.count - 1].positions.append(position)
-                    runs[runs.count - 1].columns.append(column)
-                } else {
-                    runs.append(TerminalGrid.GlyphRun(font: font, color: textColor, glyphs: [glyphs[index]],
-                                                      positions: [position], columns: [column]))
+        guard !segments.isEmpty else {
+            return TerminalGrid.Row(symbols: rowSymbols, backgrounds: backgrounds, runs: runs, underlines: underlines)
+        }
+        /// Adds the glyphs of a shaped piece of the row that starts at `units[offset]`.
+        func appendGlyphRuns(_ shaped: [TerminalShapeCache.Run], offset: Int) {
+            for run in shaped {
+                // Glyphs sharing a cell (combining marks, clusters) keep their offsets from
+                // the cell's first glyph.
+                var cellStart: (column: Int, x: CGFloat)?
+                for index in run.glyphs.indices {
+                    let column = columnAt[min(max(0, offset + run.indices[index]), columnAt.count - 1)]
+                    if rowSymbols[column] == " " { continue }
+                    if cellStart?.column != column { cellStart = (column, run.positions[index].x) }
+                    let position = CGPoint(x: CGFloat(column) * cellWidth + (run.positions[index].x - (cellStart?.x ?? 0)),
+                                           y: run.positions[index].y)
+                    let textColor = foregrounds[column]
+                    // Indexing instead of binding `runs.last` keeps the arrays uniquely referenced,
+                    // so appending never copies them.
+                    let last = runs.count - 1
+                    if last >= 0, runs[last].color === textColor, runs[last].font == run.font {
+                        runs[last].glyphs.append(run.glyphs[index])
+                        runs[last].positions.append(position)
+                        runs[last].columns.append(column)
+                    } else {
+                        var glyphRun = TerminalGrid.GlyphRun(font: run.font, color: textColor)
+                        let remaining = run.glyphs.count - index
+                        glyphRun.glyphs.reserveCapacity(remaining)
+                        glyphRun.positions.reserveCapacity(remaining)
+                        glyphRun.columns.reserveCapacity(remaining)
+                        glyphRun.glyphs.append(run.glyphs[index])
+                        glyphRun.positions.append(position)
+                        glyphRun.columns.append(column)
+                        runs.append(glyphRun)
+                    }
                 }
             }
+        }
+
+        for segment in segments {
+            // The blanks around the text stay, since spaces are context for some ligatures.
+            let lower = max(0, segment.lowerBound - shapingContext)
+            let upper = min(width, segment.upperBound + shapingContext)
+            let first = unitAt[lower]
+            let end = upper < width ? unitAt[upper] : columnAt.count
+            var styles: [Int] = []
+            for (range, font) in fontRanges where range.location < end && NSMaxRange(range) > first {
+                let start = max(range.location, first)
+                styles += [start - first, min(NSMaxRange(range), end) - start,
+                           font === boldFont ? 1 : font === italicFont ? 4 : 5]
+            }
+            let key = TerminalShapeCache.Key(units: Array(units[first..<end]), styles: styles)
+            appendGlyphRuns(TerminalShapeCache.shared.runs(for: key), offset: first)
         }
         return TerminalGrid.Row(symbols: rowSymbols, backgrounds: backgrounds, runs: runs, underlines: underlines)
     }
@@ -415,6 +589,9 @@ struct TerminalPaneView: NSViewRepresentable {
         let theme: XherdrTheme
         private var foregrounds: [UInt32: CGColor] = [:]
         private var backgrounds: [UInt32: CGColor] = [:]
+        /// The last lookups, since neighboring cells mostly share their colors.
+        private var lastForeground: (value: UInt32, color: CGColor)?
+        private var lastBackground: (value: UInt32, color: CGColor)?
         private var dims: [ObjectIdentifier: [ObjectIdentifier: CGColor]] = [:]
 
         init(theme: XherdrTheme) { self.theme = theme }
@@ -422,13 +599,33 @@ struct TerminalPaneView: NSViewRepresentable {
         /// A cell's text color; `reversed` means `value` is a background whose default is the
         /// theme background.
         mutating func foreground(_ value: UInt32, reversed: Bool = false) -> CGColor {
-            reversed ? background(value) : resolve(value, cache: &foregrounds, default: theme.terminalForeground)
+            if reversed { return background(value) }
+            if let last = lastForeground, last.value == value { return last.color }
+            let color: CGColor
+            if let cached = foregrounds[value] {
+                color = cached
+            } else {
+                color = Self.resolve(value, default: theme.terminalForeground, ansi: theme.ansi)
+                foregrounds[value] = color
+            }
+            lastForeground = (value, color)
+            return color
         }
 
         /// A cell's fill color; `reversed` means `value` is a foreground whose default is the
         /// theme foreground.
         mutating func background(_ value: UInt32, reversed: Bool = false) -> CGColor {
-            reversed ? foreground(value) : resolve(value, cache: &backgrounds, default: theme.terminalBackground)
+            if reversed { return foreground(value) }
+            if let last = lastBackground, last.value == value { return last.color }
+            let color: CGColor
+            if let cached = backgrounds[value] {
+                color = cached
+            } else {
+                color = Self.resolve(value, default: theme.terminalBackground, ansi: theme.ansi)
+                backgrounds[value] = color
+            }
+            lastBackground = (value, color)
+            return color
         }
 
         /// Faint text: the text color mixed halfway toward the cell's background, as iTerm2 draws it.
@@ -448,11 +645,10 @@ struct TerminalPaneView: NSViewRepresentable {
             return mixed
         }
 
-        private func resolve(_ value: UInt32, cache: inout [UInt32: CGColor], default fallback: NSColor) -> CGColor {
-            if let color = cache[value] { return color }
-            let color = TerminalPaneView.color(value, default: fallback, ansi: theme.ansi).cgColor
-            cache[value] = color
-            return color
+        /// Static, so a lookup never copies the palette and its theme, as a method on `self`
+        /// taking one of its own caches `inout` would.
+        private static func resolve(_ value: UInt32, default fallback: NSColor, ansi: [UInt32]) -> CGColor {
+            TerminalPaneView.color(value, default: fallback, ansi: ansi).cgColor
         }
     }
 

@@ -48,6 +48,69 @@ final class SurfaceDecodingTests: XCTestCase {
         XCTAssertThrowsError(try decoder.apply(frame: workload.frames[1]))
     }
 
+    /// With `surface_scroll`, scrolling output arrives as each pane's shift plus the rows that
+    /// still differ. Both decoders must reach the expected screen after every frame, in far
+    /// fewer bytes than patches rewriting every row.
+    func testScrolledPatchesMatchExpectedScreen() throws {
+        let workload = TerminalWorkload.scrollShift(width: 80, height: 24, frames: 60)
+        var decoder = HerdrSurfaceDecoder()
+        var reference = ReferenceSurfaceDecoder()
+        for (index, frame) in workload.frames.enumerated() {
+            let surface = try XCTUnwrap(decoder.apply(frame: frame), "frame \(index)")
+            let expected = try XCTUnwrap(reference.apply(frame), "frame \(index)")
+            XCTAssertEqual(expected.contentDigest, workload.digests[index], "reference decoder, frame \(index)")
+            XCTAssertEqual(surface.contentDigest, workload.digests[index], "frame \(index)")
+        }
+        XCTAssertEqual(decoder.surface?.cells, workload.final.cells)
+        let plain = TerminalWorkload.asciiScroll(width: 80, height: 24, frames: 60)
+        XCTAssertLessThan(workload.totalBytes * 3, plain.totalBytes, "scrolled patches should be much smaller")
+    }
+
+    /// A scroll outside the surface, overlapping regions or bytes after the patch must fail the
+    /// frame and leave the decoded surface as it was.
+    func testInvalidScrollsAreRejected() throws {
+        var model = SurfaceModel(width: 20, height: 6)
+        for y in 0..<6 {
+            var row = RowBuilder(width: 20)
+            row.put("line \(y)")
+            model.setRow(y, row.cells)
+        }
+        let previous = model
+        model.revision += 1
+        var row = RowBuilder(width: 20)
+        row.put("line 6")
+        model.scroll(appending: row.cells)
+        func frame(_ scrolls: [(x: Int, y: Int, width: Int, height: Int, shift: Int)], trailing: [UInt8] = []) -> Data {
+            var bytes: [UInt8] = [UInt8(scrolls.count)]
+            for scroll in scrolls {
+                for value in [scroll.x, scroll.y, scroll.width, scroll.height, Int(UInt16(bitPattern: Int16(scroll.shift)))] {
+                    bytes += [UInt8(value & 0xff), UInt8(value >> 8)]
+                }
+            }
+            let patch = model.patchFrame(baseRevision: previous.revision, rows: [5])
+            for shift in stride(from: 0, to: 32, by: 8) { bytes.append(UInt8((patch.count >> shift) & 0xff)) }
+            bytes += patch + trailing
+            var writer = SurfaceWireWriter()
+            writer.number(20)
+            writer.string(HerdrSurfaceDecoder.scrollKind)
+            writer.string(Data(bytes).base64EncodedString().replacingOccurrences(of: "=", with: ""))
+            return writer.data
+        }
+        let valid = frame([(0, 0, 20, 6, 1)])
+        let invalid = [frame([(0, 0, 20, 7, 1)]), frame([(0, 0, 20, 6, 6)]), frame([(0, 0, 20, 6, 0)]),
+                       frame([(0, 0, 20, 3, 1), (0, 2, 20, 4, 1)]), frame([(0, 0, 20, 6, 1)], trailing: [0])]
+        for (index, bad) in invalid.enumerated() {
+            var decoder = HerdrSurfaceDecoder()
+            var reference = ReferenceSurfaceDecoder()
+            _ = try decoder.apply(frame: previous.surfaceFrame())
+            _ = try reference.apply(previous.surfaceFrame())
+            XCTAssertThrowsError(try decoder.apply(frame: bad), "frame \(index)")
+            XCTAssertThrowsError(try reference.apply(bad), "reference, frame \(index)")
+            XCTAssertEqual(decoder.surface?.cells, previous.cells, "frame \(index) changed the surface")
+            XCTAssertEqual(try decoder.apply(frame: valid)?.cells, model.cells, "frame \(index)")
+        }
+    }
+
     func testDigestNoticesSingleCellChanges() {
         var model = SurfaceModel(width: 10, height: 2)
         let original = model.surface.contentDigest
