@@ -892,6 +892,8 @@ final class HerdrTerminalTextView: NSTextView {
     var surfaceFeed: HerdrSurfaceFeed?
     var onPresentSurface: ((HerdrSurface) -> Void)?
     private var keyWindowObserver: NSObjectProtocol?
+    /// With metrics on, records the screen's refreshes so a draw's time on screen can be estimated.
+    private let vsyncRecorder = TerminalVsyncRecorder()
     private var lastPresentedAgentRevision: (bootID: String, revision: UInt64)?
     var surfaceBootID: String?
     var surface: HerdrSurface?
@@ -953,6 +955,7 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        vsyncRecorder.follow(window == nil ? nil : self)
         if let keyWindowObserver { NotificationCenter.default.removeObserver(keyWindowObserver) }
         keyWindowObserver = window.map { window in
             NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
@@ -1053,7 +1056,10 @@ final class HerdrTerminalTextView: NSTextView {
         let signpost = TerminalPipelineMetrics.signposter.beginInterval("draw")
         defer {
             TerminalPipelineMetrics.signposter.endInterval("draw", signpost)
-            if let surface { TerminalPipelineMetrics.shared?.drawn(surface, start: drawStart) }
+            if let surface, let metrics = TerminalPipelineMetrics.shared {
+                metrics.drawn(surface, start: drawStart)
+                metrics.drawCommitted()
+            }
             if let surface, let callback = onPresentSurface, NSApp.isActive,
                window?.isKeyWindow == true, !isHiddenOrHasHiddenAncestor,
                lastPresentedAgentRevision?.bootID != surface.bootID || lastPresentedAgentRevision?.revision != surface.projectionRevision {

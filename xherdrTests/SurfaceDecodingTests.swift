@@ -159,6 +159,7 @@ final class SurfaceTraceReplayTests: XCTestCase {
         let lines = try String(contentsOfFile: metricsPath, encoding: .utf8).split(separator: "\n")
         var checked = 0
         var drawn = Set<String>()
+        var lastDrawnDigest: String?
         for line in lines {
             guard let object = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
                   object["e"] as? String == "draw",
@@ -173,10 +174,16 @@ final class SurfaceTraceReplayTests: XCTestCase {
                 continue
             }
             XCTAssertEqual(digest, String(expected, radix: 16), "revision \(drawnKey) was drawn with different content")
+            lastDrawnDigest = digest
             checked += 1
         }
         XCTAssertGreaterThan(checked, 0, "the metrics file holds no drawn digests")
-        if let lastKey { XCTAssertTrue(drawn.contains(lastKey), "the last revision received, \(lastKey), was never drawn") }
+        // A revision with the same cells as the screen (Herdr resends the screen under a new
+        // projection when a tab closes) changes no rows, so the view rightly skips drawing it.
+        if let lastKey, !drawn.contains(lastKey) {
+            XCTAssertEqual(digests[lastKey].map { String($0, radix: 16) }, lastDrawnDigest,
+                           "the last revision received, \(lastKey), was never drawn")
+        }
     }
 }
 

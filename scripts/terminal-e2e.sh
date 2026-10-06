@@ -2,8 +2,9 @@
 # Measures the live terminal pipeline end to end: starts a dedicated Herdr session, opens an
 # optimized xherdr build on it with metrics and a surface trace enabled, runs output workloads
 # in the pane, then
-#   1. summarizes frames in/out, main-thread costs and arrival-to-draw latency per workload,
-#      compared with docs/perf/e2e-baseline.json when it exists;
+#   1. summarizes frames in/out, main-thread costs, arrival-to-draw latency and an estimate of
+#      when each draw reached the screen per workload, compared with
+#      docs/perf/e2e-baseline.json when it exists;
 #   2. replays the recorded trace through the reference decoder and checks that every drawn
 #      revision showed exactly what Herdr sent, and that each workload's last frame was drawn.
 #
@@ -15,7 +16,10 @@
 # splits the pane, enables mouse reporting in the new one, and plays 40 clicks in the other
 # pane (which it already selected), 40 wheel events over the mouse-aware one and a 2 s drag of
 # the split, as three phases that report store publishes and view updates per event and the
-# event-to-screen latency of what Herdr redraws. All run by default.
+# event-to-screen latency of what Herdr redraws. split streams ascii and color output into two
+# panes at once; selection drags a text selection across the pane during ascii output; resize
+# changes the window size 16 times during ascii output; tabs switches 20 times between two tabs
+# that show earlier output. All run by default.
 #
 # The xherdr window opens and must stay visible while it runs. XHERDR_E2E_WINDOW sets its
 # content size (default 1600x1000). XHERDR_E2E_SESSION changes the
@@ -29,7 +33,7 @@ baseline=$root/docs/perf/e2e-baseline.json
 herdr=(herdr --session $session)
 save_baseline=0
 if [[ ${1:-} == --save-baseline ]]; then save_baseline=1; shift; fi
-workloads=(ascii color unicode typing burst keys mouse)
+workloads=(ascii color unicode typing burst keys mouse split selection resize tabs)
 (( $# )) && workloads=($@)
 [[ $session == default ]] && { echo "Refusing to use the primary Herdr session" >&2; exit 1; }
 
@@ -78,8 +82,10 @@ if ! $herdr status server 2>/dev/null | grep -q "status: running"; then
         python3 -c 'import time; time.sleep(0.1)'
     done
 fi
-pane=$($herdr workspace create --cwd $run --label xherdr-perf --focus |
-    python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])')
+created=$($herdr workspace create --cwd $run --label xherdr-perf --focus |
+    python3 -c 'import json, sys; pane = json.load(sys.stdin)["result"]["root_pane"]; print(pane["workspace_id"], pane["pane_id"])')
+workspace=${created% *}
+pane=${created#* }
 echo "Session $session, pane $pane"
 
 XHERDR_METRICS_FILE=$metrics XHERDR_SURFACE_TRACE=$trace XHERDR_TYPING_PROBE=1 \
@@ -128,6 +134,49 @@ for workload in $workloads; do
         continue
     fi
     play="python3 $root/scripts/terminal-perf.py play"
+    if [[ $workload == split ]]; then
+        echo "Running split"
+        second=$($herdr pane split $pane --direction right |
+            python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
+        python3 -c 'import time; time.sleep(1)'
+        start=$(now_ms)
+        $herdr pane run $second "clear; $play $run/color.txt --lines-per-second 250 --seconds 5; printf 'XHERDR_%s_%s\\n' DONE right" > /dev/null
+        $herdr pane run $pane "clear; $play $run/ascii.txt --lines-per-second 250 --seconds 5; printf 'XHERDR_%s_%s\\n' DONE left" > /dev/null
+        $herdr pane wait-output $pane --match XHERDR_DONE_left --timeout 180000 > /dev/null
+        $herdr pane wait-output $second --match XHERDR_DONE_right --timeout 180000 > /dev/null
+        python3 -c 'import time; time.sleep(1.5)'
+        echo "{\"name\":\"split\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
+        $herdr pane close $second > /dev/null
+        python3 -c 'import time; time.sleep(1)'
+        continue
+    fi
+    if [[ $workload == selection || $workload == resize ]]; then
+        echo "Running $workload"
+        # The probe plays during 5 s of ascii output.
+        $herdr pane run $pane "clear; $play $run/ascii.txt --lines-per-second 250 --seconds 7" > /dev/null
+        python3 -c 'import time; time.sleep(1)'
+        start=$(now_ms)
+        [[ $workload == selection ]] && notifyutil -p dev.xherdr.mouse-probe.select || notifyutil -p dev.xherdr.ui-probe.resize
+        python3 -c 'import time; time.sleep(5.5)'
+        echo "{\"name\":\"$workload\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
+        python3 -c 'import time; time.sleep(1.5)'
+        continue
+    fi
+    if [[ $workload == tabs ]]; then
+        echo "Running tabs"
+        $herdr pane run $pane "clear; head -c 20000 $run/color.txt" > /dev/null
+        other=$($herdr tab create --workspace $workspace |
+            python3 -c 'import json, sys; result = json.load(sys.stdin)["result"]; print(result["tab"]["tab_id"], result["root_pane"]["pane_id"])')
+        $herdr pane run ${other#* } "clear; head -c 20000 $run/unicode.txt" > /dev/null
+        python3 -c 'import time; time.sleep(1.5)'
+        start=$(now_ms)
+        notifyutil -p dev.xherdr.ui-probe.tabs
+        python3 -c 'import time; time.sleep(6.5)' # 20 switches, one every 300 ms
+        echo "{\"name\":\"tabs\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
+        $herdr tab close ${other% *} > /dev/null
+        python3 -c 'import time; time.sleep(1)'
+        continue
+    fi
     case $workload in
         ascii|color|unicode) command="$play $run/$workload.txt --lines-per-second 250 --seconds 5" ;;
         typing) command="$play $run/ascii.txt --chars-per-second 40 --seconds 5" ;;

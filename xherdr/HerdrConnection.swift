@@ -603,6 +603,9 @@ final class HerdrStore: ObservableObject {
         if let metrics = TerminalPipelineMetrics.shared {
             publishRecorder = objectWillChange.sink { _ in metrics.published() }
         }
+        #if XHERDR_PROBES
+        TerminalTypingProbe.store = self
+        #endif
     }
 
     /// Herdr's config root. Tests point it at a temporary directory with fake servers.

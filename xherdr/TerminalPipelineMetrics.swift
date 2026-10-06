@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import notify
 import os
+import QuartzCore
 
 /// Opt-in measurements of the live terminal pipeline, from a surface frame's arrival on the
 /// endpoint socket to the draw that shows it. Set `XHERDR_METRICS_FILE` to a path to record
@@ -11,11 +12,14 @@ import os
 ///
 /// Events: `recv` (frame decoded on the stream thread), `deliver` (surface published on the
 /// main thread), `update` (SwiftUI view update, with the grid layout when a revision changed)
-/// and `draw` (grid drawn). Keystrokes add `key` (the event's own time, so waiting in the main
-/// thread's queue counts, and when the view handled it) and `sent` (input written to the
-/// socket). The mouse probe adds `mouse` (a click, scroll or split drag it played, with the
-/// event's own time), and `publish` counts the store's change notifications, each of which
-/// makes SwiftUI update the window. The workspace side adds `proc` (a git, SSH or shell process that `WorkspaceFiles`
+/// and `draw` (grid drawn). `commit` marks the main thread's next turn after a draw, by which
+/// Core Animation has committed it, and `vsync` records each display refresh the terminal
+/// view's display link reports, with the time its frame reaches the screen; together they
+/// estimate when a draw became visible. Keystrokes add `key` (the event's own time, so waiting
+/// in the main thread's queue counts, and when the view handled it) and `sent` (input written
+/// to the socket). The mouse and UI probes add `mouse` (a click, scroll, split drag, selection
+/// drag, tab switch or window resize they played, with the event's own time), and `publish`
+/// counts the store's change notifications, each of which makes SwiftUI update the window. The workspace side adds `proc` (a git, SSH or shell process that `WorkspaceFiles`
 /// ran) and `span` (a user-visible operation such as loading the file list, from its start
 /// until its result is on screen). Times are nanoseconds since the first event's `start` line.
 final class TerminalPipelineMetrics {
@@ -40,6 +44,8 @@ final class TerminalPipelineMetrics {
         case delivered(boot: String, projection: UInt64, revision: UInt64, at: UInt64)
         case updated(revision: UInt64?, at: UInt64, duration: UInt64, layout: UInt64?)
         case drawn(boot: String, projection: UInt64, revision: UInt64, at: UInt64, duration: UInt64, surface: HerdrSurface?)
+        case committed(at: UInt64)
+        case vsync(at: UInt64, target: UInt64)
     }
 
     private let lock = NSLock()
@@ -84,7 +90,7 @@ final class TerminalPipelineMetrics {
         append(.sent(at: Self.now(), bytes: bytes))
     }
 
-    /// The mouse probe is about to hand a `kind` event, due at `eventAt`, to the terminal view.
+    /// A probe is about to play a `kind` event, due at `eventAt`.
     func mouseEvent(_ kind: String, eventAt: UInt64) {
         append(.mouse(kind: kind, eventAt: eventAt, at: Self.now()))
     }
@@ -130,6 +136,17 @@ final class TerminalPipelineMetrics {
         events.append(.drawn(boot: surface.bootID, projection: surface.projectionRevision, revision: surface.revision, at: end,
                              duration: end - start, surface: needsDigest ? surface : nil))
         lock.unlock()
+    }
+
+    /// A draw has just returned; the next main-thread turn comes after Core Animation's commit.
+    func drawCommitted() {
+        DispatchQueue.main.async { [weak self] in self?.append(.committed(at: Self.now())) }
+    }
+
+    /// A display refresh began at `timestamp`; its frame reaches the screen at `target`. Both
+    /// use the same uptime clock as `now()`.
+    func vsync(timestamp: CFTimeInterval, target: CFTimeInterval) {
+        append(.vsync(at: UInt64(timestamp * 1_000_000_000), target: UInt64(target * 1_000_000_000)))
     }
 
     private func append(_ event: Event) {
@@ -180,10 +197,35 @@ final class TerminalPipelineMetrics {
             return #"{"e":"deliver","boot":\#(quoted(boot)),"proj":\#(projection),"rev":\#(revision),"t":\#(time(at))}"#
         case let .updated(revision, at, duration, layout):
             return #"{"e":"update","rev":\#(revision.map(String.init) ?? "null"),"t":\#(time(at)),"dur":\#(duration),"layout":\#(layout.map(String.init) ?? "null")}"#
+        case let .committed(at):
+            return #"{"e":"commit","t":\#(time(at))}"#
+        case let .vsync(at, target):
+            return #"{"e":"vsync","t":\#(time(at)),"target":\#(time(target))}"#
         case let .drawn(boot, projection, revision, at, duration, surface):
             let digest = surface.map { #","digest":"\#(String($0.contentDigest, radix: 16))""# } ?? ""
             return #"{"e":"draw","boot":\#(quoted(boot)),"proj":\#(projection),"rev":\#(revision),"t":\#(time(at)),"dur":\#(duration)\#(digest)}"#
         }
+    }
+}
+
+/// Records the display refreshes of the screen a view is on, for `TerminalPipelineMetrics`.
+/// The display link retains its target, so this object holds no view.
+final class TerminalVsyncRecorder: NSObject {
+    private var link: CADisplayLink?
+
+    /// Follows `view`'s screen while metrics are on; nil stops recording.
+    @MainActor
+    func follow(_ view: NSView?) {
+        link?.invalidate()
+        link = nil
+        guard TerminalPipelineMetrics.shared != nil, let view, view.window != nil else { return }
+        let link = view.displayLink(target: self, selector: #selector(refresh(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    @objc private func refresh(_ link: CADisplayLink) {
+        TerminalPipelineMetrics.shared?.vsync(timestamp: link.timestamp, target: link.targetTimestamp)
     }
 }
 
@@ -302,13 +344,18 @@ extension HerdrSurface {
 /// one every `XHERDR_TYPING_PROBE_INTERVAL_MS` (100). The same flag enables the mouse probe:
 /// `dev.xherdr.mouse-probe.click`, `.scroll` and `.drag` play clicks in a pane without mouse
 /// reporting, wheel events over one with it, and a drag of the first split, through the
-/// view's own mouse handlers. Any local process can post these notifications, so the probes
-/// are compiled only with the `XHERDR_PROBES` condition, which the script sets. `XHERDR_WINDOW_SIZE` (for example `1400x900`) fixes the window's content size,
-/// in every build.
+/// view's own mouse handlers; `.select` drags a text selection across a pane. The UI probe's
+/// `dev.xherdr.ui-probe.tabs` switches between the selected Space's first two tabs as the tab
+/// row does, and `.resize` changes the window's content size back and forth. Any local process
+/// can post these notifications, so the probes are compiled only with the `XHERDR_PROBES`
+/// condition, which the script sets. `XHERDR_WINDOW_SIZE` (for example `1400x900`) fixes the
+/// window's content size, in every build.
 @MainActor
 enum TerminalTypingProbe {
     /// The terminal view showing the live surface.
     static weak var target: HerdrTerminalTextView?
+    /// The store, for probes that act on Herdr's tabs.
+    static weak var store: HerdrStore?
     private static var token: Int32 = 0
 
     static func start() {
@@ -322,10 +369,16 @@ enum TerminalTypingProbe {
         notify_register_dispatch("dev.xherdr.typing-probe", &token, .main) { _ in
             MainActor.assumeIsolated { type(keys, every: interval / 1000) }
         }
-        for kind in ["click", "scroll", "drag"] {
+        for kind in ["click", "scroll", "drag", "select"] {
             var mouseToken: Int32 = 0
             notify_register_dispatch("dev.xherdr.mouse-probe.\(kind)", &mouseToken, .main) { _ in
                 MainActor.assumeIsolated { playMouse(kind) }
+            }
+        }
+        for kind in ["tabs", "resize"] {
+            var uiToken: Int32 = 0
+            notify_register_dispatch("dev.xherdr.ui-probe.\(kind)", &uiToken, .main) { _ in
+                MainActor.assumeIsolated { playUI(kind) }
             }
         }
         #endif
@@ -416,6 +469,30 @@ enum TerminalTypingProbe {
                 // Three lines, as a wheel notch scrolls, alternately up and down.
                 _ = view.scrollPane(at: location, deltaX: 0, deltaY: index % 2 == 0 ? 3 : -3, precise: false, modifiers: [])
             }
+        case "select":
+            guard let pane = surface.paneIDs.first(where: { !surface.mouseReportingPaneIDs.contains($0) }),
+                  let rect = surface.paneInnerRects[pane], rect.width > 4, rect.height > 4
+            else { return NSLog("xherdr mouse probe: no pane to select in") }
+            let steps = 101
+            // From the top left, the head sweeps down and back across most of the pane.
+            play(steps + 1, every: 0.04) { index, timestamp in
+                let phase = Double(index % 50) / 49
+                let sweep = index % 100 < 50 ? phase : 1 - phase
+                let location = point(column: rect.x + 1 + Int(sweep * Double(rect.width - 3)),
+                                     row: rect.y + 1 + Int(sweep * Double(rect.height - 3)))
+                switch index {
+                case 0:
+                    if let down = mouse(.leftMouseDown, at: point(column: rect.x + 1, row: rect.y + 1), timestamp: timestamp) {
+                        view.mouseDown(with: down)
+                    }
+                case steps:
+                    if let up = mouse(.leftMouseUp, at: location, timestamp: timestamp) { view.mouseUp(with: up) }
+                    view.clearTerminalSelection()
+                default:
+                    record("select", timestamp)
+                    if let drag = mouse(.leftMouseDragged, at: location, timestamp: timestamp) { view.mouseDragged(with: drag) }
+                }
+            }
         case "drag":
             guard let split = surface.splits.first else { return NSLog("xherdr mouse probe: no split to drag") }
             let horizontal = split.direction == .horizontal
@@ -438,6 +515,39 @@ enum TerminalTypingProbe {
                     record("drag", timestamp)
                     if let drag = mouse(.leftMouseDragged, at: location, timestamp: timestamp) { view.mouseDragged(with: drag) }
                 }
+            }
+        default:
+            break
+        }
+    }
+
+    /// Plays a window-level workload: 20 switches between the selected Space's first two tabs,
+    /// or 16 content-size changes alternating between the current size and one 240×160 points
+    /// smaller, each making Herdr send a complete surface of the new grid.
+    private static func playUI(_ kind: String) {
+        func record(_ timestamp: TimeInterval) {
+            TerminalPipelineMetrics.shared?.mouseEvent(kind, eventAt: UInt64(timestamp * 1_000_000_000))
+        }
+        switch kind {
+        case "tabs":
+            guard let store, let workspace = store.selectedWorkspaceID,
+                  let tabs = store.snapshot?.tabs.filter({ $0.workspaceID == workspace }).map(\.tabID),
+                  tabs.count >= 2, let current = store.selectedTabID
+            else { return NSLog("xherdr UI probe: the selected Space has fewer than two tabs") }
+            let other = current == tabs[0] ? tabs[1] : tabs[0]
+            play(20, every: 0.3) { index, timestamp in
+                record(timestamp)
+                store.select(tabID: index % 2 == 0 ? other : current)
+            }
+        case "resize":
+            guard let window = target?.window, let content = window.contentView else {
+                return NSLog("xherdr UI probe: no window to resize")
+            }
+            let large = content.frame.size
+            let small = NSSize(width: large.width - 240, height: large.height - 160)
+            play(16, every: 0.4) { index, timestamp in
+                record(timestamp)
+                window.setContentSize(index % 2 == 0 ? small : large)
             }
         default:
             break
