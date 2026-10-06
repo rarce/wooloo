@@ -45,6 +45,7 @@ struct WorkspaceDocument: Identifiable {
     var version: String?
     /// PDFKit state lives with the tab so switching tabs preserves its position and zoom.
     var pdf: PDFPreviewModel?
+    var image: ImagePreviewModel?
     /// Identifies the latest load, including a close/reopen of a tab with the same ID.
     var loadRequest = UUID()
     var isLoading = true
@@ -70,7 +71,10 @@ struct WorkspaceDocument: Identifiable {
 
     var isUntitled: Bool { untitledNumber != nil }
     var isPDF: Bool { kind == .file && !isUntitled && WorkspacePDF.supports(path) }
-    var isEditable: Bool { kind == .file && !isPDF }
+    var isImage: Bool { kind == .file && !isUntitled && WorkspaceImage.supports(path) }
+    var isReadOnly: Bool { isPDF || isImage }
+    var isEditable: Bool { kind == .file && !isReadOnly }
+    var icon: String { isImage ? "photo" : isPDF ? "doc.richtext" : kind.icon }
     var id: String {
         if isUntitled { return "\(space ?? "")|\(location.identity)|untitled|\(backupID.uuidString)" }
         return "\(space ?? "")|\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)"
@@ -140,7 +144,7 @@ struct WorkspaceDocumentView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
-                Image(systemName: document.isPDF ? "doc.richtext" : document.kind.icon)
+                Image(systemName: document.icon)
                     .foregroundStyle(theme.accent)
                 Text(document.displayPath)
                     .lineLimit(1)
@@ -201,17 +205,17 @@ struct WorkspaceDocumentView: View {
                         .keyboardShortcut("s", modifiers: .command)
                         .disabled(document.isLoading || document.isSaving || !(document.isDirty || document.isUntitled))
                 }
-                if document.isPDF {
+                if document.isReadOnly {
                     Button("Reload", action: onReload)
                         .disabled(document.isLoading)
-                        .help("Reload the PDF from its local or SSH Space")
+                        .help("Reload the preview from its local or SSH Space")
                 }
             }
             .font(.system(size: typography.body))
             .padding(.horizontal, 12)
             .frame(height: 33)
             Divider()
-            if document.kind == .file && !document.isPDF && find.isVisible {
+            if document.isEditable && find.isVisible {
                 DocumentFindBar(model: find, allowsReplace: findTarget == .source,
                                 onReplace: replaceCurrentMatch, onReplaceAll: replaceAllMatches,
                                 onSelectAll: selectAllMatches)
@@ -238,6 +242,9 @@ struct WorkspaceDocumentView: View {
                     if document.isPDF, let pdf = document.pdf {
                         PDFPreviewView(model: pdf, focusRequest: document.focusRequest,
                                        onFocus: { document.focusRequest = nil })
+                    } else if document.isImage, let image = document.image {
+                        ImagePreviewView(model: image, focusRequest: document.focusRequest,
+                                         onFocus: { document.focusRequest = nil })
                     } else if document.supportsPreview {
                         switch document.markdownMode {
                         case .source: editor
@@ -253,7 +260,7 @@ struct WorkspaceDocumentView: View {
             }
             Divider()
             HStack {
-                Text(document.kind == .file ? (document.isPDF ? "PDF · Read only" : document.isDirty ? "Unsaved changes" : NotebookDocument.supports(document.path) ? "Notebook · Saved output" : "UTF-8 text")
+                Text(document.kind == .file ? (document.isImage ? "\(document.image?.contents.format ?? "Image") · Read only" : document.isPDF ? "PDF · Read only" : document.isDirty ? "Unsaved changes" : NotebookDocument.supports(document.path) ? "Notebook · Saved output" : "UTF-8 text")
                      : (document.kind == .commit ? "Commit diff" : "Git diff"))
                 Spacer()
                 if document.isEditable, cursorPositions.count > 1 {
@@ -270,7 +277,7 @@ struct WorkspaceDocumentView: View {
         }
         .background(theme.contentBackground)
         .background {
-            if document.kind == .file { findShortcuts }
+            if document.kind == .file && !document.isImage { findShortcuts }
         }
         .onChange(of: find.isVisible) { _, _ in updateFind(anchor: cursorPositions.first?.range.location) }
         .onChange(of: find.options) { _, _ in
@@ -293,7 +300,7 @@ struct WorkspaceDocumentView: View {
 
     /// An editor command from the command palette.
     private func run(_ command: EditorCommand) {
-        guard document.kind == .file else { return }
+        guard document.kind == .file, !document.isImage else { return }
         if document.isPDF {
             guard let pdf = document.pdf, !pdf.isLocked else { return }
             switch command {

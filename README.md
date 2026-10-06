@@ -35,6 +35,7 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 - Editor tabs built on [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor): syntax highlighting, find and replace, Git change bars beside line numbers, conflict-checked atomic saves, and Zed-style multiple cursors (⌥-click, ⌘D, ⇧⌘L, ⌥⌘↑/↓).
 - Reopen a Space with its document tabs, order, active editor, selections and scroll position. Unsaved edits and untitled drafts are backed up locally under `~/Library/Application Support/xherdr`, including SSH documents, and restored without saving them into the project. Backups are written after a short pause while editing and completed before quitting; closing a dirty tab still asks before discarding its contents.
 - Markdown preview with Mermaid diagrams.
+- Native image previews for PNG, JPEG, GIF, WebP, HEIC/HEIF, AVIF, TIFF, BMP, and ICO in local and SSH Spaces, using macOS decoders. Includes zoom, fit, actual size, pixel dimensions, transparency checkerboard, and reload; each tab keeps its zoom and position. Previews are read-only, limited to 50 MiB, and decode at most 4096 pixels per side. Multi-frame images show their first frame.
 - Native PDF previews for local and SSH files up to 50 MiB, with page navigation, zoom, page/width fitting, text search (⌘F and ⌘G), password unlocking, and reload. Each tab keeps its page and zoom. PDF previews and form fields are read-only; search uses existing PDF text rather than OCR.
 - Project-wide search and replace.
 

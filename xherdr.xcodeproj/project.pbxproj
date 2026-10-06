@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C3000000000000000000B001 /* ImagePreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000B002 /* ImagePreviewTests.swift */; };
+		A1000000000000000000B001 /* ImagePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000B002 /* ImagePreviewView.swift */; };
 		C3000000000000000000AF01 /* WorkspaceSessionPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000AF02 /* WorkspaceSessionPersistenceTests.swift */; };
 		A1000000000000000000AF01 /* WorkspaceSessionPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */; };
 		C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000AE02 /* PDFPreviewTests.swift */; };
@@ -122,6 +124,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C3000000000000000000B002 /* ImagePreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePreviewTests.swift; sourceTree = "<group>"; };
+		A1000000000000000000B002 /* ImagePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePreviewView.swift; sourceTree = "<group>"; };
 		C3000000000000000000AF02 /* WorkspaceSessionPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionPersistenceTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionPersistence.swift; sourceTree = "<group>"; };
 		C3000000000000000000AE02 /* PDFPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFPreviewTests.swift; sourceTree = "<group>"; };
@@ -258,6 +262,7 @@
 				A1000000000000000000AD06 /* NotebookAssets */,
 				A1000000000000000000AD04 /* NotebookPreviewView.swift */,
 				A1000000000000000000AE02 /* PDFPreviewView.swift */,
+				A1000000000000000000B002 /* ImagePreviewView.swift */,
 				A1000000000000000000AD02 /* NotebookDocument.swift */,
 				A10000000000000000000039 /* WorkspaceRepositoryView.swift */,
 				A10000000000000000000051 /* MarkdownPreviewView.swift */,
@@ -346,6 +351,7 @@
 				C3000000000000000000AF02 /* WorkspaceSessionPersistenceTests.swift */,
 				C3000000000000000000AD02 /* NotebookTests.swift */,
 				C3000000000000000000AE02 /* PDFPreviewTests.swift */,
+				C3000000000000000000B002 /* ImagePreviewTests.swift */,
 				C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */,
 				C30000000000000000000051 /* WorkspaceGitBarTests.swift */,
 				C3000000000000000000004F /* DiffHighlighterTests.swift */,
@@ -486,6 +492,7 @@
 				A10000000000000000000030 /* WorkspaceDocumentView.swift in Sources */,
 				A1000000000000000000AD03 /* NotebookPreviewView.swift in Sources */,
 				A1000000000000000000AE01 /* PDFPreviewView.swift in Sources */,
+				A1000000000000000000B001 /* ImagePreviewView.swift in Sources */,
 				A1000000000000000000AD01 /* NotebookDocument.swift in Sources */,
 				A10000000000000000000038 /* WorkspaceRepositoryView.swift in Sources */,
 				A10000000000000000000050 /* MarkdownPreviewView.swift in Sources */,
@@ -564,6 +571,7 @@
 				C3000000000000000000AF01 /* WorkspaceSessionPersistenceTests.swift in Sources */,
 				C3000000000000000000AD01 /* NotebookTests.swift in Sources */,
 				C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */,
+				C3000000000000000000B001 /* ImagePreviewTests.swift in Sources */,
 				C30000000000000000000052 /* WorkspaceRepositoryModelTests.swift in Sources */,
 				C30000000000000000000050 /* WorkspaceGitBarTests.swift in Sources */,
 				C3000000000000000000004E /* DiffHighlighterTests.swift in Sources */,

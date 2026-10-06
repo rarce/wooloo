@@ -185,6 +185,22 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertThrowsError(try WorkspacePDF.read("link.pdf", at: remote("repo")))
     }
 
+    func testRemoteImagePreviewDecodesBinaryBytesAndRejectsEscapingPaths() throws {
+        try sandbox.repository("repo")
+        let bytes = try ImageFixtures.data()
+        let path = "it's a preview.PNG"
+        try bytes.write(to: URL(fileURLWithPath: sandbox.path("repo/" + path)))
+        let contents = try WorkspaceImage.read(path, at: remote("repo"))
+        XCTAssertEqual(contents.size, CGSize(width: 120, height: 80))
+        XCTAssertEqual(contents.version, WorkspaceFiles.gitBlobHash(bytes))
+        XCTAssertThrowsError(try WorkspaceFiles.readData(path, at: remote("repo"), limit: bytes.count - 1))
+        XCTAssertThrowsError(try WorkspaceImage.read("../repo/" + path, at: remote("repo")))
+        try bytes.write(to: URL(fileURLWithPath: sandbox.path("outside.png")))
+        try FileManager.default.createSymbolicLink(atPath: sandbox.path("repo/link.png"),
+                                                 withDestinationPath: sandbox.path("outside.png"))
+        XCTAssertThrowsError(try WorkspaceImage.read("link.png", at: remote("repo")))
+    }
+
     func testFilesOfThisMacAreSentToTheMachine() throws {
         try sandbox.repository("repo")
         try sandbox.write(["-notes/todo.txt": "todo\n", "-notes/deep/x.txt": "x\n", "a.txt": "mine\n"], in: "mac")

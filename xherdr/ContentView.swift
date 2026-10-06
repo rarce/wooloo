@@ -862,7 +862,7 @@ struct ContentView: View {
         HStack(spacing: 0) {
             Button { activeDocumentID = document.id } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: document.kind.icon)
+                    Image(systemName: document.icon)
                         .foregroundStyle(theme.accent)
                     Text(document.title).lineLimit(1).italic(document.isPreview)
                     if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }

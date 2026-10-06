@@ -7,6 +7,7 @@ final class WorkspaceDocumentStore: ObservableObject {
     private enum LoadedContents {
         case text(WorkspaceFileContents)
         case pdf(WorkspacePDF.Contents)
+        case image(WorkspaceImage.Contents)
     }
     /// Every Space's documents; `visibleDocuments` are the shown Space's.
     @Published var documents: [WorkspaceDocument] = [] {
@@ -301,6 +302,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         case .failure(let failure): return failure.localizedDescription
         }
         guard !WorkspacePDF.supports(path) else { return "PDF files can only be previewed; choose a text file extension" }
+        guard !WorkspaceImage.supports(path) else { return "Image files can only be previewed; choose a text file extension" }
         let (text, location) = (document.text, document.location)
         documents[index].isSaving = true
         let result = await Task.detached(priority: .userInitiated) {
@@ -385,6 +387,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         let (kind, path, location) = (document.kind, document.path, document.location)
         let (commit, originalPath) = (document.commit, document.originalPath)
         let isPDF = document.isPDF
+        let isImage = document.isImage
         let start = TerminalPipelineMetrics.now()
         Task {
             defer {
@@ -401,6 +404,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                         return .text(WorkspaceFileContents(text: patches[.all] ?? "", version: "", patches: patches))
                     }
                     if isPDF { return .pdf(try WorkspacePDF.read(path, at: location)) }
+                    if isImage { return .image(try WorkspaceImage.read(path, at: location)) }
                     return .text(try WorkspaceFiles.read(path, at: location))
                 }
             }.value
@@ -412,6 +416,14 @@ final class WorkspaceDocumentStore: ObservableObject {
                     pdf.replace(with: content.document)
                 } else {
                     documents[index].pdf = PDFPreviewModel(document: content.document)
+                }
+                documents[index].version = content.version
+                documents[index].error = nil
+            case .success(.image(let content)):
+                if let image = documents[index].image {
+                    image.replace(with: content)
+                } else {
+                    documents[index].image = ImagePreviewModel(contents: content)
                 }
                 documents[index].version = content.version
                 documents[index].error = nil

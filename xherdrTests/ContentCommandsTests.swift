@@ -304,6 +304,20 @@ final class ContentCommandsTests: XCTestCase {
         XCTAssertEqual(documents.activeID, id)
     }
 
+    func testImageTabsDisableTextEditingAndFindCommands() async throws {
+        try ImageFixtures.data().write(to: URL(fileURLWithPath: repo.absolutePath("sample.png")))
+        documents.open(.file, path: "sample.png", at: repo)
+        for _ in 0..<300 where documents.documents.contains(where: \.isLoading) {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertNotNil(documents.documents.first?.image)
+        let available = commands.availability
+        XCTAssertTrue(available.hasReadOnlyDocument)
+        for command in ["editor_save", "editor_find", "editor_find_next", "editor_find_previous", "editor_find_replace"] {
+            XCTAssertFalse(try XCTUnwrap(XherdrCommandItem.named(command)).isAvailable(available), command)
+        }
+    }
+
     // MARK: Untitled files
 
     /// New Untitled File opens an empty tab at the explorer's location; saving it asks where,

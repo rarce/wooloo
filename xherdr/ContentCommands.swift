@@ -112,14 +112,14 @@ struct ContentCommands {
     /// Which commands apply now, for the menu bar and the command palette.
     var availability: XherdrCommandAvailability {
         let document = documents.activeID.flatMap(documents.document)
-        let hasFileDocument = document.map { $0.kind == .file && !$0.isLoading && ($0.version != nil || $0.isUntitled) } ?? false
+        let hasFileDocument = document.map { $0.kind == .file && !$0.isImage && !$0.isLoading && ($0.version != nil || $0.isUntitled) } ?? false
         let showsSource = document.map {
             $0.isEditable && (!$0.supportsPreview || $0.markdownMode != .preview)
         } ?? false
         return XherdrCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
                                          tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil && herdr.surfaceLayout?.popupTerminalID == nil,
                                          hasFiles: explorerLocation != nil, hasFileDocument: hasFileDocument,
-                                         hasReadOnlyDocument: document?.isPDF ?? false,
+                                         hasReadOnlyDocument: document?.isReadOnly ?? false,
                                          showsSource: showsSource,
                                          explorerActions: Set(ExplorerFileCommand.paletteCommands
                                              .filter(window.explorer.isAvailable).map(\.paletteAction)))
