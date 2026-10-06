@@ -10,9 +10,9 @@ import QuartzCore
 /// Signposts under the `dev.xherdr.terminal` subsystem show the same stages in Instruments
 /// whether or not the file is enabled.
 ///
-/// Events: `recv` (frame decoded on the stream thread), `deliver` (surface published on the
-/// main thread), `update` (SwiftUI view update, with the grid layout when a revision changed)
-/// and `draw` (grid drawn). `commit` marks the main thread's next turn after a draw, by which
+/// Events: `recv` (frame decoded on the stream thread, with the number of graphics it places),
+/// `deliver` (surface published on the main thread), `update` (SwiftUI view update, with the
+/// grid layout when a revision changed) and `draw` (grid drawn). `commit` marks the main thread's next turn after a draw, by which
 /// Core Animation has committed it, and `vsync` records each display refresh the terminal
 /// view's display link reports, with the time its frame reaches the screen; together they
 /// estimate when a draw became visible. Keystrokes add `key` (the event's own time, so waiting
@@ -36,7 +36,7 @@ final class TerminalPipelineMetrics {
 
     private enum Event {
         case received(boot: String, projection: UInt64, revision: UInt64, size: (Int, Int), isPatch: Bool,
-                      bytes: Int, at: UInt64, decode: UInt64, cursor: HerdrCursor?)
+                      bytes: Int, at: UInt64, decode: UInt64, cursor: HerdrCursor?, graphics: Int)
         case key(eventAt: UInt64, at: UInt64, cursor: HerdrCursor?)
         case sent(at: UInt64, bytes: Int)
         case resized(at: UInt64, cols: Int, rows: Int)
@@ -80,7 +80,8 @@ final class TerminalPipelineMetrics {
     func received(_ surface: HerdrSurface, isPatch: Bool, bytes: Int, at: UInt64, decodeNanos: UInt64) {
         append(.received(boot: surface.bootID, projection: surface.projectionRevision, revision: surface.revision,
                          size: (surface.width, surface.height), isPatch: isPatch,
-                         bytes: bytes, at: at, decode: decodeNanos, cursor: surface.cursor))
+                         bytes: bytes, at: at, decode: decodeNanos, cursor: surface.cursor,
+                         graphics: surface.graphics.count))
     }
 
     /// A key event reached the terminal view while `cursor` was showing.
@@ -186,8 +187,8 @@ final class TerminalPipelineMetrics {
             "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
         switch event {
-        case let .received(boot, projection, revision, size, isPatch, bytes, at, decode, cursor):
-            return #"{"e":"recv","boot":\#(quoted(boot)),"proj":\#(projection),"rev":\#(revision),"cols":\#(size.0),"rows":\#(size.1),"patch":\#(isPatch),"bytes":\#(bytes),"t":\#(time(at)),"decode":\#(decode)\#(position(cursor))}"#
+        case let .received(boot, projection, revision, size, isPatch, bytes, at, decode, cursor, graphics):
+            return #"{"e":"recv","boot":\#(quoted(boot)),"proj":\#(projection),"rev":\#(revision),"cols":\#(size.0),"rows":\#(size.1),"patch":\#(isPatch),"bytes":\#(bytes),"t":\#(time(at)),"decode":\#(decode),"gfx":\#(graphics)\#(position(cursor))}"#
         case let .key(eventAt, at, cursor):
             return #"{"e":"key","t_event":\#(time(eventAt)),"t":\#(time(at))\#(position(cursor))}"#
         case let .sent(at, bytes):

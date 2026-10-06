@@ -2,7 +2,7 @@
 """Reports for the terminal pipeline measurements.
 
   terminal-perf.py workloads DIR
-      Writes the output files the end-to-end run cats into a pane.
+      Writes the output files the end-to-end run plays into a pane, Kitty images included.
   terminal-perf.py play FILE [--lines-per-second N | --chars-per-second N] [--seconds S]
       Writes FILE to stdout at a steady pace, like a build log or an agent typing.
   terminal-perf.py bench RESULTS.jsonl [--baseline OLD.jsonl]
@@ -83,6 +83,47 @@ def write_workloads(directory):
             parts = [rng.choice(fragments) if rng.random() < 0.6 else rng.choice(WORDS) + " "
                      for _ in range(rng.randint(3, 16))]
             out.write(f"\x1b[33m{index:05d}\x1b[0m {''.join(parts)}\n")
+    write_graphics(directory, rng)
+
+
+def png(width, height, pixel):
+    """A minimal RGB PNG; `pixel(x, y)` gives each pixel's (r, g, b)."""
+    import struct
+    import zlib
+    rows = b"".join(b"\x00" + bytes(c for x in range(width) for c in pixel(x, y)) for y in range(height))
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b""))
+
+
+def kitty_image(data, cols, rows):
+    """Kitty graphics escapes that transmit and show a PNG over `cols`x`rows` cells, in 4 KB
+    chunks, with every reply suppressed (q=2) so nothing is written back to the program."""
+    import base64
+    encoded = base64.standard_b64encode(data).decode()
+    chunks = [encoded[i:i + 4096] for i in range(0, len(encoded), 4096)]
+    out = []
+    for index, chunk in enumerate(chunks):
+        more = 1 if index + 1 < len(chunks) else 0
+        keys = f"a=T,f=100,c={cols},r={rows},q=2,m={more}" if index == 0 else f"q=2,m={more}"
+        out.append(f"\x1b_G{keys};{chunk}\x1b\\")
+    return "".join(out)
+
+
+def write_graphics(directory, rng):
+    """A log with a different 192x96 picture every 10 lines, shown over 24x4 cells, like a
+    notebook or an agent printing plots between output."""
+    with open(directory / "graphics.txt", "w") as out:
+        for index in range(3000):
+            if index % 10 == 9:
+                hue = index * 37 % 256
+                noise = [rng.randrange(64) for _ in range(192)]
+                data = png(192, 96, lambda x, y: ((x + hue) % 256, (y * 2 + hue) % 256, (noise[x] + y + hue) % 256))
+                out.write(kitty_image(data, 24, 4) + "\n")
+            else:
+                words = " ".join(rng.choice(WORDS) for _ in range(rng.randint(3, 14)))
+                out.write(f"[{index:06d}] {words}\n")
 
 
 def play(path, lines_per_second, chars_per_second, seconds):

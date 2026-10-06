@@ -26,6 +26,7 @@ This script times decode, layout and draw per frame over the synthetic workloads
 This script starts a dedicated `xherdr-perf` Herdr session and opens a Release build on it with `XHERDR_METRICS_FILE` and `XHERDR_SURFACE_TRACE` set. It then runs these workloads in the pane:
 
 - `ascii`, `color` and `unicode`: 250 lines/s for 5 s
+- `graphics`: 100 lines/s for 5 s, every tenth line a different 192×96 PNG shown over 24×4 cells with the Kitty graphics protocol (`q=2`, so the terminal answers nothing), like a notebook or an agent printing plots between output
 - `typing`: 40 characters/s
 - `burst`: `cat` of 60,000 lines
 - `keys`: 100 letters typed into `cat`, one every 100 ms. The keys go through xherdr's own `keyDown`, sent by the typing probe (`XHERDR_TYPING_PROBE`, triggered with `notifyutil -p dev.xherdr.typing-probe`), so no accessibility access is needed. The probe is compiled only with the `XHERDR_PROBES` condition, which the script sets.
@@ -176,6 +177,22 @@ Measured with `XHERDR_E2E_LOAD=16` on a 16-core machine, with the load average r
 | keys, write → echo received, p50 | 21–32 ms | 0.2 ms | — |
 
 Earlier, a `.userInitiated` task was tried on an idle machine and showed no difference in frame rate, which is expected: priority only matters when the cores are busy.
+
+### Graphics (2026-10-06)
+
+Herdr 0.9.3 turns Kitty images that a program writes into graphics in the surface, and xherdr draws them. In a `graphics` run, 280 of 293 frames placed graphics, up to 4 at once, and the trace replay matched every drawn revision, graphics included. The replay compares surfaces, not pixels.
+
+| | graphics | ascii (baseline, a similar frame rate) |
+|---|---|---|
+| frames received / drawn per second | 26.7 / 26.6 | 28.1 / 27.1 |
+| MB received in the phase | 14.6 | 1.3 |
+| decode p50 / p95 | 120 / 201 µs | 96 µs p50 |
+| layout p50 | 0.21 ms | 0.39 ms |
+| draw p50 / p95 / max | 0.14 / 0.24 / 1.0 ms | 0.08 ms p50 |
+| arrival → draw p50 / p95 | 0.85 / 2.3 ms | 0.87 ms p50 |
+| main thread busy | 1.2% | 1.6% |
+
+xherdr decodes each image once (`HerdrTerminalTextView.prepareGraphics`) and keeps it while Herdr retains it, so drawing a frame costs little more than drawing text. The cost is in what Herdr sends: while graphics are on screen, every frame is a complete surface (about 39 KB at 113×48) instead of a scrolled patch, and each new image adds its PNG (about 74 KB here). That is 11 times the bytes of the same output without images.
 
 ### Window resizes (2026-10-06)
 

@@ -10,7 +10,8 @@
 #
 #   scripts/terminal-e2e.sh [--save-baseline] [workload...]
 #
-# Workloads: ascii, color and unicode stream 250 log lines per second for 5 s; typing echoes
+# Workloads: ascii, color and unicode stream 250 log lines per second for 5 s; graphics streams
+# 100 lines per second with a different 192x96 PNG shown as a Kitty image every 10; typing echoes
 # 40 characters per second for 5 s; burst cats 60,000 lines at once; keys types 100 letters
 # into `cat` through xherdr's own key handling and reports keystroke-to-screen latency; mouse
 # splits the pane, enables mouse reporting in the new one, and plays 40 clicks in the other
@@ -35,7 +36,7 @@ baseline=$root/docs/perf/e2e-baseline.json
 herdr=(herdr --session $session)
 save_baseline=0
 if [[ ${1:-} == --save-baseline ]]; then save_baseline=1; shift; fi
-workloads=(ascii color unicode typing burst keys mouse split selection resize tabs)
+workloads=(ascii color unicode graphics typing burst keys mouse split selection resize tabs)
 (( $# )) && workloads=($@)
 [[ $session == default ]] && { echo "Refusing to use the primary Herdr session" >&2; exit 1; }
 
@@ -194,6 +195,7 @@ for workload in $workloads; do
     fi
     case $workload in
         ascii|color|unicode) command="$play $run/$workload.txt --lines-per-second 250 --seconds 5" ;;
+        graphics) command="$play $run/graphics.txt --lines-per-second 100 --seconds 5" ;;
         typing) command="$play $run/ascii.txt --chars-per-second 40 --seconds 5" ;;
         burst) command="cat $run/ascii.txt" ;;
         *) echo "Unknown workload $workload" >&2; exit 1 ;;
