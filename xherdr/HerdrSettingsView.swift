@@ -27,6 +27,18 @@ struct HerdrSettingsView: View {
         case advanced = "Advanced TOML"
 
         var id: Self { self }
+        var subtitle: String {
+            switch self {
+            case .terminal: "Shell and working directory for new panes"
+            case .shortcuts: "Keyboard bindings for your terminal workflow"
+            case .worktrees: "Choose where new Git checkouts live"
+            case .notifications: "Sounds, alerts, and Dock activity"
+            case .appearance: "Text sizes, previews, and color themes"
+            case .server: "Terminal dimensions when no client is attached"
+            case .advanced: "Edit the complete Herdr configuration"
+            }
+        }
+
         var icon: String {
             switch self {
             case .terminal: "terminal"
@@ -50,96 +62,146 @@ struct HerdrSettingsView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("HERDR SETTINGS")
-                    .font(.system(size: typography.secondary, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                ForEach(Category.allCases) { item in
-                    Button {
-                        category = item
-                        model.message = nil
-                    } label: {
-                        Label(item.rawValue, systemImage: item.icon)
-                            .font(.system(size: typography.emphasis))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 10)
-                            .frame(height: 30)
-                            .background(category == item ? Color.primary.opacity(0.09) : .clear,
-                                        in: RoundedRectangle(cornerRadius: 5))
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer()
-            }
-            .padding(12)
-            .frame(width: 170)
-            .background(theme.sidebarBackground)
-
+            sidebar
             Divider()
-
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text(category.rawValue)
-                        .font(.system(size: typography.title, weight: .semibold))
-                    Spacer()
-                    Button("Done") { dismiss() }
-                        .buttonStyle(.borderless)
-                        .disabled(model.isSaving)
-                }
-                .padding(.horizontal, 20)
-                .frame(height: 48)
+                header
                 Divider()
-
                 Group {
                     if category == .advanced {
                         advancedEditor
                     } else {
                         ScrollView {
-                            VStack(alignment: .leading, spacing: 19) {
-                                Text(category == .notifications
-                                     ? "xherdr settings apply to this app. Herdr settings live in the local config.toml, shared by all Herdr sessions; reload applies to \(sessionName)."
-                                     : "Local config.toml · shared by all Herdr sessions. Reload applies to \(sessionName).")
-                                    .font(.system(size: typography.body))
-                                    .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 24) {
                                 categoryFields
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(20)
+                            .padding(24)
                         }
+                        .id(category)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
                 Divider()
-                HStack(spacing: 10) {
-                    if let message = model.message {
-                        Text(message)
-                            .font(.system(size: typography.body))
-                            .foregroundStyle(model.messageIsSuccess ? theme.success : theme.warning)
-                            .lineLimit(2)
-                    } else {
-                        Text(model.hasChanges ? "Unsaved changes" : "No changes")
-                            .font(.system(size: typography.body))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button(model.hasChanges ? "Discard & reload" : "Reload file") { model.load() }
-                        .disabled(model.isSaving)
-                    Button("Save & reload Herdr") {
-                        model.save(socketPath: socketPath, session: sessionName, onSaved: onSaved)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isSaving || !model.hasChanges)
-                }
-                .padding(.horizontal, 20)
-                .frame(height: 54)
+                footer
             }
+            .background(theme.contentBackground)
         }
-        .frame(width: 800, height: 540)
+        .frame(width: 880, height: 620)
+        .font(.system(size: typography.body))
+        .foregroundStyle(theme.text)
+        .tint(theme.accent)
         .preferredColorScheme(theme.colorScheme)
         .onAppear(perform: model.load)
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 10) {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: typography.title))
+                    .foregroundStyle(theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Preferences")
+                        .font(.system(size: typography.heading, weight: .semibold))
+                    Text("xherdr & Herdr")
+                        .font(.system(size: typography.secondary))
+                        .foregroundStyle(theme.subtext)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+
+            VStack(spacing: 5) {
+                ForEach(Category.allCases) { item in
+                    Button {
+                        category = item
+                        model.message = nil
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: item.icon)
+                                .font(.system(size: typography.body, weight: .medium))
+                                .frame(width: 20)
+                                .foregroundStyle(category == item ? theme.accent : theme.subtext)
+                            Text(item.rawValue)
+                                .font(.system(size: typography.body,
+                                              weight: category == item ? .semibold : .regular))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 36)
+                        .background(category == item ? theme.accent.opacity(0.14) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(category == item ? [.isSelected] : [])
+                }
+            }
+            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Herdr configuration", systemImage: "doc.text")
+                    .font(.system(size: typography.secondary, weight: .medium))
+                Text("Shared across local sessions.\nReload applies to \(sessionName).")
+                    .font(.system(size: typography.caption))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(theme.subtext)
+            .padding(10)
+        }
+        .padding(12)
+        .frame(width: 196)
+        .background(theme.sidebarBackground)
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(category.rawValue)
+                    .font(.system(size: typography.title, weight: .semibold))
+                Text(category.subtitle)
+                    .font(.system(size: typography.secondary))
+                    .foregroundStyle(theme.subtext)
+            }
+            Spacer(minLength: 0)
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+                .disabled(model.isSaving)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
+    }
+
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let message = model.message {
+                Label(message, systemImage: model.isSaving ? "arrow.triangle.2.circlepath"
+                      : model.messageIsSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: typography.secondary))
+                    .foregroundStyle(model.isSaving ? theme.subtext
+                                     : model.messageIsSuccess ? theme.success : theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 10) {
+                Label(model.hasChanges ? "Unsaved changes" : "Up to date",
+                      systemImage: model.hasChanges ? "circle.fill" : "checkmark.circle")
+                    .font(.system(size: typography.secondary))
+                    .foregroundStyle(model.hasChanges ? theme.warning : theme.subtext)
+                Spacer(minLength: 0)
+                Button(model.hasChanges ? "Discard & reload" : "Reload file") { model.load() }
+                    .disabled(model.isSaving)
+                Button("Save & reload Herdr") {
+                    model.save(socketPath: socketPath, session: sessionName, onSaved: onSaved)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isSaving || !model.hasChanges)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+        .background(theme.sidebarBackground)
     }
 
     @ViewBuilder
@@ -147,45 +209,51 @@ struct HerdrSettingsView: View {
         switch category {
         case .terminal:
             description("Defaults for new panes. Existing shells keep running with their current settings.")
-            field("Default shell", hint: "Executable name or path; blank uses $SHELL") {
-                TextField("Use $SHELL", text: string("terminal", "default_shell", default: ""))
-                    .textFieldStyle(.roundedBorder)
-            }
-            field("Shell startup", hint: "Auto starts login shells on macOS") {
-                Picker("", selection: string("terminal", "shell_mode", default: "auto")) {
-                    Text("Auto").tag("auto")
-                    Text("Login").tag("login")
-                    Text("Non-login").tag("non_login")
+            settingsGroup("New panes") {
+                field("Default shell", hint: "Executable name or path; blank uses $SHELL") {
+                    TextField("Use $SHELL", text: string("terminal", "default_shell", default: ""))
+                        .textFieldStyle(.roundedBorder)
                 }
-                .labelsHidden()
-                .frame(width: 220)
-            }
-            field("New pane directory", hint: "Follow, home, current, or an explicit path") {
-                TextField("follow", text: string("terminal", "new_cwd", default: "follow"))
-                    .textFieldStyle(.roundedBorder)
+                field("Shell startup", hint: "Auto starts login shells on macOS") {
+                    Picker("", selection: string("terminal", "shell_mode", default: "auto")) {
+                        Text("Auto").tag("auto")
+                        Text("Login").tag("login")
+                        Text("Non-login").tag("non_login")
+                    }
+                    .labelsHidden()
+                    .frame(width: 220, alignment: .leading)
+                }
+                field("New pane directory", hint: "Follow, home, current, or an explicit path") {
+                    TextField("follow", text: string("terminal", "new_cwd", default: "follow"))
+                        .textFieldStyle(.roundedBorder)
+                }
             }
         case .shortcuts:
             description("Press the prefix, release it, then press the action key. These bindings follow Herdr's [keys] format and apply in the xherdr terminal. Separate alternatives with commas.")
-            field("Prefix", hint: "Default: ctrl+b. One direct chord, such as ctrl+a.") {
-                TextField("ctrl+b", text: string("keys", "prefix", default: "ctrl+b"))
-                    .textFieldStyle(.roundedBorder)
-            }
-            ForEach(HerdrShortcutDefinition.supported) { definition in
-                field(definition.title, hint: "Default: \(definition.defaultBindings.joined(separator: ", "))") {
-                    TextField(definition.defaultBindings.joined(separator: ", "),
-                              text: shortcutBindings(definition))
+            settingsGroup("Key bindings") {
+                field("Prefix", hint: "Default: ctrl+b. One direct chord, such as ctrl+a.") {
+                    TextField("ctrl+b", text: string("keys", "prefix", default: "ctrl+b"))
                         .textFieldStyle(.roundedBorder)
+                }
+                ForEach(HerdrShortcutDefinition.supported) { definition in
+                    field(definition.title, hint: "Default: \(definition.defaultBindings.joined(separator: ", "))") {
+                        TextField(definition.defaultBindings.joined(separator: ", "),
+                                  text: shortcutBindings(definition))
+                            .textFieldStyle(.roundedBorder)
+                    }
                 }
             }
         case .worktrees:
             description("Where Herdr creates Git worktree checkouts from the sidebar.")
-            field("Worktree directory", hint: "A path such as ~/Projects/herdr-worktrees") {
-                TextField("~/.herdr/worktrees", text: string("worktrees", "directory", default: "~/.herdr/worktrees"))
-                    .textFieldStyle(.roundedBorder)
+            settingsGroup("Git worktrees") {
+                field("Worktree directory", hint: "A path such as ~/Projects/herdr-worktrees") {
+                    TextField("~/.herdr/worktrees", text: string("worktrees", "directory", default: "~/.herdr/worktrees"))
+                        .textFieldStyle(.roundedBorder)
+                }
             }
         case .notifications:
             description("Alerts fire when an agent finishes (done) or needs input (request). Unread marks stay on agents, Spaces, and tabs until you open the pane.")
-            settingsGroup("xherdr", subtitle: "This app only · applies immediately · not written to config.toml") {
+            settingsGroup("xherdr", subtitle: "This app only · applies immediately") {
                 field("macOS permission", hint: "Needed for System delivery. Herdr does not use this permission.") {
                     NotificationPermissionView()
                 }
@@ -196,65 +264,67 @@ struct HerdrSettingsView: View {
                     }
                 }
             }
-            groupHeader("Herdr", subtitle: "Saved to config.toml · shared with Herdr's terminal client · Save & reload to apply")
-            description("Sounds play for agents outside the pane you are viewing, or when xherdr is in the background.")
-            Toggle("Play sounds", isOn: bool("ui.sound", "enabled", default: true))
-            field("Sound file", hint: "Optional mp3 for all alerts. Relative paths resolve from config.toml's folder. Blank uses the system sound.") {
-                soundField("path", placeholder: "sounds/notification.mp3", kind: nil)
-            }
-            field("Done sound", hint: "Overrides only finished alerts") {
-                soundField("done_path", placeholder: "sounds/done.mp3", kind: .done)
-            }
-            field("Request sound", hint: "Overrides only needs-input alerts") {
-                soundField("request_path", placeholder: "sounds/request.mp3", kind: .request)
-            }
-            field("Per-agent sounds", hint: "Default follows Play sounds; droid is muted by default.") {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12, alignment: .leading)],
-                          alignment: .leading, spacing: 6) {
-                    ForEach(HerdrNotificationSettings.knownAgents, id: \.self) { agent in
-                        HStack(spacing: 6) {
-                            Text(agent).font(.system(size: typography.body, design: .monospaced))
-                                .frame(width: 70, alignment: .leading)
-                            Picker("", selection: agentSound(agent)) {
-                                Text("Default").tag("default")
-                                Text("On").tag("on")
-                                Text("Off").tag("off")
+            settingsGroup("Sounds", subtitle: "Herdr · Save & reload to apply") {
+                description("Sounds play for agents outside the pane you are viewing, or when xherdr is in the background.")
+                Toggle("Play sounds", isOn: bool("ui.sound", "enabled", default: true))
+                field("Sound file", hint: "Optional mp3 for all alerts. Relative paths resolve from config.toml's folder. Blank uses the system sound.") {
+                    soundField("path", placeholder: "sounds/notification.mp3", kind: nil)
+                }
+                field("Done sound", hint: "Overrides only finished alerts") {
+                    soundField("done_path", placeholder: "sounds/done.mp3", kind: .done)
+                }
+                field("Request sound", hint: "Overrides only needs-input alerts") {
+                    soundField("request_path", placeholder: "sounds/request.mp3", kind: .request)
+                }
+                field("Per-agent sounds", hint: "Default follows Play sounds; droid is muted by default.") {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12, alignment: .leading)],
+                              alignment: .leading, spacing: 6) {
+                        ForEach(HerdrNotificationSettings.knownAgents, id: \.self) { agent in
+                            HStack(spacing: 6) {
+                                Text(agent).font(.system(size: typography.body, design: .monospaced))
+                                    .frame(width: 70, alignment: .leading)
+                                Picker("", selection: agentSound(agent)) {
+                                    Text("Default").tag("default")
+                                    Text("On").tag("on")
+                                    Text("Off").tag("off")
+                                }
+                                .labelsHidden()
+                                .frame(width: 90)
                             }
-                            .labelsHidden()
-                            .frame(width: 90)
                         }
                     }
                 }
             }
-            Divider()
-            field("Pop-up notifications", hint: "Herdr's [ui.toast] delivery. Unset, xherdr uses System (Herdr itself defaults to Off). xherdr has no outer terminal, so Terminal uses system notifications.") {
-                Picker("", selection: string("ui.toast", "delivery",
-                                             default: HerdrNotificationSettings.defaultDelivery.rawValue)) {
-                    Text("Off").tag("off")
-                    Text("In xherdr").tag("herdr")
-                    Text("Terminal").tag("terminal")
-                    Text("System").tag("system")
+            settingsGroup("Pop-up notifications", subtitle: "Herdr · Save & reload to apply") {
+                field("Delivery", hint: "Herdr's [ui.toast] delivery. Unset, xherdr uses System (Herdr itself defaults to Off). xherdr has no outer terminal, so Terminal uses system notifications.") {
+                    Picker("", selection: string("ui.toast", "delivery",
+                                                 default: HerdrNotificationSettings.defaultDelivery.rawValue)) {
+                        Text("Off").tag("off")
+                        Text("In xherdr").tag("herdr")
+                        Text("Terminal").tag("terminal")
+                        Text("System").tag("system")
+                    }
+                    .labelsHidden()
+                    .frame(width: 220, alignment: .leading)
                 }
-                .labelsHidden()
-                .frame(width: 220)
-            }
-            field("Delay", hint: "Seconds to wait before showing a pop-up; alerts you handle meanwhile are skipped") {
-                TextField("1", value: integer("ui.toast", "delay_seconds", default: 1), format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 100)
-            }
-            field("In-app position", hint: "Corner for In xherdr pop-ups") {
-                Picker("", selection: string("ui.toast.herdr", "position", default: "bottom-right")) {
-                    Text("Top left").tag("top-left")
-                    Text("Top right").tag("top-right")
-                    Text("Bottom left").tag("bottom-left")
-                    Text("Bottom right").tag("bottom-right")
+                field("Delay", hint: "Seconds to wait before showing a pop-up; alerts you handle meanwhile are skipped") {
+                    TextField("1", value: integer("ui.toast", "delay_seconds", default: 1), format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
                 }
-                .labelsHidden()
-                .frame(width: 220)
+                field("In-app position", hint: "Corner for In xherdr pop-ups") {
+                    Picker("", selection: string("ui.toast.herdr", "position", default: "bottom-right")) {
+                        Text("Top left").tag("top-left")
+                        Text("Top right").tag("top-right")
+                        Text("Bottom left").tag("bottom-left")
+                        Text("Bottom right").tag("bottom-right")
+                    }
+                    .labelsHidden()
+                    .frame(width: 220, alignment: .leading)
+                }
             }
         case .appearance:
-            settingsGroup("xherdr", subtitle: "This app only · applies immediately · not written to config.toml") {
+            settingsGroup("xherdr", subtitle: "This app only · applies immediately") {
                 field("Interface text size", hint: "Sidebar, tabs, History, Files, and settings. Default: \(Int(XherdrTypography.defaultBase)) pt") {
                     textSizeControl($interfaceTextSize, range: XherdrTypography.baseRange,
                                     default: XherdrTypography.defaultBase)
@@ -274,7 +344,7 @@ struct HerdrSettingsView: View {
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(theme.sidebarBackground, in: RoundedRectangle(cornerRadius: 6))
+                .background(theme.contentBackground, in: RoundedRectangle(cornerRadius: 8))
                 field("Markdown preview", hint: "Document shows a white page with GitHub's README typography whatever the theme. Also switchable from the preview's toolbar.") {
                     Picker("", selection: $markdownPreviewStyle) {
                         ForEach(MarkdownPreviewStyle.allCases) { style in
@@ -286,22 +356,25 @@ struct HerdrSettingsView: View {
                     .frame(width: 200)
                 }
             }
-            groupHeader("Herdr", subtitle: "Saved to config.toml · Save & reload to apply")
-            ThemeSettingsView(name: string("theme", "name", default: XherdrTheme.fallbackID),
-                              autoSwitch: bool("theme", "auto_switch", default: false),
-                              lightName: optionalString("theme", "light_name"),
-                              darkName: optionalString("theme", "dark_name"))
+            settingsGroup("Color theme", subtitle: "Herdr & xherdr · Save & reload to apply") {
+                ThemeSettingsView(name: string("theme", "name", default: XherdrTheme.fallbackID),
+                                  autoSwitch: bool("theme", "auto_switch", default: false),
+                                  lightName: optionalString("theme", "light_name"),
+                                  darkName: optionalString("theme", "dark_name"))
+            }
         case .server:
             description("Headless size applies when no client is attached. These values must be positive.")
-            field("Headless columns", hint: "Default: 120") {
-                TextField("120", value: integer("server", "headless_cols", default: 120), format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 100)
-            }
-            field("Headless rows", hint: "Default: 40") {
-                TextField("40", value: integer("server", "headless_rows", default: 40), format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 100)
+            settingsGroup("Headless terminal") {
+                field("Headless columns", hint: "Default: 120") {
+                    TextField("120", value: integer("server", "headless_cols", default: 120), format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                }
+                field("Headless rows", hint: "Default: 40") {
+                    TextField("40", value: integer("server", "headless_rows", default: 40), format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                }
             }
         case .advanced:
             EmptyView()
@@ -315,32 +388,36 @@ struct HerdrSettingsView: View {
                 .foregroundStyle(.secondary)
             Text(HerdrConfigFile.url.path)
                 .font(.system(size: typography.secondary, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(theme.subtext)
                 .textSelection(.enabled)
             TextEditor(text: $model.document.text)
                 .font(.system(size: typography.emphasis, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(5)
-                .background(Color.black.opacity(0.23), in: RoundedRectangle(cornerRadius: 5))
+                .background(theme.sidebarBackground, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.text.opacity(0.1)))
             Link("Herdr configuration reference", destination: URL(string: "https://herdr.dev/docs/config-reference/")!)
                 .font(.system(size: typography.body))
         }
-        .padding(20)
+        .padding(24)
     }
 
     private func description(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: typography.emphasis))
-            .foregroundStyle(.secondary)
+            .font(.system(size: typography.body))
+            .foregroundStyle(theme.subtext)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private func field<Content: View>(_ title: String, hint: String,
                                       @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: typography.emphasis, weight: .medium))
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: typography.body, weight: .medium))
             content()
-            Text(hint).font(.system(size: typography.secondary)).foregroundStyle(.tertiary)
+            Text(hint)
+                .font(.system(size: typography.secondary))
+                .foregroundStyle(theme.subtext)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -364,35 +441,40 @@ struct HerdrSettingsView: View {
                 set: { model.setInteger($0, section, key, default: fallback) })
     }
 
-    private func groupHeader(_ title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func groupHeader(_ title: String, subtitle: String?) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.system(size: typography.heading, weight: .semibold))
-            Text(subtitle).font(.system(size: typography.secondary)).foregroundStyle(.secondary)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: typography.secondary))
+                    .foregroundStyle(theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(.top, 4)
     }
 
-    /// A boxed group for settings that belong to xherdr rather than Herdr's config.toml.
-    private func settingsGroup<Content: View>(_ title: String, subtitle: String,
+    /// Shared visual grouping for app preferences and Herdr configuration.
+    private func settingsGroup<Content: View>(_ title: String, subtitle: String? = nil,
                                               @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 20) {
             groupHeader(title, subtitle: subtitle)
             content()
         }
-        .padding(14)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.accent.opacity(0.25)))
+        .background(theme.sidebarBackground, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.text.opacity(0.1)))
     }
 
     private func textSizeControl(_ value: Binding<Double>, range: ClosedRange<Double>,
                                  default fallback: Double) -> some View {
         HStack(spacing: 10) {
             Slider(value: value, in: range, step: 1)
-                .frame(width: 220)
+                .frame(width: 220, alignment: .leading)
             Text("\(Int(value.wrappedValue)) pt")
                 .font(.system(size: typography.body, design: .monospaced))
-                .frame(width: 44, alignment: .leading)
+                .fixedSize()
+                .frame(width: 60, alignment: .leading)
             Button("Default") { value.wrappedValue = fallback }
                 .disabled(value.wrappedValue == fallback)
         }
@@ -407,6 +489,7 @@ struct HerdrSettingsView: View {
             } label: {
                 Image(systemName: "play.fill")
             }
+            .accessibilityLabel("Preview sound")
             .help("Preview")
         }
     }

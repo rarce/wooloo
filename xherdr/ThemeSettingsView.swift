@@ -2,31 +2,34 @@ import SwiftUI
 
 /// Theme picker for Herdr's `[theme]` section with a color preview of each built-in theme.
 struct ThemeSettingsView: View {
+    @Environment(\.xherdrTypography) private var typography
+    @Environment(\.xherdrTheme) private var theme
     @Binding var name: String
     @Binding var autoSwitch: Bool
     @Binding var lightName: String
     @Binding var darkName: String
 
-    private let columns = [GridItem(.adaptive(minimum: 168, maximum: 220), spacing: 14)]
+    private let columns = [GridItem(.adaptive(minimum: 230, maximum: 320), spacing: 14)]
 
     private var selectedID: String { XherdrTheme.canonicalName(name) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("One theme for Herdr and xherdr: the sidebar, tabs, editor, and terminals all use it. Saving writes [theme] in config.toml and reloads Herdr.")
-                .font(.system(size: 12))
+            Text("Choose a shared palette for the sidebar, tabs, editor, and terminals.")
+                .font(.system(size: typography.body))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             section("Dark", themes: XherdrTheme.all.filter(\.isDark))
             section("Light", themes: XherdrTheme.all.filter { !$0.isDark })
 
+            Divider()
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Follow macOS light/dark appearance", isOn: $autoSwitch)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: typography.body, weight: .medium))
                 Text("Herdr switches when the host terminal's appearance changes; xherdr follows macOS.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: typography.secondary))
+                    .foregroundStyle(theme.subtext)
                 if autoSwitch {
                     HStack(spacing: 18) {
                         picker("Light appearance", selection: $lightName, themes: XherdrTheme.all.filter { !$0.isDark })
@@ -40,7 +43,7 @@ struct ThemeSettingsView: View {
     private func section(_ title: String, themes: [XherdrTheme]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title.uppercased())
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: typography.caption, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .tracking(0.6)
             LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
@@ -50,6 +53,8 @@ struct ThemeSettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Use \(theme.name) (\(theme.id))")
+                    .accessibilityLabel(theme.name)
+                    .accessibilityAddTraits(theme.id == selectedID ? [.isSelected] : [])
                 }
             }
         }
@@ -57,7 +62,7 @@ struct ThemeSettingsView: View {
 
     private func picker(_ title: String, selection: Binding<String>, themes: [XherdrTheme]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 11, weight: .medium))
+            Text(title).font(.system(size: typography.secondary, weight: .medium))
             Picker(title, selection: Binding(
                 get: { selection.wrappedValue.isEmpty ? "" : XherdrTheme.canonicalName(selection.wrappedValue) },
                 set: { selection.wrappedValue = $0 }
@@ -67,7 +72,7 @@ struct ThemeSettingsView: View {
                 ForEach(themes) { theme in Text(theme.name).tag(theme.id) }
             }
             .labelsHidden()
-            .frame(width: 200)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -79,24 +84,34 @@ struct ThemeCard: View {
 
     private func c(_ hex: UInt32, _ opacity: Double = 1) -> Color { XherdrTheme.color(hex, opacity: opacity) }
 
+    @Environment(\.xherdrTypography) private var typography
+    @Environment(\.xherdrTheme) private var interfaceTheme
+    @State private var isHovered = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 10) {
             preview
-                .frame(height: 104)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7)
-                    .stroke(isSelected ? c(theme.herdr.accent) : Color.primary.opacity(0.12),
-                            lineWidth: isSelected ? 2.5 : 1))
-            HStack(spacing: 5) {
-                Text(theme.name).font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                .frame(height: 112)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            HStack(spacing: 8) {
+                Text(theme.name)
+                    .font(.system(size: typography.secondary,
+                                  weight: isSelected ? .semibold : .medium))
+                    .lineLimit(1)
                 Spacer(minLength: 0)
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(c(theme.herdr.accent))
-                }
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? interfaceTheme.accent : interfaceTheme.subtext.opacity(0.5))
+                    .font(.system(size: typography.body))
             }
-            .frame(height: 16)
         }
-        .contentShape(Rectangle())
+        .padding(10)
+        .background(isSelected ? interfaceTheme.accent.opacity(0.1) : interfaceTheme.contentBackground,
+                    in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .stroke(isSelected ? interfaceTheme.accent : interfaceTheme.text.opacity(isHovered ? 0.3 : 0.12),
+                    lineWidth: isSelected ? 2 : 1))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onHover { isHovered = $0 }
     }
 
     private var preview: some View {

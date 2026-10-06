@@ -102,7 +102,8 @@ final class ViewSnapshotTests: XCTestCase {
         let view = ThemeSettingsView(name: .constant("tokyo-night"), autoSwitch: .constant(true),
                                      lightName: .constant("catppuccin-latte"), darkName: .constant("tokyo-night"))
             .padding(20)
-        try assertSnapshot(render(view, size: NSSize(width: 760, height: 940)), named: "theme-picker")
+        // Match the settings grid width and include every theme and the appearance controls.
+        try assertSnapshot(render(view, size: NSSize(width: 636, height: 2200)), named: "theme-picker")
         try skipIfRecorded()
     }
 
@@ -125,7 +126,7 @@ final class ViewSnapshotTests: XCTestCase {
         defer { for (key, value) in zip(keys, saved) { defaults.set(value, forKey: key) } }
         keys.forEach(defaults.removeObject(forKey:))
 
-        let size = NSSize(width: 800, height: 540)
+        let size = NSSize(width: 880, height: 620)
         try assertSnapshot(render(HerdrSettingsView(socketPath: "/nonexistent.sock", sessionName: "work"), size: size),
                            named: "settings-terminal")
         try assertSnapshot(render(HerdrSettingsView(socketPath: "/nonexistent.sock", sessionName: "work",

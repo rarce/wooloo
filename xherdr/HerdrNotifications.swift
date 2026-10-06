@@ -436,7 +436,7 @@ struct NotificationPermissionView: View {
             }
             Text(statusDetail)
                 .font(.system(size: typography.secondary))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(theme.subtext)
                 .fixedSize(horizontal: false, vertical: true)
             if let testResult {
                 Text(testResult).font(.system(size: typography.secondary)).foregroundStyle(.secondary)
