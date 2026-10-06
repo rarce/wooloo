@@ -64,7 +64,8 @@ When the explorer points at an SSH machine, the files are read there and the req
 
 - macOS 14 or later
 - Xcode 26 (one vendored package needs Swift 6.2)
-- [Herdr](https://herdr.dev/) 0.9 or later
+- Herdr 0.9.3 is included in the app; an existing compatible Herdr installation can also be used.
+- Git and coding agent CLIs are optional, installed separately for their respective features.
 
 There is no prebuilt release yet; build from source.
 
@@ -78,7 +79,13 @@ xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destin
 
 The project signs ad hoc ("Sign to Run Locally"), so no developer account is needed. Keep a signature: macOS refuses notification permission to an unsigned app. You can also open `xherdr.xcodeproj` in Xcode and run the `xherdr` scheme on **My Mac**.
 
-xherdr connects to Herdr's `default` session on first launch. To try it without touching your main session, start a separate one and pick it in the sidebar's session picker:
+The first build downloads the pinned Intel and Apple Silicon Herdr binaries and verifies their SHA-256 hashes. They are cached under `build/herdr/0.9.3` and bundled as a signed universal helper. You can prepare this cache in advance with `sh scripts/bundle-herdr.sh --prepare`; subsequent builds work offline with the package and runtime caches present.
+
+On a fresh install, a setup wizard lets you choose a folder and creates the first Space in an app-managed `xherdr` session. It installs the included Herdr under `~/Library/Application Support/xherdr/runtime/herdr/0.9.3`, so no download, Homebrew, developer tools, or administrator password is needed at runtime. A user launchd job starts the server when xherdr opens and keeps it running when the app quits. It is not registered to start at login. Herdr's normal `config.toml` and named-session storage are used; existing configuration is preserved.
+
+You can instead choose an existing Herdr executable and connect to a running session. Existing xherdr users keep their remembered session. **Set Up Herdr…** in the sidebar session picker opens the wizard again. Runtime updates ship with xherdr; a compatible server already running is reused, and setup never stops its panes.
+
+To try the app without touching your main session, start a separate one and pick it in the sidebar's session picker:
 
 ```sh
 herdr --session xherdr-ui-test server
@@ -87,6 +94,8 @@ herdr --session xherdr-ui-test server stop   # when finished
 ```
 
 Replace `build` with `test` to run the unit tests.
+
+To check the bundled runtime and launchd lifecycle with a real server, run `TEST_RUNNER_XHERDR_RUNTIME_E2E=1 xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' -only-testing:xherdrTests/HerdrRuntimeTests test`. It uses temporary config/state/runtime roots and only the `xherdr-ui-test` session. For an interactive isolated setup, launch a test copy with `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XHERDR_RUNTIME_ROOT` pointing under `/private/tmp`, and `XHERDR_SETUP_SESSION=xherdr-ui-test`.
 
 ## Documentation
 

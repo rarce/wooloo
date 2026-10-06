@@ -22,6 +22,7 @@ OUTPUT = ROOT / "THIRD_PARTY_NOTICES.txt"
 
 # (name, url, license file) for packages copied into Vendor/.
 VENDORED = [
+    ("Herdr 0.9.3", "https://github.com/herdrdev/herdr/tree/v0.9.3", "Vendor/Herdr/LICENSE"),
     ("CodeEditSourceEditor", "https://github.com/CodeEditApp/CodeEditSourceEditor", "Vendor/CodeEditSourceEditor/LICENSE.md"),
     ("CodeEditTextView", "https://github.com/CodeEditApp/CodeEditTextView", "Vendor/CodeEditTextView/LICENSE.md"),
     ("MarkdownView", "https://github.com/LiYanan2004/MarkdownView", "Vendor/MarkdownView/LICENSE"),

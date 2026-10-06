@@ -320,8 +320,11 @@ enum WorkspaceFiles {
     static let maximumEntries = 2_000
 
     /// Where the Herdr command is looked for, in order; tests replace it.
-    static var herdrCandidates = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/herdr").path,
-                                  "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
+    private static var overriddenHerdrCandidates: [String]?
+    static var herdrCandidates: [String] {
+        get { overriddenHerdrCandidates ?? HerdrRuntimePaths.executableCandidates }
+        set { overriddenHerdrCandidates = newValue }
+    }
 
     private static func herdrExecutable() throws -> String {
         guard let executable = herdrCandidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
@@ -1070,8 +1073,7 @@ enum WorkspaceFiles {
             return try ssh(machine, remote, input: input, limit: limit, timeout: timeout, label: label)
         }
         guard let localGit else {
-            return try run("/usr/bin/env", ["GIT_TERMINAL_PROMPT=0", "git", "-C", location.root] + args,
-                           input: input, limit: limit, timeout: timeout, label: label)
+            throw WorkspaceFileError.message("Git is not installed. Install Git to use repository features; terminals and the editor work without it.")
         }
         return try run(localGit, ["-C", location.root] + args, environment: ["GIT_TERMINAL_PROMPT": "0"],
                        input: input, limit: limit, timeout: timeout, label: label)
@@ -1200,14 +1202,16 @@ enum WorkspaceFiles {
             .first { !$0.isEmpty } ?? "Command failed"
     }
 
-    /// The git that `/usr/bin/git` forwards to. The shim looks it up again on every call, which
-    /// takes longer than most git commands the app runs. `nil` when xcrun cannot find one, for
-    /// example without the command line tools; git then runs through the shim.
+    /// Avoid the Apple git/xcrun shims: on a fresh Mac they prompt to install developer tools.
     private static let localGit: String? = {
-        guard let data = try? run("/usr/bin/xcrun", ["--find", "git"], limit: 4096, label: "xcrun"),
-              let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else { return nil }
-        return path
+        let paths = ["/opt/homebrew/bin/git", "/usr/local/bin/git", "/var/db/xcode_select_link/usr/bin/git",
+                     "/Library/Developer/CommandLineTools/usr/bin/git", "/Applications/Xcode.app/Contents/Developer/usr/bin/git"]
+            + (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
+                .map { String($0) + "/git" }
+        return paths.first {
+            $0.hasPrefix("/") && URL(fileURLWithPath: $0).resolvingSymlinksInPath().path != "/usr/bin/git"
+                && FileManager.default.isExecutableFile(atPath: $0)
+        }
     }()
 
     private static func localFiles(root: String) throws -> [String] {

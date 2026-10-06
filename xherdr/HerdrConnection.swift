@@ -606,7 +606,7 @@ final class HerdrStore: ObservableObject {
     }
 
     /// Herdr's config root. Tests point it at a temporary directory with fake servers.
-    static var sessionRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/herdr")
+    static var sessionRoot = HerdrRuntimePaths.configRoot
 
     /// The default session lives at the Herdr config root; named sessions live under `sessions/`.
     private static func sessionDirectory(_ name: String) -> URL {
@@ -635,7 +635,7 @@ final class HerdrStore: ObservableObject {
 
     func connect(to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 64,
               trimmed.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
             sessionSelectionError = "Use letters, numbers, hyphens, or underscores"
             return

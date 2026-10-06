@@ -3,6 +3,8 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(\.xherdrTypography) private var typography
+    @ObservedObject private var runtime = HerdrRuntimeModel.shared
+    private var managesRuntime = true
     @StateObject private var herdr = HerdrStore()
     @StateObject private var window = ContentWindowModel()
     @State private var shortcutMap = HerdrShortcutMap.load()
@@ -69,19 +71,38 @@ struct ContentView: View {
     /// Tests pass a store for a fake Herdr session and documents opened beforehand.
     init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil) {
         _herdr = StateObject(wrappedValue: herdr)
+        managesRuntime = false
         if let documents { _documentStore = StateObject(wrappedValue: documents) }
     }
 
     private var windowContent: some View {
         GeometryReader { geometry in
-            content(totalWidth: geometry.size.width)
+            if managesRuntime && runtime.showsSetup {
+                HerdrSetupView(runtime: runtime)
+            } else {
+                content(totalWidth: geometry.size.width)
+            }
         }
-        .frame(minWidth: 850, minHeight: 380)
+        .frame(minWidth: 850, minHeight: managesRuntime && runtime.showsSetup ? 580 : 380)
         .preferredColorScheme(theme.colorScheme)
         .environment(\.xherdrTheme, theme)
         .environment(\.xherdrTypography, textScale)
         .tint(theme.accent)
-        .task { herdr.start() }
+        .task {
+            if managesRuntime {
+                guard await runtime.prepare(session: herdr.sessionName) else { return }
+            }
+            herdr.start()
+        }
+        .onChange(of: runtime.showsSetup) { _, showsSetup in
+            guard managesRuntime else { return }
+            if showsSetup {
+                herdr.stop()
+            } else {
+                herdr.connect(to: runtime.connectedSession ?? herdr.sessionName)
+                shortcutMap = HerdrShortcutMap.load()
+            }
+        }
         .focusedSceneValue(\.xherdrCommands, XherdrCommandContext(
             availability: commands.availability,
             showsSidebar: window.showsSidebar,
@@ -540,6 +561,12 @@ struct ContentView: View {
                     if let error = herdr.sessionSelectionError {
                         Text(error).font(.caption).foregroundStyle(theme.warning)
                     }
+                    if managesRuntime {
+                        Button("Set Up Herdr…") {
+                            window.showsSessionPicker = false
+                            runtime.showsSetup = true
+                        }
+                    }
                     Divider()
                     Text("Files and changes")
                         .font(.subheadline.weight(.semibold))
@@ -959,8 +986,14 @@ struct ContentView: View {
     }
 
     private func connect() {
-        herdr.connect(to: window.requestedSessionName)
-        if herdr.sessionSelectionError == nil { window.showsSessionPicker = false }
+        let name = window.requestedSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            if managesRuntime {
+                guard await runtime.prepare(session: name) else { return }
+            }
+            herdr.connect(to: name)
+            if herdr.sessionSelectionError == nil { window.showsSessionPicker = false }
+        }
         activeDocumentID = nil
     }
 

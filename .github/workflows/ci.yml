@@ -35,6 +35,12 @@ jobs:
 
       # CI runs the fast suite: pixel snapshots are compared locally only, since their
       # rendering depends on the macOS version and fonts.
+      - name: Cache Herdr release assets
+        uses: actions/cache@v5
+        with:
+          path: build/herdr
+          key: herdr-${{ hashFiles('scripts/bundle-herdr.sh') }}
+
       - name: Test
         run: |
           xcodebuild test \

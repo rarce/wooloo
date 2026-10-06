@@ -19,8 +19,7 @@ enum HerdrConfigFile {
         if let override = ProcessInfo.processInfo.environment["HERDR_CONFIG_PATH"], !override.isEmpty {
             return URL(fileURLWithPath: override).standardizedFileURL
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/herdr/config.toml")
+        return HerdrRuntimePaths.configRoot.appendingPathComponent("config.toml")
     }
 
     static func read(at url: URL) throws -> String {
