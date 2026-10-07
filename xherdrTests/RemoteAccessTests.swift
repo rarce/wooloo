@@ -38,13 +38,13 @@ final class RemoteAccessTests: XCTestCase {
 
     func testHerdroidLinkCarriesTheConnectionAndEscapesFingerprints() throws {
         let url = try XCTUnwrap(RemoteAccessLink.herdroid(
-            hostname: "a-b.trycloudflare.com", user: "roberto", session: "default", label: "Roberto's Mac",
-            herdrPath: "/Users/roberto/.local/bin/herdr", fingerprints: ["SHA256:ab+c/d", "SHA256:xyz"]))
+            hostname: "a-b.trycloudflare.com", user: "me", session: "default", label: "Ada's Mac",
+            herdrPath: "/Users/me/.local/bin/herdr", fingerprints: ["SHA256:ab+c/d", "SHA256:xyz"]))
         XCTAssertTrue(url.absoluteString.hasPrefix("herdroid://add-host?transport=cloudflare&host=a-b.trycloudflare.com"))
         XCTAssertTrue(url.absoluteString.contains("fp=SHA256:ab%2Bc/d&fp=SHA256:xyz"), url.absoluteString)
         let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
-        XCTAssertEqual(items.first { $0.name == "label" }?.value, "Roberto's Mac")
-        XCTAssertEqual(items.first { $0.name == "herdr" }?.value, "/Users/roberto/.local/bin/herdr")
+        XCTAssertEqual(items.first { $0.name == "label" }?.value, "Ada's Mac")
+        XCTAssertEqual(items.first { $0.name == "herdr" }?.value, "/Users/me/.local/bin/herdr")
         XCTAssertEqual(items.filter { $0.name == "fp" }.map(\.value), ["SHA256:ab+c/d", "SHA256:xyz"])
     }
 
