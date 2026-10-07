@@ -220,21 +220,27 @@ struct PanelDropHandler {
     let focus: (PanelContent) -> Void
 }
 
-/// Lays the panels out with draggable dividers. Panels keep their identity while the layout
-/// changes around them, so the terminals and editors are not rebuilt when a split opens.
+/// Lays the panels out with draggable dividers. A panel is identified by what it shows, the
+/// main panel's document or Search included, so a terminal, editor or preview keeps its view
+/// while the layout changes around it or it moves between the main panel and a side panel:
+/// rebuilding a long Markdown preview costs hundreds of milliseconds.
 struct PanelLayoutView<Panel: View>: View {
     @Environment(\.xherdrTheme) private var theme
     let layout: PanelLayout
+    /// What the main panel shows: `.main` for the terminals, else its document or Search.
+    let mainShows: PanelContent
     let drop: PanelDropHandler
     let setRatio: (_ path: [Bool], _ ratio: Double) -> Void
-    @ViewBuilder let panel: (PanelContent) -> Panel
+    /// A panel's view, given the panel and what it shows.
+    @ViewBuilder let panel: (_ panel: PanelContent, _ shows: PanelContent) -> Panel
 
     var body: some View {
         GeometryReader { geometry in
             let arranged = layout.arranged(in: CGRect(origin: .zero, size: geometry.size))
             ZStack(alignment: .topLeading) {
-                ForEach(arranged.panels, id: \.content) { item in
-                    panel(item.content)
+                ForEach(arranged.panels.map { (shows: $0.content == .main ? mainShows : $0.content,
+                                               content: $0.content, frame: $0.frame) }, id: \.shows) { item in
+                    panel(item.content, item.shows)
                         .frame(width: item.frame.width, height: item.frame.height)
                         .clipped()
                         .position(x: item.frame.midX, y: item.frame.midY)

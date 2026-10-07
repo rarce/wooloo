@@ -190,6 +190,22 @@ final class MarkdownTasksTests: XCTestCase {
 /// Clicks in a hosted preview reach the checkbox and the double-click handler, in both styles.
 @MainActor
 final class MarkdownPreviewInteractionTests: XCTestCase {
+    /// Previews compare by what they render, never by their callbacks, so a parent's update
+    /// does not parse and build a long document again.
+    func testPreviewsCompareByWhatTheyRender() {
+        let location = WorkspaceFileLocation(machine: nil, session: "s", workspaceID: "w", workspaceLabel: "w", root: "/r")
+        func preview(_ text: String = "# A", path: String = "A.md", focus: MarkdownFindFocus? = nil,
+                     toggles: Bool = true) -> MarkdownPreviewView {
+            MarkdownPreviewView(text: text, path: path, location: location, onOpenFile: { _ in }, focus: focus,
+                                onToggleTask: toggles ? { _, _ in } : nil, onRevealLine: { _ in })
+        }
+        XCTAssertEqual(preview(), preview(), "New callbacks alone are no change")
+        XCTAssertNotEqual(preview(), preview("# B"))
+        XCTAssertNotEqual(preview(), preview(path: "B.md"))
+        XCTAssertNotEqual(preview(), preview(focus: MarkdownFindFocus(block: 1, match: 0)))
+        XCTAssertNotEqual(preview(), preview(toggles: false), "Read-only checkboxes are a change")
+    }
+
     private var toggles: [(line: Int, checked: Bool)] = []
     private var reveals: [Int] = []
 

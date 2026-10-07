@@ -39,6 +39,19 @@ public enum MarkdownElementRendererRegistration {
     }
 }
 
+/// Registrations are equal when they register equal renderers for the same element. A
+/// `.markdownElementRenderer` modifier registers anew whenever the environment above it updates;
+/// without equality SwiftUI takes each new array for a change and every `MarkdownView` below
+/// parses and builds its whole document again. Renderers compare by value when `Hashable`, and
+/// are never equal otherwise.
+extension MarkdownElementRendererRegistration: Equatable {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        guard lhs.matches(rhs), let left = lhs.renderer as? AnyHashable,
+              let right = rhs.renderer as? AnyHashable else { return false }
+        return left == right
+    }
+}
+
 // MARK: - Environment Values
 
 struct MarkdownElementRenderersEnvironmentKey: EnvironmentKey {

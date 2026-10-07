@@ -34,7 +34,12 @@ enum MarkdownPreviewStyle: String, CaseIterable, Identifiable {
 
 /// Renders a Markdown document from the Space with MarkdownView, drawing ```mermaid blocks
 /// natively with BeautifulMermaid. Images and links resolve against the Space, locally or over SSH.
-struct MarkdownPreviewView: View {
+///
+/// MarkdownView parses and builds the whole document each time its body runs, which takes
+/// hundreds of milliseconds for a long file. Shown with `.equatable()`, the preview runs again
+/// only when what it renders changes, not whenever a parent does; callers then pass callbacks
+/// that stay valid while the preview keeps an earlier copy of them (see `MarkdownPreviewActions`).
+struct MarkdownPreviewView: View, Equatable {
     @Environment(\.xherdrTypography) private var typography
     let text: String
     let path: String
@@ -50,6 +55,15 @@ struct MarkdownPreviewView: View {
     @Environment(\.xherdrTheme) private var theme
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
     @State private var width: CGFloat = 0
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        MainActor.assumeIsolated {
+            lhs.text == rhs.text && lhs.path == rhs.path && lhs.location == rhs.location
+                && lhs.highlight == rhs.highlight && lhs.focus == rhs.focus
+                && (lhs.onToggleTask == nil) == (rhs.onToggleTask == nil)
+                && (lhs.onRevealLine == nil) == (rhs.onRevealLine == nil)
+        }
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -220,7 +234,8 @@ enum MarkdownSpaceLinks {
 
 // MARK: - Images
 
-private struct SpaceImageRenderer: MarkdownImageRenderer {
+/// Hashable, so a preview's renderer registration compares equal across updates.
+private struct SpaceImageRenderer: MarkdownImageRenderer, Hashable {
     let location: WorkspaceFileLocation
 
     func makeBody(configuration: Configuration) -> some View {
@@ -394,4 +409,13 @@ private struct MarkdownDocumentFonts: MarkdownFontGroup {
     var tableBody: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
     var inlineMath: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
     var displayMath: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
+}
+
+/// A preview's callbacks, kept by its document view and updated on each of that view's
+/// updates, so an equatable preview that skipped an update still calls the current ones.
+@MainActor
+final class MarkdownPreviewActions {
+    var openFile: (String) -> Void = { _ in }
+    var toggleTask: (Int, Bool) -> Void = { _, _ in }
+    var revealLine: (Int) -> Void = { _ in }
 }

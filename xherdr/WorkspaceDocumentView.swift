@@ -122,6 +122,7 @@ struct WorkspaceDocumentView: View {
     /// Not private so snapshot tests can open the find bar with a query.
     @StateObject var find = DocumentFindModel()
     @State private var previewFocus: MarkdownFindFocus?
+    @State private var previewActions = MarkdownPreviewActions()
     @State private var notebookSearchText: [String] = []
     /// Set by Replace so the next match is selected once the edited text comes back.
     @State private var revealsAfterEdit = false
@@ -388,9 +389,15 @@ struct WorkspaceDocumentView: View {
     }
 
     private var preview: some View {
-        MarkdownPreviewView(text: document.text, path: document.path, location: document.location,
-                            onOpenFile: onOpenFile, highlight: previewHighlight, focus: previewFocus,
-                            onToggleTask: toggleTask, onRevealLine: revealSource)
+        previewActions.openFile = onOpenFile
+        previewActions.toggleTask = toggleTask
+        previewActions.revealLine = revealSource
+        let actions = previewActions
+        return MarkdownPreviewView(text: document.text, path: document.path, location: document.location,
+                                   onOpenFile: { actions.openFile($0) }, highlight: previewHighlight,
+                                   focus: previewFocus, onToggleTask: { actions.toggleTask($0, $1) },
+                                   onRevealLine: { actions.revealLine($0) })
+            .equatable()
             .frame(minWidth: 200)
     }
 

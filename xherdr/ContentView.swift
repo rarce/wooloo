@@ -69,10 +69,11 @@ struct ContentView: View {
     }
 
     /// Tests pass a store for a fake Herdr session and documents opened beforehand.
-    init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil) {
+    init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil, window: ContentWindowModel? = nil) {
         _herdr = StateObject(wrappedValue: herdr)
         managesRuntime = false
         if let documents { _documentStore = StateObject(wrappedValue: documents) }
+        if let window { _window = StateObject(wrappedValue: window) }
     }
 
     private var windowContent: some View {
@@ -682,13 +683,12 @@ struct ContentView: View {
                     .background(barBackground)
                 Divider()
 
-                PanelLayoutView(layout: commands.panelLayout, drop: panelDrop,
-                                 setRatio: { path, ratio in setPanelRatio(ratio, at: path) }) { content in
-                    if content == .main {
-                        mainPanel
-                    } else {
-                        sidePanel(content)
-                    }
+                let layout = commands.panelLayout
+                // A tab made active while it has a side panel shows there; the redirect follows.
+                let mainShows = commands.mainPanelContent.flatMap { layout.contains($0) ? nil : $0 } ?? .main
+                PanelLayoutView(layout: layout, mainShows: mainShows, drop: panelDrop,
+                                setRatio: { path, ratio in setPanelRatio(ratio, at: path) }) { panel, shows in
+                    contentPanel(panel, shows: shows)
                 }
             } else {
                 connectionState
@@ -696,15 +696,35 @@ struct ContentView: View {
         }
     }
 
-    /// The main panel: the selected terminal tab, or the active document or Search.
+    /// A panel's view. A document or Search has the same view in the main panel and in a side
+    /// panel, where a header is added, so moving it between them keeps the view.
     @ViewBuilder
-    private var mainPanel: some View {
-        if activeDocumentID == WorkspaceSearchModel.tabID {
-            searchView
-        } else if let activeDocumentID,
-           let index = documentStore.documents.firstIndex(where: { $0.id == activeDocumentID }) {
-            documentView(at: index, focused: commands.focusedPanel == .main)
-        } else if !herdr.isConnected {
+    private func contentPanel(_ panel: PanelContent, shows: PanelContent) -> some View {
+        switch shows {
+        case .main:
+            terminalsPanel
+        case .search, .document:
+            VStack(spacing: 0) {
+                if panel != .main {
+                    panelHeader(panel)
+                    Divider()
+                }
+                if case .document(let backupID) = shows {
+                    if let index = documentStore.documents.firstIndex(where: { $0.backupID == backupID }) {
+                        documentView(at: index, focused: commands.focusedPanel == panel)
+                    }
+                } else {
+                    searchView
+                }
+            }
+            .background(theme.contentBackground)
+        }
+    }
+
+    /// The main panel showing the selected terminal tab.
+    @ViewBuilder
+    private var terminalsPanel: some View {
+        if !herdr.isConnected {
             connectionState
         } else if herdr.showsLiveSurface {
             GeometryReader { geometry in
@@ -768,26 +788,6 @@ struct ContentView: View {
             openDocument(.file, path: path, at: location)
         }, commandTarget: window.editor, isFocused: focused)
         .id(id)
-    }
-
-    /// A panel beside the main one, showing one document or Search under a header that works
-    /// like its tab: dragged, it moves the panel elsewhere.
-    private func sidePanel(_ content: PanelContent) -> some View {
-        VStack(spacing: 0) {
-            panelHeader(content)
-            Divider()
-            switch content {
-            case .search:
-                searchView
-            case .document(let backupID):
-                if let index = documentStore.documents.firstIndex(where: { $0.backupID == backupID }) {
-                    documentView(at: index, focused: commands.focusedPanel == content)
-                }
-            case .main:
-                EmptyView()
-            }
-        }
-        .background(theme.contentBackground)
     }
 
     private func panelHeader(_ content: PanelContent) -> some View {
