@@ -1306,37 +1306,96 @@ private struct SidebarResizeHandle: View {
     let range: ClosedRange<Double>
 
     @State private var dragStartWidth: Double?
-    @State private var isHovering = false
 
     var body: some View {
         Divider()
             .overlay {
-                Color.clear
-                    .frame(width: 9)
-                    .contentShape(Rectangle())
-                    .onHover { hovering in
-                        guard hovering != isHovering else { return }
-                        isHovering = hovering
-                        if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                    }
-                    .gesture(
-                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                            .onChanged { value in
-                                let start = dragStartWidth ?? width
-                                dragStartWidth = start
-                                let delta = edge == .leading ? value.translation.width : -value.translation.width
-                                width = min(max(start + delta, range.lowerBound), range.upperBound)
-                            }
-                            .onEnded { _ in dragStartWidth = nil }
-                    )
-                    .onTapGesture(count: 2) { width = defaultWidth }
-                    .help("Drag to resize · double-click to reset")
+                // An AppKit view, so the resize cursor wins over the hosting view's arrow and the
+                // neighbouring text views' I-beam; SwiftUI's onHover with NSCursor.push loses to both.
+                SidebarResizeHandleArea(
+                    onDrag: { translation in
+                        let start = dragStartWidth ?? width
+                        dragStartWidth = start
+                        let delta = edge == .leading ? translation : -translation
+                        width = min(max(start + delta, range.lowerBound), range.upperBound)
+                    },
+                    onDragEnd: { dragStartWidth = nil },
+                    onReset: { width = defaultWidth }
+                )
+                .frame(width: 9)
             }
             .zIndex(1)
             .onChange(of: range) { _, range in
                 width = min(max(width, range.lowerBound), range.upperBound)
             }
-            .onDisappear { if isHovering { NSCursor.pop() } }
+    }
+}
+
+private struct SidebarResizeHandleArea: NSViewRepresentable {
+    let onDrag: (Double) -> Void
+    let onDragEnd: () -> Void
+    let onReset: () -> Void
+
+    func makeNSView(context: Context) -> SidebarResizeHandleView {
+        let view = SidebarResizeHandleView()
+        view.toolTip = "Drag to resize · double-click to reset"
+        return view
+    }
+
+    func updateNSView(_ view: SidebarResizeHandleView, context: Context) {
+        view.onDrag = onDrag
+        view.onDragEnd = onDragEnd
+        view.onReset = onReset
+    }
+}
+
+final class SidebarResizeHandleView: NSView {
+    var onDrag: (Double) -> Void = { _ in }
+    var onDragEnd: () -> Void = {}
+    var onReset: () -> Void = {}
+    private var dragStartX: CGFloat?
+    private var cursorTrackingArea: NSTrackingArea?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let cursorTrackingArea { removeTrackingArea(cursorTrackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        cursorTrackingArea = area
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.resizeLeftRight.set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            dragStartX = nil
+            onReset()
+        } else {
+            dragStartX = event.locationInWindow.x
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragStartX else { return }
+        // The pointer leaves the handle while the sidebar catches up; keep the cursor until mouse up.
+        NSCursor.resizeLeftRight.set()
+        onDrag(event.locationInWindow.x - dragStartX)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard dragStartX != nil else { return }
+        dragStartX = nil
+        onDragEnd()
     }
 }
 

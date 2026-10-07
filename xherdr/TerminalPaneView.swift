@@ -1415,6 +1415,13 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        // The tracking area also fires under views drawn over this one, such as a sidebar's resize
+        // handle; leave the cursor to them.
+        if let contentView = window?.contentView,
+           let hit = contentView.hitTest(contentView.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow),
+           hit !== self, !hit.isDescendant(of: self) {
+            return
+        }
         updateHoveredLink(at: event.locationInWindow, modifiers: event.modifierFlags)
         if hoveredLink != nil {
             NSCursor.pointingHand.set()
