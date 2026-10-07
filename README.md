@@ -96,7 +96,17 @@ wooloo has no analytics or telemetry. It talks to the Herdr server on this Mac, 
 - **To run:** macOS 14 or later. Herdr 0.9.3 is included in the app; an existing compatible Herdr installation can also be used. Git and coding agent CLIs are optional, installed separately for their respective features.
 - **To build:** macOS 15.6 or later with Xcode 26 (one vendored package needs Swift 6.2).
 
-There is no prebuilt release yet, so for now you build from source, which needs the build requirements.
+## Install
+
+Download `wooloo-<version>.zip` from the [latest release](https://github.com/rarce/wooloo/releases/latest), unzip it and move `wooloo.app` to `/Applications`. The build is universal (Apple silicon and Intel).
+
+The app is not notarized yet (it is signed ad hoc), so Gatekeeper blocks the first launch. Either open it once, then go to System Settings → Privacy & Security and click **Open Anyway**, or remove the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/wooloo.app
+```
+
+Check the download against the SHA-256 in the release notes (`shasum -a 256 wooloo-<version>.zip`), or build from source below.
 
 ## Build and run
 
