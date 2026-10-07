@@ -37,7 +37,7 @@ CI runs the build and unit tests on every pull request.
 - Swift with four-space indentation, following the existing SwiftUI style: `UpperCamelCase` types, `lowerCamelCase` members, descriptive names such as `WorkspaceRepositoryView`.
 - Keep process, file and SSH work off the main thread. Pass command arguments as arrays, quote anything sent to a shell with `WorkspaceFiles.quote`, and validate paths before reading or writing.
 - The Xcode project lists its sources explicitly: add new Swift files to `xherdr.xcodeproj/project.pbxproj`.
-- After adding or updating a dependency, build once and run `scripts/third-party-notices.py` to refresh `THIRD_PARTY_NOTICES.txt`.
+- After adding or updating a dependency, build once and run `scripts/third-party-notices.py` to refresh `THIRD_PARTY_NOTICES.txt`. When updating the bundled Herdr, first run `scripts/herdr-notices.py` on a Herdr checkout of the new tag.
 
 ## Commits and pull requests
 

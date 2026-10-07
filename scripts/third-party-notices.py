@@ -4,7 +4,8 @@
     scripts/third-party-notices.py [checkouts]
 
 `checkouts` is the SwiftPM checkout directory of a resolved build, by default
-build/DerivedData/SourcePackages/checkouts. Run it after changing a dependency.
+build/DerivedData/SourcePackages/checkouts. Run it after changing a dependency, and
+after scripts/herdr-notices.py when Herdr is updated.
 The grammars built into CodeEditLanguages' binary framework have no checkout, so
 their licenses are fetched from GitHub; set GITHUB_TOKEN to raise the rate limit.
 """
@@ -47,9 +48,20 @@ RESOLVED = [
     ("Rearrange", "https://github.com/ChimeHQ/Rearrange", ["Rearrange/LICENSE"]),
 ]
 
+# Written by scripts/herdr-notices.py: what the Herdr helper is built from.
+HERDR_NOTICES = "Vendor/Herdr/NOTICES.txt"
+
 EPL_SOURCE = (
     "elk-swift is distributed under the Eclipse Public License 2.0. xherdr uses it\n"
     "unmodified. Its source code is available at https://github.com/lukilabs/elk-swift.\n"
+)
+
+NOTEBOOK_PREVIEW = (
+    "markdown-it 15.0.2 (MIT), DOMPurify 3.4.16 (Apache-2.0 OR MPL-2.0),\n"
+    "KaTeX 0.19.0 (MIT), and highlight.js CDN assets 11.12.0 (BSD-3-Clause).\n"
+    "The complete licenses are in Vendor/NotebookPreview/*-LICENSE and are\n"
+    "shipped alongside these libraries in the app bundle. Pinned archive URLs,\n"
+    "versions, and integrity hashes are recorded in Vendor/NotebookPreview/sources.json.\n"
 )
 
 CODEEDITLANGUAGES = (
@@ -88,6 +100,8 @@ def main():
            "xherdr itself is licensed under the MIT License; see LICENSE.\n"]
     for name, url, path in VENDORED:
         out += [rule(f"{name}\n{url}"), (ROOT / path).read_text().strip() + "\n"]
+        if path.startswith("Vendor/Herdr/"):
+            out.append("\n" + (ROOT / HERDR_NOTICES).read_text())
     for name, url, paths in RESOLVED:
         out.append(rule(f"{name}\n{url}"))
         if name == "elk-swift":
@@ -99,6 +113,8 @@ def main():
     for repo in grammar_repos(checkouts):
         spdx, text = github_license(repo)
         out += [f"\n{'-' * 78}\n{repo} ({spdx})\nhttps://github.com/{repo}\n{'-' * 78}\n\n", text.strip() + "\n"]
+
+    out += [f"\n{'-' * 78}\nNotebook preview browser libraries\n{'-' * 78}\n\n", NOTEBOOK_PREVIEW]
 
     OUTPUT.write_text("".join(out))
     print(f"Wrote {OUTPUT.relative_to(ROOT)}")

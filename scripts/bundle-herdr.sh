@@ -1,5 +1,6 @@
 #!/bin/sh
 # Download pinned, verified release assets at build time. The installed app works offline.
+# After changing the Herdr version, run scripts/herdr-notices.py on a checkout of the same tag.
 set -eu
 
 task_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

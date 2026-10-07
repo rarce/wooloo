@@ -25,7 +25,7 @@ scripts/workspace-bench.sh                    # WorkspaceFiles ops; XHERDR_BENCH
 
 Benchmarks and trace replay are skipped in normal `test` runs unless their env vars are set (the scripts do this). Pixel snapshots run locally only: CI (`.github/workflows/ci.yml`, macos-26) skips `ViewSnapshotTests` and `TerminalRenderingTests/testSnapshotsMatch` to stay fast. Terminal snapshots also need FiraCode Nerd Font Mono; view snapshots are saved per macOS version (`xherdrTests/Snapshots/Views`, re-record with `TEST_RUNNER_XHERDR_RECORD_SNAPSHOTS=1`). No linter or formatter is configured.
 
-Git, SSH and Herdr socket tests use `WorkspaceGitSandbox` (disposable repos under `/private/tmp/xherdr-tests`, global Git config ignored), a fake `ssh` via `WorkspaceFiles.sshExecutable`, and `FakeHerdrServer`. After changing a dependency, run `scripts/third-party-notices.py` to regenerate `THIRD_PARTY_NOTICES.txt`.
+Git, SSH and Herdr socket tests use `WorkspaceGitSandbox` (disposable repos under `/private/tmp/xherdr-tests`, global Git config ignored), a fake `ssh` via `WorkspaceFiles.sshExecutable`, and `FakeHerdrServer`. After changing a dependency, run `scripts/third-party-notices.py` to regenerate `THIRD_PARTY_NOTICES.txt` (after `scripts/herdr-notices.py <herdr checkout>` when the bundled Herdr changes).
 
 Develop against an isolated Herdr session, never `default` or your primary one. The app opens the last session it used (`default` on first launch), so switch to the test session in the sidebar's session picker:
 
