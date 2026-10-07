@@ -55,6 +55,7 @@ final class ContentWindowModel: ObservableObject {
     @Published var showsSessionPicker = false
     @Published var showsSettings = false
     @Published var settingsShowShortcuts = false
+    @Published var settingsShowRemoteAccess = false
     @Published var requestedSessionName = ""
     /// A document with unsaved edits the user asked to close.
     @Published var pendingCloseDocumentID: String?
@@ -141,9 +142,15 @@ struct ContentCommands {
         switch command {
         case .help:
             window.settingsShowShortcuts = true
+            window.settingsShowRemoteAccess = false
             window.showsSettings = true
         case .settings:
             window.settingsShowShortcuts = false
+            window.settingsShowRemoteAccess = false
+            window.showsSettings = true
+        case .remoteAccess:
+            window.settingsShowShortcuts = false
+            window.settingsShowRemoteAccess = true
             window.showsSettings = true
         case .newWorkspace:
             documents.activeID = nil

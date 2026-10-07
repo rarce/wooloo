@@ -60,6 +60,7 @@ private struct XherdrCommands: Commands {
             item("settings", title: "Herdr Settings…")
             item("reload_config", title: "Reload Herdr Config")
             item("switch_session")
+            item("remote_access")
         }
 
         CommandGroup(after: .newItem) {

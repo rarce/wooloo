@@ -150,7 +150,8 @@ struct ContentView: View {
         }
         .sheet(isPresented: $window.showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
-                              showShortcuts: window.settingsShowShortcuts) {
+                              showShortcuts: window.settingsShowShortcuts,
+                              showRemoteAccess: window.settingsShowRemoteAccess) {
                 shortcutMap = HerdrShortcutMap.load()
                 herdr.reloadAgentViewSettings()
                 themes.reload()
@@ -515,8 +516,10 @@ struct ContentView: View {
                     .frame(height: typography.metric(29))
                 }
                 .buttonStyle(.plain)
+                RemoteAccessIndicator { commands.perform("remote_access") }
                 Button {
                     window.settingsShowShortcuts = false
+                    window.settingsShowRemoteAccess = false
                     window.showsSettings = true
                 } label: {
                     Image(systemName: "gearshape")

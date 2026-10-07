@@ -310,6 +310,15 @@ final class WorkspaceSessionRegistry {
 final class XherdrAppDelegate: NSObject, NSApplicationDelegate {
     private var isFlushing = false
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if !XherdrApp.isHostingTests, RemoteAccessModel.shared.startsAtLaunch { RemoteAccessModel.shared.start() }
+    }
+
+    /// The tunnel belongs to xherdr; cloudflared would otherwise keep publishing SSH after quitting.
+    func applicationWillTerminate(_ notification: Notification) {
+        RemoteAccessModel.shared.stop()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if XherdrApp.isHostingTests { return .terminateNow }
         guard !isFlushing else { return .terminateLater }

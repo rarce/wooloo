@@ -20,6 +20,7 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 - The connected host's CPU, memory, disk and uptime, local or over SSH.
 - Optional Claude Code and Codex plan usage in the sidebar (see [Agent quotas](#agent-quotas)).
 - A session picker for any Herdr session on the machine.
+- Remote access from your phone (see [Remote access](#remote-access)).
 
 ### Terminal
 
@@ -59,6 +60,18 @@ The QUOTAS section is off until you turn it on. Once on, every two minutes while
 - sends those tokens to the usage endpoints that Claude Code (`api.anthropic.com/api/oauth/usage`) and the Codex CLI (`chatgpt.com/backend-api/wham/usage`) use themselves.
 
 When the explorer points at an SSH machine, the files are read there and the requests leave from your Mac. xherdr keeps the tokens in memory only and never refreshes them. Neither endpoint is documented, so the section can break when either service changes. Turn it off from the section's context menu.
+
+## Remote access
+
+Settings → Remote Access (also in the command palette) publishes this Mac's SSH server through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), so [herdroid](https://github.com/rarce/herdroid) or any SSH client can reach the Herdr session from anywhere without opening a port. Clients still sign in with SSH, then run Herdr's own commands (`remote-api-bridge`, `terminal session control`).
+
+- Needs `cloudflared` (`brew install cloudflared`) and Remote Login (System Settings → General → Sharing).
+- **Quick tunnel**: no Cloudflare account; a new `*.trycloudflare.com` address on every start. Anyone who learns it reaches your SSH login, so use key authentication.
+- **Named tunnel**: create a tunnel in Cloudflare Zero Trust with a public hostname whose service is `ssh://localhost:22`, then paste its hostname and token (kept in the Keychain, passed to `cloudflared` through its environment). It can sit behind Cloudflare Access; herdroid sends a service token.
+- While the tunnel runs, a QR code opens herdroid with the machine prefilled: hostname, user, session, Herdr's path and this Mac's host key fingerprints, so the phone trusts the right server. Other computers use `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" user@host`.
+- The tunnel is xherdr's own `cloudflared` process: it stops when xherdr quits, and can start when xherdr opens.
+
+`XHERDR_CLOUDFLARE_TUNNEL_TEST=1` (as `TEST_RUNNER_XHERDR_CLOUDFLARE_TUNNEL_TEST=1` for `xcodebuild test`) runs `RemoteAccessTests/testRealQuickTunnelReachesThisMacsSSH` against a real quick tunnel.
 
 ## Requirements
 

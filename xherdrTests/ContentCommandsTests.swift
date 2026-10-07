@@ -393,6 +393,11 @@ final class ContentCommandsTests: XCTestCase {
         commands.perform("settings")
         XCTAssertTrue(window.showsSettings)
         XCTAssertFalse(window.settingsShowShortcuts)
+        window.showsSettings = false
+        commands.perform("remote_access")
+        XCTAssertTrue(window.showsSettings)
+        XCTAssertTrue(window.settingsShowRemoteAccess)
+        XCTAssertFalse(window.settingsShowShortcuts)
 
         commands.perform("toggle_sidebar")
         XCTAssertFalse(window.showsSidebar)

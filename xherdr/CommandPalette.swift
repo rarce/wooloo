@@ -242,6 +242,7 @@ struct XherdrCommandItem: Identifiable, Equatable {
         .init("settings", "Herdr", "Settings…", KeyboardShortcut(",", modifiers: .command)),
         .init("reload_config", "Herdr", "Reload Config", requires: .connected),
         .init("switch_session", "Herdr", "Switch Session…"),
+        .init("remote_access", "Herdr", "Remote Access…"),
         .init("help", "Help", "Keyboard Shortcuts"),
         .init("command_palette", "View", "Command Palette…", KeyboardShortcut("p", modifiers: [.command, .shift])),
         .init("quick_open", "File", "Go to File…", KeyboardShortcut("p", modifiers: .command), requires: .files),

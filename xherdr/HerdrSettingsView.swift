@@ -11,6 +11,8 @@ struct HerdrSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var category: Category = .terminal
     @StateObject private var model = HerdrSettingsModel()
+    @ObservedObject private var remoteAccess = RemoteAccessModel.shared
+    @State private var tunnelToken = ""
     @AppStorage(HerdrNotifier.dockBadgeKey) private var showsDockBadge = true
     @AppStorage(HerdrNotifier.bounceDockKey) private var bouncesDock = true
     @AppStorage(XherdrTypography.baseKey) private var interfaceTextSize = XherdrTypography.defaultBase
@@ -24,6 +26,7 @@ struct HerdrSettingsView: View {
         case notifications = "Notifications"
         case appearance = "Appearance"
         case server = "Server"
+        case remoteAccess = "Remote Access"
         case advanced = "Advanced TOML"
 
         var id: Self { self }
@@ -35,6 +38,7 @@ struct HerdrSettingsView: View {
             case .notifications: "Sounds, alerts, and Dock activity"
             case .appearance: "Text sizes, previews, and color themes"
             case .server: "Terminal dimensions when no client is attached"
+            case .remoteAccess: "Reach this Mac's Herdr from your phone through Cloudflare"
             case .advanced: "Edit the complete Herdr configuration"
             }
         }
@@ -47,17 +51,18 @@ struct HerdrSettingsView: View {
             case .notifications: "bell.badge"
             case .appearance: "paintpalette"
             case .server: "server.rack"
+            case .remoteAccess: "antenna.radiowaves.left.and.right"
             case .advanced: "chevron.left.forwardslash.chevron.right"
             }
         }
     }
 
     init(socketPath: String, sessionName: String, showShortcuts: Bool = false,
-         onSaved: @escaping () -> Void = {}) {
+         showRemoteAccess: Bool = false, onSaved: @escaping () -> Void = {}) {
         self.socketPath = socketPath
         self.sessionName = sessionName
         self.onSaved = onSaved
-        _category = State(initialValue: showShortcuts ? .shortcuts : .terminal)
+        _category = State(initialValue: showShortcuts ? .shortcuts : showRemoteAccess ? .remoteAccess : .terminal)
     }
 
     var body: some View {
@@ -82,8 +87,11 @@ struct HerdrSettingsView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Divider()
-                footer
+                // Remote access is xherdr's own and applies immediately; it has nothing to save.
+                if category != .remoteAccess {
+                    Divider()
+                    footer
+                }
             }
             .background(theme.contentBackground)
         }
@@ -376,9 +384,77 @@ struct HerdrSettingsView: View {
                         .frame(width: 100)
                 }
             }
+        case .remoteAccess:
+            remoteAccessFields
         case .advanced:
             EmptyView()
         }
+    }
+
+    @ViewBuilder
+    private var remoteAccessFields: some View {
+        description("herdroid and other SSH clients reach this Mac through a Cloudflare Tunnel to its SSH server, then run Herdr's own commands. No port opens on your network, and clients still sign in with SSH.")
+        if remoteAccess.cloudflaredPath == nil {
+            warning("cloudflared is not installed. Install it with `brew install cloudflared`, then come back here.")
+        }
+        if remoteAccess.acceptsSSH == false {
+            HStack(spacing: 10) {
+                warning("Remote Login is off, so the tunnel has no SSH server to reach. Turn it on in System Settings → General → Sharing.")
+                Button("Open Sharing") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Sharing-Settings.extension")!)
+                }
+            }
+        }
+        settingsGroup("Tunnel", subtitle: "xherdr only · applies immediately · stops when xherdr quits") {
+            RemoteAccessStatusView(model: remoteAccess)
+            if case .running(let hostname) = remoteAccess.state {
+                RemoteAccessConnectionView(hostname: hostname, sessionName: sessionName)
+            }
+            field("Type", hint: remoteAccess.mode == .quick
+                  ? "No Cloudflare account needed. The address changes every time the tunnel starts, so scan the new QR code each time. Anyone who learns it can reach your SSH login: use key authentication."
+                  : "A tunnel you created in Cloudflare, with a hostname of your own that stays the same. Protect it with Cloudflare Access to stop others from reaching your SSH login.") {
+                Picker("", selection: $remoteAccess.mode) {
+                    ForEach(RemoteAccessMode.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(remoteAccess.isActive)
+            }
+            if remoteAccess.mode == .named {
+                field("Public hostname", hint: "The hostname you added to the tunnel, with ssh://localhost:22 as its service") {
+                    TextField("ssh.example.com", text: $remoteAccess.hostname)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(remoteAccess.isActive)
+                }
+                field("Tunnel token", hint: remoteAccess.hasToken
+                      ? "Saved in this Mac's Keychain. Paste a new one to replace it."
+                      : "From Cloudflare Zero Trust → Networks → Tunnels: the token in the tunnel's install command. Saved in this Mac's Keychain.") {
+                    HStack(spacing: 6) {
+                        SecureField(remoteAccess.hasToken ? "Saved" : "eyJ…", text: $tunnelToken)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Save") {
+                            remoteAccess.setToken(tunnelToken)
+                            tunnelToken = ""
+                        }
+                        .disabled(tunnelToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if remoteAccess.hasToken {
+                            Button("Remove") { remoteAccess.setToken("") }
+                        }
+                    }
+                    .disabled(remoteAccess.isActive)
+                }
+            }
+            Toggle("Start the tunnel when xherdr opens", isOn: $remoteAccess.startsAtLaunch)
+        }
+        .onAppear(perform: remoteAccess.checkSSH)
+    }
+
+    private func warning(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: typography.body))
+            .foregroundStyle(theme.warning)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var advancedEditor: some View {
