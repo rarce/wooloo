@@ -104,6 +104,9 @@ struct WorkspaceDocumentView: View {
     var onOpenFile: (String) -> Void = { _ in }
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
+    /// Whether this document's panel has focus. With split panels several documents show at
+    /// once; only the focused one takes the editor commands and ⌘S, ⌘F and ⌘G.
+    var isFocused = true
     @State private var commandToken = UUID()
     private var cursorPositions: [CursorPosition] {
         get { document.cursorPositions }
@@ -202,7 +205,7 @@ struct WorkspaceDocumentView: View {
                 }
                 if document.isEditable {
                     Button(document.isUntitled ? "Save As…" : "Save") { onSave() }
-                        .keyboardShortcut("s", modifiers: .command)
+                        .keyboardShortcut(isFocused ? KeyboardShortcut("s", modifiers: .command) : nil)
                         .disabled(document.isLoading || document.isSaving || !(document.isDirty || document.isUntitled))
                 }
                 if document.isReadOnly {
@@ -277,7 +280,7 @@ struct WorkspaceDocumentView: View {
         }
         .background(theme.contentBackground)
         .background {
-            if document.kind == .file && !document.isImage { findShortcuts }
+            if isFocused && document.kind == .file && !document.isImage { findShortcuts }
         }
         .onChange(of: find.isVisible) { _, _ in updateFind(anchor: cursorPositions.first?.range.location) }
         .onChange(of: find.options) { _, _ in
@@ -294,8 +297,15 @@ struct WorkspaceDocumentView: View {
         }
         .onChange(of: find.current) { _, _ in syncEditorMatches() }
         .onChange(of: find.revealRequest) { _, _ in revealFindMatch() }
-        .onAppear { commandTarget?.register(commandToken) { run($0) } }
+        .onAppear { if isFocused { commandTarget?.register(commandToken) { run($0) } } }
         .onDisappear { commandTarget?.unregister(commandToken) }
+        .onChange(of: isFocused) { _, focused in
+            if focused {
+                commandTarget?.register(commandToken) { run($0) }
+            } else {
+                commandTarget?.unregister(commandToken)
+            }
+        }
     }
 
     /// An editor command from the command palette.

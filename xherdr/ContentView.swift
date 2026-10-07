@@ -19,9 +19,9 @@ struct ContentView: View {
         get { documentStore.activeID }
         nonmutating set { documentStore.activeID = newValue }
     }
-    /// The active editor tab's file or changes, for the explorer to select.
+    /// The focused editor tab's file or changes, for the explorer to select.
     private var activeFile: WorkspaceActiveFile? {
-        guard let activeDocumentID, let document = documentStore.document(activeDocumentID),
+        guard let id = commands.focusedDocumentID, let document = documentStore.document(id),
               document.kind != .commit, !document.isUntitled else { return nil }
         return WorkspaceActiveFile(location: document.location, path: document.path)
     }
@@ -123,7 +123,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        windowContent
+        followingPanels(windowContent)
         .onAppear {
             notifier.onOpenPane = { focusPane($0) }
             notifier.reloadSettings()
@@ -140,6 +140,7 @@ struct ContentView: View {
         // Documents belong to the Space they were opened in.
         .onChange(of: herdr.selectedWorkspaceID.map { "\(herdr.sessionName)|\($0)" }, initial: true) { _, space in
             documentStore.showSpace(space)
+            window.focusedPanel = .main
         }
         // Editing a preview keeps it open, so later previews never replace unsaved work.
         .onChange(of: documents.contains { $0.isPreview && $0.isDirty }) { _, edited in
@@ -664,6 +665,15 @@ struct ContentView: View {
         }
     }
 
+    /// Keeps the split panels in step with the tabs: opening a tab that has a side panel focuses
+    /// that panel, and closing a tab closes its panel.
+    private func followingPanels(_ content: some View) -> some View {
+        content
+            .onChange(of: activeDocumentID) { old, new in commands.activeDocumentChanged(from: old, to: new) }
+            .onChange(of: documentStore.documents.map(\.backupID)) { _, _ in commands.prunePanels() }
+            .onChange(of: window.showsSearchTab) { _, _ in commands.prunePanels() }
+    }
+
     private var mainContent: some View {
         VStack(spacing: 0) {
             if herdr.isConnected || !documents.isEmpty {
@@ -672,70 +682,198 @@ struct ContentView: View {
                     .background(barBackground)
                 Divider()
 
-                if activeDocumentID == WorkspaceSearchModel.tabID {
-                    WorkspaceSearchView(model: search) { location, path, line, range in
-                        openDocument(.file, path: path, at: location,
-                                     reveal: WorkspaceDocumentReveal(line: line, range: range))
+                PanelLayoutView(layout: commands.panelLayout, drop: panelDrop,
+                                 setRatio: { path, ratio in setPanelRatio(ratio, at: path) }) { content in
+                    if content == .main {
+                        mainPanel
+                    } else {
+                        sidePanel(content)
                     }
-                } else if let activeDocumentID,
-                   let index = documentStore.documents.firstIndex(where: { $0.id == activeDocumentID }) {
-                    WorkspaceDocumentView(document: $documentStore.documents[index], onSave: {
-                        saveDocument(activeDocumentID)
-                    }, onReload: {
-                        documentStore.load(activeDocumentID)
-                    }, onOpenFile: { [location = documentStore.documents[index].location] path in
-                        openDocument(.file, path: path, at: location)
-                    }, commandTarget: window.editor)
-                    .id(activeDocumentID)
-                } else if !herdr.isConnected {
-                    connectionState
-                } else if herdr.showsLiveSurface {
-                    GeometryReader { geometry in
-                        TerminalPaneView(
-                            text: "",
-                            paneID: herdr.selectedPaneID ?? selectedPanes[0].paneID,
-                            surfaceFeed: herdr.surfaceFeed,
-                            onPresentSurface: { herdr.acknowledgeAgentSurface($0) },
-                            sendPopupInput: { event, id, boot in herdr.sendPopupInput(event, terminalID: id, bootID: boot) },
-                            closePopup: { id, boot in herdr.closePopup(terminalID: id, bootID: boot) },
-                            shortcutMap: shortcutMap,
-                            onShortcut: handleShortcut,
-                            onPrefixChanged: { shortcutPrefixActive = $0 },
-                            selectPane: { id in herdr.select(paneID: id) },
-                            sendText: { text, id in herdr.sendText(text, to: id) },
-                            sendPaste: { text, id in herdr.sendPaste(text, to: id) },
-                            sendKey: { key, id in herdr.sendKey(key, to: id) },
-                            sendMouse: { mouse, id in herdr.sendMouse(mouse, to: id) },
-                            setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) },
-                            tabDrop: terminalTabDrop
-                        )
-                        .onAppear { resizeSurface(to: geometry.size) }
-                        .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }
-                    }
-                } else if let layout = herdr.snapshot?.layouts.first(where: { $0.tabID == herdr.selectedTabID }),
-                   !layout.panes.isEmpty {
-                    GeometryReader { geometry in
-                        ForEach(layout.panes, id: \.paneID) { item in
-                            if let pane = selectedPanes.first(where: { $0.paneID == item.paneID }) {
-                                let width = geometry.size.width * CGFloat(item.rect.width) / CGFloat(max(layout.area.width, 1))
-                                let height = geometry.size.height * CGFloat(item.rect.height) / CGFloat(max(layout.area.height, 1))
-                                let x = geometry.size.width * CGFloat(item.rect.x - layout.area.x) / CGFloat(max(layout.area.width, 1)) + width / 2
-                                let y = geometry.size.height * CGFloat(item.rect.y - layout.area.y) / CGFloat(max(layout.area.height, 1)) + height / 2
-                                terminalPane(pane)
-                                    .frame(width: max(width - 2, 1), height: max(height - 2, 1))
-                                    .position(x: x, y: y)
-                            }
-                        }
-                    }
-                } else if let pane = selectedPanes.first {
-                    terminalPane(pane)
-                } else {
-                    emptyState("This tab has no panes")
                 }
             } else {
                 connectionState
             }
         }
+    }
+
+    /// The main panel: the selected terminal tab, or the active document or Search.
+    @ViewBuilder
+    private var mainPanel: some View {
+        if activeDocumentID == WorkspaceSearchModel.tabID {
+            searchView
+        } else if let activeDocumentID,
+           let index = documentStore.documents.firstIndex(where: { $0.id == activeDocumentID }) {
+            documentView(at: index, focused: commands.focusedPanel == .main)
+        } else if !herdr.isConnected {
+            connectionState
+        } else if herdr.showsLiveSurface {
+            GeometryReader { geometry in
+                TerminalPaneView(
+                    text: "",
+                    paneID: herdr.selectedPaneID ?? selectedPanes[0].paneID,
+                    surfaceFeed: herdr.surfaceFeed,
+                    onPresentSurface: { herdr.acknowledgeAgentSurface($0) },
+                    sendPopupInput: { event, id, boot in herdr.sendPopupInput(event, terminalID: id, bootID: boot) },
+                    closePopup: { id, boot in herdr.closePopup(terminalID: id, bootID: boot) },
+                    shortcutMap: shortcutMap,
+                    onShortcut: handleShortcut,
+                    onPrefixChanged: { shortcutPrefixActive = $0 },
+                    selectPane: { id in herdr.select(paneID: id) },
+                    sendText: { text, id in herdr.sendText(text, to: id) },
+                    sendPaste: { text, id in herdr.sendPaste(text, to: id) },
+                    sendKey: { key, id in herdr.sendKey(key, to: id) },
+                    sendMouse: { mouse, id in herdr.sendMouse(mouse, to: id) },
+                    setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) },
+                    tabDrop: terminalTabDrop
+                )
+                .onAppear { resizeSurface(to: geometry.size) }
+                .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }
+            }
+        } else if let layout = herdr.snapshot?.layouts.first(where: { $0.tabID == herdr.selectedTabID }),
+           !layout.panes.isEmpty {
+            GeometryReader { geometry in
+                ForEach(layout.panes, id: \.paneID) { item in
+                    if let pane = selectedPanes.first(where: { $0.paneID == item.paneID }) {
+                        let width = geometry.size.width * CGFloat(item.rect.width) / CGFloat(max(layout.area.width, 1))
+                        let height = geometry.size.height * CGFloat(item.rect.height) / CGFloat(max(layout.area.height, 1))
+                        let x = geometry.size.width * CGFloat(item.rect.x - layout.area.x) / CGFloat(max(layout.area.width, 1)) + width / 2
+                        let y = geometry.size.height * CGFloat(item.rect.y - layout.area.y) / CGFloat(max(layout.area.height, 1)) + height / 2
+                        terminalPane(pane)
+                            .frame(width: max(width - 2, 1), height: max(height - 2, 1))
+                            .position(x: x, y: y)
+                    }
+                }
+            }
+        } else if let pane = selectedPanes.first {
+            terminalPane(pane)
+        } else {
+            emptyState("This tab has no panes")
+        }
+    }
+
+    private var searchView: some View {
+        WorkspaceSearchView(model: search) { location, path, line, range in
+            openDocument(.file, path: path, at: location,
+                         reveal: WorkspaceDocumentReveal(line: line, range: range))
+        }
+    }
+
+    private func documentView(at index: Int, focused: Bool) -> some View {
+        let id = documentStore.documents[index].id
+        return WorkspaceDocumentView(document: $documentStore.documents[index], onSave: {
+            saveDocument(id)
+        }, onReload: {
+            documentStore.load(id)
+        }, onOpenFile: { [location = documentStore.documents[index].location] path in
+            openDocument(.file, path: path, at: location)
+        }, commandTarget: window.editor, isFocused: focused)
+        .id(id)
+    }
+
+    /// A panel beside the main one, showing one document or Search under a header that works
+    /// like its tab: dragged, it moves the panel elsewhere.
+    private func sidePanel(_ content: PanelContent) -> some View {
+        VStack(spacing: 0) {
+            panelHeader(content)
+            Divider()
+            switch content {
+            case .search:
+                searchView
+            case .document(let backupID):
+                if let index = documentStore.documents.firstIndex(where: { $0.backupID == backupID }) {
+                    documentView(at: index, focused: commands.focusedPanel == content)
+                }
+            case .main:
+                EmptyView()
+            }
+        }
+        .background(theme.contentBackground)
+    }
+
+    private func panelHeader(_ content: PanelContent) -> some View {
+        let id = commands.tabID(of: content)
+        let document = id.flatMap(documentStore.document)
+        let focused = commands.focusedPanel == content
+        return HStack(spacing: 5) {
+            Image(systemName: document?.icon ?? "magnifyingglass")
+                .foregroundStyle(theme.accent)
+            Text(document?.title ?? search.title).lineLimit(1)
+                .foregroundStyle(focused ? .primary : .secondary)
+            if document?.isDirty == true { Circle().fill(theme.warning).frame(width: 5, height: 5) }
+            Spacer(minLength: 6)
+            Button { if let id { commands.dropTab(id, on: .main, zone: .center) } } label: {
+                Image(systemName: "rectangle.portrait.and.arrow.forward")
+                    .frame(width: 22, height: typography.metric(25))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Show in Main Panel")
+            Button { commands.closePanel(content) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: typography.tiny))
+                    .frame(width: 22, height: typography.metric(25))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close Split (the tab stays open)")
+        }
+        .font(.system(size: typography.body))
+        .padding(.leading, 9)
+        .padding(.trailing, 3)
+        .frame(height: typography.metric(27))
+        .background(barBackground)
+        .overlay(alignment: .top) {
+            if focused { Rectangle().fill(theme.accent).frame(height: 2) }
+        }
+        .contentShape(Rectangle())
+        .help(document.map { $0.isUntitled ? "\($0.title) · not saved yet" : "\($0.location.machineLabel) · \($0.path)" }
+              ?? "Project Search")
+        .onDrag { window.tabDrag.begin(content == .search ? .search : .document, id: id ?? "") }
+        .contextMenu {
+            if let id {
+                Button("Show in Main Panel", systemImage: "rectangle.portrait.and.arrow.forward") {
+                    commands.dropTab(id, on: .main, zone: .center)
+                }
+            }
+            Button("Close Split", systemImage: "rectangle.split.2x1.slash") { commands.closePanel(content) }
+            Divider()
+            if content == .search {
+                Button("Close Search", systemImage: "xmark") { closeSearch() }
+            } else if let id {
+                Button("Close Tab", systemImage: "xmark") { closeDocument(id) }
+            }
+        }
+    }
+
+    /// Document and Search tabs dragged from the tab bar or a panel header onto the panels:
+    /// the middle of a panel shows the tab there, a side splits the panel.
+    private var panelDrop: PanelDropHandler {
+        PanelDropHandler(
+            dragged: { [drag = window.tabDrag] in drag.draggedPanelTab.flatMap(commands.panelContent(forTab:)) },
+            accepts: { content, target, zone in
+                PanelDrop.accepts(content, on: target, zone: zone, mainShows: commands.mainPanelContent)
+            },
+            drop: { [drag = window.tabDrag] target, zone in
+                guard let id = drag.dropPanelTab() else { return false }
+                return commands.dropTab(id, on: target, zone: zone)
+            },
+            focus: { commands.focusPanel($0) })
+    }
+
+    private func setPanelRatio(_ ratio: Double, at path: [Bool]) {
+        let key = WorkspaceSessionPersistence.key(for: documentStore.space)
+        guard let layout = window.panelLayouts[key] else { return }
+        window.panelLayouts[key] = layout.settingRatio(ratio, at: path)
+    }
+
+    /// A tab's background: strong while its panel has focus, faint while it shows in another
+    /// panel, none while hidden. Every tab type uses it.
+    private func tabBackground(_ content: PanelContent?, inMain: Bool) -> Color {
+        let focused = commands.focusedPanel
+        let visible = inMain || content.map { $0 != .main && commands.panelLayout.contains($0) } == true
+        guard visible else { return .clear }
+        let hasFocus = inMain ? focused == .main : content == focused
+        return Color.primary.opacity(hasFocus ? 0.09 : 0.045)
     }
 
     /// Terminal tabs, the Search tab and document tabs, then the new tab buttons. Double-clicking
@@ -803,6 +941,7 @@ struct ContentView: View {
         Button {
             herdr.select(tabID: tab.tabID)
             activeDocumentID = nil
+            commands.focusPanel(.main)
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "terminal")
@@ -814,11 +953,8 @@ struct ContentView: View {
             .font(.system(size: typography.body))
             .padding(.horizontal, 10)
             .frame(height: typography.metric(27))
-            .background(
-                activeDocumentID == nil && herdr.selectedTabID == tab.tabID
-                    ? Color.primary.opacity(0.09) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 4)
-            )
+            .background(tabBackground(nil, inMain: activeDocumentID == nil && herdr.selectedTabID == tab.tabID),
+                        in: RoundedRectangle(cornerRadius: 4))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -879,15 +1015,21 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
         }
-        .background(activeDocumentID == WorkspaceSearchModel.tabID ? Color.primary.opacity(0.09) : .clear,
+        .background(tabBackground(.search, inMain: activeDocumentID == WorkspaceSearchModel.tabID),
                     in: RoundedRectangle(cornerRadius: 4))
         .help("Project Search")
         .onMiddleClick { closeSearch() }
+        .onDrag { window.tabDrag.begin(.search, id: WorkspaceSearchModel.tabID) }
+        .contextMenu {
+            splitActions(WorkspaceSearchModel.tabID)
+            Divider()
+            Button("Close Search", systemImage: "xmark") { closeSearch() }
+        }
     }
 
     private func documentTab(_ document: WorkspaceDocument, index: Int) -> some View {
         HStack(spacing: 0) {
-            Button { activeDocumentID = document.id } label: {
+            Button { commands.selectTab(document.id) } label: {
                 HStack(spacing: 5) {
                     Image(systemName: document.icon)
                         .foregroundStyle(theme.accent)
@@ -907,7 +1049,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
         }
-        .background(activeDocumentID == document.id ? Color.primary.opacity(0.09) : .clear,
+        .background(tabBackground(.document(document.backupID), inMain: activeDocumentID == document.id),
                     in: RoundedRectangle(cornerRadius: 4))
         .help(document.isUntitled ? "\(document.title) · not saved yet"
               : "\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.path)")
@@ -1081,6 +1223,8 @@ struct ContentView: View {
                 openDocument(.file, path: document.path, at: document.location)
             }
         }
+        Divider()
+        splitActions(document.id)
         if !document.isUntitled {
             Divider()
             Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(document.location.absolutePath(document.path)) }
@@ -1099,6 +1243,19 @@ struct ContentView: View {
             .disabled(documents.count < 2)
         Button("Close All") {
             for other in documents { closeDocument(other.id) }
+        }
+    }
+
+    /// Opening a document or Search tab in a panel of its own, beside the focused panel, or
+    /// putting it back in the main panel.
+    @ViewBuilder
+    private func splitActions(_ id: String) -> some View {
+        Button("Split Right", systemImage: "rectangle.split.2x1") { commands.splitTab(id, edge: .right) }
+        Button("Split Down", systemImage: "rectangle.split.1x2") { commands.splitTab(id, edge: .bottom) }
+        if let content = commands.panelContent(forTab: id), commands.panelLayout.contains(content) {
+            Button("Show in Main Panel", systemImage: "rectangle.portrait.and.arrow.forward") {
+                commands.dropTab(id, on: .main, zone: .center)
+            }
         }
     }
 
@@ -1311,7 +1468,7 @@ private struct SidebarResizeHandle: View {
             .overlay {
                 // An AppKit view, so the resize cursor wins over the hosting view's arrow and the
                 // neighbouring text views' I-beam; SwiftUI's onHover with NSCursor.push loses to both.
-                SidebarResizeHandleArea(
+                ResizeHandleArea(
                     onDrag: { translation in
                         let start = dragStartWidth ?? width
                         dragStartWidth = start
@@ -1330,36 +1487,47 @@ private struct SidebarResizeHandle: View {
     }
 }
 
-private struct SidebarResizeHandleArea: NSViewRepresentable {
+/// A resize handle as an AppKit view, so its cursor wins over the hosting view's arrow and the
+/// neighbouring text views' I-beam. `vertical` handles resize heights.
+struct ResizeHandleArea: NSViewRepresentable {
+    var vertical = false
+    var tooltip = "Drag to resize · double-click to reset"
     let onDrag: (Double) -> Void
     let onDragEnd: () -> Void
     let onReset: () -> Void
 
-    func makeNSView(context: Context) -> SidebarResizeHandleView {
-        let view = SidebarResizeHandleView()
-        view.toolTip = "Drag to resize · double-click to reset"
+    func makeNSView(context: Context) -> ResizeHandleView {
+        let view = ResizeHandleView()
+        view.toolTip = tooltip
         return view
     }
 
-    func updateNSView(_ view: SidebarResizeHandleView, context: Context) {
+    func updateNSView(_ view: ResizeHandleView, context: Context) {
+        view.vertical = vertical
+        view.toolTip = tooltip
         view.onDrag = onDrag
         view.onDragEnd = onDragEnd
         view.onReset = onReset
     }
 }
 
-final class SidebarResizeHandleView: NSView {
+final class ResizeHandleView: NSView {
+    /// Resizes heights: dragging down is positive.
+    var vertical = false {
+        didSet { if vertical != oldValue { window?.invalidateCursorRects(for: self) } }
+    }
     var onDrag: (Double) -> Void = { _ in }
     var onDragEnd: () -> Void = {}
     var onReset: () -> Void = {}
-    private var dragStartX: CGFloat?
+    private var dragStart: CGFloat?
     private var cursorTrackingArea: NSTrackingArea?
+    private var cursor: NSCursor { vertical ? .resizeUpDown : .resizeLeftRight }
 
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeLeftRight)
+        addCursorRect(bounds, cursor: cursor)
     }
 
     override func updateTrackingAreas() {
@@ -1372,28 +1540,33 @@ final class SidebarResizeHandleView: NSView {
     }
 
     override func cursorUpdate(with event: NSEvent) {
-        NSCursor.resizeLeftRight.set()
+        cursor.set()
+    }
+
+    /// Window coordinates grow upwards; heights grow as the pointer goes down.
+    private func position(_ event: NSEvent) -> CGFloat {
+        vertical ? -event.locationInWindow.y : event.locationInWindow.x
     }
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
-            dragStartX = nil
+            dragStart = nil
             onReset()
         } else {
-            dragStartX = event.locationInWindow.x
+            dragStart = position(event)
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let dragStartX else { return }
-        // The pointer leaves the handle while the sidebar catches up; keep the cursor until mouse up.
-        NSCursor.resizeLeftRight.set()
-        onDrag(event.locationInWindow.x - dragStartX)
+        guard let dragStart else { return }
+        // The pointer leaves the handle while the view catches up; keep the cursor until mouse up.
+        cursor.set()
+        onDrag(position(event) - dragStart)
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard dragStartX != nil else { return }
-        dragStartX = nil
+        guard dragStart != nil else { return }
+        dragStart = nil
         onDragEnd()
     }
 }

@@ -81,16 +81,25 @@ final class MiddleClickView: NSView {
 
 // MARK: Reordering tabs
 
-/// The tab bar's groups; a tab moves only within its own.
+/// The tab bar's groups; a tab moves only within its own. Search is a group of one: it only
+/// moves into a panel.
 enum TabDragGroup {
-    case terminal, document
+    case terminal, document, search
 }
 
-/// The tab being dragged and where it would drop. Tab drags carry only `type`, private to
-/// xherdr, so terminals, the explorer and Finder ignore them, and the tab bar ignores theirs.
+/// The tab being dragged and where it would drop. Tab drags carry only types private to
+/// xherdr, so the explorer and Finder ignore them, and the tab bar ignores theirs: terminal
+/// tabs `type`, which the terminal view takes to split inside Herdr, and document and Search
+/// tabs `panelType`, which the main area's panels take.
 @MainActor
 final class TabDragModel: ObservableObject {
     static let type = UTType(exportedAs: "dev.xherdr.tab")
+    static let panelType = UTType(exportedAs: "dev.xherdr.panel-tab")
+    static let types = [type, panelType]
+
+    static func type(of group: TabDragGroup) -> UTType {
+        group == .terminal ? type : panelType
+    }
 
     /// A drop place: before or after the tab at `index` of `group`.
     struct Target: Equatable {
@@ -110,7 +119,8 @@ final class TabDragModel: ObservableObject {
         dragged = (group, id)
         target = nil
         let provider = NSItemProvider()
-        provider.registerDataRepresentation(forTypeIdentifier: Self.type.identifier, visibility: .ownProcess) { completion in
+        provider.registerDataRepresentation(forTypeIdentifier: Self.type(of: group).identifier,
+                                            visibility: .ownProcess) { completion in
             completion(Data(id.utf8), nil)
             return nil
         }
@@ -118,7 +128,7 @@ final class TabDragModel: ObservableObject {
     }
 
     func accepts(_ group: TabDragGroup, _ info: DropInfo) -> Bool {
-        dragged?.group == group && info.hasItemsConforming(to: [Self.type])
+        dragged?.group == group && info.hasItemsConforming(to: [Self.type(of: group)])
     }
 
     func hover(_ target: Target?) {
@@ -136,11 +146,24 @@ final class TabDragModel: ObservableObject {
 
     /// The dragged terminal tab, ending the drag, for a drop outside the tab bar.
     func dropTerminalTab() -> String? {
-        defer {
-            dragged = nil
-            if target != nil { target = nil }
-        }
+        defer { endDrag() }
         return draggedTerminalTab
+    }
+
+    /// The document or Search tab being dragged, which the main area's panels take.
+    var draggedPanelTab: String? {
+        dragged?.group == .terminal ? nil : dragged?.id
+    }
+
+    /// The dragged document or Search tab, ending the drag, for a drop on the panels.
+    func dropPanelTab() -> String? {
+        defer { endDrag() }
+        return draggedPanelTab
+    }
+
+    private func endDrag() {
+        dragged = nil
+        if target != nil { target = nil }
     }
 
     /// The dragged tab's ID and the gap it drops into, ending the drag.
@@ -166,7 +189,7 @@ extension View {
     /// Drops on the bar's space after a group's tabs, which put the dragged tab last in its
     /// group: after the tab at the group's `lastIndex`.
     func tabDropAtEnd(drag: TabDragModel, _ ends: [TabDragGroup: TabDropEnd]) -> some View {
-        onDrop(of: [TabDragModel.type], delegate: TabEndDropDelegate(drag: drag, ends: ends))
+        onDrop(of: TabDragModel.types, delegate: TabEndDropDelegate(drag: drag, ends: ends))
     }
 }
 
@@ -189,7 +212,7 @@ private struct TabReorderModifier: ViewModifier {
         content
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .onDrag { drag.begin(group, id: id) }
-            .onDrop(of: [TabDragModel.type], delegate: TabDropDelegate(group: group, index: index, width: width,
+            .onDrop(of: TabDragModel.types, delegate: TabDropDelegate(group: group, index: index, width: width,
                                                                        drag: drag, onMove: onMove))
             .overlay(alignment: drag.target?.after == true ? .trailing : .leading) {
                 if let target = drag.target, target.group == group, target.index == index {

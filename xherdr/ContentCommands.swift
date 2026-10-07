@@ -79,6 +79,11 @@ final class ContentWindowModel: ObservableObject {
     let explorer = ExplorerCommandTarget()
     /// A tab dragged in the tab bar; only the tabs observe it, so hovering redraws only them.
     let tabDrag = TabDragModel()
+    /// Each Space's split panels beside the main panel, by `WorkspaceSessionPersistence.key`;
+    /// a Space without splits has none. They last as long as the window.
+    @Published var panelLayouts: [String: PanelLayout] = [:]
+    /// The panel clicked last; its document takes the editor commands. See `ContentCommands.focusedPanel`.
+    @Published var focusedPanel: PanelContent = .main
 
     /// Tests keep the pickers' recent commands and options out of the app's defaults.
     init(defaults: UserDefaults = .standard) {
@@ -112,7 +117,7 @@ struct ContentCommands {
 
     /// Which commands apply now, for the menu bar and the command palette.
     var availability: XherdrCommandAvailability {
-        let document = documents.activeID.flatMap(documents.document)
+        let document = focusedDocumentID.flatMap(documents.document)
         let hasFileDocument = document.map { $0.kind == .file && !$0.isImage && !$0.isLoading && ($0.version != nil || $0.isUntitled) } ?? false
         let showsSource = document.map {
             $0.isEditable && (!$0.supportsPreview || $0.markdownMode != .preview)
@@ -197,10 +202,10 @@ struct ContentCommands {
             guard tabs.count > 1, let tab = tabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
             window.closeTarget = .tab(tab.tabID, tab.label)
         case .closeCurrentTab:
-            if documents.activeID == WorkspaceSearchModel.tabID {
+            if focusedDocumentID == WorkspaceSearchModel.tabID {
                 closeSearch()
-            } else if let activeID = documents.activeID {
-                closeDocument(activeID)
+            } else if let focusedDocumentID {
+                closeDocument(focusedDocumentID)
             } else {
                 perform(.closeTab)
             }
@@ -213,7 +218,7 @@ struct ContentCommands {
                 window.quickOpen.move(1)
             } else if let explorerLocation {
                 window.commandPalette.dismiss()
-                let current = documents.activeID.flatMap(documents.document)
+                let current = focusedDocumentID.flatMap(documents.document)
                 window.quickOpen.present(at: explorerLocation, recents: documents.recentPaths(at: explorerLocation),
                                          current: current?.location == explorerLocation ? current?.path : nil)
             }
@@ -296,12 +301,13 @@ struct ContentCommands {
         window.showsSearchTab = true
         if replace { search.showsReplace = true }
         search.setLocation(explorerLocation)
-        documents.activeID = WorkspaceSearchModel.tabID
+        selectTab(WorkspaceSearchModel.tabID)
         search.requestFocus()
     }
 
     func closeSearch() {
         window.showsSearchTab = false
+        closePanel(.search)
         if documents.activeID == WorkspaceSearchModel.tabID { documents.activeID = nil }
     }
 
