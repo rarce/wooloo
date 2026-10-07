@@ -60,7 +60,7 @@ extension TextViewController {
         guard let scrollView = view as? NSScrollView else { return }
         scrollView.drawsBackground = useThemeBackground
         scrollView.backgroundColor = useThemeBackground ? theme.background : .clear
-        // xherdr patch: the gutter unclips its floating container, so the scroll view clips instead;
+        // wooloo patch: the gutter unclips its floating container, so the scroll view clips instead;
         // otherwise the gutter background draws over the views above the editor when scrolled.
         scrollView.clipsToBounds = true
         scrollView.wantsLayer = true

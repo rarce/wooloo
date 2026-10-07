@@ -19,7 +19,7 @@ extension TextView {
         layoutManager.beginTransaction()
         textStorage.beginEditing()
 
-        // xherdr patch: one edit at several cursors is one undo step. The first mutation starts or continues a group
+        // wooloo patch: one edit at several cursors is one undo step. The first mutation starts or continues a group
         // as usual, and the others join it.
         var groupsRanges = false
         defer { if groupsRanges { _undoManager?.endGrouping() } }

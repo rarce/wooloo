@@ -51,7 +51,7 @@ extension TextView {
             unmarkText()
             selectionManager.addSelectedRange(NSRange(location: offset, length: 0))
         } else if flags.intersection([.option, .command, .control, .shift]) == .option {
-            // xherdr patch: Option-click adds a cursor, or removes the selection under it, as in Zed and VS Code.
+            // wooloo patch: Option-click adds a cursor, or removes the selection under it, as in Zed and VS Code.
             unmarkText()
             let selections = selectionManager.textSelections
             if selections.count > 1, let hit = selections.firstIndex(where: {

@@ -136,7 +136,7 @@ def zon_url(zon, name):
 
 def archive_texts(url, names):
     # deps.files.ghostty.org refuses Python's default user agent.
-    request = urllib.request.Request(url, headers={"User-Agent": "xherdr-notices"})
+    request = urllib.request.Request(url, headers={"User-Agent": "wooloo-notices"})
     with urllib.request.urlopen(request, timeout=60) as response:
         archive = tarfile.open(fileobj=io.BytesIO(response.read()), mode="r:*")
     members = {m.name.split("/", 1)[1]: m for m in archive.getmembers() if "/" in m.name and m.isfile()}

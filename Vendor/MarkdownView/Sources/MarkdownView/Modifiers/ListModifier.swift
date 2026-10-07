@@ -44,7 +44,7 @@ extension View {
         }
     }
 
-    /// Sets the spacing between top-level blocks of the document (xherdr patch).
+    /// Sets the spacing between top-level blocks of the document (wooloo patch).
     nonisolated public func markdownBlockSpacing(_ spacing: CGFloat) -> some View {
         transformEnvironment(\.markdownRendererConfiguration) { configuration in
             configuration.blockSpacing = spacing

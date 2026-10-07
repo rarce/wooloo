@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in xherdr does not work as expected
+description: Something in wooloo does not work as expected
 labels: [bug]
 body:
   - type: textarea
@@ -29,9 +29,9 @@ body:
     validations:
       required: true
   - type: input
-    id: xherdr-version
+    id: wooloo-version
     attributes:
-      label: xherdr commit
+      label: wooloo commit
       description: The commit you built, from `git rev-parse --short HEAD`.
     validations:
       required: true

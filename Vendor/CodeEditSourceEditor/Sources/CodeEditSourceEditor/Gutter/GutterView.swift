@@ -32,7 +32,7 @@ public protocol GutterViewDelegate: AnyObject {
 /// off the leading edge of the editor.
 ///
 public class GutterView: NSView {
-    // xherdr patch: Git change bars at the leading edge of the gutter, as in VS Code and Zed.
+    // wooloo patch: Git change bars at the leading edge of the gutter, as in VS Code and Zed.
     public struct LineChange: Equatable {
         public enum Kind: Equatable {
             case added, modified
@@ -269,7 +269,7 @@ public class GutterView: NSView {
         context.restoreGState()
     }
 
-    // xherdr patch
+    // wooloo patch
     private func drawLineChanges(_ context: CGContext) {
         guard let textView, !lineChanges.isEmpty else { return }
         let visible = Array(textView.layoutManager.visibleLines())

@@ -9,7 +9,7 @@ import Foundation
 
 extension TextSelectionManager {
     public func didReplaceCharacters(in range: NSRange, replacementLength: Int) {
-        // xherdr patch: shift later selections by the change in length, and keep the length of selections the edit
+        // wooloo patch: shift later selections by the change in length, and keep the length of selections the edit
         // does not touch. Upstream shifted by the replacement length alone and collapsed every selection, so typing
         // over several non-empty selections (edited last to first) left the cursors in the wrong places.
         let delta = replacementLength - range.length

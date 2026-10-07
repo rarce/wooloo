@@ -1,12 +1,12 @@
-# xherdr
+# wooloo
 
 **A native macOS home for your coding agents.**
 
-![xherdr with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right](docs/images/main-window.png)
+![wooloo with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right](docs/images/main-window.png)
 
-xherdr is a Mac app for [Herdr](https://herdr.dev/), the server that runs and organizes coding agent sessions. It is for developers who work with several agents at once, use a mouse alongside the keyboard, and want some of the convenience of an IDE without leaving an environment built around their agents.
+wooloo is a Mac app for [Herdr](https://herdr.dev/), the server that runs and organizes coding agent sessions. It is for developers who work with several agents at once, use a mouse alongside the keyboard, and want some of the convenience of an IDE without leaving an environment built around their agents.
 
-Herdr keeps owning the processes, layout and terminal state, so the same sessions stay available from the Herdr TUI. xherdr renders them natively and sends your input back.
+Herdr keeps owning the processes, layout and terminal state, so the same sessions stay available from the Herdr TUI. wooloo renders them natively and sends your input back.
 
 > **Status:** early development. Expect rough edges and breaking changes. See [`TODO.md`](TODO.md) for known issues and planned work.
 
@@ -34,7 +34,7 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 - An explorer for the selected Space, local or on an SSH machine saved in Herdr. It works like Zed's project panel: compact folder chains, Git status colors, ignored files, keyboard navigation, multi-selection, drag and drop, in-place create and rename, trash, and undo and redo of file operations. Repositories with up to 200,000 files are supported.
 - Go to File (⌘P) with fuzzy matching and `:line:column`, and a command palette (⇧⌘P) for app, editor and explorer actions.
 - Editor tabs built on [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor): syntax highlighting, find and replace, Git change bars beside line numbers, conflict-checked atomic saves, and Zed-style multiple cursors (⌥-click, ⌘D, ⇧⌘L, ⌥⌘↑/↓).
-- Reopen a Space with its document tabs, order, active editor, selections and scroll position. Unsaved edits and untitled drafts are backed up locally under `~/Library/Application Support/xherdr`, including SSH documents, and restored without saving them into the project. Backups are written after a short pause while editing and completed before quitting; closing a dirty tab still asks before discarding its contents.
+- Reopen a Space with its document tabs, order, active editor, selections and scroll position. Unsaved edits and untitled drafts are backed up locally under `~/Library/Application Support/wooloo`, including SSH documents, and restored without saving them into the project. Backups are written after a short pause while editing and completed before quitting; closing a dirty tab still asks before discarding its contents.
 - Markdown preview with Mermaid diagrams.
 - Native image previews for PNG, JPEG, GIF, WebP, HEIC/HEIF, AVIF, TIFF, BMP, and ICO in local and SSH Spaces, using macOS decoders. Includes zoom, fit, actual size, pixel dimensions, transparency checkerboard, and reload; each tab keeps its zoom and position. Previews are read-only, limited to 50 MiB, and decode at most 4096 pixels per side. Multi-frame images show their first frame.
 - Native PDF previews for local and SSH files up to 50 MiB, with page navigation, zoom, page/width fitting, text search (⌘F and ⌘G), password unlocking, and reload. Each tab keeps its page and zoom. PDF previews and form fields are read-only; search uses existing PDF text rather than OCR.
@@ -53,13 +53,13 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 
 ## Agent quotas
 
-The QUOTAS section is off until you turn it on. Once on, every two minutes while a window is active, xherdr:
+The QUOTAS section is off until you turn it on. Once on, every two minutes while a window is active, wooloo:
 
-- reads Claude Code's sign-in from `~/.claude/.credentials.json`, or else from the Keychain item `Claude Code-credentials` (macOS asks you to allow xherdr the first time);
+- reads Claude Code's sign-in from `~/.claude/.credentials.json`, or else from the Keychain item `Claude Code-credentials` (macOS asks you to allow wooloo the first time);
 - reads Codex's sign-in from `${CODEX_HOME:-~/.codex}/auth.json` and the rate limits in its newest session logs;
 - sends those tokens to the usage endpoints that Claude Code (`api.anthropic.com/api/oauth/usage`) and the Codex CLI (`chatgpt.com/backend-api/wham/usage`) use themselves.
 
-When the explorer points at an SSH machine, the files are read there and the requests leave from your Mac. xherdr keeps the tokens in memory only and never refreshes them. Neither endpoint is documented, so the section can break when either service changes. Turn it off from the section's context menu.
+When the explorer points at an SSH machine, the files are read there and the requests leave from your Mac. wooloo keeps the tokens in memory only and never refreshes them. Neither endpoint is documented, so the section can break when either service changes. Turn it off from the section's context menu.
 
 ## Remote access
 
@@ -69,9 +69,9 @@ Settings → Remote Access (also in the command palette) publishes this Mac's SS
 - **Quick tunnel**: no Cloudflare account; a new `*.trycloudflare.com` address on every start. Anyone who learns it reaches your SSH login, so use key authentication.
 - **Named tunnel**: create a tunnel in Cloudflare Zero Trust with a public hostname whose service is `ssh://localhost:22`, then paste its hostname and token (kept in the Keychain, passed to `cloudflared` through its environment). It can sit behind Cloudflare Access; herdroid sends a service token.
 - While the tunnel runs, a QR code opens herdroid with the machine prefilled: hostname, user, session, Herdr's path and this Mac's host key fingerprints, so the phone trusts the right server. Other computers use `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" user@host`.
-- The tunnel is xherdr's own `cloudflared` process: it stops when xherdr quits, and can start when xherdr opens.
+- The tunnel is wooloo's own `cloudflared` process: it stops when wooloo quits, and can start when wooloo opens.
 
-`XHERDR_CLOUDFLARE_TUNNEL_TEST=1` (as `TEST_RUNNER_XHERDR_CLOUDFLARE_TUNNEL_TEST=1` for `xcodebuild test`) runs `RemoteAccessTests/testRealQuickTunnelReachesThisMacsSSH` against a real quick tunnel.
+`WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` (as `TEST_RUNNER_WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` for `xcodebuild test`) runs `RemoteAccessTests/testRealQuickTunnelReachesThisMacsSSH` against a real quick tunnel.
 
 ## Requirements
 
@@ -85,30 +85,30 @@ There is no prebuilt release yet; build from source.
 ## Build and run
 
 ```sh
-git clone https://github.com/rarce/xherdr.git
-cd xherdr
-xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' build
+git clone https://github.com/rarce/wooloo.git
+cd wooloo
+xcodebuild -project wooloo.xcodeproj -scheme wooloo -configuration Debug -destination 'platform=macOS' build
 ```
 
-The project signs ad hoc ("Sign to Run Locally"), so no developer account is needed. Keep a signature: macOS refuses notification permission to an unsigned app. You can also open `xherdr.xcodeproj` in Xcode and run the `xherdr` scheme on **My Mac**.
+The project signs ad hoc ("Sign to Run Locally"), so no developer account is needed. Keep a signature: macOS refuses notification permission to an unsigned app. You can also open `wooloo.xcodeproj` in Xcode and run the `wooloo` scheme on **My Mac**.
 
 The first build downloads the pinned Intel and Apple Silicon Herdr binaries and verifies their SHA-256 hashes. They are cached under `build/herdr/0.9.3` and bundled as a signed universal helper. You can prepare this cache in advance with `sh scripts/bundle-herdr.sh --prepare`; subsequent builds work offline with the package and runtime caches present.
 
-On a fresh install, a setup wizard lets you choose a folder and creates the first Space in an app-managed `xherdr` session. It installs the included Herdr under `~/Library/Application Support/xherdr/runtime/herdr/0.9.3`, so no download, Homebrew, developer tools, or administrator password is needed at runtime. A user launchd job starts the server when xherdr opens and keeps it running when the app quits. It is not registered to start at login. Herdr's normal `config.toml` and named-session storage are used; existing configuration is preserved.
+On a fresh install, a setup wizard lets you choose a folder and creates the first Space in an app-managed `wooloo` session. It installs the included Herdr under `~/Library/Application Support/wooloo/runtime/herdr/0.9.3`, so no download, Homebrew, developer tools, or administrator password is needed at runtime. A user launchd job starts the server when wooloo opens and keeps it running when the app quits. It is not registered to start at login. Herdr's normal `config.toml` and named-session storage are used; existing configuration is preserved.
 
-You can instead choose an existing Herdr executable and connect to a running session. Existing xherdr users keep their remembered session. **Set Up Herdr…** in the sidebar session picker opens the wizard again. Runtime updates ship with xherdr; a compatible server already running is reused, and setup never stops its panes.
+You can instead choose an existing Herdr executable and connect to a running session. Existing wooloo users keep their remembered session. **Set Up Herdr…** in the sidebar session picker opens the wizard again. Runtime updates ship with wooloo; a compatible server already running is reused, and setup never stops its panes.
 
 To try the app without touching your main session, start a separate one and pick it in the sidebar's session picker:
 
 ```sh
-herdr --session xherdr-ui-test server
-herdr --session xherdr-ui-test workspace create --cwd "$PWD" --label xherdr-test
-herdr --session xherdr-ui-test server stop   # when finished
+herdr --session wooloo-ui-test server
+herdr --session wooloo-ui-test workspace create --cwd "$PWD" --label wooloo-test
+herdr --session wooloo-ui-test server stop   # when finished
 ```
 
 Replace `build` with `test` to run the unit tests.
 
-To check the bundled runtime and launchd lifecycle with a real server, run `TEST_RUNNER_XHERDR_RUNTIME_E2E=1 xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug -destination 'platform=macOS' -only-testing:xherdrTests/HerdrRuntimeTests test`. It uses temporary config/state/runtime roots and only the `xherdr-ui-test` session. For an interactive isolated setup, launch a test copy with `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XHERDR_RUNTIME_ROOT` pointing under `/private/tmp`, and `XHERDR_SETUP_SESSION=xherdr-ui-test`.
+To check the bundled runtime and launchd lifecycle with a real server, run `TEST_RUNNER_WOOLOO_RUNTIME_E2E=1 xcodebuild -project wooloo.xcodeproj -scheme wooloo -configuration Debug -destination 'platform=macOS' -only-testing:woolooTests/HerdrRuntimeTests test`. It uses temporary config/state/runtime roots and only the `wooloo-ui-test` session. For an interactive isolated setup, launch a test copy with `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `WOOLOO_RUNTIME_ROOT` pointing under `/private/tmp`, and `WOOLOO_SETUP_SESSION=wooloo-ui-test`.
 
 ## Documentation
 
@@ -124,4 +124,4 @@ Bug reports, ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBU
 
 ## License
 
-xherdr is released under the [MIT License](LICENSE). It includes third-party software under their own licenses; see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), also available in the app under xherdr → Third-Party Notices.
+wooloo is released under the [MIT License](LICENSE). It includes third-party software under their own licenses; see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), also available in the app under wooloo → Third-Party Notices.

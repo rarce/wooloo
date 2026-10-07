@@ -1,6 +1,6 @@
 # Notebook preview assets
 
-These browser bundles are shipped with xherdr and run offline inside the restricted notebook webview. No CDN or Python runtime is used by the app.
+These browser bundles are shipped with wooloo and run offline inside the restricted notebook webview. No CDN or Python runtime is used by the app.
 
 | Component | Version | Purpose | License |
 | --- | --- | --- | --- |
@@ -18,4 +18,4 @@ To update, download the pinned official npm archives to a temporary directory an
 - KaTeX: `package/dist/katex.min.js`, `package/dist/katex.min.css`, `package/dist/contrib/auto-render.min.js`, all `package/dist/fonts/*.woff2`, plus `package/LICENSE`.
 - highlight.js CDN assets: `package/highlight.min.js`, plus `package/LICENSE`.
 
-Retain the layout, update the manifest and notices, and run `NotebookRenderingTests`. Notebook-authored JavaScript is never passed to these bundles for execution. The application template and renderer are in `xherdr/NotebookAssets/`.
+Retain the layout, update the manifest and notices, and run `NotebookRenderingTests`. Notebook-authored JavaScript is never passed to these bundles for execution. The application template and renderer are in `wooloo/NotebookAssets/`.

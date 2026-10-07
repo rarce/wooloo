@@ -37,13 +37,13 @@ References: [Zed worktree scanner](https://github.com/zed-industries/zed/blob/ma
 
 ## Original API boundary research
 
-xherdr connects one named **local** Herdr session through Unix sockets. It has no machine identity or remote workspace selector. Herdr's JSON `session.snapshot` supplies workspace, tab and pane IDs, plus `workspace.worktree.checkout_path` when a Space is a worktree and `pane.cwd` for ordinary panes. It does not expose Git file status, diffs, directory listings, file contents or file writes. `pane.read` returns terminal screen content, not a file. Herdr's `--machine` CLI forwards API commands over its saved SSH bridge, which likewise has no file API.
+wooloo connects one named **local** Herdr session through Unix sockets. It has no machine identity or remote workspace selector. Herdr's JSON `session.snapshot` supplies workspace, tab and pane IDs, plus `workspace.worktree.checkout_path` when a Space is a worktree and `pane.cwd` for ordinary panes. It does not expose Git file status, diffs, directory listings, file contents or file writes. `pane.read` returns terminal screen content, not a file. Herdr's `--machine` CLI forwards API commands over its saved SSH bridge, which likewise has no file API.
 
 Herdr's `machine list --json` is the supported way to discover saved SSH profiles. Each row contains `id`, `label`, `target`, `session`, `enabled` and `selected`. A profile targets one remote session. On this development machine the list is empty, so remote behavior cannot yet be checked against a live host.
 
 ## Proposed first version
 
-1. Introduce a Space identity containing session, machine ID (Local or saved profile ID), and workspace ID. Herdr IDs can repeat across machines. Show a machine selector and obtain remote snapshots with `herdr --machine <id> api snapshot` until xherdr has a persistent remote client connection. Keep the existing local terminal path as it is during this stage.
+1. Introduce a Space identity containing session, machine ID (Local or saved profile ID), and workspace ID. Herdr IDs can repeat across machines. Show a machine selector and obtain remote snapshots with `herdr --machine <id> api snapshot` until wooloo has a persistent remote client connection. Keep the existing local terminal path as it is during this stage.
 2. Resolve a Space root from `worktree.checkout_path`; otherwise use the selected pane's stable `cwd`, falling back to another pane in that Space. Avoid `foreground_cwd` as the root because an agent can change its foreground process directory. Resolve the root again when the selected Space changes.
 3. Use one file service interface for Local and SSH: list files, read a text file with a version token, save only if that version still matches, and run Git status/diff. Return paths relative to the Space root to the UI.
 4. Add a compact Files / Changes panel. Changes lists staged, modified and untracked files. Selecting a tracked change shows unstaged and staged diffs; selecting a file opens a simple monospaced text editor. Open untracked files directly. Save with Command-S and show dirty and external-change states.

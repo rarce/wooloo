@@ -31,7 +31,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: build/DerivedData/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('xherdr.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          key: spm-${{ runner.os }}-${{ hashFiles('wooloo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       # CI runs the fast suite: pixel snapshots are compared locally only, since their
       # rendering depends on the macOS version and fonts.
@@ -44,16 +44,16 @@ jobs:
       - name: Test
         run: |
           xcodebuild test \
-            -project xherdr.xcodeproj -scheme xherdr -configuration Debug \
+            -project wooloo.xcodeproj -scheme wooloo -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath build/DerivedData \
-            -resultBundlePath build/xherdr.xcresult \
-            -skip-testing:xherdrTests/ViewSnapshotTests \
-            -skip-testing:xherdrTests/TerminalRenderingTests/testSnapshotsMatch \
+            -resultBundlePath build/wooloo.xcresult \
+            -skip-testing:woolooTests/ViewSnapshotTests \
+            -skip-testing:woolooTests/TerminalRenderingTests/testSnapshotsMatch \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
 
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: xherdr-test-results
-          path: build/xherdr.xcresult
+          name: wooloo-test-results
+          path: build/wooloo.xcresult

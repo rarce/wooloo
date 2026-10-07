@@ -2,12 +2,12 @@
 //  SourceActionsModifier.swift
 //  MarkdownView
 //
-//  xherdr patch: lets the host edit or reveal the source from the rendered document.
+//  wooloo patch: lets the host edit or reveal the source from the rendered document.
 //
 
 import SwiftUI
 
-/// Actions that map rendered elements back to their source lines (xherdr patch).
+/// Actions that map rendered elements back to their source lines (wooloo patch).
 /// Lines are 1-based, in the text given to `MarkdownView`.
 struct MarkdownSourceActions {
     /// Called when a task list checkbox is clicked, with the item's line and its new state.
@@ -28,20 +28,20 @@ extension EnvironmentValues {
 }
 
 extension View {
-    /// Makes task list checkboxes clickable; nil keeps them read-only (xherdr patch).
+    /// Makes task list checkboxes clickable; nil keeps them read-only (wooloo patch).
     nonisolated public func markdownTaskToggle(
         _ action: (@MainActor (_ line: Int, _ checked: Bool) -> Void)?
     ) -> some View {
         transformEnvironment(\.markdownSourceActions) { $0.toggleTask = action }
     }
 
-    /// Reports double-clicks on top-level blocks with the block's first source line (xherdr patch).
+    /// Reports double-clicks on top-level blocks with the block's first source line (wooloo patch).
     nonisolated public func markdownRevealSource(_ action: (@MainActor (_ line: Int) -> Void)?) -> some View {
         transformEnvironment(\.markdownSourceActions) { $0.revealLine = action }
     }
 }
 
-/// Double-click on a top-level block reveals its source line (xherdr patch).
+/// Double-click on a top-level block reveals its source line (wooloo patch).
 struct MarkdownRevealSourceGesture: ViewModifier {
     let line: Int?
     @Environment(\.markdownSourceActions.revealLine) private var revealLine

@@ -8,10 +8,10 @@
 import AppKit
 
 extension TextView {
-    /// xherdr patch: holds one string per selection, so pasting at as many cursors gives each its own text.
-    public static let selectionsPasteboardType = NSPasteboard.PasteboardType("dev.xherdr.editor.selections")
+    /// wooloo patch: holds one string per selection, so pasting at as many cursors gives each its own text.
+    public static let selectionsPasteboardType = NSPasteboard.PasteboardType("dev.wooloo.editor.selections")
 
-    /// xherdr patch: copies the selections in document order joined by newlines, and each one separately.
+    /// wooloo patch: copies the selections in document order joined by newlines, and each one separately.
     /// Upstream wrote one pasteboard item per selection, so other apps only pasted the first.
     @objc open func copy(_ sender: AnyObject) {
         let strings = selectionManager.textSelections
@@ -26,7 +26,7 @@ extension TextView {
         }
     }
 
-    /// xherdr patch: text copied from N selections pastes one piece at each cursor when there are N cursors,
+    /// wooloo patch: text copied from N selections pastes one piece at each cursor when there are N cursors,
     /// as in Zed and VS Code.
     @objc open func paste(_ sender: AnyObject) {
         guard let stringContents = NSPasteboard.general.string(forType: .string) else { return }

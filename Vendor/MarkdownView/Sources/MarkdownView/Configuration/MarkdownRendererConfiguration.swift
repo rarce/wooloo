@@ -16,7 +16,7 @@ struct MarkdownRendererConfiguration: Hashable, AllowingModifyThroughKeyPath, Se
     var tintColors: [MarkdownTintableComponent : Color] = [:]
     var underlineLinks: Bool = false
     var listConfiguration: MarkdownListConfiguration = MarkdownListConfiguration()
-    /// Find matches to highlight (xherdr patch).
+    /// Find matches to highlight (wooloo patch).
     var searchHighlight: MarkdownSearchHighlight?
 
     func resolvedMarkdownURL(for destination: String) -> URL? {

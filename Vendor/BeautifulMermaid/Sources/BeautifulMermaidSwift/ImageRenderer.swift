@@ -152,7 +152,7 @@ public final class MermaidImageRenderer {
             ctx.fill(CGRect(origin: .zero, size: pixelSize))
         }
 
-        // DiagramRenderer draws top-left origin; CGContext bitmaps are bottom-left (xherdr patch).
+        // DiagramRenderer draws top-left origin; CGContext bitmaps are bottom-left (wooloo patch).
         ctx.translateBy(x: 0, y: pixelSize.height)
         ctx.scaleBy(x: 1, y: -1)
         ctx.scaleBy(x: scale, y: scale)

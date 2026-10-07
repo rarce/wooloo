@@ -7,19 +7,19 @@ These packages are copies of the upstream `Sources/` trees, with their MIT licen
 | [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor) | 0.9.1 | `b0688fa59fb8060840fb013afb4d6e6a96000f14` |
 | [CodeEditTextView](https://github.com/CodeEditApp/CodeEditTextView) | 0.7.7 | `509d7b2e86460e8ec15b0dd5410cbc8e8c05940f` |
 
-Their source files are unchanged except for these changes in CodeEditSourceEditor, marked "xherdr patch":
+Their source files are unchanged except for these changes in CodeEditSourceEditor, marked "wooloo patch":
 
 - `styleScrollView()` clips the scroll view, because `GutterView` turns off clipping on its floating container and its background otherwise covers the tabs and header above the editor when the text scrolls.
 - `GutterView.lineChanges` draws Git change bars (added, modified, deleted, staged as outlines) at the gutter's leading edge, and `TextViewController.gutterView` is public so the app can set them.
 
-And in CodeEditTextView, for multiple cursors (`xherdr/EditorMultiCursor.swift` adds the commands):
+And in CodeEditTextView, for multiple cursors (`wooloo/EditorMultiCursor.swift` adds the commands):
 
 - Option-click adds a cursor, or removes the selection under it when there are several (`TextView+Mouse.swift`).
 - `TextSelectionManager.didReplaceCharacters` shifts later selections by the change in length and keeps untouched selections. Upstream shifted by the replacement length and collapsed every selection, which misplaced cursors when typing over several selections.
 - An edit at several cursors is one undo step (`TextView+ReplaceCharacters.swift`).
-- Copy writes the selections joined by newlines plus a `dev.xherdr.editor.selections` list; paste with as many cursors puts one piece at each (`TextView+CopyPaste.swift`).
+- Copy writes the selections joined by newlines plus a `dev.wooloo.editor.selections` list; paste with as many cursors puts one piece at each (`TextView+CopyPaste.swift`).
 
-The local `Package.swift` files keep the runtime dependencies and omit test targets and SwiftLint build plugins. Those plugins download a separate binary and are unnecessary when building xherdr. Update the versions together after checking the editor API and running an xherdr build.
+The local `Package.swift` files keep the runtime dependencies and omit test targets and SwiftLint build plugins. Those plugins download a separate binary and are unnecessary when building wooloo. Update the versions together after checking the editor API and running an wooloo build.
 
 # Markdown preview packages
 
@@ -28,7 +28,7 @@ The local `Package.swift` files keep the runtime dependencies and omit test targ
 | [MarkdownView](https://github.com/LiYanan2004/MarkdownView) | 3.0.0 | `6f452b55635246224a3329362e4e11cd3d592a30` | MIT |
 | [BeautifulMermaid](https://github.com/lukilabs/beautiful-mermaid-swift) | 1.0.4 | `6a23a29e91af8f5b3e9fc09945332ca193bd69ec` | MIT |
 
-`MarkdownView/Sources/MarkdownView/Documentation.docc` is omitted. Source changes, marked "xherdr patch":
+`MarkdownView/Sources/MarkdownView/Documentation.docc` is omitted. Source changes, marked "wooloo patch":
 
 - MarkdownView: `markdownBlockSpacing(_:)` sets the spacing between top-level blocks, which upstream fixes at 8 pt.
 - MarkdownView: `markdownSearchHighlight(_:)` colors find matches in `Text` and `InlineCode` nodes (`Modifiers/SearchHighlightModifier.swift`), and each top-level block carries a `MarkdownBlockAnchor` id so find can scroll to it. Because of the anchors, adjacent paragraphs are separate views spaced by the block spacing instead of one text joined with blank lines.
@@ -38,10 +38,10 @@ The local `Package.swift` files keep the runtime dependencies and omit test targ
 
 The local `Package.swift` files drop test targets, examples, and MarkdownView's default `LaTeX` trait, so SwiftMath and its ~7 MB of math fonts are not linked and `ENABLE_MATH_RENDERING` stays undefined.
 
-Remote runtime dependencies resolve through Swift Package Manager: swift-markdown and RichText (MarkdownView), Highlightr (MarkdownView, highlight.js under BSD-3-Clause), and [elk-swift](https://github.com/lukilabs/elk-swift) (BeautifulMermaid). elk-swift is licensed under EPL-2.0: linking it is fine, but modified elk-swift source files must be published under EPL-2.0, and its license notice must ship with xherdr.
+Remote runtime dependencies resolve through Swift Package Manager: swift-markdown and RichText (MarkdownView), Highlightr (MarkdownView, highlight.js under BSD-3-Clause), and [elk-swift](https://github.com/lukilabs/elk-swift) (BeautifulMermaid). elk-swift is licensed under EPL-2.0: linking it is fine, but modified elk-swift source files must be published under EPL-2.0, and its license notice must ship with wooloo.
 
 # Notices
 
 Herdr 0.9.3 is bundled as a universal macOS helper. `scripts/bundle-herdr.sh` downloads the pinned official release assets, checks their SHA-256 hashes, combines the Intel and Apple Silicon binaries, and signs the helper before the app is signed. The binary cache is under the ignored `build/herdr` directory; `Vendor/Herdr/LICENSE` retains its Apache-2.0 license. Update the script's hashes and `HerdrRuntimePaths.version` together when upgrading the runtime.
 
-`THIRD_PARTY_NOTICES.txt` at the repository root collects the licenses of every package above, their SwiftPM dependencies, and the tree-sitter grammars built into CodeEditLanguages. It is copied into the app bundle and opened from xherdr → Third-Party Notices. After changing a dependency, build xherdr and run `scripts/third-party-notices.py`.
+`THIRD_PARTY_NOTICES.txt` at the repository root collects the licenses of every package above, their SwiftPM dependencies, and the tree-sitter grammars built into CodeEditLanguages. It is copied into the app bundle and opened from wooloo → Third-Party Notices. After changing a dependency, build wooloo and run `scripts/third-party-notices.py`.

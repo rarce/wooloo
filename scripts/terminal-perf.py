@@ -6,11 +6,11 @@
   terminal-perf.py play FILE [--lines-per-second N | --chars-per-second N] [--seconds S]
       Writes FILE to stdout at a steady pace, like a build log or an agent typing.
   terminal-perf.py bench RESULTS.jsonl [--baseline OLD.jsonl]
-      Tabulates XHERDR-BENCH lines from TerminalPipelineBenchmarks.
+      Tabulates WOOLOO-BENCH lines from TerminalPipelineBenchmarks.
   terminal-perf.py files RESULTS.jsonl [--baseline OLD.jsonl]
       Tabulates WorkspaceFilesBenchmarks results: time and processes per operation.
   terminal-perf.py e2e METRICS.jsonl PHASES.jsonl [--baseline OLD.json] [--json OUT.json]
-      Summarizes a live run recorded with XHERDR_METRICS_FILE, one row per workload phase.
+      Summarizes a live run recorded with WOOLOO_METRICS_FILE, one row per workload phase.
 """
 import argparse
 import bisect
@@ -151,7 +151,7 @@ def play(path, lines_per_second, chars_per_second, seconds):
 def read_bench(path):
     config, results = {}, {}
     for line in Path(path).read_text().splitlines():
-        line = line.split("XHERDR-BENCH ", 1)[-1].strip()
+        line = line.split("WOOLOO-BENCH ", 1)[-1].strip()
         if not line.startswith("{"):
             continue
         record = json.loads(line)

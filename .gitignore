@@ -9,7 +9,7 @@ xcuserdata/
 
 # SwiftPM
 .build/
-# Resolved when a vendored package is opened on its own; the app pins versions in xherdr.xcodeproj.
+# Resolved when a vendored package is opened on its own; the app pins versions in wooloo.xcodeproj.
 Vendor/*/Package.resolved
 
 # Coverage

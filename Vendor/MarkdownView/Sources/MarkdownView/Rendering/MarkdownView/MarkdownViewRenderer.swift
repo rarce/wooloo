@@ -43,10 +43,10 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
 
     func visitDocument(_ document: Markdown.Document) -> MarkdownNodeView {
         var renderer = self
-        // xherdr patch: anchor each top-level block so find can scroll to it.
+        // wooloo patch: anchor each top-level block so find can scroll to it.
         let nodeViews = document.children.map { child in
             let nodeView = renderer.visit(child)
-            // xherdr patch: a double-click reveals the block's source line.
+            // wooloo patch: a double-click reveals the block's source line.
             let line = child.range?.lowerBound.line
             return MarkdownNodeView {
                 nodeView
@@ -87,7 +87,7 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
                 .makeBody(mathContext: mathContext)
         }
 
-        // xherdr patch: highlight find matches.
+        // wooloo patch: highlight find matches.
         var attributedString = AttributedString(text.plainText)
         configuration.searchHighlight?.apply(to: text.plainText, of: text, in: &attributedString)
         return MarkdownNodeView(attributedString)
@@ -141,7 +141,7 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
         var attributedString = AttributedString(stringLiteral: inlineCode.code)
         attributedString.foregroundColor = tintColor
         attributedString.backgroundColor = tintColor.opacity(0.1)
-        // xherdr patch: highlight find matches.
+        // wooloo patch: highlight find matches.
         configuration.searchHighlight?.apply(to: inlineCode.code, of: inlineCode, in: &attributedString)
         return MarkdownNodeView(attributedString)
     }

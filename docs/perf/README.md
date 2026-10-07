@@ -9,12 +9,12 @@ A Herdr surface travels this path before it is on screen:
 
 Three tools measure it. All of them also check that no information is lost on the way.
 
-## Unit tests: `xherdrTests`
+## Unit tests: `woolooTests`
 
-Run them with `xcodebuild test` and the scheme `xherdr`, using the build flags from `AGENTS.md`.
+Run them with `xcodebuild test` and the scheme `wooloo`, using the build flags from `AGENTS.md`.
 
 - `SurfaceDecodingTests` encodes synthetic workloads (`SurfaceFixtures.swift`): ASCII, color and Unicode scrolling, typing, and complete frames. After every frame, the app's decoder and an independent `ReferenceSurfaceDecoder` must both produce the expected screen. Stale or baseless patches must be rejected.
-- `TerminalRenderingTests` checks the laid-out grid cell by cell. Every visible symbol must have a glyph in its column, and every colored background and underline must be kept. Nothing may be left over from the previous frame. The test also compares 2× pixel snapshots in `xherdrTests/Snapshots`. The snapshots depend on the installed terminal font; re-record them with `TEST_RUNNER_XHERDR_RECORD_SNAPSHOTS=1`.
+- `TerminalRenderingTests` checks the laid-out grid cell by cell. Every visible symbol must have a glyph in its column, and every colored background and underline must be kept. Nothing may be left over from the previous frame. The test also compares 2× pixel snapshots in `woolooTests/Snapshots`. The snapshots depend on the installed terminal font; re-record them with `TEST_RUNNER_WOOLOO_RECORD_SNAPSHOTS=1`.
 - `SurfaceTraceReplayTests` runs only from `scripts/terminal-e2e.sh`; see below.
 
 ## Stage benchmarks: `scripts/terminal-bench.sh`
@@ -23,18 +23,18 @@ This script times decode, layout and draw per frame over the synthetic workloads
 
 ## End to end: `scripts/terminal-e2e.sh`
 
-This script starts a dedicated `xherdr-perf` Herdr session and opens a Release build on it with `XHERDR_METRICS_FILE` and `XHERDR_SURFACE_TRACE` set. It then runs these workloads in the pane:
+This script starts a dedicated `wooloo-perf` Herdr session and opens a Release build on it with `WOOLOO_METRICS_FILE` and `WOOLOO_SURFACE_TRACE` set. It then runs these workloads in the pane:
 
 - `ascii`, `color` and `unicode`: 250 lines/s for 5 s
 - `graphics`: 100 lines/s for 5 s, every tenth line a different 192×96 PNG shown over 24×4 cells with the Kitty graphics protocol (`q=2`, so the terminal answers nothing), like a notebook or an agent printing plots between output
 - `typing`: 40 characters/s
 - `burst`: `cat` of 60,000 lines
-- `keys`: 100 letters typed into `cat`, one every 100 ms. The keys go through xherdr's own `keyDown`, sent by the typing probe (`XHERDR_TYPING_PROBE`, triggered with `notifyutil -p dev.xherdr.typing-probe`), so no accessibility access is needed. The probe is compiled only with the `XHERDR_PROBES` condition, which the script sets.
-- `mouse`: splits the pane and turns on SGR mouse reporting in the new pane, whose `cat` echoes the reports Herdr writes for it. The mouse probe, enabled by the same flag, then plays three phases through the view's own mouse handlers: `mouse-click`, 40 clicks, one every 100 ms, in the pane without mouse reporting, after one unrecorded click that selects it (`notifyutil -p dev.xherdr.mouse-probe.click`); `mouse-scroll`, 40 wheel events of 3 lines, alternately up and down, over the mouse-aware pane (`.scroll`); and `mouse-drag`, a 2 s drag of the split 6 cells each way and back, one move every 40 ms (`.drag`). Wheel events enter at `HerdrTerminalTextView.scrollPane`, below `scrollWheel`, because AppKit cannot make a scroll `NSEvent` at a window location.
+- `keys`: 100 letters typed into `cat`, one every 100 ms. The keys go through wooloo's own `keyDown`, sent by the typing probe (`WOOLOO_TYPING_PROBE`, triggered with `notifyutil -p dev.wooloo.typing-probe`), so no accessibility access is needed. The probe is compiled only with the `WOOLOO_PROBES` condition, which the script sets.
+- `mouse`: splits the pane and turns on SGR mouse reporting in the new pane, whose `cat` echoes the reports Herdr writes for it. The mouse probe, enabled by the same flag, then plays three phases through the view's own mouse handlers: `mouse-click`, 40 clicks, one every 100 ms, in the pane without mouse reporting, after one unrecorded click that selects it (`notifyutil -p dev.wooloo.mouse-probe.click`); `mouse-scroll`, 40 wheel events of 3 lines, alternately up and down, over the mouse-aware pane (`.scroll`); and `mouse-drag`, a 2 s drag of the split 6 cells each way and back, one move every 40 ms (`.drag`). Wheel events enter at `HerdrTerminalTextView.scrollPane`, below `scrollWheel`, because AppKit cannot make a scroll `NSEvent` at a window location.
 - `split`: splits the pane and streams the `ascii` output into one pane and the `color` output into the other at the same time, 250 lines/s each for 5 s.
-- `selection`: during `ascii` output, drags a text selection diagonally across a pane without mouse reporting, one move every 40 ms for 4 s (`notifyutil -p dev.xherdr.mouse-probe.select`).
-- `resize`: during `ascii` output, which starts after a marker the script waits for, changes the window's content size 16 times, one every 400 ms, alternately shrinking it by 240×160 points and restoring it (`dev.xherdr.ui-probe.resize`).
-- `tabs`: opens a second tab showing earlier `unicode` output beside the first tab's `color` output, then switches between them 20 times, one every 300 ms, through `HerdrStore.select(tabID:)` as the tab row does (`dev.xherdr.ui-probe.tabs`).
+- `selection`: during `ascii` output, drags a text selection diagonally across a pane without mouse reporting, one move every 40 ms for 4 s (`notifyutil -p dev.wooloo.mouse-probe.select`).
+- `resize`: during `ascii` output, which starts after a marker the script waits for, changes the window's content size 16 times, one every 400 ms, alternately shrinking it by 240×160 points and restoring it (`dev.wooloo.ui-probe.resize`).
+- `tabs`: opens a second tab showing earlier `unicode` output beside the first tab's `color` output, then switches between them 20 times, one every 300 ms, through `HerdrStore.select(tabID:)` as the tab row does (`dev.wooloo.ui-probe.tabs`).
 
 For each workload, the script reports:
 
@@ -62,13 +62,13 @@ For each workload, the script reports:
 
 **When a draw reaches the screen.** `draw` returns once the view has drawn into its layer. Core Animation commits the layer when the main thread's turn ends; the window server composites the commit at the next display refresh and shows it at the one after. The metrics record a `commit` event on the main thread's next turn after each draw and a `vsync` event for each refresh the terminal view's display link reports (`TerminalVsyncRecorder`, macOS 14 `NSView.displayLink`), with the time that refresh's frame reaches the screen. `terminal-perf.py` takes the first `commit` after a draw, the first refresh at or after it (extrapolated from the refresh period when the display link missed some while the main thread was busy) and that refresh's target time. macOS exposes no commit or presentation callback to an `NSView`, so this is an estimate, good to about one refresh. On the 120 Hz display measured below it adds 12–15 ms at p50 to every draw: about half a refresh waiting for the next one, plus the refresh the window server takes to show it.
 
-`XHERDR_E2E_LOAD=N` keeps N busy processes (`yes > /dev/null`) running during the workloads, to see how xherdr holds up on a loaded machine. These runs are not compared with the baseline.
+`WOOLOO_E2E_LOAD=N` keeps N busy processes (`yes > /dev/null`) running during the workloads, to see how wooloo holds up on a loaded machine. These runs are not compared with the baseline.
 
-The window's content size is fixed with `XHERDR_E2E_WINDOW` (default 1600x1000), so runs compare the same grid whatever size your own xherdr window was saved at. The live results below before this option used a 311×80 window. `e2e-baseline.json` now uses the fixed size, a 120×48 grid on the machine below.
+The window's content size is fixed with `WOOLOO_E2E_WINDOW` (default 1600x1000), so runs compare the same grid whatever size your own wooloo window was saved at. The live results below before this option used a 311×80 window. `e2e-baseline.json` now uses the fixed size, a 120×48 grid on the machine below.
 
-It compares them with `e2e-baseline.json`. The script then replays the recorded trace through the reference decoder. Every revision the app drew must match what Herdr sent, and the last frame received must have been drawn. The xherdr window must stay visible during the run.
+It compares them with `e2e-baseline.json`. The script then replays the recorded trace through the reference decoder. Every revision the app drew must match what Herdr sent, and the last frame received must have been drawn. The wooloo window must stay visible during the run.
 
-Signposts in the `dev.xherdr.terminal` subsystem (`decode`, `layout`, `draw`) show the same stages in Instruments, with or without the metrics file.
+Signposts in the `dev.wooloo.terminal` subsystem (`decode`, `layout`, `draw`) show the same stages in Instruments, with or without the metrics file.
 
 ## Results
 
@@ -100,7 +100,7 @@ Live, 311×80 window:
 | unicode | 13.6 / 38.6 → 42.7 / 42.7 | 166 → 0 | 48 → 2.4 ms | 273 → 18 ms | 56% → 9% |
 | typing | 18.2 / 30.7 → 30.5 / 30.5 | 83 → 0 | 45 → 2.7 ms | 429 → 5 ms | 56% → 5% |
 
-xherdr now draws every frame Herdr sends. The frame rate is limited by Herdr, not by the app. After a clear or a tab switch, a cold layout of the whole grid takes about 5 ms at 311×80, down from about 28 ms.
+wooloo now draws every frame Herdr sends. The frame rate is limited by Herdr, not by the app. After a clear or a tab switch, a cold layout of the whole grid takes about 5 ms at 311×80, down from about 28 ms.
 
 ### Keystroke to screen
 
@@ -168,7 +168,7 @@ In the last run, Herdr answered in 2.7–4.2 ms and the surface was drawn 8–10
 
 The surface stream, a blocking read loop, ran in a `.utility` task. On a loaded machine, the system ran other work first, and the thread stood still for up to 0.4 s while the main thread was idle. A frame read after such a pause was usually replaced in the mailbox by the next one before it was drawn, so arrival-to-draw latency did not show it. The pauses between draws and the keystroke echo did. The stream now runs on its own thread at `.userInteractive` priority (`HerdrSurfaceStream.onOwnThread`), which also stops it from holding a thread of Swift's cooperative pool. Decoding still takes about 0.1–0.3 ms a frame.
 
-Measured with `XHERDR_E2E_LOAD=16` on a 16-core machine, with the load average reaching 24–123 because other work was running too:
+Measured with `WOOLOO_E2E_LOAD=16` on a 16-core machine, with the load average reaching 24–123 because other work was running too:
 
 | phase | before: pauses >50 ms, longest | after: pauses >50 ms, longest | drawn fps, before → after |
 |---|---|---|---|
@@ -180,7 +180,7 @@ Earlier, a `.userInitiated` task was tried on an idle machine and showed no diff
 
 ### Graphics (2026-10-06)
 
-Herdr 0.9.3 turns Kitty images that a program writes into graphics in the surface, and xherdr draws them. In a `graphics` run, 280 of 293 frames placed graphics, up to 4 at once, and the trace replay matched every drawn revision, graphics included. The replay compares surfaces, not pixels.
+Herdr 0.9.3 turns Kitty images that a program writes into graphics in the surface, and wooloo draws them. In a `graphics` run, 280 of 293 frames placed graphics, up to 4 at once, and the trace replay matched every drawn revision, graphics included. The replay compares surfaces, not pixels.
 
 | | graphics | ascii (baseline, a similar frame rate) |
 |---|---|---|
@@ -192,7 +192,7 @@ Herdr 0.9.3 turns Kitty images that a program writes into graphics in the surfac
 | arrival → draw p50 / p95 | 0.85 / 2.3 ms | 0.87 ms p50 |
 | main thread busy | 1.2% | 1.6% |
 
-xherdr decodes each image once (`HerdrTerminalTextView.prepareGraphics`) and keeps it while Herdr retains it, so drawing a frame costs little more than drawing text. The cost is in what Herdr sends: while graphics are on screen, every frame is a complete surface (about 39 KB at 113×48) instead of a scrolled patch, and each new image adds its PNG (about 74 KB here). That is 11 times the bytes of the same output without images.
+wooloo decodes each image once (`HerdrTerminalTextView.prepareGraphics`) and keeps it while Herdr retains it, so drawing a frame costs little more than drawing text. The cost is in what Herdr sends: while graphics are on screen, every frame is a complete surface (about 39 KB at 113×48) instead of a scrolled patch, and each new image adds its PNG (about 74 KB here). That is 11 times the bytes of the same output without images.
 
 ### Window resizes (2026-10-06)
 
@@ -204,7 +204,7 @@ A resize took about 25 ms from the window's size change to the first frame at th
 | herdr: new size written → first frame at that size received | 73 ms | 318 ms |
 | render: received → drawn | 1.9 ms | 3.9 ms |
 
-xherdr's share is about 7 ms. It writes the new size in the SwiftUI update that reports the new geometry and draws the frame like any other. The rest is Herdr re-laying out the panes and sending a complete surface, which grows with load: an estimated 18 ms under load average 5–11 (the 25 ms measured then, less xherdr's share), 73 ms under 44. The view keeps showing the previous surface until then. Sending the size from the view's own layout would save a few milliseconds at most.
+wooloo's share is about 7 ms. It writes the new size in the SwiftUI update that reports the new geometry and draws the frame like any other. The rest is Herdr re-laying out the panes and sending a complete surface, which grows with load: an estimated 18 ms under load average 5–11 (the 25 ms measured then, less wooloo's share), 73 ms under 44. The view keeps showing the previous surface until then. Sending the size from the view's own layout would save a few milliseconds at most.
 
 Running `resize` on its own used to start the probe before a new session's shell had run the output command, so the window was resized with no output and the output outlived the app. The script now waits for a start marker and the end marker.
 
@@ -245,7 +245,7 @@ With scrolled patches as well, two later runs decoded ascii frames in 120–240 
 
 # Workspace measurements
 
-The file explorer, Git bar, repository panel, diffs and documents get their data from `WorkspaceFiles`. Every git, SSH or shell command goes through `WorkspaceFiles.run`, which reports it to `WorkspaceProcessLog`. With `XHERDR_METRICS_FILE` set, each command becomes a `proc` event, labeled with its command (for example `git status`) and whether it ran over SSH. User-visible operations become `span` events, from the moment they start until their result is on screen:
+The file explorer, Git bar, repository panel, diffs and documents get their data from `WorkspaceFiles`. Every git, SSH or shell command goes through `WorkspaceFiles.run`, which reports it to `WorkspaceProcessLog`. With `WOOLOO_METRICS_FILE` set, each command becomes a `proc` event, labeled with its command (for example `git status`) and whether it ran over SSH. User-visible operations become `span` events, from the moment they start until their result is on screen:
 
 - `file-list`
 - `git-bar`
@@ -256,12 +256,12 @@ The file explorer, Git bar, repository panel, diffs and documents get their data
 
 ## Benchmarks: `scripts/workspace-bench.sh`
 
-This script runs `xherdrTests/WorkspaceFilesBenchmarks` in a Release build. Every operation the UI performs is timed and its processes counted. The operations run against two disposable repositories:
+This script runs `woolooTests/WorkspaceFilesBenchmarks` in a Release build. Every operation the UI performs is timed and its processes counted. The operations run against two disposable repositories:
 
 - `small`: 40 files, 30 commits.
 - `large`: 20,000 files, 400 commits, and a 5,000-line file with a third of its lines changed.
 
-Both repositories are built once and reused. They live under `/private/tmp/xherdr-bench` locally, and under `/tmp/xherdr-bench` on an SSH target. The SSH target is the first enabled Herdr machine that answers; set it with `XHERDR_BENCH_SSH_TARGET`, or set that variable to `none` to skip SSH. Results go to `build/perf/`, and the script compares them with `files-baseline.jsonl`.
+Both repositories are built once and reused. They live under `/private/tmp/wooloo-bench` locally, and under `/tmp/wooloo-bench` on an SSH target. The SSH target is the first enabled Herdr machine that answers; set it with `WOOLOO_BENCH_SSH_TARGET`, or set that variable to `none` to skip SSH. Results go to `build/perf/`, and the script compares them with `files-baseline.jsonl`.
 
 ## Before (2026-09-29, Mac16,5; SSH to an OrbStack VM with a 40 ms handshake)
 
@@ -287,7 +287,7 @@ What the numbers show:
 
 `files-baseline.jsonl` now holds the numbers after three changes:
 
-1. **SSH connections are shared.** `ssh` runs with `ControlMaster=auto` and `ControlPersist=60`, with sockets in `/tmp/xherdr-ssh-<uid>`, a directory only the user can use. Commands after the first skip the handshake. Commands without input also get `/dev/null` as stdin, since SSH would otherwise forward the app's own stdin, which cost about 15 ms per call.
+1. **SSH connections are shared.** `ssh` runs with `ControlMaster=auto` and `ControlPersist=60`, with sockets in `/tmp/wooloo-ssh-<uid>`, a directory only the user can use. Commands after the first skip the handshake. Commands without input also get `/dev/null` as stdin, since SSH would otherwise forward the app's own stdin, which cost about 15 ms per call.
 2. **A refresh loads the repository once.** The Git bar and the repository panel share one `repository()` load (`SharedLoads`, kept for 2 s). Git operations the app runs, and every explicit refresh, forget it, so a change is never hidden. `SharedLoadsTests` checks this.
 3. **Local git runs without the shim.** `xcrun --find git` is resolved once, and `/usr/bin/git` is used only if it fails.
 
@@ -305,7 +305,7 @@ Over SSH, a command through the shared connection takes 11–15 ms against a nor
 
 ## After batching SSH commands
 
-Over SSH, the commands of one load now run as a single remote script (`WorkspaceFiles.gitBatch`). The script prints each command's exit status and the lengths of its output and errors before them, so each command still fails or succeeds on its own. The listing is one script. The Git bar's status and repository are another, and the repository panel shares that result. The work tree root (`git rev-parse --show-toplevel`) is kept for 2 s like the repository, so the listing and the repository load no longer both look it up. Failed SSH commands are logged with their exit status and stderr (subsystem `dev.xherdr.workspace`), and `proc` events carry a `status` field.
+Over SSH, the commands of one load now run as a single remote script (`WorkspaceFiles.gitBatch`). The script prints each command's exit status and the lengths of its output and errors before them, so each command still fails or succeeds on its own. The listing is one script. The Git bar's status and repository are another, and the repository panel shares that result. The work tree root (`git rev-parse --show-toplevel`) is kept for 2 s like the repository, so the listing and the repository load no longer both look it up. Failed SSH commands are logged with their exit status and stderr (subsystem `dev.wooloo.workspace`), and `proc` events carry a `status` field.
 
 Measured on 2026-10-02 under heavy machine load (load average 25–34), against the OrbStack VM, where a single SSH command took about 100 ms in this run:
 

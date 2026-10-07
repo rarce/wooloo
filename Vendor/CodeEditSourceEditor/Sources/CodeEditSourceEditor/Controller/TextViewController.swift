@@ -22,7 +22,7 @@ public class TextViewController: NSViewController {
 
     var scrollView: NSScrollView!
     private(set) public var textView: TextView!
-    // xherdr patch: public so the app can set the gutter's line change bars.
+    // wooloo patch: public so the app can set the gutter's line change bars.
     public internal(set) var gutterView: GutterView!
     internal var _undoManager: CEUndoManager?
     /// Internal reference to any injected layers in the text view.

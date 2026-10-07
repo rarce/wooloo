@@ -17,7 +17,7 @@ struct MarkdownHeading: View {
     @Environment(\.markdownFontGroup) private var fontGroup
     @Environment(\.headingStyleGroup) private var headingStyleGroup
     @Environment(\.headingPaddings) private var paddings
-    // xherdr patch: an optional rule under the heading.
+    // wooloo patch: an optional rule under the heading.
     @Environment(\.markdownHeadingDivider) private var divider
     
     private var font: Font {
@@ -71,7 +71,7 @@ struct MarkdownHeading: View {
     }
 }
 
-/// xherdr patch: the rule under a heading, inside its padding so it spans the text column.
+/// wooloo patch: the rule under a heading, inside its padding so it spans the text column.
 private struct HeadingDividerOverlay: ViewModifier {
     let divider: MarkdownHeadingDivider?
 

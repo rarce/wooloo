@@ -1,5 +1,5 @@
-xherdr includes the following third-party software.
-xherdr itself is licensed under the MIT License; see LICENSE.
+wooloo includes the following third-party software.
+wooloo itself is licensed under the MIT License; see LICENSE.
 
 ==============================================================================
 Herdr 0.9.3
@@ -4323,7 +4323,7 @@ elk-swift
 https://github.com/lukilabs/elk-swift
 ==============================================================================
 
-elk-swift is distributed under the Eclipse Public License 2.0. xherdr uses it
+elk-swift is distributed under the Eclipse Public License 2.0. wooloo uses it
 unmodified. Its source code is available at https://github.com/lukilabs/elk-swift.
 
 Eclipse Public License - v 2.0

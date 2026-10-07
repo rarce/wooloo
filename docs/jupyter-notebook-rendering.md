@@ -2,9 +2,9 @@
 
 ## Scope
 
-xherdr can provide a notebook preview that displays saved code, Markdown, tables, plots, and execution results without starting Python or a Jupyter server. The recommended first implementation is a static `.ipynb` viewer inside the existing document tabs, with a JSON Source mode. Editing individual cells, running kernels, and displaying interactive widgets are separate capabilities with additional requirements.
+wooloo can provide a notebook preview that displays saved code, Markdown, tables, plots, and execution results without starting Python or a Jupyter server. The recommended first implementation is a static `.ipynb` viewer inside the existing document tabs, with a JSON Source mode. Editing individual cells, running kernels, and displaying interactive widgets are separate capabilities with additional requirements.
 
-This research was checked on October 5, 2026 against Jupyter documentation, GitHub's published behavior, Microsoft's public implementations, and xherdr at commit `1d1e840`. Implementation recommendations below are proposals; notebook support has not been added to the app. GitHub's current internal notebook renderer was not inspected, and no browser comparison or rendering benchmark was performed.
+This research was checked on October 5, 2026 against Jupyter documentation, GitHub's published behavior, Microsoft's public implementations, and wooloo at commit `1d1e840`. Implementation recommendations below are proposals; notebook support has not been added to the app. GitHub's current internal notebook renderer was not inspected, and no browser comparison or rendering benchmark was performed.
 
 ## The `.ipynb` document
 
@@ -56,7 +56,7 @@ The output list preserves the order of distinct results. These four output varia
 
 The field definitions are in the [output schema](https://github.com/jupyter/nbformat/blob/4346f97c9d435f41ddfe76d28758b23796fdcf5a/nbformat/v4/nbformat.v4.schema.json). Raster images generally contain base64 data; JSON MIME types contain JSON values rather than requiring another JSON string decode. Markdown attachments are cell-local MIME bundles referenced by `attachment:name`. Since format 4.5, cell IDs are required and unique within the document. See [attachments and cell IDs](https://nbformat.readthedocs.io/en/latest/format_description.html#cell-attachments).
 
-A preview represents the stored document. It cannot establish that outputs match the current code, that dependencies remain available, or that running the cells again would reproduce the results. xherdr should describe the view as saved output and keep original execution counts rather than inventing a current execution state.
+A preview represents the stored document. It cannot establish that outputs match the current code, that dependencies remain available, or that running the cells again would reproduce the results. wooloo should describe the view as saved output and keep original execution counts rather than inventing a current execution state.
 
 ## GitHub's rendering
 
@@ -70,9 +70,9 @@ Consequently, it would be inaccurate to assert that today's GitHub notebook prev
 
 Jupyter's Python `nbconvert` offers an inspectable way to understand static notebook export. Its exporter loads a notebook through `nbformat`, applies preprocessors and filters, and uses Jinja templates to produce a target document. The HTML exporter defaults to the `lab` template; a `classic` template is also available. ANSI text conversion is one example of a filter applied to output. The exporter can return HTML in memory, allowing a host to consume it without writing another notebook. See [nbconvert architecture](https://nbconvert.readthedocs.io/en/latest/architecture.html).
 
-Plain HTML export does not require executing cells. Execution is a separately enabled preprocessing operation. For xherdr, an export experiment should consume saved outputs and never add `--execute`. Exported HTML also needs review before being loaded into a privileged application: the checked [HTML exporter](https://github.com/jupyter/nbconvert/blob/1ff189e1b30f0820238e95427c035a9150a5e43f/nbconvert/exporters/html.py) defaults `sanitize_html` to false, defines external script URLs, and prioritizes some active output formats. A safe offline viewer cannot inherit these defaults unchanged.
+Plain HTML export does not require executing cells. Execution is a separately enabled preprocessing operation. For wooloo, an export experiment should consume saved outputs and never add `--execute`. Exported HTML also needs review before being loaded into a privileged application: the checked [HTML exporter](https://github.com/jupyter/nbconvert/blob/1ff189e1b30f0820238e95427c035a9150a5e43f/nbconvert/exporters/html.py) defaults `sanitize_html` to false, defines external script URLs, and prioritizes some active output formats. A safe offline viewer cannot inherit these defaults unchanged.
 
-nbconvert is a useful reference and optional export tool. Requiring a user's Python installation, Jupyter configuration, templates, and packages for every preview would add environment-dependent behavior to xherdr's document viewer.
+nbconvert is a useful reference and optional export tool. Requiring a user's Python installation, Jupyter configuration, templates, and packages for every preview would add environment-dependent behavior to wooloo's document viewer.
 
 ## VS Code's implementation
 
@@ -88,23 +88,23 @@ This separation allows displaying a notebook independently of executing it. Rend
 
 The checked [built-in `.ipynb` serializer](https://github.com/microsoft/vscode/blob/9216ae78282dabc1dfd01eca5903a31b43125e28/extensions/ipynb/src/notebookSerializer.ts) decodes bytes, parses JSON, resolves the preferred cell language, and converts the result into `NotebookData`. It rejects notebooks declaring a major version below 4. Its companion [deserializer](https://github.com/microsoft/vscode/blob/9216ae78282dabc1dfd01eca5903a31b43125e28/extensions/ipynb/src/deserializers.ts) converts raster base64 into bytes, translates outputs into notebook output items, and retains cell metadata, IDs, and attachments. Its MIME display ordering prefers specialized formats and HTML ahead of plain text. Those priorities are implementation choices, not requirements imposed on every notebook viewer.
 
-Microsoft's [notebook architecture document](https://github.com/microsoft/vscode/wiki/Notebook-documentation) describes a virtualized cell list with two rendering contexts. Code editing uses the workbench's Monaco text models; Markdown and rich outputs render in a separate webview/iframe. Output dimensions return asynchronously so the outer cell list can adjust layout. Focus can move between editors, the list, and rendered content. That architecture supports a full editor, but brings layout, scrolling, and focus coordination that a first static xherdr preview can avoid.
+Microsoft's [notebook architecture document](https://github.com/microsoft/vscode/wiki/Notebook-documentation) describes a virtualized cell list with two rendering contexts. Code editing uses the workbench's Monaco text models; Markdown and rich outputs render in a separate webview/iframe. Output dimensions return asynchronously so the outer cell list can adjust layout. Focus can move between editors, the list, and rendered content. That architecture supports a full editor, but brings layout, scrolling, and focus coordination that a first static wooloo preview can avoid.
 
 The checked [built-in output renderer](https://github.com/microsoft/vscode/blob/9216ae78282dabc1dfd01eca5903a31b43125e28/extensions/notebook-renderers/src/index.ts) handles streams, errors, images, text, HTML, SVG, and JavaScript. It gates HTML/SVG and JavaScript rendering on workspace trust. A separate [Jupyter renderer extension manifest](https://github.com/microsoft/vscode-notebook-renderers/blob/b0597bc49a79c363658b40c5006359470ca8647d/package.json) contributes Plotly, Vega/Vega-Lite, and other MIME handlers. Rendering such outputs in VS Code depends on the appropriate renderer and trust state; opening an arbitrary notebook does not guarantee every representation works.
 
 VS Code's user documentation distinguishes opening notebooks from selecting kernels and executing cells, and describes restricted behavior in untrusted workspaces. See [Jupyter Notebooks in VS Code](https://code.visualstudio.com/docs/datascience/jupyter-notebooks). Its serializer and renderer sources are useful architectural references, but their extension APIs, messaging, and workbench integration prevent treating them as drop-in Swift components.
 
-## Current xherdr integration points
+## Current wooloo integration points
 
 The existing document layer already supplies much of the surrounding behavior:
 
 | Existing code | Notebook implication |
 | --- | --- |
-| [WorkspaceDocumentStore](../xherdr/WorkspaceDocumentStore.swift) | Reuse Space-scoped tabs, preview tabs, document loading, dirty state, and saving. |
-| [WorkspaceDocumentView](../xherdr/WorkspaceDocumentView.swift) | Add notebook presentation alongside the source editor, with explicit JSON highlighting for Source mode. |
-| [WorkspaceFiles](../xherdr/WorkspaceFiles.swift) | Reuse bounded local/SSH reads, path validation, version hashes, and conflict-aware writes. |
-| [MarkdownPreviewView](../xherdr/MarkdownPreviewView.swift) | Reuse theme concepts and Space-relative resource/link resolution, while adapting attachment lookup. |
-| [DocumentFind](../xherdr/DocumentFind.swift) | Keep raw JSON search in Source mode and integrate rendered-content search separately. |
+| [WorkspaceDocumentStore](../wooloo/WorkspaceDocumentStore.swift) | Reuse Space-scoped tabs, preview tabs, document loading, dirty state, and saving. |
+| [WorkspaceDocumentView](../wooloo/WorkspaceDocumentView.swift) | Add notebook presentation alongside the source editor, with explicit JSON highlighting for Source mode. |
+| [WorkspaceFiles](../wooloo/WorkspaceFiles.swift) | Reuse bounded local/SSH reads, path validation, version hashes, and conflict-aware writes. |
+| [MarkdownPreviewView](../wooloo/MarkdownPreviewView.swift) | Reuse theme concepts and Space-relative resource/link resolution, while adapting attachment lookup. |
+| [DocumentFind](../wooloo/DocumentFind.swift) | Keep raw JSON search in Source mode and integrate rendered-content search separately. |
 
 `MarkdownDisplayMode.supports` currently recognizes Markdown extensions only. An `.ipynb` file has no notebook-specific model or preview. Opening it follows the ordinary text document path when it fits the file limit. This is independent of Herdr terminal surfaces and plugins; no new Herdr popup or terminal protocol is needed to preview a workspace file.
 
@@ -114,7 +114,7 @@ The vendored [MarkdownView package](../Vendor/MarkdownView/Package.swift) delibe
 
 ## Rendering options
 
-The following comparison is an engineering assessment for xherdr, informed by the implementations above:
+The following comparison is an engineering assessment for wooloo, informed by the implementations above:
 
 | Approach | Advantages | Main cost or limitation |
 | --- | --- | --- |
@@ -123,7 +123,7 @@ The following comparison is an engineering assessment for xherdr, informed by th
 | nbconvert subprocess followed by a webview | Broad Jupyter export compatibility and familiar templates. | Requires Python dependencies and controlled configuration; generated scripts/resources need sanitization and offline treatment. |
 | Embed JupyterLab notebook/rendermime packages | Reuses mature notebook models and MIME rendering. | Larger JavaScript dependency surface and integration work; a complete JupyterLab application is unnecessary for viewing saved results. |
 
-[JupyterLab rendermime](https://jupyterlab.readthedocs.io/en/stable/api/modules/rendermime.html) is particularly relevant as a renderer-registry reference: it handles MIME bundles with renderers for Markdown, HTML, images, and LaTeX. Evaluating an actual bundle and its dependencies would be required before choosing to embed it. Merely including the package name does not provide xherdr's file, theme, or resource integration.
+[JupyterLab rendermime](https://jupyterlab.readthedocs.io/en/stable/api/modules/rendermime.html) is particularly relevant as a renderer-registry reference: it handles MIME bundles with renderers for Markdown, HTML, images, and LaTeX. Evaluating an actual bundle and its dependencies would be required before choosing to embed it. Merely including the package name does not provide wooloo's file, theme, or resource integration.
 
 ## Recommended first implementation
 
@@ -164,19 +164,19 @@ Define an explicit renderer registry and preference order. Choose one usable rep
 | Raw cells | Clearly labeled source text; do not inject arbitrary exporter material into the page. |
 | JavaScript, widgets, and unknown vendor MIME types | Use a saved supported alternative, otherwise show the unsupported type and allow inspecting its data. |
 
-A reasonable starting preference is sanitized HTML, supported raster images, sanitized SVG, Markdown, LaTeX, JSON, then plain text. This is an xherdr policy to validate against real notebooks, not a claim about GitHub's exact order. For example, a dataframe with HTML and plain-text alternatives should show one table; a Plotly output with a saved PNG alternative should show that PNG without loading Plotly.
+A reasonable starting preference is sanitized HTML, supported raster images, sanitized SVG, Markdown, LaTeX, JSON, then plain text. This is an wooloo policy to validate against real notebooks, not a claim about GitHub's exact order. For example, a dataframe with HTML and plain-text alternatives should show one table; a Plotly output with a saved PNG alternative should show that PNG without loading Plotly.
 
 ### Web assets and resource handling
 
 Candidate bundled components are [markdown-it](https://github.com/markdown-it/markdown-it) for Markdown, [highlight.js](https://github.com/highlightjs/highlight.js) for code, [DOMPurify](https://github.com/cure53/DOMPurify) for HTML/SVG sanitization, and [KaTeX](https://katex.org/docs/options.html) for math. Pin selected releases and retain their licenses and font notices. Check Jupyter math delimiters and macro compatibility in fixtures; a KaTeX implementation should keep `trust` disabled and fall back visibly when syntax is unsupported. These are proposed dependencies, not an inspected GitHub technology stack.
 
-Generate the surrounding HTML and CSS from an app-owned template using xherdr theme and typography tokens. Keep notebook strings out of executable script interpolation; send structured data through a safe argument/serialization path. Run only bundled application scripts. Notebook-authored scripts, event handlers, active URLs, embedded frames, and styles capable of escaping the output presentation should be removed or rejected. CSP, navigation policy, and sanitization must agree; a sanitizer alone does not define a complete resource policy.
+Generate the surrounding HTML and CSS from an app-owned template using wooloo theme and typography tokens. Keep notebook strings out of executable script interpolation; send structured data through a safe argument/serialization path. Run only bundled application scripts. Notebook-authored scripts, event handlers, active URLs, embedded frames, and styles capable of escaping the output presentation should be removed or rejected. CSP, navigation policy, and sanitization must agree; a sanitizer alone does not define a complete resource policy.
 
 Use an [ephemeral WebKit data store](https://developer.apple.com/documentation/webkit/wkwebsitedatastore/nonpersistent()) and a restricted [custom URL scheme handler](https://developer.apple.com/documentation/webkit/wkurlschemehandler) for bundled assets and approved images. Resolve workspace references through `WorkspaceFiles`, including its local/SSH path checks. Attachment names must resolve within their originating cell. Expose registered resource IDs rather than an unrestricted filesystem path endpoint. Do not grant the preview access to the entire Space with a broad `file:` base URL.
 
 The initial viewer should work offline: no CDN imports or automatic HTTP image/resource requests. Show unavailable external resources explicitly. Route user-activated web links to the system browser and valid workspace file links to native document tabs. Restrict any JavaScript-to-Swift messages to narrowly typed preview actions; they must not become a process execution or arbitrary file-read API. Dispose handlers, resource registrations, and outstanding loads when closing or replacing a document.
 
-Jupyter's [trust model](https://jupyter-server.readthedocs.io/en/latest/operators/security.html) checks signatures against a user-owned database before trusting stored active output. A notebook's own metadata is therefore not evidence that xherdr should execute its scripts. The first static viewer needs no trust toggle: sanitize the supported representations and consistently decline notebook-authored JavaScript.
+Jupyter's [trust model](https://jupyter-server.readthedocs.io/en/latest/operators/security.html) checks signatures against a user-owned database before trusting stored active output. A notebook's own metadata is therefore not evidence that wooloo should execute its scripts. The first static viewer needs no trust toggle: sanitize the supported representations and consistently decline notebook-authored JavaScript.
 
 ### Limits, performance, and search
 
@@ -212,7 +212,7 @@ Validate unchanged-file round trips at the byte level: opening and previewing mu
 
 The public documentation was read and these source snapshots were downloaded and inspected: VS Code `9216ae78282dabc1dfd01eca5903a31b43125e28`, VS Code notebook renderers `b0597bc49a79c363658b40c5006359470ca8647d`, nbformat `4346f97c9d435f41ddfe76d28758b23796fdcf5a`, and nbconvert `1ff189e1b30f0820238e95427c035a9150a5e43f`. Links above pin implementation claims to those commits where applicable.
 
-The initial research confirmed xherdr's document flow, one-megabyte read/write limits, existing Markdown/WebKit components, and omitted math dependency. That research stage did not change the app or run a reference exporter because Python validators were unavailable in its interpreter. The subsequent implementation and its validation are recorded below.
+The initial research confirmed wooloo's document flow, one-megabyte read/write limits, existing Markdown/WebKit components, and omitted math dependency. That research stage did not change the app or run a reference exporter because Python validators were unavailable in its interpreter. The subsequent implementation and its validation are recorded below.
 
 ## Implemented static preview
 
@@ -239,13 +239,13 @@ The script schema-validates format 4.5 and legacy 4.4 notebooks using nbformat. 
 To include the generated fixtures in native renderer tests:
 
 ```sh
-TEST_RUNNER_XHERDR_NOTEBOOK_FIXTURES="$PWD/build/notebook-fixtures" \
-  xcodebuild -project xherdr.xcodeproj -scheme xherdr -configuration Debug \
+TEST_RUNNER_WOOLOO_NOTEBOOK_FIXTURES="$PWD/build/notebook-fixtures" \
+  xcodebuild -project wooloo.xcodeproj -scheme wooloo -configuration Debug \
   -destination 'platform=macOS' test
 ```
 
 The parser and actual WebKit tests cover normalized multiline fields, MIME alternatives, JSON scalars, cell-local attachments, legacy IDs, truncation, invalid raster fallback, Markdown math delimiters, HTML/SVG sanitization, scoped resources, rendered-text Find, and conflict-aware saves. Generated-fixture checks additionally validate pandas tables, matplotlib PNG/SVG output, widget text fallback, untrusted active content, and a notebook larger than the old one-megabyte limit. These optional fixture checks are skipped when the environment variable is absent.
 
-Manual checks against the isolated `xherdr-ui-test` session verified Preview/Source/Split, finding a value inside a dataframe, opening a relative file link in the Space, recovering malformed JSON, previewing unsaved edits, and explicit saving. Comparing files on disk confirmed that previewing does not rewrite notebook bytes and that saving preserves custom metadata. No live SSH notebook UI check was performed; remote files use the existing SSH read/save/resource paths.
+Manual checks against the isolated `wooloo-ui-test` session verified Preview/Source/Split, finding a value inside a dataframe, opening a relative file link in the Space, recovering malformed JSON, previewing unsaved edits, and explicit saving. Comparing files on disk confirmed that previewing does not rewrite notebook bytes and that saving preserves custom metadata. No live SSH notebook UI check was performed; remote files use the existing SSH read/save/resource paths.
 
 The signed Debug build and complete macOS test suite passed with the generated-fixture checks enabled: 582 tests, 3 skipped, 0 failures. Browser assets add approximately 900 KiB before bundle/signing overhead.

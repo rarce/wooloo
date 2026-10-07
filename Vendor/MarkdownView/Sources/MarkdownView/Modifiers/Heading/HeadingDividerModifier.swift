@@ -2,12 +2,12 @@
 //  HeadingDividerModifier.swift
 //  MarkdownView
 //
-//  xherdr patch: draws a rule under headings, as GitHub does for h1 and h2.
+//  wooloo patch: draws a rule under headings, as GitHub does for h1 and h2.
 //
 
 import SwiftUI
 
-/// A rule under headings of the given levels (xherdr patch).
+/// A rule under headings of the given levels (wooloo patch).
 public struct MarkdownHeadingDivider: Hashable, Sendable {
     public var levels: Set<Int>
     public var color: Color
@@ -33,7 +33,7 @@ extension EnvironmentValues {
 }
 
 extension View {
-    /// Draws a one-point rule under headings of the given levels; nil draws none (xherdr patch).
+    /// Draws a one-point rule under headings of the given levels; nil draws none (wooloo patch).
     nonisolated public func markdownHeadingDivider(_ divider: MarkdownHeadingDivider?) -> some View {
         environment(\.markdownHeadingDivider, divider)
     }

@@ -2,13 +2,13 @@
 //  SearchHighlightModifier.swift
 //  MarkdownView
 //
-//  xherdr patch: highlights find matches in rendered text and anchors top-level blocks.
+//  wooloo patch: highlights find matches in rendered text and anchors top-level blocks.
 //
 
 import SwiftUI
 import Markdown
 
-/// Find matches to highlight in rendered text (xherdr patch).
+/// Find matches to highlight in rendered text (wooloo patch).
 public struct MarkdownSearchHighlight: Hashable, Sendable {
     public struct Match: Hashable, Sendable {
         /// UTF-16 range within the node's plain text.
@@ -59,7 +59,7 @@ public struct MarkdownSearchHighlight: Hashable, Sendable {
     }
 }
 
-/// Identifies a top-level block of the document for `ScrollViewReader` (xherdr patch).
+/// Identifies a top-level block of the document for `ScrollViewReader` (wooloo patch).
 public struct MarkdownBlockAnchor: Hashable, Sendable {
     public let index: Int
 
@@ -69,7 +69,7 @@ public struct MarkdownBlockAnchor: Hashable, Sendable {
 }
 
 extension View {
-    /// Highlights find matches in the rendered document (xherdr patch).
+    /// Highlights find matches in the rendered document (wooloo patch).
     nonisolated public func markdownSearchHighlight(_ highlight: MarkdownSearchHighlight?) -> some View {
         transformEnvironment(\.markdownRendererConfiguration) { configuration in
             configuration.searchHighlight = highlight

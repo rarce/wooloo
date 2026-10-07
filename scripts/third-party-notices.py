@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes THIRD_PARTY_NOTICES.txt from the licenses of every package xherdr ships.
+"""Writes THIRD_PARTY_NOTICES.txt from the licenses of every package wooloo ships.
 
     scripts/third-party-notices.py [checkouts]
 
@@ -52,7 +52,7 @@ RESOLVED = [
 HERDR_NOTICES = "Vendor/Herdr/NOTICES.txt"
 
 EPL_SOURCE = (
-    "elk-swift is distributed under the Eclipse Public License 2.0. xherdr uses it\n"
+    "elk-swift is distributed under the Eclipse Public License 2.0. wooloo uses it\n"
     "unmodified. Its source code is available at https://github.com/lukilabs/elk-swift.\n"
 )
 
@@ -94,10 +94,10 @@ def grammar_repos(checkouts):
 def main():
     checkouts = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "build/DerivedData/SourcePackages/checkouts")
     if not (checkouts / "CodeEditLanguages").is_dir():
-        sys.exit(f"No resolved packages in {checkouts}; build xherdr first or pass the checkouts directory.")
+        sys.exit(f"No resolved packages in {checkouts}; build wooloo first or pass the checkouts directory.")
 
-    out = ["xherdr includes the following third-party software.\n",
-           "xherdr itself is licensed under the MIT License; see LICENSE.\n"]
+    out = ["wooloo includes the following third-party software.\n",
+           "wooloo itself is licensed under the MIT License; see LICENSE.\n"]
     for name, url, path in VENDORED:
         out += [rule(f"{name}\n{url}"), (ROOT / path).read_text().strip() + "\n"]
         if path.startswith("Vendor/Herdr/"):

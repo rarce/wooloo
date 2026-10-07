@@ -61,7 +61,7 @@ struct MarkdownList<List: ListItemContainer>: View {
     
     private struct MarkdownCheckbox: View {
         var checkbox: Checkbox
-        /// xherdr patch: the item's source line, so a click can toggle it in the source.
+        /// wooloo patch: the item's source line, so a click can toggle it in the source.
         var line: Int?
         @Environment(\.markdownSourceActions.toggleTask) private var toggleTask
 

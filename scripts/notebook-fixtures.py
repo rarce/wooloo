@@ -33,7 +33,7 @@ def main():
     frame = pd.DataFrame({"Space": ["Research", "Analysis"], "Agents": [3, 2]})
     notebook = nbf.v4.new_notebook(metadata={
         "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
-        "language_info": {"name": "python"}, "xherdr_fixture": {"preserve": [1, True, None]},
+        "language_info": {"name": "python"}, "wooloo_fixture": {"preserve": [1, True, None]},
     })
     notebook.cells = [
         nbf.v4.new_markdown_cell("# Notebook preview\n\nSaved results; **no kernel needed**.\n\nInline math $E=mc^2$.\n\n$$\\int_0^1 x^2\\,dx=\\frac13$$\n\n| Item | Value |\n| --- | --- |\n| Format | ipynb |\n\n[Local source](sample.py) · [Jupyter](https://jupyter.org)\n\n![Attached plot](attachment:plot.png)", attachments={"plot.png": {"image/png": encoded}}),
@@ -44,7 +44,7 @@ def main():
         nbf.v4.new_code_cell("display(JSON({'ok': True}))", outputs=[nbf.v4.new_output("display_data", data={"application/json": {"ok": True, "count": 4}, "text/plain": "{'ok': True, 'count': 4}"})]),
         nbf.v4.new_raw_cell("Raw exporter content <script>must remain text</script>"),
         nbf.v4.new_code_cell("widget", outputs=[nbf.v4.new_output("display_data", data={"application/vnd.jupyter.widget-view+json": {"version_major": 2, "version_minor": 0, "model_id": "missing-model"}, "text/plain": "Widget (saved text fallback)"})]),
-        nbf.v4.new_code_cell("unsupported", outputs=[nbf.v4.new_output("display_data", data={"application/vnd.xherdr.unsupported+json": {"inspect": "Saved data"}})]),
+        nbf.v4.new_code_cell("unsupported", outputs=[nbf.v4.new_output("display_data", data={"application/vnd.wooloo.unsupported+json": {"inspect": "Saved data"}})]),
         nbf.v4.new_markdown_cell("## Cell-local attachment\n\n![Different plot](attachment:plot.png)", attachments={"plot.png": {"image/svg+xml": '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="teal"/></svg>'}}),
     ]
     nbf.validate(notebook)
