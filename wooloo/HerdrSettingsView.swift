@@ -393,7 +393,7 @@ struct HerdrSettingsView: View {
 
     @ViewBuilder
     private var remoteAccessFields: some View {
-        description("herdroid and other SSH clients reach this Mac through a Cloudflare Tunnel to its SSH server, then run Herdr's own commands. No port opens on your network, and clients still sign in with SSH.")
+        description("SSH clients reach this Mac through a Cloudflare Tunnel to its SSH server, then run Herdr's own commands. No port opens on your network, and clients still sign in with SSH.")
         if remoteAccess.cloudflaredPath == nil {
             warning("cloudflared is not installed. Install it with `brew install cloudflared`, then come back here.")
         }

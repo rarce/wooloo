@@ -44,7 +44,7 @@ enum RemoteAccessTunnelLog {
 
 /// The addresses another device uses to reach this Mac's Herdr through the tunnel.
 enum RemoteAccessLink {
-    /// Opens herdroid's host editor prefilled; the Android camera opens it from the QR code.
+    /// Opens the Android app's host editor prefilled; the Android camera opens it from the QR code.
     static func herdroid(hostname: String, user: String, session: String, label: String,
                          herdrPath: String?, fingerprints: [String]) -> URL? {
         var components = URLComponents()
@@ -182,7 +182,7 @@ enum RemoteAccessSystem {
     }
 }
 
-/// Runs `cloudflared` to publish this Mac's SSH, which remote clients such as herdroid use to
+/// Runs `cloudflared` to publish this Mac's SSH, which remote SSH clients use to
 /// run Herdr's own commands. The tunnel belongs to wooloo: it stops when wooloo quits.
 @MainActor
 final class RemoteAccessModel: ObservableObject {

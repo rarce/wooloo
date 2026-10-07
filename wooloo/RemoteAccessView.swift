@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The running tunnel's address, as a QR code for herdroid and as text for other clients.
+/// The running tunnel's address, as a QR code for the Android app and as text for other clients.
 struct RemoteAccessConnectionView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
@@ -25,10 +25,10 @@ struct RemoteAccessConnectionView: View {
                     .frame(width: 168, height: 168)
                     .padding(8)
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("QR code for herdroid")
+                    .accessibilityLabel("QR code for the Android app")
             }
             VStack(alignment: .leading, spacing: 12) {
-                Text("Scan with the phone's camera to add this Mac to herdroid, then choose its SSH key.")
+                Text("Scan with the phone's camera to add this Mac to the Android app, then choose its SSH key.")
                     .font(.system(size: typography.secondary))
                     .foregroundStyle(theme.subtext)
                     .fixedSize(horizontal: false, vertical: true)
@@ -36,7 +36,7 @@ struct RemoteAccessConnectionView: View {
                 copyRow("SSH user · Herdr session", "\(user) · \(sessionName)", copies: user)
                 copyRow("From another computer", RemoteAccessLink.sshCommand(hostname: hostname, user: user))
                 if let link {
-                    Button("Copy herdroid Link", systemImage: "link") { AppActions.copy(link.absoluteString) }
+                    Button("Copy App Link", systemImage: "link") { AppActions.copy(link.absoluteString) }
                 }
             }
         }

@@ -142,7 +142,7 @@ final class RemoteAccessTests: XCTestCase {
         defer { model.stop() }
         try await waitFor({ if case .running = model.state { true } else { false } }, timeout: 120)
         guard case .running(let hostname) = model.state else { return XCTFail("\(model.state)") }
-        // A client speaks SSH inside binary WebSocket messages, as `cloudflared access ssh` and herdroid do.
+        // A client speaks SSH inside binary WebSocket messages, as `cloudflared access ssh` and the Android app do.
         var banner = ""
         for _ in 0..<5 where banner.isEmpty {
             let socket = URLSession.shared.webSocketTask(with: URL(string: "wss://\(hostname)/")!)

@@ -63,12 +63,12 @@ When the explorer points at an SSH machine, the files are read there and the req
 
 ## Remote access
 
-Settings → Remote Access (also in the command palette) publishes this Mac's SSH server through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), so [herdroid](https://github.com/rarce/herdroid) or any SSH client can reach the Herdr session from anywhere without opening a port. Clients still sign in with SSH, then run Herdr's own commands (`remote-api-bridge`, `terminal session control`).
+Settings → Remote Access (also in the command palette) publishes this Mac's SSH server through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), so an SSH client, on a computer or a phone, can reach the Herdr session from anywhere without opening a port. Clients still sign in with SSH, then run Herdr's own commands (`remote-api-bridge`, `terminal session control`).
 
 - Needs `cloudflared` (`brew install cloudflared`) and Remote Login (System Settings → General → Sharing).
 - **Quick tunnel**: no Cloudflare account; a new `*.trycloudflare.com` address on every start. Anyone who learns it reaches your SSH login, so use key authentication.
-- **Named tunnel**: create a tunnel in Cloudflare Zero Trust with a public hostname whose service is `ssh://localhost:22`, then paste its hostname and token (kept in the Keychain, passed to `cloudflared` through its environment). It can sit behind Cloudflare Access; herdroid sends a service token.
-- While the tunnel runs, a QR code opens herdroid with the machine prefilled: hostname, user, session, Herdr's path and this Mac's host key fingerprints, so the phone trusts the right server. Other computers use `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" user@host`.
+- **Named tunnel**: create a tunnel in Cloudflare Zero Trust with a public hostname whose service is `ssh://localhost:22`, then paste its hostname and token (kept in the Keychain, passed to `cloudflared` through its environment). It can sit behind Cloudflare Access, with a service token for clients.
+- While the tunnel runs, a QR code adds the machine to the companion Android app, prefilled: hostname, user, session, Herdr's path and this Mac's host key fingerprints, so the phone trusts the right server. Other computers use `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" user@host`.
 - The tunnel is wooloo's own `cloudflared` process: it stops when wooloo quits, and can start when wooloo opens.
 
 `WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` (as `TEST_RUNNER_WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` for `xcodebuild test`) runs `RemoteAccessTests/testRealQuickTunnelReachesThisMacsSSH` against a real quick tunnel.
