@@ -265,27 +265,43 @@ struct PanelLayoutView<Panel: View>: View {
     }
 }
 
-/// A split's divider, with a wider handle that drags it and double-clicks back to half.
+/// A split's divider, with a wider handle that drags it and double-clicks back to half. While
+/// dragging, a line in the accent shows where the divider goes; the panels resize once, on
+/// release, since reflowing a long Markdown preview or the terminals on every step is slow.
 private struct PanelDividerView: View {
+    @Environment(\.xherdrTheme) private var theme
     let divider: PanelDivider
     let ratio: Double
     let setRatio: ([Bool], Double) -> Void
-    @State private var startRatio: Double?
+    /// The ratio the divider would have if released now.
+    @State private var pendingRatio: Double?
 
     var body: some View {
         let horizontal = divider.axis == .horizontal
         let length = horizontal ? divider.container.width : divider.container.height
+        // How far the pending divider is from the current one.
+        let offset = pendingRatio.map { (CGFloat($0 - ratio) * (length - PanelLayout.dividerWidth)).rounded() }
         Rectangle()
             .fill(Color(nsColor: .separatorColor))
             .frame(width: divider.frame.width, height: divider.frame.height)
             .overlay {
+                if let offset {
+                    Rectangle()
+                        .fill(theme.accent)
+                        .frame(width: horizontal ? 2 : divider.frame.width, height: horizontal ? divider.frame.height : 2)
+                        .offset(x: horizontal ? offset : 0, y: horizontal ? 0 : offset)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay {
                 ResizeHandleArea(vertical: !horizontal, tooltip: "Drag to resize · double-click to split evenly",
                                  onDrag: { translation in
-                                     let start = startRatio ?? ratio
-                                     startRatio = start
-                                     setRatio(divider.path, PanelDrop.ratio(start, dragged: translation, in: length))
+                                     pendingRatio = PanelDrop.ratio(ratio, dragged: translation, in: length)
                                  },
-                                 onDragEnd: { startRatio = nil },
+                                 onDragEnd: {
+                                     if let pendingRatio, pendingRatio != ratio { setRatio(divider.path, pendingRatio) }
+                                     pendingRatio = nil
+                                 },
                                  onReset: { setRatio(divider.path, 0.5) })
                     .frame(width: horizontal ? 7 : divider.frame.width, height: horizontal ? divider.frame.height : 7)
             }
