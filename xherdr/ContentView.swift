@@ -311,21 +311,6 @@ struct ContentView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 7) {
-                Image(systemName: "square.stack.3d.up")
-                    .foregroundStyle(theme.accent)
-                Text("herdr")
-                    .font(.system(size: typography.emphasis, weight: .semibold, design: .monospaced))
-                Spacer()
-                Circle()
-                    .fill(herdr.isConnected ? theme.success : theme.warning)
-                    .frame(width: 6, height: 6)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: typography.metric(35))
-            .contentShape(Rectangle())
-            .contextMenu { globalActions }
-
             ScrollView {
                 VStack(alignment: .leading, spacing: 13) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -626,46 +611,61 @@ struct ContentView: View {
 
     private var mainArea: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Button {
-                    window.showsSidebar.toggle()
-                } label: {
-                    Image(systemName: "sidebar.left")
-                }
-                .buttonStyle(.borderless)
-                .help(window.showsSidebar ? "Hide sidebar" : "Show sidebar")
-                Text(selectedWorkspace?.label ?? "Herdr")
-                    .font(.system(size: typography.emphasis, weight: .semibold))
-                    .lineLimit(1)
-                if shortcutPrefixActive {
-                    Text("PREFIX")
-                        .font(.system(size: typography.caption, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(theme.accent)
-                }
-                Spacer()
-                if !herdr.isConnected {
-                    Text("Disconnected")
-                        .font(.system(size: typography.secondary, design: .monospaced))
-                        .foregroundStyle(theme.warning)
-                }
-                Button { window.showsFilesSidebar.toggle() } label: {
-                    Image(systemName: "sidebar.right")
-                }
-                .buttonStyle(.borderless)
-                .help(window.showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes")
-            }
-            .padding(.horizontal, 11)
-            .frame(height: typography.metric(35))
-            .background(barBackground)
-            .contextMenu {
-                if let selectedWorkspace {
-                    spaceActions(selectedWorkspace)
-                    Divider()
-                }
-                globalActions
-            }
+            mainContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
+            statusBar
+        }
+    }
 
+    /// Under the panes, level with the sidebar's session bar: the sidebar toggles, the selected
+    /// Space and the prefix and connection state.
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            Button { window.showsSidebar.toggle() } label: {
+                Image(systemName: "sidebar.left")
+                    .frame(width: 22, height: typography.metric(29))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(window.showsSidebar ? "Hide sidebar" : "Show sidebar")
+            Text(selectedWorkspace?.label ?? "Herdr")
+                .lineLimit(1)
+            if shortcutPrefixActive {
+                Text("PREFIX")
+                    .font(.system(size: typography.caption, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(theme.accent)
+            }
+            Spacer()
+            if !herdr.isConnected {
+                Text("Disconnected")
+                    .foregroundStyle(theme.warning)
+            }
+            Button { window.showsFilesSidebar.toggle() } label: {
+                Image(systemName: "sidebar.right")
+                    .frame(width: 22, height: typography.metric(29))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(window.showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes")
+        }
+        .font(.system(size: typography.secondary, design: .monospaced))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .frame(height: typography.metric(29))
+        .background(sidebarBackground)
+        .contentShape(Rectangle())
+        .contextMenu {
+            if let selectedWorkspace {
+                spaceActions(selectedWorkspace)
+                Divider()
+            }
+            globalActions
+        }
+    }
+
+    private var mainContent: some View {
+        VStack(spacing: 0) {
             if herdr.isConnected || !documents.isEmpty {
                 tabBar
                     .frame(height: typography.metric(31))
@@ -736,7 +736,6 @@ struct ContentView: View {
                 connectionState
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Terminal tabs, the Search tab and document tabs, then the new tab buttons. Double-clicking
