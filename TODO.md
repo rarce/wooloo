@@ -10,7 +10,7 @@
 - [x] Describe the current features in the README, with a screenshot, and set the GitHub description and topics.
 - [ ] Decide whether to rewrite history to hide the personal commit email. Every commit so far is authored with a personal Gmail address, and only a history rewrite removes it. Future commits can use the GitHub noreply address.
 - [x] Rename the project from xherdr to wooloo, so its name no longer derives from Herdr's. Existing installs are not migrated: settings, document backups, the Keychain tunnel token and the app-managed Herdr session start fresh.
-- [ ] Register `wooloo.dev`, which the bundle identifier `dev.wooloo.app` implies, and rename the GitHub repository to `rarce/wooloo`.
+- [x] Register `wooloo.dev`, which the bundle identifier `dev.wooloo.app` implies, and rename the GitHub repository to `rarce/wooloo`.
 - [ ] Before shipping binaries, turn on the hardened runtime (`ENABLE_HARDENED_RUNTIME`), sign with a Developer ID and notarize. Check that the test bundle still loads, since library validation may reject an ad hoc signed bundle.
 
 ## Terminal performance
