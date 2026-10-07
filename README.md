@@ -1,5 +1,7 @@
 # wooloo
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **A native macOS home for your coding agents.**
 
 ![wooloo with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right](docs/images/main-window.png)
@@ -7,6 +9,8 @@
 wooloo is a Mac app for [Herdr](https://herdr.dev/), the server that runs and organizes coding agent sessions. It is for developers who work with several agents at once, use a mouse alongside the keyboard, and want some of the convenience of an IDE without leaving an environment built around their agents.
 
 Herdr keeps owning the processes, layout and terminal state, so the same sessions stay available from the Herdr TUI. wooloo renders them natively and sends your input back.
+
+wooloo is an independent project, not affiliated with or endorsed by Herdr, Anthropic or OpenAI.
 
 > **Status:** early development. Expect rough edges and breaking changes. See [`TODO.md`](TODO.md) for known issues and planned work.
 
@@ -20,7 +24,7 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 - The connected host's CPU, memory, disk and uptime, local or over SSH.
 - Optional Claude Code and Codex plan usage in the sidebar (see [Agent quotas](#agent-quotas)).
 - A session picker for any Herdr session on the machine.
-- Remote access from your phone (see [Remote access](#remote-access)).
+- Remote access to the Herdr session over SSH, through a Cloudflare Tunnel (see [Remote access](#remote-access)).
 
 ### Terminal
 
@@ -31,11 +35,11 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 
 ### Files and editor
 
-- An explorer for the selected Space, local or on an SSH machine saved in Herdr. It works like Zed's project panel: compact folder chains, Git status colors, ignored files, keyboard navigation, multi-selection, drag and drop, in-place create and rename, trash, and undo and redo of file operations. Repositories with up to 200,000 files are supported.
+- An explorer for the selected Space, local or on an SSH machine saved in Herdr. It works like Zed's project panel: compact folder chains, Git status colors, ignored files, keyboard navigation, multi-selection, drag and drop, in-place create and rename, trash, and undo and redo of file operations. Folders with more than 200,000 files are listed only up to that count, and Go to File says so.
 - Go to File (⌘P) with fuzzy matching and `:line:column`, and a command palette (⇧⌘P) for app, editor and explorer actions.
 - Editor tabs built on [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor): syntax highlighting, find and replace, Git change bars beside line numbers, conflict-checked atomic saves, and Zed-style multiple cursors (⌥-click, ⌘D, ⇧⌘L, ⌥⌘↑/↓).
 - Reopen a Space with its document tabs, order, active editor, selections and scroll position. Unsaved edits and untitled drafts are backed up locally under `~/Library/Application Support/wooloo`, including SSH documents, and restored without saving them into the project. Backups are written after a short pause while editing and completed before quitting; closing a dirty tab still asks before discarding its contents.
-- Markdown preview with Mermaid diagrams.
+- Markdown preview with Mermaid diagrams, and Jupyter notebooks rendered with their saved output.
 - Native image previews for PNG, JPEG, GIF, WebP, HEIC/HEIF, AVIF, TIFF, BMP, and ICO in local and SSH Spaces, using macOS decoders. Includes zoom, fit, actual size, pixel dimensions, transparency checkerboard, and reload; each tab keeps its zoom and position. Previews are read-only, limited to 50 MiB, and decode at most 4096 pixels per side. Multi-frame images show their first frame.
 - Native PDF previews for local and SSH files up to 50 MiB, with page navigation, zoom, page/width fitting, text search (⌘F and ⌘G), password unlocking, and reload. Each tab keeps its page and zoom. PDF previews and form fields are read-only; search uses existing PDF text rather than OCR.
 - Project-wide search and replace.
@@ -53,34 +57,45 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 
 ## Agent quotas
 
+> **Unofficial.** This section uses Claude Code's and Codex's own sign-ins against endpoints that Anthropic and OpenAI do not document for third-party apps. It is not endorsed by either company, may conflict with their terms, and can stop working at any time. Use it at your own risk.
+
 The QUOTAS section is off until you turn it on. Once on, every two minutes while a window is active, wooloo:
 
 - reads Claude Code's sign-in from `~/.claude/.credentials.json`, or else from the Keychain item `Claude Code-credentials` (macOS asks you to allow wooloo the first time);
 - reads Codex's sign-in from `${CODEX_HOME:-~/.codex}/auth.json` and the rate limits in its newest session logs;
 - sends those tokens to the usage endpoints that Claude Code (`api.anthropic.com/api/oauth/usage`) and the Codex CLI (`chatgpt.com/backend-api/wham/usage`) use themselves.
 
-When the explorer points at an SSH machine, the files are read there and the requests leave from your Mac. wooloo keeps the tokens in memory only and never refreshes them. Neither endpoint is documented, so the section can break when either service changes. Turn it off from the section's context menu.
+When the explorer points at an SSH machine, wooloo reads that machine's sign-ins (its files, or its Keychain through `security`) instead of this Mac's, and the requests still leave from your Mac. wooloo keeps the tokens in memory only, never refreshes them, and never writes or logs them. Turn the section off from its context menu.
 
 ## Remote access
 
-Settings → Remote Access (also in the command palette) publishes this Mac's SSH server through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), so an SSH client, on a computer or a phone, can reach the Herdr session from anywhere without opening a port. Clients still sign in with SSH, then run Herdr's own commands (`remote-api-bridge`, `terminal session control`).
+> **This puts your Mac's SSH login on the internet.** Before turning it on, allow only key authentication: add a file such as `/etc/ssh/sshd_config.d/100-keys-only.conf` with `PasswordAuthentication no` and `KbdInteractiveAuthentication no`, then turn Remote Login off and on again.
+
+Settings → Remote Access (also in the command palette) publishes this Mac's SSH server through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), so an SSH client elsewhere can reach the Herdr session without opening a port. Clients still sign in with SSH, then run Herdr's own commands (`remote-api-bridge`, `terminal session control`).
 
 - Needs `cloudflared` (`brew install cloudflared`) and Remote Login (System Settings → General → Sharing).
-- **Quick tunnel**: no Cloudflare account; a new `*.trycloudflare.com` address on every start. Anyone who learns it reaches your SSH login, so use key authentication.
+- **Quick tunnel**: no Cloudflare account; a new `*.trycloudflare.com` address on every start. Anyone who learns it reaches your SSH login.
 - **Named tunnel**: create a tunnel in Cloudflare Zero Trust with a public hostname whose service is `ssh://localhost:22`, then paste its hostname and token (kept in the Keychain, passed to `cloudflared` through its environment). It can sit behind Cloudflare Access, with a service token for clients.
-- While the tunnel runs, a QR code adds the machine to the companion Android app, prefilled: hostname, user, session, Herdr's path and this Mac's host key fingerprints, so the phone trusts the right server. Other computers use `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" user@host`.
+- Other computers connect with `cloudflared` installed: `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" user@host`.
+- While the tunnel runs, wooloo also shows a QR code for a companion Android app that is not published yet.
 - The tunnel is wooloo's own `cloudflared` process: it stops when wooloo quits, and can start when wooloo opens.
 
-`WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` (as `TEST_RUNNER_WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` for `xcodebuild test`) runs `RemoteAccessTests/testRealQuickTunnelReachesThisMacsSSH` against a real quick tunnel.
+## Privacy
+
+wooloo has no analytics or telemetry. It talks to the Herdr server on this Mac, to SSH machines you saved in Herdr, and over the network only to:
+
+- GitHub, at build time, to download the pinned Herdr binaries and Swift packages;
+- your Git remotes, when you fetch, pull or push;
+- web images that a Markdown file you preview links to;
+- Anthropic's and OpenAI's usage endpoints, when you turn on QUOTAS;
+- Cloudflare, when you turn on Remote Access.
 
 ## Requirements
 
-- macOS 14 or later
-- Xcode 26 (one vendored package needs Swift 6.2)
-- Herdr 0.9.3 is included in the app; an existing compatible Herdr installation can also be used.
-- Git and coding agent CLIs are optional, installed separately for their respective features.
+- **To run:** macOS 14 or later. Herdr 0.9.3 is included in the app; an existing compatible Herdr installation can also be used. Git and coding agent CLIs are optional, installed separately for their respective features.
+- **To build:** macOS 15.6 or later with Xcode 26 (one vendored package needs Swift 6.2).
 
-There is no prebuilt release yet; build from source.
+There is no prebuilt release yet, so for now you build from source, which needs the build requirements.
 
 ## Build and run
 
@@ -96,27 +111,38 @@ The first build downloads the pinned Intel and Apple Silicon Herdr binaries and 
 
 On a fresh install, a setup wizard lets you choose a folder and creates the first Space in an app-managed `wooloo` session. It installs the included Herdr under `~/Library/Application Support/wooloo/runtime/herdr/0.9.3`, so no download, Homebrew, developer tools, or administrator password is needed at runtime. A user launchd job starts the server when wooloo opens and keeps it running when the app quits. It is not registered to start at login. Herdr's normal `config.toml` and named-session storage are used; existing configuration is preserved.
 
-You can instead choose an existing Herdr executable and connect to a running session. Existing wooloo users keep their remembered session. **Set Up Herdr…** in the sidebar session picker opens the wizard again. Runtime updates ship with wooloo; a compatible server already running is reused, and setup never stops its panes.
+You can instead choose an existing Herdr executable and connect to a running session. **Set Up Herdr…** in the sidebar session picker opens the wizard again. Runtime updates ship with wooloo; a compatible server already running is reused, and setup never stops its panes.
 
-To try the app without touching your main session, start a separate one and pick it in the sidebar's session picker:
+To try the app without touching your main Herdr session, or to run the tests, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Uninstall
+
+The Herdr server that wooloo starts keeps running after you quit wooloo, so your terminals survive. To remove everything:
 
 ```sh
-herdr --session wooloo-ui-test server
-herdr --session wooloo-ui-test workspace create --cwd "$PWD" --label wooloo-test
-herdr --session wooloo-ui-test server stop   # when finished
+# Stop the server (this ends its terminals) and unload its launchd job.
+for plist in ~/Library/Application\ Support/wooloo/runtime/services/*.plist; do
+  launchctl bootout "gui/$(id -u)" "$plist"
+done
+# Remove the runtime, document backups and settings, then delete the app itself.
+rm -rf ~/Library/Application\ Support/wooloo
+defaults delete dev.wooloo.app
+# Only if you used a named tunnel in Remote Access:
+security delete-generic-password -s dev.wooloo.remote-access
 ```
 
-Replace `build` with `test` to run the unit tests.
+Herdr's own configuration (`~/.config/herdr`) is shared with the Herdr CLI and is left in place; the `wooloo` session's data is under `~/.config/herdr/sessions/wooloo` if you want to remove it too.
 
-To check the bundled runtime and launchd lifecycle with a real server, run `TEST_RUNNER_WOOLOO_RUNTIME_E2E=1 xcodebuild -project wooloo.xcodeproj -scheme wooloo -configuration Debug -destination 'platform=macOS' -only-testing:woolooTests/HerdrRuntimeTests test`. It uses temporary config/state/runtime roots and only the `wooloo-ui-test` session. For an interactive isolated setup, launch a test copy with `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `WOOLOO_RUNTIME_ROOT` pointing under `/private/tmp`, and `WOOLOO_SETUP_SESSION=wooloo-ui-test`.
+## Design notes
 
-## Documentation
+Research and plans written while building wooloo. They describe how parts work or could work, not features to rely on.
 
 - [Herdr connection](docs/herdr-connection.md): sockets, events and the client endpoint
-- [Herdr plugins](docs/herdr-plugins.md): manifests, lifecycle, APIs and native integration
-- [Git and file editing](docs/git-and-files-research.md): local and SSH implementation
 - [Terminal performance](docs/perf/README.md): pipeline, benchmarks and baselines
 - [SwiftTerm evaluation](docs/swiftterm-evaluation.md): why the terminal is drawn natively
+- [Git and file editing](docs/git-and-files-research.md): local and SSH implementation
+- [Jupyter notebook rendering](docs/jupyter-notebook-rendering.md): how saved notebook output is shown
+- [Herdr plugins](docs/herdr-plugins.md): a plan for integrating Herdr plugins; wooloo does not support them yet
 
 ## Contributing
 

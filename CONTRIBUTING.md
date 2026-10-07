@@ -4,7 +4,7 @@ Thanks for helping. Bug reports, ideas and pull requests are all welcome. For a 
 
 ## Set up
 
-You need macOS 14 or later, Xcode 26 (one vendored package needs Swift 6.2), Git, and [Herdr](https://herdr.dev/) 0.9 or later.
+You need macOS 15.6 or later with Xcode 26 (one vendored package needs Swift 6.2; the app itself runs on macOS 14), Git, and [Herdr](https://herdr.dev/) 0.9 or later.
 
 The project signs ad hoc ("Sign to Run Locally"), so no developer account is needed:
 
@@ -29,6 +29,8 @@ Run the unit tests by replacing `build` with `test` in the command above. Add `-
 - **Terminal rendering or surface changes:** also run `scripts/terminal-bench.sh` and `scripts/terminal-e2e.sh`, and compare with the baselines described in `docs/perf/README.md`. Pixel snapshots are compared only where FiraCode Nerd Font Mono is installed; re-record them with `TEST_RUNNER_WOOLOO_RECORD_SNAPSHOTS=1` when a change is intended.
 - **Git worktree changes:** try them in a disposable repository under `/private/tmp`, and confirm that normal removal still rejects dirty worktrees.
 - **UI changes:** exercise the affected controls in the app against the isolated Herdr session.
+- **Bundled runtime and launchd lifecycle:** `TEST_RUNNER_WOOLOO_RUNTIME_E2E=1 xcodebuild -project wooloo.xcodeproj -scheme wooloo -configuration Debug -destination 'platform=macOS' -only-testing:woolooTests/HerdrRuntimeTests test` runs them against a real server, with temporary config, state and runtime roots and only the `wooloo-ui-test` session. For an interactive isolated setup, launch a test copy with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `WOOLOO_RUNTIME_ROOT` pointing under `/private/tmp`, and `WOOLOO_SETUP_SESSION=wooloo-ui-test`.
+- **Remote access:** `TEST_RUNNER_WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` runs `RemoteAccessTests/testRealQuickTunnelReachesThisMacsSSH` against a real quick tunnel (`WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` outside `xcodebuild test`).
 
 CI runs the build and unit tests on every pull request.
 
