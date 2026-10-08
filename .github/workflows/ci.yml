@@ -49,10 +49,12 @@ jobs:
             -resultBundlePath build/wooloo.xcresult \
             -skip-testing:woolooTests/ViewSnapshotTests \
             -skip-testing:woolooTests/TerminalRenderingTests/testSnapshotsMatch \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 120 \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
 
       - name: Upload test results
-        if: failure()
+        # Also when the job times out, so a hang leaves its results behind.
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v6
         with:
           name: wooloo-test-results

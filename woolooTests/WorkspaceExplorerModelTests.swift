@@ -88,6 +88,8 @@ final class WorkspaceExplorerModelTests: XCTestCase {
             machine: nil, refreshVersion: 0, onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in },
             onNewTab: { _ in }, onNewSpace: { _, _ in }, onLocationChange: { _ in },
             onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in }, onOpenCommitFile: { _, _, _ in }, model: self.model)
+        // The test host may be inactive, or lose activation midway, which would hold every refresh.
+        model.pausesWhileInactive = false
         let host = NSHostingView(rootView: view)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 700),
             styleMask: .borderless, backing: .buffered, defer: false)
@@ -98,7 +100,9 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         try await waitUntil("The mounted browser loads and installs its watcher") {
             model.listedIdentity == repo.identity && model.isWatchingFiles
         }
+        // As on CI, where the host can lose activation after becoming active.
         NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApplication.shared)
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApplication.shared)
         try await Task.sleep(for: .milliseconds(600))
         try sandbox.write(["visible.txt": "first\n"], in: "repo")
         try await waitUntil("The visible explorer receives external changes") { model.listing?.files.contains("visible.txt") == true }

@@ -141,6 +141,9 @@ final class WorkspaceExplorerModel: ObservableObject {
     private var pendingRefresh: Task<Void, Never>?
     private var needsRefresh = false
     private var applicationIsActive = true
+    /// Refreshes pause while the app is inactive; tests of a mounted browser turn this off, since
+    /// the test host's activation can change at any moment.
+    var pausesWhileInactive = true
     var isWatchingFiles: Bool { watcher != nil }
     var effects = WorkspaceExplorerEffects()
 
@@ -284,7 +287,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     }
 
     func setApplicationActive(_ active: Bool) {
-        applicationIsActive = active
+        applicationIsActive = active || !pausesWhileInactive
         if active { requestRefresh() }
     }
 
