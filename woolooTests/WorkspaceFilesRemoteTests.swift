@@ -110,6 +110,30 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    func testRemoteGoToFileWithoutGitHasTheLocalLimits() throws {
+        let depth = WorkspaceFiles.quickOpenMaximumDepth
+        let chain = (1..<depth).map { "d\($0)" }.joined(separator: "/")
+        try sandbox.write(["a b.txt": "x\n", "d1/b.txt": "x\n", "\(chain)/last.txt": "x\n",
+                           "\(chain)/d\(depth)/too-deep.txt": "x\n", "node_modules/pkg/index.js": "x\n",
+                           ".git/HEAD": "x\n"], in: "loose")
+        let listing = try WorkspaceFiles.quickOpenFiles(at: remote("loose"))
+        XCTAssertEqual(listing.files, ["a b.txt", "d1/b.txt", "\(chain)/last.txt"])
+        XCTAssertTrue(listing.partial)
+        let ignored = try WorkspaceFiles.quickOpenFiles(at: remote("loose"), includeIgnored: true)
+        XCTAssertTrue(ignored.files.contains("node_modules/pkg/index.js"))
+
+        try sandbox.write(["c.txt": "x\n", "sub/d.txt": "x\n"], in: "small")
+        let small = try WorkspaceFiles.quickOpenFiles(at: remote("small"))
+        XCTAssertEqual(small.files, ["c.txt", "sub/d.txt"])
+        XCTAssertFalse(small.partial)
+
+        defer { WorkspaceFiles.quickOpenWalkBudget = 2 }
+        WorkspaceFiles.quickOpenWalkBudget = 0
+        let timed = try WorkspaceFiles.quickOpenFiles(at: remote("loose"))
+        XCTAssertEqual(timed.files, ["a b.txt"], "Only the root is read once the time is up")
+        XCTAssertTrue(timed.partial)
+    }
+
     func testRemoteIgnoredFoldersAreListedAndRead() throws {
         try sandbox.repository("repo", files: [".gitignore": "build/\n"])
         try sandbox.write(["build/out/app": "a", "build/.hidden": "h", "build/it's here.o": "o"], in: "repo")

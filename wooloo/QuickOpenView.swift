@@ -184,6 +184,10 @@ private struct QuickOpenPanel: View {
             if model.isTruncated {
                 Text("· first \(WorkspaceFiles.maximumFiles.formatted()) files only")
                     .foregroundStyle(theme.warning)
+            } else if model.isPartial {
+                Text("· folders near the root only")
+                    .foregroundStyle(theme.warning)
+                    .help("Outside a Git repository, Go to File reads \(WorkspaceFiles.quickOpenMaximumDepth) folder levels for at most \(Int(WorkspaceFiles.quickOpenWalkBudget)) seconds")
             }
             Spacer(minLength: 8)
             Button { model.toggleIgnored() } label: {

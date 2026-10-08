@@ -108,6 +108,9 @@ struct QuickOpenListing: Equatable, Sendable {
     var files: [String] = []
     /// True when the location has more files than `WorkspaceFiles.maximumFiles`.
     var truncated = false
+    /// True when Go to File stopped walking a folder outside a repository at its depth or time
+    /// limit, so deeper files may be missing.
+    var partial = false
     /// The kind of change of each changed file.
     var changes: [String: WorkspaceFileChange.Kind] = [:]
     /// Files Git ignores, listed when asked for.
@@ -417,8 +420,7 @@ enum WorkspaceFiles {
     /// Lighter than `listing`, which also lists ignored folders for the explorer tree.
     static func quickOpenFiles(at location: WorkspaceFileLocation, includeIgnored: Bool = false) throws -> QuickOpenListing {
         guard (try? git(location, ["rev-parse", "--is-inside-work-tree"], limit: 100)) != nil else {
-            let files = try filesWithoutGit(at: location)
-            return QuickOpenListing(files: files, truncated: files.count >= maximumFiles)
+            return try quickOpenFilesWithoutGit(at: location, includeIgnored: includeIgnored)
         }
         let data = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
                            limit: maximumListingBytes)
@@ -436,6 +438,82 @@ enum WorkspaceFiles {
         let changes = Dictionary(parseStatus(status).map { ($0.path, $0.kind) }, uniquingKeysWith: { first, _ in first })
         return QuickOpenListing(files: Array(files.prefix(maximumFiles)), truncated: files.count > maximumFiles,
                                 changes: changes, ignored: ignored)
+    }
+
+    /// How many folders down Go to File looks outside a repository.
+    static let quickOpenMaximumDepth = 12
+    /// Seconds Go to File spends walking a folder outside a repository; tests replace it.
+    static var quickOpenWalkBudget: TimeInterval = 2
+    /// Folders Go to File skips outside a repository unless ignored files are included; `.git`
+    /// is always skipped.
+    static let quickOpenSkippedFolders = ["node_modules", ".build", "DerivedData", "__pycache__", ".venv"]
+
+    /// Go to File's files in a folder outside a repository, which may be as large as /private/tmp.
+    /// The walk goes one folder level at a time and stops after `quickOpenMaximumDepth` levels or
+    /// `quickOpenWalkBudget` seconds, so it ends quickly and always has the files nearest the root.
+    private static func quickOpenFilesWithoutGit(at location: WorkspaceFileLocation,
+                                                 includeIgnored: Bool) throws -> QuickOpenListing {
+        let skipped = [".git"] + (includeIgnored ? [] : quickOpenSkippedFolders)
+        let walk: (files: [String], partial: Bool)
+        if let machine = location.machine {
+            let words = ["sh", "-c", quickOpenWalkScript(skipping: skipped), "sh", location.root]
+            var records = nulStrings(try ssh(machine, words.map(quote).joined(separator: " "), limit: maximumListingBytes))
+            let partial = records.last == "wooloo-partial"
+            if partial { records.removeLast() }
+            walk = (records.map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }, partial)
+        } else {
+            walk = localQuickOpenWalk(root: location.root, skipping: Set(skipped))
+        }
+        // The walk lists shallow files first, so a cut keeps those.
+        return QuickOpenListing(files: walk.files.prefix(maximumFiles).sorted(),
+                                truncated: walk.files.count >= maximumFiles, partial: walk.partial)
+    }
+
+    /// `quickOpenFilesWithoutGit` on this Mac: files level by level, and whether folders were left
+    /// unread at the depth or time limit.
+    private static func localQuickOpenWalk(root: String, skipping skipped: Set<String>) -> (files: [String], partial: Bool) {
+        let deadline = Date().addingTimeInterval(quickOpenWalkBudget)
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey, .isPackageKey]
+        var files: [String] = []
+        var level = [(url: URL(fileURLWithPath: root), path: "")]
+        for depth in 1...quickOpenMaximumDepth {
+            var next: [(url: URL, path: String)] = []
+            for folder in level {
+                // The root is always read in full.
+                if depth > 1, Date() >= deadline { return (files, true) }
+                guard let entries = try? FileManager.default.contentsOfDirectory(
+                    at: folder.url, includingPropertiesForKeys: Array(keys)) else { continue }
+                for entry in entries {
+                    let name = entry.lastPathComponent
+                    guard !skipped.contains(name) else { continue }
+                    let path = folder.path.isEmpty ? name : folder.path + "/" + name
+                    let values = try? entry.resourceValues(forKeys: keys)
+                    if values?.isRegularFile == true || values?.isSymbolicLink == true {
+                        files.append(path)
+                        if files.count >= maximumFiles { return (files, false) }
+                    } else if values?.isDirectory == true, values?.isPackage != true {
+                        next.append((entry, path))
+                    }
+                }
+            }
+            if next.isEmpty { return (files, false) }
+            level = next
+        }
+        return (files, true)
+    }
+
+    /// `quickOpenFilesWithoutGit` over SSH, with the root as `$1`: one `find` per level with the
+    /// same limits as on this Mac, ending with a `wooloo-partial` record when folders were left
+    /// unread. Unreadable folders are skipped, as they are locally.
+    private static func quickOpenWalkScript(skipping skipped: [String]) -> String {
+        let prune = #"\( "# + skipped.map { "-name " + quote($0) }.joined(separator: " -o ") + #" \) -prune -o"#
+        let level = #"find . -maxdepth "$d" "# + prune
+        return #"cd "$1" || exit 1; end=$(( $(date +%s) + "# + String(Int(quickOpenWalkBudget.rounded(.up))) + " )); "
+            + #"p='./*'; d=1; while :; do "#
+            + level + #" \( -type f -o -type l \) -path "$p" ! -path "$p/*" -print0 2>/dev/null; "#
+            + #"[ -n "$("# + level + #" -type d -path "$p" ! -path "$p/*" -print 2>/dev/null | head -n 1)" ] || exit 0; "#
+            + #"if [ "$d" -ge "# + String(quickOpenMaximumDepth) + #" ] || [ "$(date +%s)" -ge "$end" ]; then "#
+            + #"printf 'wooloo-partial\0'; exit 0; fi; d=$((d + 1)); p="$p/*"; done"#
     }
 
     /// Every file under a folder that is not in a Git repository, skipping `.git` folders.

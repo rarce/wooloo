@@ -236,6 +236,8 @@ final class QuickOpenModel: ObservableObject {
     @Published private(set) var isIndexing = false
     /// True when the Space has more files than the listing keeps.
     @Published private(set) var isTruncated = false
+    /// True when a folder outside a repository was read only near its root, at the walk's limit.
+    @Published private(set) var isPartial = false
     @Published private(set) var error: String?
     @Published private(set) var location: WorkspaceFileLocation?
     /// A path typed that no file has, offered as a last row that creates it.
@@ -284,6 +286,7 @@ final class QuickOpenModel: ObservableObject {
             index = nil
             indexIdentity = identity(location)
             isTruncated = false
+            isPartial = false
             changes = [:]
             ignored = []
         }
@@ -343,6 +346,7 @@ final class QuickOpenModel: ObservableObject {
             switch outcome {
             case .success(let (newIndex, listing)):
                 isTruncated = listing.truncated
+                isPartial = listing.partial
                 if changes != listing.changes { changes = listing.changes }
                 if ignored != listing.ignored { ignored = listing.ignored }
                 guard newIndex.paths != index?.paths else { return }
