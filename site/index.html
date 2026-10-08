@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wooloo — a native macOS home for your coding agents</title>
+<meta name="description" content="wooloo is an open source Mac app for Herdr: live terminals, a file explorer, an editor and Git tools for your coding agent sessions.">
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="canonical" href="https://wooloo.dev/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://wooloo.dev/">
+<meta property="og:title" content="wooloo">
+<meta property="og:description" content="A native macOS home for your coding agents. Open source client for Herdr.">
+<meta property="og:image" content="https://wooloo.dev/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #11111b;
+    --bg-raised: #181824;
+    --line: #2a2a3c;
+    --text: #f4f4f8;
+    --text-2: #c4c4d4;
+    --text-3: #8c8ca5;
+    --accent: #8aadf4;
+    --accent-ink: #11111b;
+    --max: 1120px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font: 0.88em ui-monospace, "SF Mono", Menlo, monospace; background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px; padding: 0.1em 0.4em; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 16px; }
+  @media (min-width: 720px) { .wrap { padding: 0 32px; } }
+
+  header.top { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 650; font-size: 18px; }
+  .brand img { width: 32px; height: 32px; border-radius: 7px; }
+  .top nav { display: flex; gap: 20px; font-size: 15px; }
+  .top nav a { color: var(--text-2); }
+
+  .hero { text-align: center; padding: 56px 0 40px; }
+  .hero img.icon { width: 112px; height: 112px; border-radius: 25px; }
+  .hero h1 { font-size: clamp(36px, 6vw, 60px); line-height: 1.08; letter-spacing: -0.02em; margin: 24px 0 16px; font-weight: 750; }
+  .hero p.lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--text-2); max-width: 680px; margin: 0 auto; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 32px 0 14px; }
+  .button { display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 10px; font-weight: 600; font-size: 16px; border: 1px solid var(--line); color: var(--text); background: var(--bg-raised); }
+  .button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .button:hover { text-decoration: none; filter: brightness(1.08); }
+  .meta { color: var(--text-3); font-size: 14px; }
+
+  .shot { margin: 24px auto 0; }
+  .shot img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55); }
+
+  section { padding: 72px 0 0; }
+  section h2 { font-size: clamp(26px, 3.5vw, 34px); letter-spacing: -0.01em; margin: 0 0 12px; }
+  section > .wrap > p.intro { color: var(--text-2); max-width: 720px; margin: 0 0 32px; }
+
+  .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } }
+  @media (min-width: 1000px) { .grid.three { grid-template-columns: 1fr 1fr 1fr; } }
+  .card { background: var(--bg-raised); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; }
+  .card h3 { margin: 0 0 10px; font-size: 18px; }
+  .card ul { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 15.5px; }
+  .card li + li { margin-top: 6px; }
+  .card p { margin: 0; color: var(--text-2); font-size: 15.5px; }
+
+  ol.steps { color: var(--text-2); padding-left: 22px; max-width: 760px; }
+  ol.steps li + li { margin-top: 10px; }
+  pre { background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace; color: var(--text); }
+  .note { border-left: 3px solid #eed49f; background: var(--bg-raised); padding: 12px 16px; border-radius: 0 8px 8px 0; color: var(--text-2); font-size: 15.5px; max-width: 760px; }
+
+  footer { margin-top: 88px; border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--text-3); font-size: 14px; }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 24px; }
+</style>
+</head>
+<body>
+<header class="wrap top">
+  <a class="brand" href="/"><img src="icon.png" alt="">wooloo</a>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/rarce/wooloo">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <img class="icon" src="icon.png" alt="The wooloo icon: a sheep peeking out of a window">
+    <h1>A native macOS home<br>for your coding agents</h1>
+    <p class="lede">wooloo is an open source Mac app for <a href="https://herdr.dev/">Herdr</a>, the server that runs and organizes coding agent sessions. Live terminals, a file explorer, an editor and Git tools, without leaving an environment built around your agents.</p>
+    <div class="actions">
+      <a class="button primary" href="https://github.com/rarce/wooloo/releases/latest">Download for macOS</a>
+      <a class="button" href="https://github.com/rarce/wooloo">View on GitHub</a>
+    </div>
+    <p class="meta">Free and MIT licensed · macOS 14 or later · Apple silicon and Intel · Herdr included</p>
+  </div>
+
+  <div class="wrap shot">
+    <img src="main-window.png" width="2560" height="1600" alt="wooloo with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right">
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Everything around the agent, natively</h2>
+      <p class="intro">Herdr keeps owning the processes, layout and terminal state, so the same sessions stay available from the Herdr TUI. wooloo renders them natively and sends your input back.</p>
+      <div class="grid">
+        <div class="card">
+          <h3>Agents and sessions</h3>
+          <ul>
+            <li>Spaces, tabs and split panes from Herdr, managed from the sidebar, menus or command palette.</li>
+            <li>Every agent with its Space, summary and status at a glance.</li>
+            <li>Alerts when an agent finishes or needs input, with unread marks.</li>
+            <li>The host's CPU, memory and disk, local or over SSH.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Terminal</h3>
+          <ul>
+            <li>Live surfaces over Herdr's binary endpoint, drawn with Core Text at Herdr's frame rate.</li>
+            <li>Colors, alternate-screen apps, inline images, mouse reporting and clickable links.</li>
+            <li>Drag split borders to resize; select, copy, paste and drop file paths.</li>
+            <li>Herdr's prefix and direct key bindings, from the same <code>config.toml</code>.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Files and editor</h3>
+          <ul>
+            <li>An explorer for local and SSH Spaces, with Git status, drag and drop, and undo.</li>
+            <li>Go to File (⌘P), a command palette (⇧⌘P) and project-wide search and replace.</li>
+            <li>Syntax-highlighted editor tabs with change bars and multiple cursors.</li>
+            <li>Markdown with Mermaid, Jupyter notebooks, images and PDFs.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Git</h3>
+          <ul>
+            <li>A Changes tree with stage checkboxes, a branch bar and a commit editor.</li>
+            <li>Unified or split diffs with syntax colors.</li>
+            <li>History with each commit's files, branches, and worktrees that refuse to drop dirty work.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Your Mac, your data</h2>
+      <div class="grid three">
+        <div class="card">
+          <h3>No telemetry</h3>
+          <p>wooloo has no analytics. It talks to Herdr on your Mac, your saved SSH machines and your Git remotes. Everything else is opt-in.</p>
+        </div>
+        <div class="card">
+          <h3>Remote access, if you want it</h3>
+          <p>Publish this Mac's SSH through a Cloudflare Tunnel to reach your sessions from elsewhere. Off by default; use key-only SSH first.</p>
+        </div>
+        <div class="card">
+          <h3>Open source</h3>
+          <p>MIT licensed and built in the open. Read the code, file issues and send pull requests on <a href="https://github.com/rarce/wooloo">GitHub</a>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Install</h2>
+      <ol class="steps">
+        <li>Download the latest <code>wooloo-&lt;version&gt;.zip</code> from <a href="https://github.com/rarce/wooloo/releases/latest">GitHub Releases</a>, unzip it and move <code>wooloo.app</code> to Applications.</li>
+        <li>Open it once. Then go to System Settings → Privacy &amp; Security and click <strong>Open Anyway</strong>, or remove the quarantine flag:
+          <pre>xattr -dr com.apple.quarantine /Applications/wooloo.app</pre>
+        </li>
+      </ol>
+      <p class="note">wooloo is in early development and not notarized yet, so macOS warns on the first launch. You can also <a href="https://github.com/rarce/wooloo#build-and-run">build it from source</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>wooloo is an independent project, not affiliated with or endorsed by Herdr, Anthropic or OpenAI.</span>
+    <span><a href="https://github.com/rarce/wooloo">GitHub</a> · <a href="https://github.com/rarce/wooloo/blob/main/LICENSE">MIT License</a></span>
+  </div>
+</footer>
+</body>
+</html>
