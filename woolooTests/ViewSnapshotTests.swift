@@ -180,6 +180,22 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    /// The branch picker over local, remote and worktree branches, filtered by a query.
+    func testBranchPicker() throws {
+        func branch(_ name: String, remote: Bool = false, current: Bool = false, upstream: String = "") -> WorkspaceBranch {
+            WorkspaceBranch(id: (remote ? "refs/remotes/" : "refs/heads/") + name, name: name, isRemote: remote,
+                            isCurrent: current, upstream: upstream)
+        }
+        let branches = [branch("main", current: true, upstream: "origin/main"), branch("bugfix/login"),
+                        branch("topic/feature"), branch("origin/main", remote: true), branch("origin/release", remote: true)]
+        let worktrees = [WorkspaceWorktree(path: "/repo-feature", branch: "topic/feature", isBare: false,
+                                           isLocked: false, isPrunable: false)]
+        let panel = WorkspaceBranchPickerPanel(branches: branches, otherWorktrees: worktrees, remotes: ["origin"], current: "main",
+                                               opensWorktrees: true, onChoose: { _ in }, onCancel: {})
+        try assertSnapshot(render(panel, size: NSSize(width: 340, height: 190)), named: "branch-picker")
+        try skipIfRecorded()
+    }
+
     /// A repository with three dated commits, a few branches, a worktree and every kind of
     /// change, in a sandbox with a fixed path so the worktree paths shown do not change.
     private func snapshotRepository() throws -> (sandbox: WorkspaceGitSandbox, location: WorkspaceFileLocation) {

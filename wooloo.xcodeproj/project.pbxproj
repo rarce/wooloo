@@ -38,6 +38,7 @@
 		A10000000000000000000046 /* WoolooTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000047 /* WoolooTheme.swift */; };
 		A10000000000000000000044 /* WorkspaceSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000045 /* WorkspaceSearchView.swift */; };
 		A10000000000000000000052 /* WorkspaceGitBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000053 /* WorkspaceGitBar.swift */; };
+		A1000000000000000000B106 /* WorkspaceBranchPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000B107 /* WorkspaceBranchPicker.swift */; };
 		C3000000000000000000005A /* WorkspaceExplorerTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000005B /* WorkspaceExplorerTree.swift */; };
 		C30000000000000000000054 /* WorkspaceDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000055 /* WorkspaceDocumentStore.swift */; };
 		A10000000000000000000054 /* HerdrNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000055 /* HerdrNotifications.swift */; };
@@ -164,6 +165,7 @@
 		A10000000000000000000047 /* WoolooTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooTheme.swift; sourceTree = "<group>"; };
 		A10000000000000000000045 /* WorkspaceSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearchView.swift; sourceTree = "<group>"; };
 		A10000000000000000000053 /* WorkspaceGitBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitBar.swift; sourceTree = "<group>"; };
+		A1000000000000000000B107 /* WorkspaceBranchPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceBranchPicker.swift; sourceTree = "<group>"; };
 		C3000000000000000000005B /* WorkspaceExplorerTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerTree.swift; sourceTree = "<group>"; };
 		C30000000000000000000055 /* WorkspaceDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDocumentStore.swift; sourceTree = "<group>"; };
 		A10000000000000000000055 /* HerdrNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrNotifications.swift; sourceTree = "<group>"; };
@@ -291,6 +293,7 @@
 				A10000000000000000000047 /* WoolooTheme.swift */,
 				A10000000000000000000045 /* WorkspaceSearchView.swift */,
 				A10000000000000000000053 /* WorkspaceGitBar.swift */,
+				A1000000000000000000B107 /* WorkspaceBranchPicker.swift */,
 				C3000000000000000000005B /* WorkspaceExplorerTree.swift */,
 				C30000000000000000000055 /* WorkspaceDocumentStore.swift */,
 				A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */,
@@ -546,6 +549,7 @@
 				A10000000000000000000046 /* WoolooTheme.swift in Sources */,
 				A10000000000000000000044 /* WorkspaceSearchView.swift in Sources */,
 				A10000000000000000000052 /* WorkspaceGitBar.swift in Sources */,
+				A1000000000000000000B106 /* WorkspaceBranchPicker.swift in Sources */,
 				C3000000000000000000005A /* WorkspaceExplorerTree.swift in Sources */,
 				C30000000000000000000054 /* WorkspaceDocumentStore.swift in Sources */,
 				A1000000000000000000AF01 /* WorkspaceSessionPersistence.swift in Sources */,

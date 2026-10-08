@@ -468,8 +468,12 @@ struct WorkspaceRepositoryView: View {
         .contentShape(Rectangle())
         .help(branch.upstream.isEmpty ? branch.id : "Tracks \(branch.upstream)")
         .contextMenu {
-            if !branch.isRemote && !branch.isCurrent {
-                Button("Switch to Branch", systemImage: "arrow.triangle.swap") {
+            if !branch.isCurrent, !branch.isRemote
+                || WorkspaceBranchPicker.canCheckOut(branch, among: listing.branches, remotes: []) {
+                // A remote branch is checked out as a new local branch that tracks it, unless a local
+                // branch already tracks it or has its name.
+                Button(branch.isRemote ? "Check Out as Tracking Branch" : "Switch to Branch",
+                       systemImage: "arrow.triangle.swap") {
                     if let location { model.switchBranch(branch, at: location, onSwitched: onChange) }
                 }
             }

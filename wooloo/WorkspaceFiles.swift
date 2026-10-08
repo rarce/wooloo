@@ -231,7 +231,7 @@ struct WorkspaceBranch: Identifiable, Hashable {
     let upstream: String
 }
 
-struct WorkspaceWorktree: Identifiable {
+struct WorkspaceWorktree: Identifiable, Equatable {
     let path: String
     let branch: String?
     let isBare: Bool
@@ -977,8 +977,8 @@ enum WorkspaceFiles {
         // Git checks out a branch only when given its short name; a full ref detaches HEAD.
         let start: String
         if let newBranch, !newBranch.isEmpty {
-            guard !newBranch.hasPrefix("-"), !newBranch.contains("\0") else {
-                throw WorkspaceFileError.message("Invalid branch name")
+            guard isValidNewBranchName(newBranch) else {
+                throw WorkspaceFileError.message("“\(newBranch)” is not a valid branch name")
             }
             args += ["-b", newBranch]
             start = branch.id
@@ -1110,12 +1110,34 @@ enum WorkspaceFiles {
         }
     }
 
+    /// Switches to a local branch, or to a remote one through a new local branch that tracks it.
     static func switchBranch(_ branch: WorkspaceBranch, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
-        guard !branch.isRemote, !branch.isCurrent, !branch.name.hasPrefix("-") else {
-            throw WorkspaceFileError.message("Choose another local branch")
+        guard !branch.isCurrent, !branch.name.hasPrefix("-") else {
+            throw WorkspaceFileError.message("Choose another branch")
         }
-        _ = try git(location, ["switch", branch.name], limit: 20_000)
+        // A remote branch by its full ref: `origin/x` alone could name a local branch called that.
+        _ = try git(location, branch.isRemote ? ["switch", "--track", branch.id] : ["switch", branch.name],
+                    limit: 20_000)
+    }
+
+    /// Creates a branch at HEAD and switches to it; uncommitted changes stay in the working tree.
+    static func createBranch(_ name: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        guard isValidNewBranchName(name) else {
+            throw WorkspaceFileError.message("“\(name)” is not a valid branch name")
+        }
+        _ = try git(location, ["switch", "-c", name], limit: 20_000)
+    }
+
+    /// Whether `name` could name a new branch. Git checks its full rules when creating one; this
+    /// keeps out names it always refuses, and any that it could read as an option.
+    static func isValidNewBranchName(_ name: String) -> Bool {
+        guard !name.isEmpty, !name.hasPrefix("-"), !name.hasPrefix("/"), !name.hasSuffix("/"),
+              !name.hasSuffix("."), !name.hasSuffix(".lock"), name != "@",
+              !name.contains(".."), !name.contains("@{"), !name.contains("//") else { return false }
+        let forbidden = CharacterSet(charactersIn: "~^:?*[\\").union(.whitespacesAndNewlines).union(.controlCharacters)
+        return name.unicodeScalars.allSatisfy { !forbidden.contains($0) }
     }
 
     /// Runs a POSIX shell script in the Space root: locally with /bin/sh, remotely over SSH,

@@ -16,6 +16,7 @@ struct WorkspaceGitBar: View {
     /// Injectable so tests can wait for its load.
     @StateObject var model = WorkspaceGitBarModel()
     @State private var confirmsForcePush = false
+    @State private var showsBranchPicker = false
     @State private var expandsEditor = false
 
     private var identity: String { "\(location.identity)|\(reloadToken)" }
@@ -42,7 +43,7 @@ struct WorkspaceGitBar: View {
         HStack(spacing: 4) {
             if let status = model.status {
                 worktreeMenu
-                branchMenu(status)
+                branchPicker(status)
                 Spacer(minLength: 6)
                 syncButton(status)
             } else {
@@ -144,30 +145,42 @@ struct WorkspaceGitBar: View {
         }
     }
 
-    private func branchMenu(_ status: WorkspaceBranchStatus) -> some View {
-        Menu {
-            Section("Branches") {
-                ForEach(model.localBranches) { branch in
-                    Button {
-                        model.switchBranch(branch, finished: finished)
-                    } label: {
-                        if branch.isCurrent { Label(branch.name, systemImage: "checkmark") } else { Text(branch.name) }
-                    }
-                    .disabled(branch.isCurrent)
-                }
-            }
-            Divider()
-            Button("Copy Branch Name", systemImage: "doc.on.doc") {
-                AppActions.copy(status.branch ?? status.shortHead)
-            }
+    private func branchPicker(_ status: WorkspaceBranchStatus) -> some View {
+        let name = status.branch ?? status.shortHead
+        return Button {
+            showsBranchPicker.toggle()
         } label: {
-            pickerLabel(status.branch ?? status.shortHead, icon: "arrow.triangle.branch")
+            // The padding a borderless menu gives the worktree picker beside it.
+            pickerLabel(name, icon: "arrow.triangle.branch")
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
         .fixedSize(horizontal: false, vertical: true)
         .disabled(running != nil)
-        .help(status.upstream.map { "Tracking \($0)" } ?? "Switch branch")
+        .help(status.upstream.map { "Switch branch (tracking \($0))" } ?? "Switch branch")
+        .contextMenu {
+            Button("Copy Branch Name", systemImage: "doc.on.doc") { AppActions.copy(name) }
+        }
+        .popover(isPresented: $showsBranchPicker, arrowEdge: .top) {
+            WorkspaceBranchPickerPanel(branches: model.repository?.branches ?? [],
+                                       otherWorktrees: model.worktreesHoldingBranches,
+                                       remotes: status.remotes, current: name, opensWorktrees: onOpenWorktree != nil,
+                                       onChoose: choose, onCancel: { showsBranchPicker = false })
+        }
+    }
+
+    private func choose(_ choice: WorkspaceBranchChoice) {
+        showsBranchPicker = false
+        switch choice {
+        case .branch(let branch, worktree: let tree?):
+            // A deleted worktree still holds its branch until pruned; there is nothing to open.
+            if !tree.isPrunable { onOpenWorktree?(tree.path, branch.name) }
+        case .branch(let branch, worktree: nil):
+            if !branch.isCurrent { model.switchBranch(branch, finished: finished) }
+        case .create(let name):
+            model.createBranch(name, finished: finished)
+        }
     }
 
     private func pickerLabel(_ title: String, icon: String) -> some View {
@@ -360,7 +373,14 @@ final class WorkspaceGitBarModel: ObservableObject {
         repository?.worktrees.first { $0.path == repository?.root }
     }
 
+    /// The worktrees besides this one that can be opened: not bare, and not deleted without pruning.
     var otherWorktrees: [WorkspaceWorktree] {
+        (repository?.worktrees ?? []).filter { $0.path != repository?.root && !$0.isBare && !$0.isPrunable }
+    }
+
+    /// The worktrees besides this one, including deleted ones not yet pruned: Git keeps their
+    /// branches checked out there.
+    var worktreesHoldingBranches: [WorkspaceWorktree] {
         (repository?.worktrees ?? []).filter { $0.path != repository?.root && !$0.isBare }
     }
 
@@ -404,6 +424,10 @@ final class WorkspaceGitBarModel: ObservableObject {
         run("Switching…", finished: finished) { try WorkspaceFiles.switchBranch(branch, at: $0) }
     }
 
+    func createBranch(_ name: String, finished: @escaping (String?) -> Void) {
+        run("Creating Branch…", finished: finished) { try WorkspaceFiles.createBranch(name, at: $0) }
+    }
+
     /// Runs one operation off the main thread, reports its error (nil on success), and reloads.
     private func run(_ label: String, onSuccess: @escaping () -> Void = {}, finished: @escaping (String?) -> Void,
                      _ operation: @escaping @Sendable (WorkspaceFileLocation) throws -> Void) {
@@ -422,5 +446,196 @@ final class WorkspaceGitBarModel: ObservableObject {
             // A bar that moved to another location meanwhile loads that one itself.
             if self.location?.identity == location.identity { await load(location) }
         }
+    }
+}
+
+/// The branch picker: type to filter the branches, ↑ and ↓ to move, ↩ to switch, or type a new
+/// name to create a branch.
+struct WorkspaceBranchPickerPanel: View {
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
+    let branches: [WorkspaceBranch]
+    let otherWorktrees: [WorkspaceWorktree]
+    let remotes: [String]
+    let current: String
+    /// Whether a branch checked out in another worktree can open it.
+    let opensWorktrees: Bool
+    let onChoose: (WorkspaceBranchChoice) -> Void
+    let onCancel: () -> Void
+    @State private var query = ""
+    @State private var selection = 0
+    /// Built again only when the branches change, and matched again only when the query does.
+    @State private var picker: WorkspaceBranchPicker
+    @State private var rows: [WorkspaceBranchPickerRow]
+
+    init(branches: [WorkspaceBranch], otherWorktrees: [WorkspaceWorktree], remotes: [String], current: String,
+         opensWorktrees: Bool, onChoose: @escaping (WorkspaceBranchChoice) -> Void, onCancel: @escaping () -> Void) {
+        self.branches = branches
+        self.otherWorktrees = otherWorktrees
+        self.remotes = remotes
+        self.current = current
+        self.opensWorktrees = opensWorktrees
+        self.onChoose = onChoose
+        self.onCancel = onCancel
+        // Filled from the start, so the popover opens at its size instead of growing into it.
+        let picker = WorkspaceBranchPicker(branches: branches, otherWorktrees: otherWorktrees, remotes: remotes)
+        _picker = State(initialValue: picker)
+        _rows = State(initialValue: picker.rows(query: ""))
+    }
+
+    private var rowHeight: CGFloat { typography.metric(26) }
+
+    private func rebuild() {
+        picker = WorkspaceBranchPicker(branches: branches, otherWorktrees: otherWorktrees, remotes: remotes)
+        refresh()
+    }
+
+    private func refresh() {
+        rows = picker.rows(query: query)
+        selection = 0
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: typography.body))
+                    .foregroundStyle(theme.accent)
+                PickerField(text: $query, placeholder: "Switch branch or type a new name",
+                            font: .systemFont(ofSize: typography.body),
+                            onMove: { move($0, in: rows) }, onSubmit: { submit(rows) }, onCancel: onCancel)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: typography.metric(32))
+            Divider()
+            if rows.isEmpty {
+                Text(query.isEmpty ? "No branches" : "No matching branches")
+                    .font(.system(size: typography.body))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+            } else {
+                list(rows)
+            }
+        }
+        .frame(width: 340)
+        .onChange(of: query) { _, _ in refresh() }
+        .onChange(of: branches) { _, _ in rebuild() }
+        .onChange(of: otherWorktrees) { _, _ in rebuild() }
+        .onChange(of: remotes) { _, _ in rebuild() }
+    }
+
+    private func list(_ rows: [WorkspaceBranchPickerRow]) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                        rowView(row, selected: index == selection)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selection = index
+                                submit(rows)
+                            }
+                    }
+                }
+                .padding(4)
+            }
+            .frame(height: min(CGFloat(rows.count) * rowHeight + 8, 320))
+            .onChange(of: selection) { _, index in
+                if rows.indices.contains(index) { proxy.scrollTo(rows[index].id) }
+            }
+        }
+    }
+
+    private func rowView(_ row: WorkspaceBranchPickerRow, selected: Bool) -> some View {
+        let detail = detail(row)
+        return HStack(spacing: 7) {
+            Image(systemName: icon(row))
+                .font(.system(size: typography.secondary))
+                .foregroundStyle(isCurrent(row) ? theme.accent : Color.secondary)
+                .frame(width: 14)
+            if case .create = row.choice {
+                Text("Create branch “\(row.title)”")
+                    .font(.system(size: typography.body))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else {
+                Text(PickerHighlight.text(row.title, from: 0, row.positions, color: theme.accent, size: typography.body))
+                    .font(.system(size: typography.body))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: typography.caption))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: rowHeight)
+        .background(selected ? theme.rowSelected : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+        .opacity(isAvailable(row) ? 1 : 0.5)
+        .help(help(row))
+    }
+
+    private func isCurrent(_ row: WorkspaceBranchPickerRow) -> Bool {
+        if case .branch(let branch, _) = row.choice { return branch.isCurrent }
+        return false
+    }
+
+    private func isAvailable(_ row: WorkspaceBranchPickerRow) -> Bool {
+        if case .branch(_, worktree: let tree?) = row.choice { return opensWorktrees && !tree.isPrunable }
+        return true
+    }
+
+    private func icon(_ row: WorkspaceBranchPickerRow) -> String {
+        switch row.choice {
+        case .create: return "plus"
+        case .branch(let branch, let tree):
+            if branch.isCurrent { return "checkmark" }
+            if let tree { return tree.isPrunable ? "folder.badge.questionmark" : "folder" }
+            return branch.isRemote ? "cloud" : "arrow.triangle.branch"
+        }
+    }
+
+    private func detail(_ row: WorkspaceBranchPickerRow) -> String? {
+        switch row.choice {
+        case .create: return "from \(current)"
+        case .branch(let branch, let tree):
+            if branch.isCurrent { return "current" }
+            if let tree { return tree.isPrunable ? "deleted worktree" : (tree.path as NSString).lastPathComponent }
+            return branch.isRemote ? "remote" : nil
+        }
+    }
+
+    private func help(_ row: WorkspaceBranchPickerRow) -> String {
+        switch row.choice {
+        case .create(let name): return "Create \(name) from \(current) and switch to it, keeping uncommitted changes"
+        case .branch(let branch, let tree):
+            if branch.isCurrent { return "The current branch" }
+            if let tree {
+                if tree.isPrunable {
+                    return "Checked out in \(tree.path), which was deleted; run git worktree prune to free the branch"
+                }
+                return opensWorktrees ? "Checked out in \(tree.path); choose it to open that worktree"
+                                      : "Checked out in \(tree.path), so Git cannot switch to it here"
+            }
+            if branch.isRemote { return "Create a local branch tracking \(branch.name) and switch to it" }
+            return "Switch to \(branch.name)"
+        }
+    }
+
+    private func move(_ delta: Int, in rows: [WorkspaceBranchPickerRow]) {
+        guard !rows.isEmpty else { return }
+        selection = ((selection + delta) % rows.count + rows.count) % rows.count
+    }
+
+    private func submit(_ rows: [WorkspaceBranchPickerRow]) {
+        guard rows.indices.contains(selection), isAvailable(rows[selection]) else { return }
+        onChoose(rows[selection].choice)
     }
 }
