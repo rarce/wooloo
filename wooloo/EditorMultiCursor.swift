@@ -17,7 +17,8 @@ struct MultiCursorSelection: Equatable {
 
 /// Multi-cursor commands as in Zed, on plain ranges so they can be tested without an editor.
 /// Occurrences match case-sensitively; `wordwise` also requires word boundaries, which is how a
-/// run started from a cursor (rather than a selection) matches. Columns are UTF-16 offsets.
+/// run started from a cursor (rather than a selection) matches. ⌥⌘↑/↓ keep their goal as a
+/// display column (`DisplayColumns`), so tabs and wide characters do not shift it.
 enum MultiCursor {
     /// ⌘D: selects the word under an empty newest selection (and under every other cursor), or
     /// adds the next occurrence of the newest selection after it, wrapping around. With
@@ -55,14 +56,17 @@ enum MultiCursor {
     }
 
     /// ⌥⌘↑ / ⌥⌘↓: adds a cursor on the line above the topmost selection or below the bottommost,
-    /// at `goalColumn` (clamped to the line). A selection on one line adds the same columns, on
-    /// the nearest line long enough to hold part of them.
+    /// at display column `goalColumn` (clamped to the line). A selection on one line adds the same
+    /// display columns, on the nearest line long enough to hold part of them.
     static func addCursor(_ selection: MultiCursorSelection, in text: NSString, above: Bool,
-                          goalColumn: Int) -> MultiCursorSelection? {
+                          goalColumn: Int, tabWidth: Int = 4) -> MultiCursorSelection? {
         guard let base = above ? selection.ranges.first : selection.ranges.last else { return nil }
         let baseLine = text.lineRange(for: NSRange(location: base.location, length: 0))
         let singleLine = base.length > 0 && NSMaxRange(base) <= contentsEnd(of: baseLine, in: text)
-        let width = singleLine ? base.length : 0
+        let width = singleLine
+            ? DisplayColumns.column(of: NSMaxRange(base), in: text, tabWidth: tabWidth)
+                - DisplayColumns.column(of: base.location, in: text, tabWidth: tabWidth)
+            : 0
         var line = baseLine
         while true {
             if above {
@@ -77,9 +81,10 @@ enum MultiCursor {
                     line = text.lineRange(for: NSRange(location: NSMaxRange(line), length: 0))
                 }
             }
-            let length = contentsEnd(of: line, in: text) - line.location
-            let start = min(goalColumn, length)
-            let end = min(goalColumn + width, length)
+            let contents = text.substring(with: NSRange(location: line.location,
+                                                        length: contentsEnd(of: line, in: text) - line.location))
+            let start = DisplayColumns.offset(forColumn: goalColumn, in: contents, tabWidth: tabWidth)
+            let end = width > 0 ? DisplayColumns.offset(forColumn: goalColumn + width, in: contents, tabWidth: tabWidth) : start
             if width > 0 && end <= start { continue }
             let added = NSRange(location: line.location + start, length: end - start)
             return MultiCursorSelection(ranges: selection.ranges + [added], newest: added)
@@ -115,11 +120,6 @@ enum MultiCursor {
         return matches
     }
 
-    /// The UTF-16 column of `offset` within its line.
-    static func column(of offset: Int, in text: NSString) -> Int {
-        offset - text.lineRange(for: NSRange(location: min(offset, text.length), length: 0)).location
-    }
-
     private static func isWholeWord(_ range: NSRange, in text: NSString) -> Bool {
         (range.location == 0 || !isWordCharacter(text.character(at: range.location - 1)))
             && (NSMaxRange(range) == text.length || !isWordCharacter(text.character(at: NSMaxRange(range))))
@@ -138,6 +138,92 @@ enum MultiCursor {
 
     private static func endsWithNewline(_ line: NSRange, _ text: NSString) -> Bool {
         line.length > 0 && [0x0A, 0x0D].contains(text.character(at: NSMaxRange(line) - 1))
+    }
+}
+
+/// Display columns of a line as a monospaced editor draws it: a tab advances to the next tab
+/// stop, East Asian wide characters and emoji take two columns, and combining marks none, as part
+/// of their grapheme cluster. Offsets are UTF-16, as in `NSString` and the editor's ranges.
+enum DisplayColumns {
+    /// The display column of `offset` within its line.
+    static func column(of offset: Int, in text: NSString, tabWidth: Int) -> Int {
+        let offset = min(max(offset, 0), text.length)
+        let line = text.lineRange(for: NSRange(location: offset, length: 0))
+        return column(ofUTF16Offset: offset - line.location,
+                      in: text.substring(with: NSRange(location: line.location, length: offset - line.location)),
+                      tabWidth: tabWidth)
+    }
+
+    /// The display column at UTF-16 `offset` in `line`, counting only whole grapheme clusters
+    /// before it.
+    static func column(ofUTF16Offset offset: Int, in line: String, tabWidth: Int) -> Int {
+        var column = 0
+        var utf16 = 0
+        for character in line {
+            let length = character.utf16.count
+            guard utf16 + length <= offset else { break }
+            column += width(of: character, at: column, tabWidth: tabWidth)
+            utf16 += length
+        }
+        return column
+    }
+
+    /// The UTF-16 offset in `line` (without its line break) that shows at display `column`, clamped
+    /// to the line's end. A column inside a tab or a wide character goes to the nearer side of
+    /// it, and to the far side when both are equally near, as VS Code does; the offset is always
+    /// on a grapheme cluster boundary.
+    static func offset(forColumn target: Int, in line: String, tabWidth: Int) -> Int {
+        var column = 0
+        var utf16 = 0
+        for character in line {
+            guard column < target else { break }
+            let next = column + width(of: character, at: column, tabWidth: tabWidth)
+            let length = character.utf16.count
+            if next > target {
+                return target - column < next - target ? utf16 : utf16 + length
+            }
+            column = next
+            utf16 += length
+        }
+        return utf16
+    }
+
+    /// The columns `character` takes when it starts at display `column`.
+    static func width(of character: Character, at column: Int, tabWidth: Int) -> Int {
+        if character == "\t" {
+            let tabWidth = max(tabWidth, 1)
+            return tabWidth - column % tabWidth
+        }
+        let scalars = character.unicodeScalars
+        guard let first = scalars.first else { return 0 }
+        if scalars.count == 1 {
+            switch first.properties.generalCategory {
+            case .nonspacingMark, .enclosingMark, .format, .control: return 0
+            default: break
+            }
+        }
+        if isWide(first) { return 2 }
+        // Emoji shown as emoji by default (flags among them), then text-default emoji turned into
+        // emoji by U+FE0F, keycaps and ZWJ sequences.
+        if first.properties.isEmojiPresentation { return 2 }
+        if scalars.count > 1, first.properties.isEmoji,
+           scalars.contains(where: { [0xFE0F, 0x20E3, 0x200D].contains($0.value) }) {
+            return 2
+        }
+        return 1
+    }
+
+    /// East Asian Wide and Fullwidth ranges (Unicode's EastAsianWidth.txt, W and F), coarsely.
+    private static func isWide(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x1100...0x115F, 0x231A...0x231B, 0x2329...0x232A, 0x2E80...0x303E, 0x3041...0x33FF,
+             0x3400...0x4DBF, 0x4E00...0x9FFF, 0xA000...0xA4CF, 0xA960...0xA97F, 0xAC00...0xD7A3,
+             0xF900...0xFAFF, 0xFE10...0xFE19, 0xFE30...0xFE6F, 0xFF00...0xFF60, 0xFFE0...0xFFE6,
+             0x16FE0...0x18AFF, 0x1B000...0x1B2FF, 0x1F200...0x1F2FF, 0x20000...0x2FFFD, 0x30000...0x3FFFD:
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -266,12 +352,14 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
 
     private func addCursor(_ selection: MultiCursorSelection, text: NSString, above: Bool) -> MultiCursorSelection? {
         let column = goalColumn.flatMap { $0.after == selection.ranges ? $0.column : nil }
-            ?? MultiCursor.column(of: (above ? selection.ranges.first : selection.ranges.last)?.location ?? 0,
-                                  in: text)
-        let result = MultiCursor.addCursor(selection, in: text, above: above, goalColumn: column)
+            ?? DisplayColumns.column(of: (above ? selection.ranges.first : selection.ranges.last)?.location ?? 0,
+                                     in: text, tabWidth: tabWidth)
+        let result = MultiCursor.addCursor(selection, in: text, above: above, goalColumn: column, tabWidth: tabWidth)
         goalColumn = result.map { (column, $0.ranges) }
         return result
     }
+
+    private var tabWidth: Int { max(controller?.tabWidth ?? 4, 1) }
 
     /// Whether the newest selection is still the word a ⌘D run started from a cursor selected.
     private func isWordwise(_ selection: MultiCursorSelection, _ text: NSString) -> Bool {

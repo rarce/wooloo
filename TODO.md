@@ -52,7 +52,8 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 
 ## Editor
 
-- [ ] Multiple cursors: ⌥⌘↑/↓ keeps the goal column in UTF-16 offsets, so tabs and wide characters shift it; use the text's display column instead. Also missing from Zed's set: ⌃⌘D (select previous occurrence, taken by macOS's Look Up unless disabled), Option-drag column selection, and ⌘U for selection changes made by clicks or arrows.
+- [x] Multiple cursors: ⌥⌘↑/↓ keep the goal as a display column (`DisplayColumns`), expanding tabs to the editor's tab width and counting wide characters and emoji as two columns, so they no longer shift it.
+- [ ] Multiple cursors still missing from Zed's set: ⌃⌘D (select previous occurrence, taken by macOS's Look Up unless disabled), Option-drag column selection, and ⌘U for selection changes made by clicks or arrows.
 
 ## Go to File and command palette
 

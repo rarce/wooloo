@@ -87,6 +87,75 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selection.ranges, [range(4, 3), range(18, 3)])
     }
 
+    func testDisplayColumnsMatchUTF16ColumnsForPlainASCII() {
+        let text = "let x = 1\n    return x\n" as NSString
+        for offset in 0...text.length {
+            let line = text.lineRange(for: range(min(offset, text.length)))
+            XCTAssertEqual(DisplayColumns.column(of: offset, in: text, tabWidth: 4), offset - line.location)
+        }
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 6, in: "    return x", tabWidth: 4), 6)
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 40, in: "    return x", tabWidth: 4), 12, "clamped")
+    }
+
+    func testAddingCursorsKeepsTheDisplayColumnAcrossTabs() throws {
+        let text = "\tx\n    abcd\n\t\tz\nab" as NSString
+        XCTAssertEqual(DisplayColumns.column(of: 1, in: text, tabWidth: 4), 4, "after the tab")
+        var selection = try XCTUnwrap(MultiCursor.addCursor(cursor(1), in: text, above: false,
+                                                            goalColumn: 4, tabWidth: 4))
+        XCTAssertEqual(selection.newest, range(7), "under the tab's end, not after one space")
+        selection = try XCTUnwrap(MultiCursor.addCursor(selection, in: text, above: false, goalColumn: 4, tabWidth: 4))
+        XCTAssertEqual(selection.newest, range(13), "between the two tabs")
+        selection = try XCTUnwrap(MultiCursor.addCursor(selection, in: text, above: false, goalColumn: 4, tabWidth: 4))
+        XCTAssertEqual(selection.newest, range(18), "clamped to the shorter last line")
+
+        // A column inside a tab goes to the nearer tab stop, the later one on a tie.
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 1, in: "\tx", tabWidth: 4), 0)
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 2, in: "\tx", tabWidth: 4), 1)
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 3, in: "\tx", tabWidth: 4), 1)
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 2, in: "\tx", tabWidth: 8), 0, "the editor's tab width")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 3, in: "ab\tx", tabWidth: 4), 4, "tab stops, not tab widths")
+    }
+
+    func testAddingCursorsKeepsTheDisplayColumnAcrossWideCharacters() throws {
+        let text = "日本語x\nabcdefgh" as NSString
+        XCTAssertEqual(DisplayColumns.column(of: 2, in: text, tabWidth: 4), 4)
+        let below = try XCTUnwrap(MultiCursor.addCursor(cursor(2), in: text, above: false, goalColumn: 4))
+        XCTAssertEqual(below.newest, range(9))
+        let above = try XCTUnwrap(MultiCursor.addCursor(cursor(12), in: text, above: true, goalColumn: 3))
+        XCTAssertEqual(above.newest, range(2), "column 3 is inside 本; the later boundary on a tie")
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 5, in: "日本語x", tabWidth: 4), 3, "inside 語")
+
+        // A selection keeps its display width.
+        let selected = MultiCursorSelection(ranges: [range(1, 1)], newest: range(1, 1))
+        let added = try XCTUnwrap(MultiCursor.addCursor(selected, in: text, above: false, goalColumn: 2))
+        XCTAssertEqual(added.newest, range(7, 2), "本 covers columns 2–4, \"cd\" below")
+    }
+
+    func testEmojiAndCombiningMarksAreWholeClustersOfTheirWidth() throws {
+        let family = "👨‍👩‍👧"
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "👍x", tabWidth: 4), 2)
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: family.utf16.count, in: family + "x", tabWidth: 4), 2,
+                       "a ZWJ sequence is one wide cluster")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "❤️x", tabWidth: 4), 2, "text emoji with U+FE0F")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 4, in: "🇨🇱x", tabWidth: 4), 2, "a flag")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "e\u{301}x", tabWidth: 4), 1, "e + combining acute")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 1, in: "\u{301}x", tabWidth: 4), 0, "a lone combining mark")
+
+        let text = "\(family)x\nabcdef\ne\u{301}xy" as NSString
+        let familyEnd = family.utf16.count
+        let secondLine = familyEnd + 2
+        let below = try XCTUnwrap(MultiCursor.addCursor(cursor(familyEnd), in: text, above: false, goalColumn: 2))
+        XCTAssertEqual(below.newest, range(secondLine + 2))
+        let into = try XCTUnwrap(MultiCursor.addCursor(cursor(secondLine + 1), in: text, above: true, goalColumn: 1))
+        XCTAssertEqual(into.newest, range(familyEnd), "never inside the ZWJ sequence")
+        let third = secondLine + 7
+        let combining = try XCTUnwrap(MultiCursor.addCursor(cursor(secondLine + 1), in: text, above: false,
+                                                            goalColumn: 1))
+        XCTAssertEqual(combining.newest, range(third + 2), "after the whole é, not between e and its accent")
+        let fromAccent = try XCTUnwrap(MultiCursor.addCursor(cursor(third + 3), in: text, above: true, goalColumn: 2))
+        XCTAssertEqual(fromAccent.newest, range(secondLine + 2))
+    }
+
     // MARK: - Editor
 
     func testCommandDTwiceThenTypingReplacesBothOccurrencesAsOneUndoStep() throws {
@@ -153,6 +222,13 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertTrue(coordinator.handle(key("n", [.command, .control])))
         textView.insertText("- ")
         XCTAssertEqual(textView.string, "- one\n- two\n- three\n")
+    }
+
+    func testAddCursorBelowUsesTheEditorsTabWidth() throws {
+        let (coordinator, textView) = try makeEditor(text: "\tx\n    ab\n")
+        textView.selectionManager.setSelectedRange(range(1))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertEqual(selectedRanges(textView), [range(1), range(7)], "a tab of 4 columns, not one")
     }
 
     func testCopyingSelectionsPastesOnePieceAtEachCursor() throws {
