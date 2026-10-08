@@ -353,6 +353,9 @@ final class QuickOpenModel: ObservableObject {
                 index = newIndex
                 refresh(keepingSelection: true)
             case .failure(let failure):
+                // No limit warning from an earlier listing stays beside the error.
+                isTruncated = false
+                isPartial = false
                 error = failure.localizedDescription
             }
         }

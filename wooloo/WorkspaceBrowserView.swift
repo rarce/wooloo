@@ -223,6 +223,8 @@ struct WorkspaceBrowserView: View {
                                     }
                                     if !model.showsChanges && listing.totalFiles > listing.files.count {
                                         hint("Showing \(listing.files.count) of \(listing.totalFiles) files; tracked files come first")
+                                    } else if !model.showsChanges && listing.partial {
+                                        hint("Showing files near the root only; deeper folders were not read")
                                     }
                                     Color.clear
                                         .frame(height: 0)

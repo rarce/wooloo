@@ -110,28 +110,63 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
-    func testRemoteGoToFileWithoutGitHasTheLocalLimits() throws {
-        let depth = WorkspaceFiles.quickOpenMaximumDepth
+    func testRemoteWalkWithoutGitMatchesTheLocalOne() throws {
+        let depth = WorkspaceFiles.folderWalkMaximumDepth
         let chain = (1..<depth).map { "d\($0)" }.joined(separator: "/")
         try sandbox.write(["a b.txt": "x\n", "d1/b.txt": "x\n", "\(chain)/last.txt": "x\n",
                            "\(chain)/d\(depth)/too-deep.txt": "x\n", "node_modules/pkg/index.js": "x\n",
-                           ".git/HEAD": "x\n"], in: "loose")
-        let listing = try WorkspaceFiles.quickOpenFiles(at: remote("loose"))
-        XCTAssertEqual(listing.files, ["a b.txt", "d1/b.txt", "\(chain)/last.txt"])
-        XCTAssertTrue(listing.partial)
-        let ignored = try WorkspaceFiles.quickOpenFiles(at: remote("loose"), includeIgnored: true)
-        XCTAssertTrue(ignored.files.contains("node_modules/pkg/index.js"))
-
+                           "app/.build/out.o": "x\n", ".git/HEAD": "x\n", "it's\nodd.txt": "x\n"], in: "loose")
+        try sandbox.sh("ln -s d1 loose/alias")
         try sandbox.write(["c.txt": "x\n", "sub/d.txt": "x\n"], in: "small")
-        let small = try WorkspaceFiles.quickOpenFiles(at: remote("small"))
-        XCTAssertEqual(small.files, ["c.txt", "sub/d.txt"])
-        XCTAssertFalse(small.partial)
+        try sandbox.sh("mkdir -p small/\(chain)/d\(depth) small/\(chain)/node_modules/x")
+        var wide = ["top.txt": "x\n"]
+        for index in 0..<300 { wide["w\(index)/f.txt"] = "x\n" }
+        try sandbox.write(wide, in: "wide")
 
-        defer { WorkspaceFiles.quickOpenWalkBudget = 2 }
-        WorkspaceFiles.quickOpenWalkBudget = 0
-        let timed = try WorkspaceFiles.quickOpenFiles(at: remote("loose"))
-        XCTAssertEqual(timed.files, ["a b.txt"], "Only the root is read once the time is up")
+        for name in ["loose", "small", "wide"] {
+            for includeIgnored in [false, true] {
+                XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: remote(name), includeIgnored: includeIgnored),
+                               try WorkspaceFiles.quickOpenFiles(at: sandbox.location(name), includeIgnored: includeIgnored),
+                               "\(name), ignored: \(includeIgnored)")
+            }
+            WorkspaceFiles.forgetRecentResults()
+            let remoteListing = try WorkspaceFiles.listing(at: remote(name))
+            let localListing = try WorkspaceFiles.listing(at: sandbox.location(name))
+            XCTAssertEqual(remoteListing.files, localListing.files, name)
+            XCTAssertEqual(remoteListing.ignored, localListing.ignored, name)
+            XCTAssertEqual(remoteListing.symbolicLinks, localListing.symbolicLinks, name)
+            XCTAssertEqual(remoteListing.partial, localListing.partial, name)
+        }
+        let loose = try WorkspaceFiles.quickOpenFiles(at: remote("loose"), includeIgnored: true)
+        XCTAssertEqual(loose.files, ["a b.txt", "alias", "app/.build/out.o", "d1/b.txt", "\(chain)/last.txt",
+                                     "it's\nodd.txt", "node_modules/pkg/index.js"])
+        XCTAssertEqual(loose.ignored, ["app/.build/out.o", "node_modules/pkg/index.js"])
+        XCTAssertTrue(loose.partial)
+        XCTAssertFalse(try WorkspaceFiles.quickOpenFiles(at: remote("small")).partial,
+                       "Empty or skipped folders at the depth limit leave nothing unread")
+        XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: remote("wide")).files.count, 301,
+                       "A level read in several batches is read in full")
+        WorkspaceFiles.forgetRecentResults()
+        let listing = try WorkspaceFiles.listing(at: remote("loose"))
+        XCTAssertEqual(listing.ignored.directories, ["app/.build", "node_modules"])
+        XCTAssertEqual(listing.symbolicLinks["alias"], WorkspaceSymbolicLink(target: "d1", isDirectory: true))
+        XCTAssertTrue(listing.partial)
+    }
+
+    /// A level stopped by the time limit ends the walk with what earlier levels found.
+    func testRemoteWalkStopsAtItsTimeBudgetWithoutFailing() throws {
+        defer { WorkspaceFiles.folderWalkBudget = 2 }
+        var files = ["top.txt": "x\n"]
+        for index in 0..<300 { files["w\(index)/nested/f.txt"] = "x\n" }
+        try sandbox.write(files, in: "wide")
+        WorkspaceFiles.folderWalkBudget = 0
+        let timed = try WorkspaceFiles.quickOpenFiles(at: remote("wide"))
+        XCTAssertEqual(timed.files, ["top.txt"], "Only the root is read once the time is up")
         XCTAssertTrue(timed.partial)
+        WorkspaceFiles.forgetRecentResults()
+        let listing = try WorkspaceFiles.listing(at: remote("wide"))
+        XCTAssertEqual(listing.files, ["top.txt"])
+        XCTAssertTrue(listing.partial)
     }
 
     func testRemoteIgnoredFoldersAreListedAndRead() throws {
