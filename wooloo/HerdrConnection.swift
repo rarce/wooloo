@@ -705,8 +705,9 @@ final class HerdrStore: ObservableObject {
                     break
                 }
                 do {
-                    // The stream blocks for as long as it is connected: keep it off the cooperative threads.
-                    try await BlockingWork.run(priority: .utility) {
+                    // The stream blocks for as long as it is connected: keep it off the cooperative
+                    // threads, and out of the limit on blocking work.
+                    try await BlockingWork.run(priority: .utility, limited: false) {
                         try stream.run(path: path) { newSnapshot in
                             Task { @MainActor in
                                 guard store.generation == currentGeneration else { return }
@@ -768,7 +769,12 @@ final class HerdrStore: ObservableObject {
                 }
                 guard let size, !Task.isCancelled else { stream.cancel(); break }
                 do {
-                    try await HerdrSurfaceStream.onOwnThread {
+                    // A blocking `run`, on a thread of its own at user-interactive priority. The
+                    // surfaces it reads are what the user is watching: in a `.utility` task, a loaded
+                    // machine starved the thread for up to 0.4 s at a time. It blocks for as long as
+                    // it is connected, so it takes no slot from the limit on blocking work.
+                    try await BlockingWork.run(qualityOfService: .userInteractive, limited: false,
+                                               name: "dev.wooloo.surface-stream") {
                         try stream.run(path: surfacePath, cols: size.0, rows: size.1,
                                        cellWidth: size.2, cellHeight: size.3) {
                             Task { @MainActor in

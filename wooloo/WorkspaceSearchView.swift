@@ -111,7 +111,7 @@ final class WorkspaceSearchModel: ObservableObject {
         let writable = paths.filter { !skipped.contains($0) }
         isReplacing = true
         Task {
-            let outcome = await BlockingWork.run(priority: .userInitiated) { () -> (count: Int, files: [String], failures: [String]) in
+            guard let outcome = try? await BlockingWork.run(priority: .userInitiated, { () -> (count: Int, files: [String], failures: [String]) in
                 var count = 0
                 var files: [String] = []
                 var failures: [String] = []
@@ -125,6 +125,9 @@ final class WorkspaceSearchModel: ObservableObject {
                     }
                 }
                 return (count, files, failures)
+            }) else {
+                isReplacing = false
+                return
             }
             isReplacing = false
             var parts = ["Replaced \(outcome.count) match\(outcome.count == 1 ? "" : "es") in \(outcome.files.count) file\(outcome.files.count == 1 ? "" : "s")"]

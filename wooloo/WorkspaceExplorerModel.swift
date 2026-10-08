@@ -260,9 +260,9 @@ final class WorkspaceExplorerModel: ObservableObject {
     }
 
     private func installLocalWatcher(at location: WorkspaceFileLocation, token: UUID) async {
-        let paths = await BlockingWork.run(priority: .utility) {
-            WorkspaceFiles.localGitWatchPaths(at: location).map(WorkspaceFileWatcher.canonicalPath)
-        }
+        guard let paths = await BlockingWork.run(priority: .utility, {
+            Optional(WorkspaceFiles.localGitWatchPaths(at: location).map(WorkspaceFileWatcher.canonicalPath))
+        }) else { return }
         guard !Task.isCancelled, monitoringToken == token else { return }
         gitWatchPaths = paths
         let next = WorkspaceFileWatcher(paths: [location.root] + paths) { [weak self] events in
@@ -389,9 +389,9 @@ final class WorkspaceExplorerModel: ObservableObject {
         guard !toRead.isEmpty else { return nil }
         let version = listingVersion
         return Task {
-            let results = await BlockingWork.run {
-                toRead.map { folder in (folder, Result { try WorkspaceFiles.folderContents(folder, at: location) }) }
-            }
+            guard let results = await BlockingWork.run({
+                Optional(toRead.map { folder in (folder, Result { try WorkspaceFiles.folderContents(folder, at: location) }) })
+            }) else { return }
             guard self.location?.identity == location.identity, listingVersion == version else { return }
             for (folder, result) in results {
                 switch result {

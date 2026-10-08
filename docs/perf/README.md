@@ -166,7 +166,7 @@ In the last run, Herdr answered in 2.7–4.2 ms and the surface was drawn 8–10
 
 ### The stream thread under load (2026-10-06)
 
-The surface stream, a blocking read loop, ran in a `.utility` task. On a loaded machine, the system ran other work first, and the thread stood still for up to 0.4 s while the main thread was idle. A frame read after such a pause was usually replaced in the mailbox by the next one before it was drawn, so arrival-to-draw latency did not show it. The pauses between draws and the keystroke echo did. The stream now runs on its own thread at `.userInteractive` priority (`HerdrSurfaceStream.onOwnThread`), which also stops it from holding a thread of Swift's cooperative pool. Decoding still takes about 0.1–0.3 ms a frame.
+The surface stream, a blocking read loop, ran in a `.utility` task. On a loaded machine, the system ran other work first, and the thread stood still for up to 0.4 s while the main thread was idle. A frame read after such a pause was usually replaced in the mailbox by the next one before it was drawn, so arrival-to-draw latency did not show it. The pauses between draws and the keystroke echo did. The stream now runs on its own thread at `.userInteractive` priority (`BlockingWork.run(qualityOfService: .userInteractive, limited: false)`), which also stops it from holding a thread of Swift's cooperative pool. Decoding still takes about 0.1–0.3 ms a frame.
 
 Measured with `WOOLOO_E2E_LOAD=16` on a 16-core machine, with the load average reaching 24–123 because other work was running too:
 

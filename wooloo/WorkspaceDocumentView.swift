@@ -449,9 +449,9 @@ struct WorkspaceDocumentView: View {
     private func loadGitBases() async {
         guard document.version != nil else { return }
         let (path, location) = (document.path, document.location)
-        let bases = await BlockingWork.run(priority: .utility) {
-            WorkspaceFiles.gitBases(path, at: location)
-        }
+        guard let bases = await BlockingWork.run(priority: .utility, {
+            Optional(WorkspaceFiles.gitBases(path, at: location))
+        }) else { return }
         guard !Task.isCancelled else { return }
         lineChangeCoordinator.setBases(head: bases.head, index: bases.index)
     }

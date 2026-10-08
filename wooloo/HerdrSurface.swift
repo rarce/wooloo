@@ -762,19 +762,6 @@ final class HerdrSurfaceStream {
     private var cancelled = false
     private var bootID: String?
 
-    /// Runs `body`, a blocking `run`, on a thread of its own at user-interactive priority. The
-    /// surfaces it reads are what the user is watching: in a `.utility` task, a loaded machine
-    /// starved the thread for up to 0.4 s at a time, and a blocking read also holds a thread of
-    /// Swift's small cooperative pool.
-    static func onOwnThread(_ body: @escaping () throws -> Void) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let thread = Thread { continuation.resume(with: Result { try body() }) }
-            thread.name = "dev.wooloo.surface-stream"
-            thread.qualityOfService = .userInteractive
-            thread.start()
-        }
-    }
-
     func cancel() {
         lock.lock()
         cancelled = true
