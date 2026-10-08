@@ -319,20 +319,34 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
     /// has a thread per core; a process that waited there on work queued to a global queue could
     /// starve that queue and hang every load, as happened on CI's small runners.
     func testManyConcurrentProcessesFinish() async throws {
-        executionTimeAllowance = 60
         let count = ProcessInfo.processInfo.activeProcessorCount * 4
-        let started = ContinuousClock.now
-        let finished = await withTaskGroup(of: Bool.self) { group in
-            for _ in 0..<count {
-                group.addTask {
-                    let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "sleep 0.3; echo out; echo err >&2"], limit: 1_000)
-                    return output == Data("out\n".utf8)
+        let done = expectation(description: "Every process finished")
+        let finished = Counter()
+        // Not awaited directly: if the runs hang, the expectation fails the test instead of hanging it.
+        Task.detached {
+            await withTaskGroup(of: Bool.self) { group in
+                for _ in 0..<count {
+                    group.addTask {
+                        let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "sleep 0.3; echo out; echo err >&2"],
+                                                             limit: 1_000)
+                        return output == Data("out\n".utf8)
+                    }
                 }
+                for await succeeded in group where succeeded { finished.increment() }
             }
-            return await group.reduce(0) { $0 + ($1 ? 1 : 0) }
+            done.fulfill()
         }
-        XCTAssertEqual(finished, count)
-        XCTAssertLessThan(ContinuousClock.now - started, .seconds(20))
+        await fulfillment(of: [done], timeout: 20)
+        XCTAssertEqual(finished.value, count)
+    }
+
+    /// A command that prints while it reads its input, beyond what a pipe holds, finishes; and one
+    /// that exits before reading its input reports its failure instead of ending the app.
+    func testInputAndOutputLargerThanAPipe() throws {
+        let input = Data(repeating: UInt8(ascii: "x"), count: 1_000_000)
+        let echoed = try WorkspaceFiles.run("/bin/cat", [], input: input, limit: 2_000_000, timeout: 10)
+        XCTAssertEqual(echoed.count, input.count)
+        XCTAssertThrowsError(try WorkspaceFiles.run("/bin/sh", ["-c", "exit 3"], input: input, limit: 1_000, timeout: 10))
     }
 
     // MARK: Branches and worktrees
@@ -517,4 +531,12 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(try WorkspaceFiles.permalink("a b.swift", at: sandbox.location("repo/src")).absoluteString,
                        "https://github.com/owner/repo/blob/\(head)/src/a%20b.swift")
     }
+}
+
+/// A count shared by concurrent tasks.
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
 }

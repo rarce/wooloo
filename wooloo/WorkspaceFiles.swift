@@ -1494,23 +1494,43 @@ enum WorkspaceFiles {
         timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler { if process.isRunning { process.terminate() } }
         timer.resume()
+        // Input is written on its own thread too, so a command that prints while it reads cannot fill
+        // the output pipe and wait on us while we wait on it. A command that exits early closes the
+        // pipe; writing then fails with EPIPE instead of a SIGPIPE that would end the app.
         var inputError: Error?
+        let inputWritten = DispatchSemaphore(value: 0)
         if let input, let source {
-            do { try source.fileHandleForWriting.write(contentsOf: input) }
-            catch { inputError = error }
-            try? source.fileHandleForWriting.close()
+            let writer = source.fileHandleForWriting
+            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
+            Thread {
+                do { try writer.write(contentsOf: input) }
+                catch { inputError = error }
+                try? writer.close()
+                inputWritten.signal()
+            }.start()
+        } else {
+            inputWritten.signal()
         }
         var data = Data()
-        while let chunk = try output.fileHandleForReading.read(upToCount: 65_536), !chunk.isEmpty {
-            data.append(chunk)
-            if data.count > limit {
-                if process.isRunning { process.terminate() }
-                break
+        var readError: Error?
+        do {
+            while let chunk = try output.fileHandleForReading.read(upToCount: 65_536), !chunk.isEmpty {
+                data.append(chunk)
+                if data.count > limit {
+                    if process.isRunning { process.terminate() }
+                    break
+                }
             }
+        } catch {
+            // Stop the command rather than leave it, its threads and its timer behind.
+            readError = error
+            if process.isRunning { process.terminate() }
         }
         process.waitUntilExit()
         timer.cancel()
         errorsRead.wait()
+        inputWritten.wait()
+        if let readError { throw readError }
         outputBytes = data.count
         // A signal means the timeout or the output limit stopped the process.
         status = process.terminationReason == .exit ? process.terminationStatus : -process.terminationStatus
