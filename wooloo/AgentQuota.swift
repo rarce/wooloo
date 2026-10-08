@@ -322,9 +322,9 @@ actor AgentQuotaReader {
         if keychain { nextKeychainRead = now.addingTimeInterval(5 * 60) }
         let files: AgentQuotaFiles
         do {
-            files = try await Task.detached { [machine, environment] in
+            files = try await BlockingWork.run { [machine, environment] in
                 try AgentQuotaProbe.read(machine: machine, keychain: keychain, environment: environment)
-            }.value
+            }
         } catch {
             return [.claude: .failure(error), .codex: .failure(error)]
         }

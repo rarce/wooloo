@@ -305,13 +305,13 @@ final class WorkspaceDocumentStore: ObservableObject {
         guard !WorkspaceImage.supports(path) else { return "Image files can only be previewed; choose a text file extension" }
         let (text, location) = (document.text, document.location)
         documents[index].isSaving = true
-        let result = await Task.detached(priority: .userInitiated) {
+        let result = await BlockingWork.run(priority: .userInitiated) {
             Result { () throws -> String in
                 try WorkspaceFiles.createFile(path, at: location)
                 return try WorkspaceFiles.save(text, path: path, expectedVersion: WorkspaceFiles.gitBlobHash(Data()),
                                                at: location)
             }
-        }.value
+        }
         guard let currentIndex = documents.firstIndex(where: { $0.id == id }) else { return nil }
         documents[currentIndex].isSaving = false
         switch result {
@@ -393,7 +393,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             defer {
                 TerminalPipelineMetrics.spanShown("open-\(kind)", start: start, detail: location.isLocal ? "local" : "ssh")
             }
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> LoadedContents in
                     if kind == .commit, let commit {
                         return .text(WorkspaceFileContents(text: try WorkspaceFiles.commitDiff(
@@ -407,7 +407,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                     if isImage { return .image(try WorkspaceImage.read(path, at: location)) }
                     return .text(try WorkspaceFiles.read(path, at: location))
                 }
-            }.value
+            }
             guard let index = documents.firstIndex(where: { $0.id == id && $0.loadRequest == request }) else { return }
             documents[index].isLoading = false
             switch result {
@@ -456,10 +456,10 @@ final class WorkspaceDocumentStore: ObservableObject {
         let document = documents[index]
         documents[index].isSaving = true
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { try WorkspaceFiles.save(document.text, path: document.path,
                                                  expectedVersion: version, at: document.location) }
-            }.value
+            }
             guard let currentIndex = documents.firstIndex(where: { $0.id == id && $0.backupID == document.backupID }) else { return }
             documents[currentIndex].isSaving = false
             switch result {

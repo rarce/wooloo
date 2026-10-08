@@ -48,6 +48,7 @@
 		A1000000000000000000005A /* DocumentFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005B /* DocumentFind.swift */; };
 		A10000000000000000000042 /* WorkspaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000043 /* WorkspaceSearch.swift */; };
 		A1000000000000000000005C /* HostStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005D /* HostStats.swift */; };
+		A1000000000000000000C201 /* BlockingWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000C202 /* BlockingWork.swift */; };
 		A1000000000000000000005E /* HostStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005F /* HostStatsView.swift */; };
 		A1D000000000000000000101 /* RemoteAccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000101 /* RemoteAccessView.swift */; };
 		A1D000000000000000000100 /* RemoteAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000100 /* RemoteAccess.swift */; };
@@ -174,6 +175,7 @@
 		A1000000000000000000005B /* DocumentFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentFind.swift; sourceTree = "<group>"; };
 		A10000000000000000000043 /* WorkspaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearch.swift; sourceTree = "<group>"; };
 		A1000000000000000000005D /* HostStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStats.swift; sourceTree = "<group>"; };
+		A1000000000000000000C202 /* BlockingWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingWork.swift; sourceTree = "<group>"; };
 		A1000000000000000000005F /* HostStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsView.swift; sourceTree = "<group>"; };
 		A1D100000000000000000101 /* RemoteAccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessView.swift; sourceTree = "<group>"; };
 		A1D100000000000000000100 /* RemoteAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccess.swift; sourceTree = "<group>"; };
@@ -302,6 +304,7 @@
 				A100000000000000000000F1 /* EditorMultiCursor.swift */,
 				A10000000000000000000043 /* WorkspaceSearch.swift */,
 				A1000000000000000000005D /* HostStats.swift */,
+				A1000000000000000000C202 /* BlockingWork.swift */,
 				A1000000000000000000005F /* HostStatsView.swift */,
 				A1D100000000000000000101 /* RemoteAccessView.swift */,
 				A1D100000000000000000100 /* RemoteAccess.swift */,
@@ -557,6 +560,7 @@
 				A100000000000000000000F0 /* EditorMultiCursor.swift in Sources */,
 				A10000000000000000000042 /* WorkspaceSearch.swift in Sources */,
 				A1000000000000000000005C /* HostStats.swift in Sources */,
+				A1000000000000000000C201 /* BlockingWork.swift in Sources */,
 				A1000000000000000000005E /* HostStatsView.swift in Sources */,
 				A1D000000000000000000101 /* RemoteAccessView.swift in Sources */,
 				A1D000000000000000000100 /* RemoteAccess.swift in Sources */,

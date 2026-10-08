@@ -332,12 +332,12 @@ final class QuickOpenModel: ObservableObject {
         let load = loadFiles
         let includesIgnored = includesIgnored
         Task {
-            let outcome = await Task.detached(priority: .userInitiated) {
+            let outcome = await BlockingWork.run(priority: .userInitiated) {
                 Result { () -> (QuickOpenIndex, QuickOpenListing) in
                     let listing = try load(location, includesIgnored)
                     return (QuickOpenIndex(listing.files), listing)
                 }
-            }.value
+            }
             guard generation == loadGeneration else { return }
             isIndexing = false
             switch outcome {

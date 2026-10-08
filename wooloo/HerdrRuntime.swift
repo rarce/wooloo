@@ -347,9 +347,9 @@ final class HerdrRuntimeModel: ObservableObject {
                 }
                 selected = executable
                 // Exercise the selected binary without starting or stopping any session.
-                _ = try await Task.detached {
+                _ = try await BlockingWork.run {
                     try WorkspaceFiles.run(executable.path, ["api", "schema", "--json"], limit: 8_000_000)
-                }.value
+                }
             }
             progress = "Connecting to Herdr…"
             try await service.ensureServer(executable: selected, session: session,

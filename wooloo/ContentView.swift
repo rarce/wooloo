@@ -601,7 +601,7 @@ struct ContentView: View {
 
     private func loadMachines() {
         Task {
-            let result = await Task.detached { Result { try WorkspaceFiles.machines() } }.value
+            let result = await BlockingWork.run { Result { try WorkspaceFiles.machines() } }
             guard case .success(let profiles) = result else { return }
             machines = profiles
             // A machine removed from Herdr's list falls back to this Mac.

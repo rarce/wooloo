@@ -135,12 +135,12 @@ final class HerdrSettingsModel: ObservableObject {
         isSaving = true
         message = "Validating with Herdr…"
         let task = Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result {
                     try HerdrConfigFile.saveAndReload(text, original: old, at: url,
                                                       socketPath: socketPath, session: session)
                 }
-            }.value
+            }
             switch result {
             case .success(let status):
                 original = text

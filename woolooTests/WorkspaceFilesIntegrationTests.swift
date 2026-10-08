@@ -338,6 +338,34 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(finished.value, count)
     }
 
+    /// Loads run through `BlockingWork` leave Swift's cooperative threads free: with more slow
+    /// processes running than there are cores, an unrelated async task still runs at once.
+    func testSlowProcessLoadsLeaveCooperativeThreadsFree() throws {
+        let count = ProcessInfo.processInfo.activeProcessorCount * 3
+        let runs = DispatchGroup()
+        let finished = Locked(0)
+        for _ in 0..<count {
+            runs.enter()
+            Task.detached {
+                let output = try? await BlockingWork.run(priority: .utility) {
+                    try WorkspaceFiles.run("/bin/sh", ["-c", "sleep 1.5; echo out"], limit: 1_000)
+                }
+                if output == Data("out\n".utf8) { finished.withLock { $0 += 1 } }
+                runs.leave()
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        // Waited on from this test's own thread, so a regression fails instead of hanging.
+        let progressed = DispatchSemaphore(value: 0)
+        Task.detached {
+            await Task.yield()
+            progressed.signal()
+        }
+        XCTAssertEqual(progressed.wait(timeout: .now() + 0.5), .success, "An unrelated task ran while the loads did")
+        XCTAssertEqual(runs.wait(timeout: .now() + 20), .success, "Every load finished")
+        XCTAssertEqual(finished.value, count)
+    }
+
     /// A command that prints while it reads its input, beyond what a pipe holds, finishes; and one
     /// that exits before reading its input reports its failure instead of ending the app.
     func testInputAndOutputLargerThanAPipe() throws {
