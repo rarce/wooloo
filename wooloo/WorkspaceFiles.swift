@@ -95,6 +95,23 @@ struct WorkspaceFileListing {
     /// are listed without their contents, which the explorer reads when one is expanded.
     var ignored = WorkspaceIgnoredEntries()
     var symbolicLinks: [String: WorkspaceSymbolicLink] = [:]
+    /// True when a folder outside a repository was read only near its root (`WorkspaceFolderWalk`).
+    var partial = false
+}
+
+/// The files of a folder outside a Git repository, as `WorkspaceFiles.folderWalk` reads them.
+struct WorkspaceFolderWalk: Equatable {
+    /// Files found, at most `WorkspaceFiles.maximumFiles`, the shallow ones kept first.
+    var files: [String] = []
+    /// Files inside skipped folders, when those were read.
+    var ignoredFiles: Set<String> = []
+    /// Skipped folders, when they were not read.
+    var skippedFolders: [String] = []
+    /// True when folders with something in them were left unread at the depth or time limit.
+    var partial = false
+    /// True when more than `WorkspaceFiles.maximumFiles` files were found.
+    var truncated = false
+    var symbolicLinks: [String: WorkspaceSymbolicLink] = [:]
 }
 
 struct WorkspaceSymbolicLink: Equatable {
@@ -108,6 +125,9 @@ struct QuickOpenListing: Equatable, Sendable {
     var files: [String] = []
     /// True when the location has more files than `WorkspaceFiles.maximumFiles`.
     var truncated = false
+    /// True when Go to File stopped walking a folder outside a repository at its depth or time
+    /// limit, so deeper files may be missing.
+    var partial = false
     /// The kind of change of each changed file.
     var changes: [String: WorkspaceFileChange.Kind] = [:]
     /// Files Git ignores, listed when asked for.
@@ -377,7 +397,7 @@ enum WorkspaceFiles {
         } else {
             hasGit = true
         }
-        var listing = try makeListing(hasGit ? results : nil) { try filesWithoutGit(at: location) }
+        var listing = try makeListing(hasGit ? results : nil) { try folderWalk(at: location, readingSkipped: false) }
         listing.symbolicLinks = try localSymbolicLinks(listing.files + listing.ignored.directories, root: location.root)
         return listing
     }
@@ -393,14 +413,10 @@ enum WorkspaceFiles {
         + [GitSection([], limit: maximumListingBytes, script: symbolicLinkListingScript)]
 
     /// A listing from the outputs of `listingSections`, or, outside a work tree (nil), from
-    /// the files `withoutGit` finds.
+    /// the walk `withoutGit` makes.
     private static func makeListing(_ results: ArraySlice<Result<Data, Error>>?,
-                                    withoutGit: () throws -> [String]) throws -> WorkspaceFileListing {
-        guard let results else {
-            let files = try withoutGit()
-            return WorkspaceFileListing(files: files, changes: [], hasGit: false, totalFiles: files.count,
-                                        ignored: WorkspaceIgnoredEntries())
-        }
+                                    withoutGit: () throws -> WorkspaceFolderWalk) throws -> WorkspaceFileListing {
+        guard let results else { return nonGitListing(try withoutGit()) }
         let outputs = Array(results)
         let (tracked, untracked) = trackedFirst(nulStrings(try outputs[0].get()))
         let ignored = WorkspaceIgnoredEntries(gitEntries: nulStrings(try outputs[1].get()))
@@ -417,8 +433,7 @@ enum WorkspaceFiles {
     /// Lighter than `listing`, which also lists ignored folders for the explorer tree.
     static func quickOpenFiles(at location: WorkspaceFileLocation, includeIgnored: Bool = false) throws -> QuickOpenListing {
         guard (try? git(location, ["rev-parse", "--is-inside-work-tree"], limit: 100)) != nil else {
-            let files = try filesWithoutGit(at: location)
-            return QuickOpenListing(files: files, truncated: files.count >= maximumFiles)
+            return try quickOpenFilesWithoutGit(at: location, includeIgnored: includeIgnored)
         }
         let data = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
                            limit: maximumListingBytes)
@@ -438,20 +453,156 @@ enum WorkspaceFiles {
                                 changes: changes, ignored: ignored)
     }
 
-    /// Every file under a folder that is not in a Git repository, skipping `.git` folders.
-    private static func filesWithoutGit(at location: WorkspaceFileLocation) throws -> [String] {
-        guard let machine = location.machine else { return try localFiles(root: location.root) }
-        return filesFound(try ssh(machine, findWords(location).map(quote).joined(separator: " "), limit: maximumListingBytes))
+    /// How many folders down the walk of a folder outside a repository reads.
+    static let folderWalkMaximumDepth = 12
+    /// Seconds the walk of a folder outside a repository spends after reading the root; tests replace it.
+    static var folderWalkBudget: TimeInterval = 2
+    /// Folders the walk outside a repository lists without reading, as Git lists ignored folders,
+    /// unless ignored files are asked for. `.git` is never read.
+    static let folderWalkSkippedFolders = ["node_modules", ".build", "DerivedData", "__pycache__", ".venv"]
+
+    /// Go to File's files in a folder outside a repository, from `folderWalk`.
+    private static func quickOpenFilesWithoutGit(at location: WorkspaceFileLocation,
+                                                 includeIgnored: Bool) throws -> QuickOpenListing {
+        let walk = try folderWalk(at: location, readingSkipped: includeIgnored)
+        return QuickOpenListing(files: walk.files, truncated: walk.truncated, partial: walk.partial,
+                                ignored: walk.ignoredFiles)
     }
 
-    /// The remote command that lists every file under a folder that is not in a repository.
-    private static func findWords(_ location: WorkspaceFileLocation) -> [String] {
-        ["sh", "-c", #"cd "$1" && find . -name .git -prune -o \( -type f -o -type l \) -print0"#, "sh", location.root]
+    /// The explorer's listing of a folder outside a repository: skipped folders are listed like
+    /// ignored ones, read when expanded.
+    private static func nonGitListing(_ walk: WorkspaceFolderWalk) -> WorkspaceFileListing {
+        WorkspaceFileListing(files: walk.files, changes: [], hasGit: false, totalFiles: walk.files.count,
+                             ignored: WorkspaceIgnoredEntries(gitEntries: walk.skippedFolders.map { $0 + "/" }),
+                             symbolicLinks: walk.symbolicLinks, partial: walk.partial || walk.truncated)
     }
 
-    /// The files of `findWords`'s output.
-    private static func filesFound(_ data: Data) -> [String] {
-        nulStrings(data).map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }.sorted().prefix(maximumFiles).map { $0 }
+    /// The files of a folder outside a repository, which may be as large as /private/tmp, for the
+    /// explorer and Go to File. The walk reads one folder level at a time, so it always has the
+    /// files nearest the root, and stops after `folderWalkMaximumDepth` levels or once
+    /// `folderWalkBudget` seconds have passed after the root.
+    static func folderWalk(at location: WorkspaceFileLocation, readingSkipped: Bool) throws -> WorkspaceFolderWalk {
+        guard let machine = location.machine else {
+            return finished(localFolderWalk(root: location.root, readingSkipped: readingSkipped), readingSkipped: readingSkipped)
+        }
+        let words = folderWalkWords(location, readingSkipped: readingSkipped, links: false)
+        let data = try ssh(machine, words.map(quote).joined(separator: " "), limit: maximumListingBytes)
+        return finished(folderWalk(records: nulStrings(data)), readingSkipped: readingSkipped)
+    }
+
+    /// `folderWalk` on this Mac.
+    private static func localFolderWalk(root: String, readingSkipped: Bool) -> WorkspaceFolderWalk {
+        let deadline = Date().addingTimeInterval(folderWalkBudget)
+        let skipped = readingSkipped ? [] : Set(folderWalkSkippedFolders)
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey, .isPackageKey]
+        func entries(_ url: URL) -> [URL] {
+            ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: Array(keys))) ?? [])
+                .filter { $0.lastPathComponent != ".git" }
+        }
+        var walk = WorkspaceFolderWalk()
+        var level = [(url: URL(fileURLWithPath: root), path: "")]
+        var depth = 1
+        while !level.isEmpty {
+            if depth > folderWalkMaximumDepth {
+                // Folders at the limit count as unread only when something besides skipped folders is in them.
+                walk.partial = level.contains { entries($0.url).contains { !skipped.contains($0.lastPathComponent) } }
+                break
+            }
+            var next: [(url: URL, path: String)] = []
+            for folder in level {
+                // The root is always read in full.
+                if depth > 1, Date() >= deadline {
+                    walk.partial = true
+                    return walk
+                }
+                for entry in entries(folder.url) {
+                    let name = entry.lastPathComponent
+                    let path = folder.path.isEmpty ? name : folder.path + "/" + name
+                    let values = try? entry.resourceValues(forKeys: keys)
+                    if values?.isRegularFile == true || values?.isSymbolicLink == true {
+                        walk.files.append(path)
+                        if walk.files.count > maximumFiles { return walk }
+                    } else if values?.isDirectory == true, values?.isPackage != true {
+                        if skipped.contains(name) { walk.skippedFolders.append(path) } else { next.append((entry, path)) }
+                    }
+                }
+            }
+            level = next
+            depth += 1
+        }
+        return walk
+    }
+
+    /// A walk from the records `folderWalkWords` prints: files, skipped folders ending in "/", and
+    /// `wooloo-partial` when folders were left unread.
+    private static func folderWalk(records: some Sequence<String>) -> WorkspaceFolderWalk {
+        var walk = WorkspaceFolderWalk()
+        for record in records {
+            guard record != "wooloo-partial" else {
+                walk.partial = true
+                continue
+            }
+            var path = record.hasPrefix("./") ? String(record.dropFirst(2)) : record
+            guard !path.isEmpty else { continue }
+            if path.hasSuffix("/") {
+                path.removeLast()
+                walk.skippedFolders.append(path)
+            } else {
+                walk.files.append(path)
+            }
+        }
+        return walk
+    }
+
+    /// Cuts a walk to `maximumFiles`, keeping the shallow files it found first, sorts it, and marks
+    /// the files read inside skipped folders as ignored.
+    static func finished(_ walk: WorkspaceFolderWalk, readingSkipped: Bool) -> WorkspaceFolderWalk {
+        var walk = walk
+        if walk.files.count > maximumFiles {
+            walk.files = Array(walk.files.prefix(maximumFiles))
+            walk.truncated = true
+        }
+        walk.files.sort()
+        walk.skippedFolders.sort()
+        if readingSkipped {
+            let names = Set(folderWalkSkippedFolders)
+            walk.ignoredFiles = Set(walk.files.filter { $0.split(separator: "/").dropLast().contains { names.contains(String($0)) } })
+        }
+        return walk
+    }
+
+    /// The remote command of `folderWalk`, with the same limits as on this Mac. Each level is read
+    /// by `find` on the folders the previous one found, in batches that stop once the time is up,
+    /// so a slow level ends the walk with what was found instead of reaching the SSH timeout.
+    /// Unreadable folders are skipped, as they are locally. With `links`, link metadata follows a
+    /// `wooloo-symbolic-links` record.
+    private static func folderWalkWords(_ location: WorkspaceFileLocation, readingSkipped: Bool, links: Bool) -> [String] {
+        let skipped = readingSkipped ? [] : folderWalkSkippedFolders
+        let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
+        let entries = #"find "$@" -mindepth 1 -maxdepth 1 ! -name .git"#
+        var batch = #"if [ "$d" -gt 1 ] && [ "$(date +%s)" -ge "$end" ]; then exit 255; fi; "#
+            + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
+            + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
+        if links { batch += entries + #" -type l -print0 2>/dev/null >> "$t/links"; "# }
+        if !skipped.isEmpty {
+            batch += entries + #" -type d \( "# + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
+                + #" \) -exec printf '%s/\0' {} + 2>/dev/null; "#
+        }
+        batch += "exit 0"
+        let check = entries + unskipped + " -print 2>/dev/null | head -n 1; exit 0"
+        var script = #"cd "$1" || exit 1; t=$(mktemp -d) || exit 1; trap 'rm -rf "$t"' EXIT; "#
+            + "b=" + quote(batch) + "; c=" + quote(check) + "; "
+            + "end=$(( $(date +%s) + " + String(Int(folderWalkBudget.rounded(.up))) + " )); d=1; export end t d; "
+            + #"printf '.\0' > "$t/level"; : > "$t/links"; while [ -s "$t/level" ]; do "#
+            + #"if [ "$d" -gt "# + String(folderWalkMaximumDepth) + " ]; then "
+            + #"[ -n "$(xargs -0 sh -c "$c" sh < "$t/level" | head -n 1)" ] && printf 'wooloo-partial\0'; break; fi; "#
+            + #": > "$t/next"; if ! xargs -0 -n 256 sh -c "$b" sh < "$t/level"; then printf 'wooloo-partial\0'; break; fi; "#
+            + #"mv "$t/next" "$t/level"; d=$((d + 1)); done; "#
+        if links {
+            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && xargs -0 sh -c "#
+                + quote(symbolicLinkMetadataScript) + " sh < \"$t/links\"; "
+        }
+        return ["sh", "-c", script + "exit 0", "sh", location.root]
     }
 
     /// What is directly inside `folder` ("" is the root), for an ignored folder being expanded.
@@ -810,8 +961,9 @@ enum WorkspaceFiles {
         let sections = branchStatusSections + (knownRoot == nil ? [GitSection.root] : []) + listingSections
             + repositorySections
         let batch = try remoteGitBatch(machine, location, sections,
-                                       otherwise: knownRoot == nil ? (["sh", "-c", "cd " + quote(location.root)
-                                           + " && " + plainListingScript], maximumListingBytes) : nil)
+                                       otherwise: knownRoot == nil
+                                           ? (folderWalkWords(location, readingSkipped: false, links: true), maximumListingBytes)
+                                           : nil)
         var results = batch.results[...]
         let status = Result { try branchStatus(from: results.prefix(branchStatusSections.count)) }
         results = results.dropFirst(branchStatusSections.count)
@@ -827,12 +979,13 @@ enum WorkspaceFiles {
                 let data = try (batch.otherwise ?? .failure(WorkspaceFileError.message("Remote command output is incomplete"))).get()
                 let records = nulStrings(data)
                 let separator = records.firstIndex(of: "wooloo-symbolic-links") ?? records.count
-                let files = filesFound(Data((records.prefix(separator).joined(separator: "\0") + "\0").utf8))
+                var walk = finished(folderWalk(records: records.prefix(separator)), readingSkipped: false)
                 let metadata = Data((records.dropFirst(separator + 1).joined(separator: "\0") + "\0").utf8)
-                return WorkspaceFileListing(files: files, changes: [], hasGit: false, totalFiles: files.count,
-                                            symbolicLinks: parseSymbolicLinks(metadata))
+                let listed = Set(walk.files)
+                walk.symbolicLinks = parseSymbolicLinks(metadata).filter { listed.contains($0.key) }
+                return nonGitListing(walk)
             }
-            return try makeListing(listingResults) { [] }
+            return try makeListing(listingResults) { WorkspaceFolderWalk() }
         }
         let repository = Result { () throws -> WorkspaceRepositoryListing in
             if let rootError { throw rootError }
@@ -1315,11 +1468,6 @@ enum WorkspaceFiles {
         + "git ls-files --others --ignored --exclude-standard --directory -z -- .; } | xargs -0 sh -c "
         + quote(symbolicLinkMetadataScript) + " sh"
 
-    private static let plainListingScript =
-        #"find . -name .git -prune -o \( -type f -o -type l \) -print0; printf 'wooloo-symbolic-links\0'; "#
-        + #"find . -name .git -prune -o -type l -print0 | xargs -0 sh -c "#
-        + quote(symbolicLinkMetadataScript) + " sh"
-
     private static func parseSymbolicLinks(_ data: Data) -> [String: WorkspaceSymbolicLink] {
         let entries = nulStrings(data)
         var links: [String: WorkspaceSymbolicLink] = [:]
@@ -1340,27 +1488,6 @@ enum WorkspaceFiles {
             links[path] = WorkspaceSymbolicLink(target: target, isDirectory: isDirectory.boolValue)
         }
         return links
-    }
-
-    private static func localFiles(root: String) throws -> [String] {
-        let rootURL = URL(fileURLWithPath: root).resolvingSymlinksInPath()
-        guard let enumerator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-                                                               options: [.skipsPackageDescendants]) else { return [] }
-        var files: [String] = []
-        for case let url as URL in enumerator {
-            if url.lastPathComponent == ".git" { enumerator.skipDescendants(); continue }
-            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            if values?.isRegularFile == true || values?.isSymbolicLink == true {
-                // Foundation may enumerate /private/tmp while its resolved root uses /tmp.
-                // Normalize only the parent so the final component keeps the link's name.
-                let item = url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent)
-                guard item.path.hasPrefix(rootURL.path + "/") else { continue }
-                let path = String(item.path.dropFirst(rootURL.path.count + 1))
-                files.append(path)
-                if files.count >= maximumFiles { break }
-            }
-        }
-        return files.sorted()
     }
 
     private static func localFileURL(_ path: String, root: String) throws -> URL {
@@ -1589,11 +1716,16 @@ extension WorkspaceFiles {
     }
 
     /// Creates an empty file, and any missing folders above it; `path` may name a subfolder.
-    static func createFile(_ path: String, at location: WorkspaceFileLocation) throws {
+    /// Creates an empty file. With `keepingExisting`, a file already at `path` is left as it is
+    /// and false is returned, for Go to File, whose listing may not have reached it.
+    @discardableResult
+    static func createFile(_ path: String, at location: WorkspaceFileLocation, keepingExisting: Bool = false) throws -> Bool {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
-        _ = try shell("p=\(quote("./" + path)); " + refuseOutside("p") + refuseExisting("p")
-                      + "mkdir -p \"$(dirname \"$p\")\" && : > \"$p\"", at: location, limit: 4_000)
+        let existing = keepingExisting ? "if [ -f \"$p\" ]; then echo existing; exit 0; fi; " : ""
+        let output = try shell("p=\(quote("./" + path)); " + refuseOutside("p") + existing + refuseExisting("p")
+                               + "mkdir -p \"$(dirname \"$p\")\" && : > \"$p\"", at: location, limit: 4_000)
+        return String(decoding: output, as: UTF8.self) != "existing\n"
     }
 
     static func createFolder(_ path: String, at location: WorkspaceFileLocation) throws {

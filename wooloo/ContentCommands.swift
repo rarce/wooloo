@@ -265,15 +265,17 @@ struct ContentCommands {
             WorkspaceDocumentReveal(line: line, range: query.column.map { NSRange(location: max($0 - 1, 0), length: 0) })
         }
         if let path = quickOpen.selectedCreatePath {
+            // A listing cut at its limits may not have reached a file that exists; that file is opened.
+            let keepingExisting = quickOpen.isPartial || quickOpen.isTruncated
             return Task { [documents, window] in
                 let created = await BlockingWork.run(priority: .userInitiated) {
-                    Result { try WorkspaceFiles.createFile(path, at: location) }
+                    Result { try WorkspaceFiles.createFile(path, at: location, keepingExisting: keepingExisting) }
                 }
                 switch created {
-                case .success:
+                case .success(let isNew):
                     quickOpen.dismiss(restoringFocus: false)
-                    documents.open(.file, path: path, at: location, focus: true)
-                    window.fileRefreshVersion += 1
+                    documents.open(.file, path: path, at: location, reveal: isNew ? nil : reveal, focus: true)
+                    if isNew { window.fileRefreshVersion += 1 }
                 case .failure(let failure):
                     quickOpen.fail(failure.localizedDescription)
                 }

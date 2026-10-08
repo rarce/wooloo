@@ -166,7 +166,7 @@ private struct QuickOpenPanel: View {
         .padding(.horizontal, 8)
         .frame(height: rowHeight)
         .background(selected ? theme.rowSelected : Color.clear, in: RoundedRectangle(cornerRadius: 5))
-        .help(model.ignored.contains(match.path) ? match.path + " (ignored by Git)" : match.path)
+        .help(model.ignored.contains(match.path) ? match.path + " (ignored)" : match.path)
     }
 
     private func highlighted(_ text: String, from offset: Int, _ positions: [Int]) -> AttributedString {
@@ -184,6 +184,10 @@ private struct QuickOpenPanel: View {
             if model.isTruncated {
                 Text("· first \(WorkspaceFiles.maximumFiles.formatted()) files only")
                     .foregroundStyle(theme.warning)
+            } else if model.isPartial {
+                Text("· folders near the root only")
+                    .foregroundStyle(theme.warning)
+                    .help("Outside a Git repository, Go to File reads \(WorkspaceFiles.folderWalkMaximumDepth) folder levels for at most \(Int(WorkspaceFiles.folderWalkBudget)) seconds")
             }
             Spacer(minLength: 8)
             Button { model.toggleIgnored() } label: {

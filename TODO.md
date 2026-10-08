@@ -57,7 +57,9 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 ## Go to File and command palette
 
 - [ ] Symbol search in the open file (⇧⌘O) and across the Space (⌘T), or as `@` and `#` prefixes in Go to File. Postponed until there is a document outline panel to share its symbols with.
-- [ ] Go to File without Git walks the whole folder up to `maximumFiles`, which is slow in a large non-repository folder such as `/private/tmp`; consider a time or depth limit, or reading only to the depth already listed.
+- [x] Bound the walk of a folder outside Git, shared by Go to File and the explorer: it reads one folder level at a time, locally and over SSH, for at most 12 levels and 2 seconds after the root, lists `node_modules`, `.build`, `DerivedData`, `__pycache__` and `.venv` like ignored folders unless ignored files are included, and says when only folders near the root were read. Creating a file the walk missed opens it instead.
+- [ ] The walk outside Git checks its time limit per folder, so a single huge folder is still read in full. Locally it could stop inside a folder; over SSH, inside a `find` batch.
+- [ ] The walk outside Git has two implementations, a Swift one for this Mac and a `find` script for SSH; one script run through `shell(_:at:limit:)` would keep them from drifting.
 
 ## Notebook preview
 
