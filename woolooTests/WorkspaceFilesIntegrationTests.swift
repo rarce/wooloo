@@ -315,6 +315,49 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.commitDiff(head, path: "../a.txt", originalPath: nil, at: repo))
     }
 
+    /// Processes started from Swift concurrency all at once must all finish. The cooperative pool
+    /// has a thread per core; a process that waited there on work queued to a global queue could
+    /// starve that queue and hang every load, as happened on CI's small runners.
+    func testManyConcurrentProcessesFinish() throws {
+        let count = ProcessInfo.processInfo.activeProcessorCount * 4
+        let runs = DispatchGroup()
+        let finished = Locked(0)
+        // Run on Swift's cooperative threads, as the app's loads do, but waited on from this test's
+        // own thread: awaiting would need a cooperative thread too, so a regression would hang the
+        // test instead of failing it.
+        for _ in 0..<count {
+            runs.enter()
+            Task.detached {
+                let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "sleep 0.3; echo out; echo err >&2"],
+                                                     limit: 1_000)
+                if output == Data("out\n".utf8) { finished.withLock { $0 += 1 } }
+                runs.leave()
+            }
+        }
+        XCTAssertEqual(runs.wait(timeout: .now() + 20), .success, "Every process finished")
+        XCTAssertEqual(finished.value, count)
+    }
+
+    /// A command that prints while it reads its input, beyond what a pipe holds, finishes; and one
+    /// that exits before reading its input reports its failure instead of ending the app.
+    func testInputAndOutputLargerThanAPipe() throws {
+        let input = Data(repeating: UInt8(ascii: "x"), count: 1_000_000)
+        let echoed = try WorkspaceFiles.run("/bin/cat", [], input: input, limit: 2_000_000, timeout: 10)
+        XCTAssertEqual(echoed.count, input.count)
+        XCTAssertThrowsError(try WorkspaceFiles.run("/bin/sh", ["-c", "exit 3"], input: input, limit: 1_000, timeout: 10))
+        // Exits successfully without reading its input: the failed write is reported.
+        XCTAssertThrowsError(try WorkspaceFiles.run("/bin/sh", ["-c", "exec 0<&-; sleep 0.1; exit 0"],
+                                                    input: input, limit: 1_000, timeout: 10))
+    }
+
+    /// A background process that keeps stderr open does not hold the command's result.
+    func testBackgroundProcessDoesNotHoldTheResult() throws {
+        let started = Date()
+        let output = try WorkspaceFiles.run("/bin/sh", ["-c", "sleep 30 >/dev/null & echo done"], limit: 1_000, timeout: 10)
+        XCTAssertEqual(output, Data("done\n".utf8))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8)
+    }
+
     // MARK: Branches and worktrees
 
     func testSwitchBranch() throws {

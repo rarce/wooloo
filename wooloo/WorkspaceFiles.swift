@@ -1448,6 +1448,8 @@ enum WorkspaceFiles {
         return path
     }()
 
+    private static let processTimeouts = DispatchQueue(label: "dev.wooloo.process-timeouts")
+
     /// Runs a process and returns its output. `label` names it in the process log, for
     /// example `git status`, and `remote` marks commands sent over SSH.
     static func run(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
@@ -1478,42 +1480,74 @@ enum WorkspaceFiles {
         process.standardInput = source ?? FileHandle.nullDevice
         try process.run()
         // Drained on its own thread, so a command that writes a lot to stderr cannot stall on a full pipe.
+        // A thread, not a global queue: callers block here on Swift's cooperative threads, and once they
+        // reach the system's limit of threads for global queues, work queued there never runs and every
+        // caller waits forever.
         var errorData = Data()
         let errorsRead = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .utility).async {
+        Thread {
             errorData = errors.fileHandleForReading.readDataToEndOfFile()
             errorsRead.signal()
-        }
-        let timer = DispatchSource.makeTimerSource()
+        }.start()
+        // A private serial queue gets a thread beyond that limit too, so the timeout always fires.
+        let timer = DispatchSource.makeTimerSource(queue: processTimeouts)
         timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler { if process.isRunning { process.terminate() } }
         timer.resume()
+        // Input is written on its own thread too, so a command that prints while it reads cannot fill
+        // the output pipe and wait on us while we wait on it. A command that exits early closes the
+        // pipe; writing then fails with EPIPE instead of a SIGPIPE that would end the app.
         var inputError: Error?
+        var inputWritten: DispatchSemaphore?
         if let input, let source {
-            do { try source.fileHandleForWriting.write(contentsOf: input) }
-            catch { inputError = error }
-            try? source.fileHandleForWriting.close()
+            let writer = source.fileHandleForWriting
+            guard fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+                process.terminate()
+                timer.cancel()
+                throw WorkspaceFileError.message("Could not prepare the command's input")
+            }
+            let written = DispatchSemaphore(value: 0)
+            inputWritten = written
+            Thread {
+                do { try writer.write(contentsOf: input) }
+                catch { inputError = error }
+                try? writer.close()
+                written.signal()
+            }.start()
         }
         var data = Data()
-        while let chunk = try output.fileHandleForReading.read(upToCount: 65_536), !chunk.isEmpty {
-            data.append(chunk)
-            if data.count > limit {
-                if process.isRunning { process.terminate() }
-                break
+        var readError: Error?
+        do {
+            while let chunk = try output.fileHandleForReading.read(upToCount: 65_536), !chunk.isEmpty {
+                data.append(chunk)
+                if data.count > limit {
+                    if process.isRunning { process.terminate() }
+                    break
+                }
             }
+        } catch {
+            // Stop the command rather than leave it, its threads and its timer behind.
+            readError = error
+            if process.isRunning { process.terminate() }
         }
         process.waitUntilExit()
         timer.cancel()
-        errorsRead.wait()
+        // A process the command left running in the background can keep stderr or stdin open after
+        // the command exits. Its threads are then left to finish on their own rather than waited on.
+        let settled = DispatchTime.now() + 2
+        let stderrRead = errorsRead.wait(timeout: settled) == .success
+        let inputSettled = inputWritten.map { $0.wait(timeout: settled) == .success } ?? true
+        let errorOutput = stderrRead ? errorData : Data()
         outputBytes = data.count
         // A signal means the timeout or the output limit stopped the process.
         status = process.terminationReason == .exit ? process.terminationStatus : -process.terminationStatus
-        if status != 0 { errorText = String(decoding: errorData, as: UTF8.self) }
+        if status != 0 { errorText = String(decoding: errorOutput, as: UTF8.self) }
+        if let readError { throw readError }
         guard data.count <= limit else { throw WorkspaceFileError.message("Output is too large") }
         guard process.terminationStatus == 0 else {
-            throw WorkspaceFileError.message(failureMessage(errors: errorData, output: data))
+            throw WorkspaceFileError.message(failureMessage(errors: errorOutput, output: data))
         }
-        if let inputError { throw inputError }
+        if inputSettled, let inputError { throw inputError }
         return data
     }
 }
