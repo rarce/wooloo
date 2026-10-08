@@ -153,6 +153,14 @@ final class WorkspaceGitBarModelTests: XCTestCase {
         XCTAssertEqual(model.status?.branch, "other", "The bar reloads after switching")
     }
 
+    func testCreatingABranchSwitchesToIt() async throws {
+        var outcome: String??
+        model.createBranch("topic") { outcome = .some($0) }
+        await settle { model.status?.branch == "topic" }
+        XCTAssertEqual(outcome, .some(nil))
+        XCTAssertEqual(model.localBranches.map(\.name).sorted(), ["main", "other", "topic"])
+    }
+
     /// One operation runs at a time; another started meanwhile is ignored.
     func testOperationsDoNotOverlap() async throws {
         let other = try XCTUnwrap(model.localBranches.first { $0.name == "other" })
@@ -163,5 +171,64 @@ final class WorkspaceGitBarModelTests: XCTestCase {
         await settle()
         XCTAssertNil(second)
         XCTAssertEqual(model.status?.branch, "main")
+    }
+}
+
+/// The branch picker's rows for what was typed.
+final class WorkspaceBranchPickerTests: XCTestCase {
+    private func branch(_ name: String, remote: Bool = false, current: Bool = false,
+                        upstream: String = "") -> WorkspaceBranch {
+        WorkspaceBranch(id: (remote ? "refs/remotes/" : "refs/heads/") + name, name: name, isRemote: remote,
+                        isCurrent: current, upstream: upstream)
+    }
+
+    private var branches: [WorkspaceBranch] {
+        [branch("bugfix"), branch("main", current: true, upstream: "origin/main"), branch("topic/feature"),
+         branch("origin/main", remote: true), branch("origin/release", remote: true)]
+    }
+
+    private func rows(_ query: String, worktrees: [WorkspaceWorktree] = []) -> [WorkspaceBranchPickerRow] {
+        WorkspaceBranchPicker.rows(query: query, branches: branches, worktrees: worktrees, root: "/repo")
+    }
+
+    /// The current branch first, then local branches, then remote ones no local branch tracks.
+    func testListsTheCurrentBranchThenLocalThenUntrackedRemoteBranches() {
+        XCTAssertEqual(rows("").map(\.title), ["main", "bugfix", "topic/feature", "origin/release"])
+    }
+
+    func testFiltersFuzzilyAndOffersToCreateTheTypedName() throws {
+        let found = rows("tf")
+        XCTAssertEqual(found.map(\.title), ["topic/feature", "tf"])
+        XCTAssertEqual(found[0].positions, [0, 6])
+        XCTAssertEqual(found[1].choice, .create("tf"))
+
+        XCTAssertEqual(rows(" release ").first?.title, "origin/release")
+        XCTAssertEqual(rows("release").last?.choice, .create("release"),
+                       "A remote branch of that name does not stop creating a local one")
+    }
+
+    func testDoesNotOfferExistingOrInvalidNames() {
+        XCTAssertFalse(rows("bugfix").contains { if case .create = $0.choice { true } else { false } })
+        for name in ["has space", "-x", "a..b", "end/", "x.lock", "a:b", "wip~1", "@"] {
+            XCTAssertFalse(WorkspaceBranchPicker.isPlausibleBranchName(name), name)
+            XCTAssertEqual(rows(name).filter { if case .create = $0.choice { true } else { false } }, [], name)
+        }
+        for name in ["feature/login", "fix-123", "v2.0", "UPPER_case"] {
+            XCTAssertTrue(WorkspaceBranchPicker.isPlausibleBranchName(name), name)
+        }
+    }
+
+    /// A branch checked out in another worktree opens that worktree instead of switching.
+    func testBranchesCheckedOutElsewhereOpenTheirWorktree() {
+        let worktrees = [
+            WorkspaceWorktree(path: "/repo", branch: "main", isBare: false, isLocked: false, isPrunable: false),
+            WorkspaceWorktree(path: "/repo-feature", branch: "topic/feature", isBare: false, isLocked: false, isPrunable: false)
+        ]
+        let found = rows("", worktrees: worktrees)
+        XCTAssertEqual(found.first { $0.title == "topic/feature" }?.choice,
+                       .branch(branch("topic/feature"), worktreePath: "/repo-feature"))
+        XCTAssertEqual(found.first { $0.title == "main" }?.choice,
+                       .branch(branch("main", current: true, upstream: "origin/main"), worktreePath: nil))
+        XCTAssertEqual(found.first { $0.title == "bugfix" }?.choice, .branch(branch("bugfix"), worktreePath: nil))
     }
 }

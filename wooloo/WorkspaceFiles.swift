@@ -1110,12 +1110,23 @@ enum WorkspaceFiles {
         }
     }
 
+    /// Switches to a local branch, or to a remote one through a new local branch that tracks it.
     static func switchBranch(_ branch: WorkspaceBranch, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
-        guard !branch.isRemote, !branch.isCurrent, !branch.name.hasPrefix("-") else {
-            throw WorkspaceFileError.message("Choose another local branch")
+        guard !branch.isCurrent, !branch.name.hasPrefix("-") else {
+            throw WorkspaceFileError.message("Choose another branch")
         }
-        _ = try git(location, ["switch", branch.name], limit: 20_000)
+        _ = try git(location, branch.isRemote ? ["switch", "--track", branch.name] : ["switch", branch.name],
+                    limit: 20_000)
+    }
+
+    /// Creates a branch at HEAD and switches to it; uncommitted changes stay in the working tree.
+    static func createBranch(_ name: String, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        guard WorkspaceBranchPicker.isPlausibleBranchName(name) else {
+            throw WorkspaceFileError.message("“\(name)” is not a valid branch name")
+        }
+        _ = try git(location, ["switch", "-c", name], limit: 20_000)
     }
 
     /// Runs a POSIX shell script in the Space root: locally with /bin/sh, remotely over SSH,

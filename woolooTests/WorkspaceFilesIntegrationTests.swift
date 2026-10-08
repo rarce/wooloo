@@ -371,7 +371,33 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         try WorkspaceFiles.switchBranch(feature, at: repo)
         XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).branch, "feature")
         let remote = WorkspaceBranch(id: "refs/remotes/origin/x", name: "origin/x", isRemote: true, isCurrent: false, upstream: "")
-        XCTAssertThrowsError(try WorkspaceFiles.switchBranch(remote, at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.switchBranch(remote, at: repo), "There is no such remote branch")
+    }
+
+    /// Choosing a remote branch creates a local branch that tracks it, as `git switch --track` does.
+    func testSwitchingToARemoteBranchTracksIt() throws {
+        try sandbox.repository("upstream")
+        try sandbox.sh("git branch topic/remote-only", in: "upstream")
+        try sandbox.sh("git clone -q upstream clone")
+        let clone = sandbox.location("clone")
+        let remote = try XCTUnwrap(WorkspaceFiles.repository(at: clone).branches.first { $0.name == "origin/topic/remote-only" })
+        XCTAssertTrue(remote.isRemote)
+        try WorkspaceFiles.switchBranch(remote, at: clone)
+        let status = try WorkspaceFiles.branchStatus(at: clone)
+        XCTAssertEqual(status.branch, "topic/remote-only")
+        XCTAssertEqual(status.upstream, "origin/topic/remote-only")
+    }
+
+    func testCreateBranchSwitchesToItAndKeepsChanges() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.write(["a.txt": "changed\n"], in: "repo")
+        try WorkspaceFiles.createBranch("topic/new", at: repo)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).branch, "topic/new")
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "changed\n", "Uncommitted changes stay")
+        XCTAssertThrowsError(try WorkspaceFiles.createBranch("main", at: repo), "main already exists")
+        XCTAssertThrowsError(try WorkspaceFiles.createBranch("has space", at: repo))
+        XCTAssertThrowsError(try WorkspaceFiles.createBranch("--orphan", at: repo))
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).branch, "topic/new")
     }
 
     func testWorktreesAreAddedAndOnlyCleanOnesRemoved() throws {
