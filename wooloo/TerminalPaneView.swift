@@ -923,6 +923,8 @@ final class HerdrTerminalTextView: NSTextView {
     }
     var selectPane: ((String) -> Void)?
     var paneID = ""
+    /// Where Copy writes and Paste reads; tests use their own so they leave the clipboard alone.
+    var pasteboard = NSPasteboard.general
     var shortcutMap = HerdrShortcutMap(document: HerdrConfigDocument(text: ""))
     var onShortcut: ((String) -> Void)?
     var onPrefixChanged: ((Bool) -> Void)?
@@ -945,6 +947,9 @@ final class HerdrTerminalTextView: NSTextView {
     /// The live selection lives in cell coordinates, so screen updates never move it.
     private var selectionAnchor: GridPoint?
     private var selectionHead: GridPoint?
+    /// The pane a selection began in; it stays inside that pane's content, as with split panes in
+    /// Ghostty or iTerm2. Nil without panes, or while a popup holds the selection.
+    private var selectionPaneID: String?
     private var isSelectingCells = false
     /// The link under the pointer while Command is held, underlined until either changes.
     private var hoveredLink: TerminalLink?
@@ -1089,10 +1094,11 @@ final class HerdrTerminalTextView: NSTextView {
             }
         }
         let selection = orderedSelection(in: grid)
+        let selectionLimits = selection == nil ? nil : selectionBounds
         if let selection {
             context.setFillColor(grid.selectionFill)
             for row in selection.start.row...selection.end.row {
-                let columns = selectedColumns(row: row, selection: selection, width: grid.width)
+                let columns = selectedColumns(row: row, selection: selection, width: grid.width, bounds: selectionLimits)
                 guard !columns.isEmpty else { continue }
                 context.fill(CGRect(x: origin.x + CGFloat(columns.lowerBound) * cellWidth,
                                     y: origin.y + CGFloat(row) * cellHeight,
@@ -1103,7 +1109,7 @@ final class HerdrTerminalTextView: NSTextView {
         context.setAllowsFontSubpixelPositioning(true)
         for row in visibleRows {
             let top = origin.y + CGFloat(row) * cellHeight
-            let selected = selection.map { selectedColumns(row: row, selection: $0, width: grid.width) } ?? 0..<0
+            let selected = selection.map { selectedColumns(row: row, selection: $0, width: grid.width, bounds: selectionLimits) } ?? 0..<0
             context.saveGState()
             context.translateBy(x: origin.x, y: top + TerminalPaneView.baseline)
             context.scaleBy(x: 1, y: -1)
@@ -1198,6 +1204,7 @@ final class HerdrTerminalTextView: NSTextView {
         selectionAtSnapshot = nil
         selectionAnchor = nil
         selectionHead = nil
+        selectionPaneID = nil
         setSelectedRange(NSRange(location: 0, length: 0))
         needsDisplay = true
     }
@@ -1217,6 +1224,10 @@ final class HerdrTerminalTextView: NSTextView {
         let start = TerminalPipelineMetrics.now()
         let splitsChanged = self.surface?.splits != surface.splits
         let popupChanged = self.surface?.popup?.terminalID != surface.popup?.terminalID
+        if let selectionPaneID, surface.paneInnerRects[selectionPaneID] != self.surface?.paneInnerRects[selectionPaneID] {
+            // The pane closed or moved, so the selection no longer covers the text it was made on.
+            clearTerminalSelection()
+        }
         if popupChanged {
             clearTerminalSelection()
             clearShortcutPrefix()
@@ -1285,11 +1296,25 @@ final class HerdrTerminalTextView: NSTextView {
         return start < end ? (start, end) : nil
     }
 
-    private func selectedColumns(row: Int, selection: (start: GridPoint, end: GridPoint), width: Int) -> Range<Int> {
+    /// The cells a selection stays inside: the popup's content, or that of the pane it began in,
+    /// clipped to the surface; nil when that leaves nothing.
+    private var selectionBounds: HerdrRect? {
+        guard let surface else { return nil }
+        let inner = surface.popup != nil
+            ? surface.popup?.geometry(cols: surface.width, rows: surface.height)?.inner
+            : selectionPaneID.flatMap { surface.paneInnerRects[$0] }
+        guard let inner else { return nil }
+        let left = max(0, inner.x), top = max(0, inner.y)
+        let right = min(surface.width, inner.x + inner.width), bottom = min(surface.height, inner.y + inner.height)
+        return right > left && bottom > top ? HerdrRect(x: left, y: top, width: right - left, height: bottom - top) : nil
+    }
+
+    private func selectedColumns(row: Int, selection: (start: GridPoint, end: GridPoint), width: Int,
+                                 bounds: HerdrRect?) -> Range<Int> {
         guard row >= selection.start.row, row <= selection.end.row else { return 0..<0 }
         let lower = row == selection.start.row ? selection.start.column : 0
         let upper = row == selection.end.row ? selection.end.column : width
-        if let surface, let inner = surface.popup?.geometry(cols: surface.width, rows: surface.height)?.inner {
+        if let inner = bounds {
             guard row >= inner.y, row < inner.y + inner.height else { return 0..<0 }
             let start = max(lower, inner.x), end = min(upper, inner.x + inner.width)
             return start < end ? start..<end : 0..<0
@@ -1300,19 +1325,20 @@ final class HerdrTerminalTextView: NSTextView {
     /// The text of the cells selected in the live grid.
     func selectedCellText() -> String? {
         guard let grid = terminalGrid, let selection = orderedSelection(in: grid) else { return nil }
+        let bounds = selectionBounds
         return (selection.start.row...selection.end.row).map { row in
-            grid.rows[row].symbols[selectedColumns(row: row, selection: selection, width: grid.width)].joined()
+            grid.rows[row].symbols[selectedColumns(row: row, selection: selection, width: grid.width, bounds: bounds)].joined()
         }.joined(separator: "\n")
     }
 
     /// The caret position nearest to the pointer, clamped to the grid.
     private func gridPoint(_ event: NSEvent, in grid: TerminalGrid) -> GridPoint {
         let point = convert(event.locationInWindow, from: nil)
-        let row = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
-        let column = Int(((point.x - textContainerInset.width) / TerminalPaneView.cellWidth).rounded())
-        if let surface, let inner = surface.popup?.geometry(cols: surface.width, rows: surface.height)?.inner {
-            return GridPoint(row: min(max(inner.y, row), inner.y + inner.height - 1),
-                             column: min(max(inner.x, column), inner.x + inner.width))
+        var row = Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight))
+        var column = Int(((point.x - textContainerInset.width) / TerminalPaneView.cellWidth).rounded())
+        if let inner = selectionBounds {
+            row = min(max(inner.y, row), inner.y + inner.height - 1)
+            column = min(max(inner.x, column), inner.x + inner.width)
         }
         return GridPoint(row: min(max(0, row), grid.height - 1), column: min(max(0, column), grid.width))
     }
@@ -1320,19 +1346,41 @@ final class HerdrTerminalTextView: NSTextView {
     private func beginCellSelection(with event: NSEvent, in grid: TerminalGrid) {
         window?.makeFirstResponder(self)
         guard grid.width > 0, grid.height > 0 else { return }
-        let point = gridPoint(event, in: grid)
+        let (x, y) = surfacePoint(event)
+        // A press outside every pane, such as in a gap of the layout, selects in the focused one.
+        let pane = surface.flatMap { surface in
+            surface.popup != nil ? nil : TerminalPointer.paneID(atColumn: x, row: y, in: surface)
+                ?? (surface.paneInnerRects[paneID] != nil ? paneID : nil)
+        }
+        // Shift extends a selection in the same pane; in a program that takes the mouse, Shift
+        // is what selects at all, so it starts a new selection there.
+        let extending = event.modifierFlags.contains(.shift) && selectionAnchor != nil
+            && pane == selectionPaneID && !reportsMouse(at: event)
+        selectionPaneID = pane
         selectedSnapshot = nil
-        let cell = min(max(0, surfacePoint(event).0), grid.width - 1)
-        let word = TerminalPointer.wordRange(in: grid.rows[point.row].symbols, at: cell)
+        let bounds = selectionBounds
+        if pane != nil && bounds == nil {
+            // A pane without content cells has nothing to select.
+            selectionAnchor = nil
+            selectionHead = nil
+            needsDisplay = true
+            return
+        }
+        let point = gridPoint(event, in: grid)
+        let line = bounds.map { $0.x..<($0.x + $0.width) } ?? 0..<grid.width
+        // Double- and triple-click act on the content under the pointer, not on a border or title.
+        let onContent = bounds?.contains(column: x, row: y) ?? true
+        let cell = min(max(0, x), grid.width - 1)
+        let word = onContent ? TerminalPointer.wordRange(in: grid.rows[point.row].symbols, at: cell) : nil
         switch event.clickCount {
         case 2 where word != nil:
             selectionAnchor = GridPoint(row: point.row, column: word!.lowerBound)
             selectionHead = GridPoint(row: point.row, column: word!.upperBound)
-        case 3...:
-            selectionAnchor = GridPoint(row: point.row, column: 0)
-            selectionHead = GridPoint(row: point.row, column: grid.width)
+        case 3... where onContent:
+            selectionAnchor = GridPoint(row: point.row, column: line.lowerBound)
+            selectionHead = GridPoint(row: point.row, column: line.upperBound)
         default:
-            if !event.modifierFlags.contains(.shift) || selectionAnchor == nil { selectionAnchor = point }
+            if !extending { selectionAnchor = point }
             selectionHead = point
         }
         isSelectingCells = event.clickCount < 2
@@ -1377,19 +1425,23 @@ final class HerdrTerminalTextView: NSTextView {
         let lines = selectedSnapshot.components(separatedBy: "\n")
         let copyText = lines.map { $0.replacingOccurrences(of: "[ \\t]+$", with: "", options: .regularExpression) }
             .joined(separator: "\n")
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(copyText, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(copyText, forType: .string)
     }
 
     /// The grid selection is not a TextKit range, so NSTextView alone would disable Copy.
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         if item.action == #selector(copy(_:)), terminalGrid != nil { return hasCellSelection }
+        // NSTextView would check the general pasteboard, not the one Paste reads.
+        if item.action == #selector(paste(_:)) { return pasteboard.string(forType: .string) != nil }
         return super.validateUserInterfaceItem(item)
     }
 
     override func selectAll(_ sender: Any?) {
         if let grid = terminalGrid {
-            if let surface, let inner = surface.popup?.geometry(cols: surface.width, rows: surface.height)?.inner {
+            // The popup's content, or the focused pane's when the tab is split.
+            selectionPaneID = surface?.popup == nil && surface?.paneInnerRects[paneID] != nil ? paneID : nil
+            if let inner = selectionBounds {
                 selectionAnchor = GridPoint(row: inner.y, column: inner.x)
                 selectionHead = GridPoint(row: inner.y + inner.height - 1, column: inner.x + inner.width)
             } else {
@@ -1619,7 +1671,7 @@ final class HerdrTerminalTextView: NSTextView {
         let menu = NSMenu()
         menu.addItem(standardItem("Copy", #selector(copy(_:)), enabled: hasCellSelection || selectedRange().length > 0))
         menu.addItem(standardItem("Paste", #selector(paste(_:)),
-                                  enabled: NSPasteboard.general.string(forType: .string) != nil))
+                                  enabled: pasteboard.string(forType: .string) != nil))
         menu.addItem(standardItem("Select All", #selector(selectAll(_:)), enabled: true))
         if surface?.popup != nil {
             menu.addItem(.separator())
@@ -1759,6 +1811,12 @@ final class HerdrTerminalTextView: NSTextView {
         return TerminalPointer.pane(atColumn: x, row: y, in: surface).map { ($0.id, $0.column, $0.row) }
     }
 
+    /// Whether the program under the pointer takes the mouse.
+    private func reportsMouse(at event: NSEvent) -> Bool {
+        guard let surface, let (id, _, _) = mouseHit(event, in: surface) else { return false }
+        return reportsMouse(id, in: surface)
+    }
+
     private func reportsMouse(_ id: String, in surface: HerdrSurface) -> Bool {
         surface.popup.map { $0.terminalID == id && $0.mouseReporting } ?? surface.mouseReportingPaneIDs.contains(id)
     }
@@ -1855,7 +1913,7 @@ final class HerdrTerminalTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
-        if let value = NSPasteboard.general.string(forType: .string), !value.isEmpty {
+        if let value = pasteboard.string(forType: .string), !value.isEmpty {
             if !popupInput(.paste(value)) { sendPaste?(value, paneID) }
         }
     }

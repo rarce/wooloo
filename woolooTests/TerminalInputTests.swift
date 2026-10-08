@@ -6,7 +6,7 @@ import XCTest
 private func twoPaneSurface(mouseReporting: Set<String> = []) -> HerdrSurface {
     let blank = SurfaceModel.blank
     var cells = Array(repeating: blank, count: 20 * 4)
-    for (offset, character) in "hello world".enumerated() {
+    for (offset, character) in "hello wor".enumerated() {
         cells[offset] = HerdrCell(symbol: String(character), foreground: 0, background: 0, modifier: 0, skip: false)
     }
     let left = HerdrRect(x: 0, y: 0, width: 10, height: 4)
@@ -17,6 +17,25 @@ private func twoPaneSurface(mouseReporting: Set<String> = []) -> HerdrSurface {
                         cursor: nil, paneIDs: ["w1:p1", "w1:p2"],
                         paneRects: ["w1:p1": left, "w1:p2": right], paneInnerRects: ["w1:p1": left, "w1:p2": right],
                         mouseReportingPaneIDs: mouseReporting, splits: [split], graphics: [])
+}
+
+/// Two panes side by side, "left N" and "right N" on each row, around a divider.
+private func splitTextSurface(mouseReporting: Set<String> = []) -> HerdrSurface {
+    var surface = twoPaneSurface(mouseReporting: mouseReporting)
+    let blank = SurfaceModel.blank
+    surface.cells = Array(repeating: blank, count: 20 * 4)
+    func put(_ text: String, column: Int, row: Int) {
+        for (offset, character) in text.enumerated() {
+            surface.cells[row * 20 + column + offset] = HerdrCell(symbol: String(character), foreground: 0, background: 0,
+                                                                   modifier: 0, skip: false)
+        }
+    }
+    for row in 0..<4 {
+        put("left \(row)", column: 0, row: row)
+        put("│", column: 10, row: row)
+        put("right \(row)", column: 11, row: row)
+    }
+    return surface
 }
 
 /// Where the pointer lands on a surface: panes, splits, words and scroll lines.
@@ -155,6 +174,8 @@ final class TerminalMouseTests: XCTestCase {
     private var ratios: [Double] = []
     private var selectedPanes: [String] = []
     private var actions: [String] = []
+    private var pastes: [String] = []
+    private var pasteboard: NSPasteboard!
 
     private func show(_ surface: HerdrSurface) {
         view = TerminalRenderHarness.makeView(width: surface.width, height: surface.height)
@@ -169,9 +190,13 @@ final class TerminalMouseTests: XCTestCase {
         view.setSplitRatio = { [unowned self] _, ratio in ratios.append(ratio) }
         view.selectPane = { [unowned self] in selectedPanes.append($0) }
         view.onShortcut = { [unowned self] in actions.append($0) }
+        view.sendPaste = { [unowned self] text, pane in pastes.append("\(pane) \(text)") }
+        pasteboard = NSPasteboard(name: NSPasteboard.Name("wooloo-tests-\(UUID().uuidString)"))
+        view.pasteboard = pasteboard
     }
 
     override func tearDown() {
+        pasteboard?.releaseGlobally()
         window?.close()
         window = nil
         view = nil
@@ -206,9 +231,9 @@ final class TerminalMouseTests: XCTestCase {
     func testDoubleAndTripleClicksSelectAWordAndALine() {
         show(twoPaneSurface())
         click(7, 0, clicks: 2)
-        XCTAssertEqual(view.selectedCellText(), "world")
+        XCTAssertEqual(view.selectedCellText(), "wor")
         click(2, 0, clicks: 3)
-        XCTAssertEqual(view.selectedCellText()?.trimmingCharacters(in: .whitespaces), "hello world")
+        XCTAssertEqual(view.selectedCellText()?.trimmingCharacters(in: .whitespaces), "hello wor")
         click(15, 2, clicks: 2)
         XCTAssertNil(view.selectedCellText(), "Double-clicking a blank selects nothing")
     }
@@ -288,5 +313,154 @@ final class TerminalMouseTests: XCTestCase {
         view.selectAll(nil)
         let selected = try XCTUnwrap(view.menu(for: event(.rightMouseDown, 2, 1))?.items.first { $0.title == "Copy" })
         XCTAssertNotNil(selected.action)
+    }
+
+    // MARK: Copy and paste
+
+    /// What Copy puts on the clipboard.
+    private func copied() -> String? {
+        pasteboard.clearContents()
+        view.copy(nil)
+        return pasteboard.string(forType: .string)
+    }
+
+    private func drag(from start: (Int, Int), to end: (Int, Int), flags: NSEvent.ModifierFlags = []) {
+        view.mouseDown(with: event(.leftMouseDown, start.0, start.1, flags: flags))
+        view.mouseDragged(with: event(.leftMouseDragged, end.0, end.1, flags: flags))
+        view.mouseUp(with: event(.leftMouseUp, end.0, end.1, flags: flags))
+    }
+
+    func testCopyPutsTheSelectionOnTheClipboardWithoutTrailingBlanks() {
+        show(splitTextSurface())
+        drag(from: (0, 0), to: (6, 1))
+        XCTAssertEqual(copied(), "left 0\nleft 1")
+    }
+
+    /// Selecting across the divider stops at the edge of the pane where the drag began, as
+    /// Ghostty and iTerm2 do with split panes.
+    func testSelectionStaysInThePaneWhereItBegan() {
+        show(splitTextSurface())
+        drag(from: (0, 0), to: (16, 2))
+        XCTAssertEqual(copied(), "left 0\nleft 1\nleft 2")
+
+        drag(from: (18, 3), to: (2, 1))
+        XCTAssertEqual(copied(), "right 1\nright 2\nright 3", "Dragging back past the divider stops at the pane's edge")
+    }
+
+    func testTripleClickSelectsOnlyThePanesLine() {
+        show(splitTextSurface())
+        click(13, 1, clicks: 3)
+        XCTAssertEqual(copied(), "right 1")
+        click(2, 2, clicks: 2)
+        XCTAssertEqual(copied(), "left", "Double-click selects a word")
+    }
+
+    func testSelectAllSelectsTheFocusedPane() {
+        show(splitTextSurface())
+        view.paneID = "w1:p2"
+        view.selectAll(nil)
+        XCTAssertEqual(copied(), "right 0\nright 1\nright 2\nright 3")
+    }
+
+    /// Shift selects in a pane whose program takes the mouse; it must start where the drag
+    /// begins, not extend an earlier click.
+    func testShiftSelectsFromTheDragInAMouseReportingPane() {
+        show(splitTextSurface(mouseReporting: ["w1:p2"]))
+        click(2, 3)
+        drag(from: (12, 1), to: (16, 1), flags: .shift)
+        XCTAssertTrue(mouse.isEmpty)
+        XCTAssertEqual(copied(), "ight")
+    }
+
+    func testShiftClickDoesNotExtendIntoAnotherPane() {
+        show(splitTextSurface())
+        click(1, 0)
+        click(16, 2, flags: .shift)
+        XCTAssertEqual(copied(), nil, "A click in another pane starts there")
+    }
+
+    /// Copy takes the text that was selected, even after the program redraws those cells.
+    func testCopyKeepsTheSelectedTextAfterTheScreenChanges() {
+        show(splitTextSurface())
+        drag(from: (0, 1), to: (6, 1))
+        var redrawn = splitTextSurface()
+        redrawn.revision = 2
+        for column in 0..<6 {
+            redrawn.cells[20 + column] = HerdrCell(symbol: "x", foreground: 0, background: 0, modifier: 0, skip: false)
+        }
+        TerminalRenderHarness.show(redrawn, in: view)
+        XCTAssertEqual(copied(), "left 1")
+    }
+
+    /// A selection whose pane closed or moved is dropped, so it never marks other text.
+    func testASelectionEndsWhenItsPaneChanges() {
+        show(splitTextSurface())
+        drag(from: (0, 0), to: (6, 1))
+        var resized = splitTextSurface()
+        resized.revision = 2
+        resized.paneInnerRects["w1:p1"] = HerdrRect(x: 0, y: 0, width: 8, height: 4)
+        TerminalRenderHarness.show(resized, in: view)
+        XCTAssertNil(view.selectedCellText())
+        XCTAssertNil(copied())
+    }
+
+    /// Herdr can send a pane too small for content, or one that reaches past the surface.
+    func testPanesWithoutContentSelectNothing() {
+        var surface = splitTextSurface()
+        surface.paneInnerRects["w1:p2"] = HerdrRect(x: 11, y: 0, width: 9, height: 0)
+        show(surface)
+        drag(from: (12, 0), to: (16, 2))
+        click(13, 1, clicks: 3)
+        XCTAssertNil(copied())
+
+        surface.paneInnerRects["w1:p2"] = HerdrRect(x: 11, y: 2, width: 30, height: 9)
+        surface.revision = 2
+        show(surface)
+        drag(from: (12, 3), to: (19, 3))
+        XCTAssertEqual(copied(), "ight 3", "The selection stops at the surface's edge")
+    }
+
+    /// Double- and triple-click on a pane's border or title select nothing.
+    func testClicksOnAPaneBorderSelectNoContent() {
+        var surface = splitTextSurface()
+        surface.paneInnerRects["w1:p1"] = HerdrRect(x: 0, y: 1, width: 10, height: 3)
+        show(surface)
+        click(2, 0, clicks: 2)
+        XCTAssertNil(copied())
+        click(2, 0, clicks: 3)
+        XCTAssertNil(copied())
+        click(2, 2, clicks: 3)
+        XCTAssertEqual(copied(), "left 2")
+    }
+
+    /// A press in a gap of the layout selects in the focused pane, never across panes.
+    func testSelectingFromAGapStaysInTheFocusedPane() {
+        var surface = splitTextSurface()
+        surface.paneRects["w1:p2"] = HerdrRect(x: 11, y: 0, width: 9, height: 3)
+        surface.paneInnerRects["w1:p2"] = HerdrRect(x: 11, y: 0, width: 9, height: 3)
+        show(surface)
+        view.paneID = "w1:p2"
+        drag(from: (12, 3), to: (12, 1))
+        XCTAssertEqual(copied(), "ight 1\nr", "The press clamps to the right pane's last row")
+    }
+
+    /// Edit > Copy (⌘C) is enabled only with a selection, and Edit > Paste (⌘V) sends the
+    /// clipboard to the focused pane as a paste.
+    func testCopyAndPasteMenuItemsWork() {
+        show(splitTextSurface())
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        let pasteItem = NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        XCTAssertFalse(view.validateUserInterfaceItem(copyItem))
+        drag(from: (11, 0), to: (16, 0))
+        XCTAssertTrue(view.validateUserInterfaceItem(copyItem))
+        XCTAssertFalse(view.validateUserInterfaceItem(pasteItem), "Paste follows the view's pasteboard, which is empty")
+
+        pasteboard.clearContents()
+        pasteboard.setString("echo hi\nls", forType: .string)
+        XCTAssertTrue(view.validateUserInterfaceItem(pasteItem))
+        view.paneID = "w1:p2"
+        view.paste(nil)
+        XCTAssertEqual(pastes, ["w1:p2 echo hi\nls"])
+        XCTAssertTrue(mouse.isEmpty)
     }
 }
