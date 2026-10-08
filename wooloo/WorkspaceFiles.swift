@@ -1448,6 +1448,8 @@ enum WorkspaceFiles {
         return path
     }()
 
+    private static let processTimeouts = DispatchQueue(label: "dev.wooloo.process-timeouts")
+
     /// Runs a process and returns its output. `label` names it in the process log, for
     /// example `git status`, and `remote` marks commands sent over SSH.
     static func run(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
@@ -1478,13 +1480,17 @@ enum WorkspaceFiles {
         process.standardInput = source ?? FileHandle.nullDevice
         try process.run()
         // Drained on its own thread, so a command that writes a lot to stderr cannot stall on a full pipe.
+        // A thread, not a global queue: callers block here on Swift's cooperative threads, and once they
+        // reach the system's limit of threads for global queues, work queued there never runs and every
+        // caller waits forever.
         var errorData = Data()
         let errorsRead = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .utility).async {
+        Thread {
             errorData = errors.fileHandleForReading.readDataToEndOfFile()
             errorsRead.signal()
-        }
-        let timer = DispatchSource.makeTimerSource()
+        }.start()
+        // A private serial queue gets a thread beyond that limit too, so the timeout always fires.
+        let timer = DispatchSource.makeTimerSource(queue: processTimeouts)
         timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler { if process.isRunning { process.terminate() } }
         timer.resume()

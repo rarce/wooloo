@@ -315,6 +315,26 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.commitDiff(head, path: "../a.txt", originalPath: nil, at: repo))
     }
 
+    /// Processes started from Swift concurrency all at once must all finish. The cooperative pool
+    /// has a thread per core; a process that waited there on work queued to a global queue could
+    /// starve that queue and hang every load, as happened on CI's small runners.
+    func testManyConcurrentProcessesFinish() async throws {
+        executionTimeAllowance = 60
+        let count = ProcessInfo.processInfo.activeProcessorCount * 4
+        let started = ContinuousClock.now
+        let finished = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<count {
+                group.addTask {
+                    let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "sleep 0.3; echo out; echo err >&2"], limit: 1_000)
+                    return output == Data("out\n".utf8)
+                }
+            }
+            return await group.reduce(0) { $0 + ($1 ? 1 : 0) }
+        }
+        XCTAssertEqual(finished, count)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(20))
+    }
+
     // MARK: Branches and worktrees
 
     func testSwitchBranch() throws {
