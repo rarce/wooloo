@@ -231,7 +231,7 @@ struct WorkspaceBranch: Identifiable, Hashable {
     let upstream: String
 }
 
-struct WorkspaceWorktree: Identifiable {
+struct WorkspaceWorktree: Identifiable, Equatable {
     let path: String
     let branch: String?
     let isBare: Bool
@@ -1116,7 +1116,8 @@ enum WorkspaceFiles {
         guard !branch.isCurrent, !branch.name.hasPrefix("-") else {
             throw WorkspaceFileError.message("Choose another branch")
         }
-        _ = try git(location, branch.isRemote ? ["switch", "--track", branch.name] : ["switch", branch.name],
+        // A remote branch by its full ref: `origin/x` alone could name a local branch called that.
+        _ = try git(location, branch.isRemote ? ["switch", "--track", branch.id] : ["switch", branch.name],
                     limit: 20_000)
     }
 

@@ -23,21 +23,22 @@ struct WorkspaceBranchPickerRow: Equatable, Identifiable {
     }
 }
 
-/// The branch picker's rows: the branches matching what was typed, then a row to create a branch
-/// with that name when none has it.
+/// The branch picker's rows: the branches matching what was typed, and a row to create a branch
+/// with that name when no branch has it.
 enum WorkspaceBranchPicker {
     /// Without a query: the current branch, the other local branches, then remote branches.
-    /// Remote branches that a local branch already tracks are left out, since choosing them would
-    /// only switch to that local branch.
-    static func rows(query: String, branches: [WorkspaceBranch], worktrees: [WorkspaceWorktree],
-                     root: String) -> [WorkspaceBranchPickerRow] {
-        let tracked = Set(branches.filter { !$0.isRemote }.map(\.upstream).filter { !$0.isEmpty })
-        let shown = branches.filter { !$0.isRemote && $0.isCurrent }
-            + branches.filter { !$0.isRemote && !$0.isCurrent }
-            + branches.filter { $0.isRemote && !tracked.contains($0.name) }
-        // A branch checked out elsewhere cannot be switched to here; its worktree opens instead.
+    /// Remote branches are left out when a local branch tracks them or has their name, since
+    /// choosing them could only fail or switch to that local branch. `otherWorktrees` are the
+    /// usable worktrees besides this one; a branch checked out in one of them opens it instead.
+    static func rows(query: String, branches: [WorkspaceBranch],
+                     otherWorktrees: [WorkspaceWorktree]) -> [WorkspaceBranchPickerRow] {
+        let locals = branches.filter { !$0.isRemote }
+        let tracked = Set(locals.map(\.upstream).filter { !$0.isEmpty })
+        let localNames = Set(locals.map(\.name))
+        let shown = locals.filter(\.isCurrent) + locals.filter { !$0.isCurrent }
+            + branches.filter { $0.isRemote && !tracked.contains($0.name) && !localNames.contains(localName(of: $0)) }
         var elsewhere: [String: String] = [:]
-        for tree in worktrees where tree.path != root && !tree.isBare {
+        for tree in otherWorktrees {
             if let branch = tree.branch { elsewhere[branch] = tree.path }
         }
         func row(_ branch: WorkspaceBranch, _ positions: [Int]) -> WorkspaceBranchPickerRow {
@@ -57,10 +58,21 @@ enum WorkspaceBranchPicker {
             rows = matches.compactMap { match in byName[match.path].map { row($0, match.positions) } }
         }
         let name = query.trimmingCharacters(in: .whitespaces)
-        if isPlausibleBranchName(name), !branches.contains(where: { !$0.isRemote && $0.name == name }) {
-            rows.append(WorkspaceBranchPickerRow(choice: .create(name), title: name, positions: []))
-        }
-        return rows
+        // Git refuses a name that differs from an existing branch only in case on a case-insensitive
+        // disk, or creates a second branch other machines cannot check out.
+        guard isPlausibleBranchName(name),
+              !locals.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return rows }
+        let create = WorkspaceBranchPickerRow(choice: .create(name), title: name, positions: [])
+        // A loose fuzzy match should not take ↩ from a new name: the Create row comes first unless a
+        // branch contains what was typed as it was typed.
+        let contained = rows.contains { $0.title.range(of: name, options: .caseInsensitive) != nil }
+        return contained ? rows + [create] : [create] + rows
+    }
+
+    /// The local branch `git switch --track` makes for a remote branch: its name without the remote.
+    static func localName(of remote: WorkspaceBranch) -> String {
+        guard let slash = remote.name.firstIndex(of: "/") else { return remote.name }
+        return String(remote.name[remote.name.index(after: slash)...])
     }
 
     /// Whether `name` could name a new branch. Git checks the full rules when creating it; this

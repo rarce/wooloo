@@ -164,8 +164,7 @@ struct WorkspaceGitBar: View {
         }
         .popover(isPresented: $showsBranchPicker, arrowEdge: .top) {
             WorkspaceBranchPickerPanel(branches: model.repository?.branches ?? [],
-                                       worktrees: model.repository?.worktrees ?? [],
-                                       root: model.repository?.root ?? location.root,
+                                       otherWorktrees: model.otherWorktrees,
                                        current: name, opensWorktrees: onOpenWorktree != nil,
                                        onChoose: choose, onCancel: { showsBranchPicker = false })
         }
@@ -373,8 +372,9 @@ final class WorkspaceGitBarModel: ObservableObject {
         repository?.worktrees.first { $0.path == repository?.root }
     }
 
+    /// The worktrees besides this one that can be opened: not bare, and not deleted without pruning.
     var otherWorktrees: [WorkspaceWorktree] {
-        (repository?.worktrees ?? []).filter { $0.path != repository?.root && !$0.isBare }
+        (repository?.worktrees ?? []).filter { $0.path != repository?.root && !$0.isBare && !$0.isPrunable }
     }
 
     var localBranches: [WorkspaceBranch] {
@@ -448,8 +448,7 @@ struct WorkspaceBranchPickerPanel: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     let branches: [WorkspaceBranch]
-    let worktrees: [WorkspaceWorktree]
-    let root: String
+    let otherWorktrees: [WorkspaceWorktree]
     let current: String
     /// Whether a branch checked out in another worktree can open it.
     let opensWorktrees: Bool
@@ -457,11 +456,17 @@ struct WorkspaceBranchPickerPanel: View {
     let onCancel: () -> Void
     @State private var query = ""
     @State private var selection = 0
+    /// Matched again only when the query or the branches change, not on every move of the selection.
+    @State private var rows: [WorkspaceBranchPickerRow] = []
 
     private var rowHeight: CGFloat { typography.metric(26) }
 
+    private func refresh() {
+        rows = WorkspaceBranchPicker.rows(query: query, branches: branches, otherWorktrees: otherWorktrees)
+        selection = 0
+    }
+
     var body: some View {
-        let rows = WorkspaceBranchPicker.rows(query: query, branches: branches, worktrees: worktrees, root: root)
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.triangle.branch")
@@ -486,7 +491,10 @@ struct WorkspaceBranchPickerPanel: View {
             }
         }
         .frame(width: 340)
-        .onChange(of: query) { _, _ in selection = 0 }
+        .onAppear(perform: refresh)
+        .onChange(of: query) { _, _ in refresh() }
+        .onChange(of: branches) { _, _ in refresh() }
+        .onChange(of: otherWorktrees) { _, _ in refresh() }
     }
 
     private func list(_ rows: [WorkspaceBranchPickerRow]) -> some View {
@@ -580,7 +588,10 @@ struct WorkspaceBranchPickerPanel: View {
         case .create(let name): return "Create \(name) from \(current) and switch to it, keeping uncommitted changes"
         case .branch(let branch, let path):
             if branch.isCurrent { return "The current branch" }
-            if let path { return "Checked out in \(path); open that worktree" }
+            if let path {
+                return opensWorktrees ? "Checked out in \(path); choose it to open that worktree"
+                                      : "Checked out in \(path), so Git cannot switch to it here"
+            }
             if branch.isRemote { return "Create a local branch tracking \(branch.name) and switch to it" }
             return "Switch to \(branch.name)"
         }

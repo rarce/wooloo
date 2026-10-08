@@ -188,10 +188,9 @@ final class ViewSnapshotTests: XCTestCase {
         }
         let branches = [branch("main", current: true, upstream: "origin/main"), branch("bugfix/login"),
                         branch("topic/feature"), branch("origin/main", remote: true), branch("origin/release", remote: true)]
-        let worktrees = [WorkspaceWorktree(path: "/repo", branch: "main", isBare: false, isLocked: false, isPrunable: false),
-                         WorkspaceWorktree(path: "/repo-feature", branch: "topic/feature", isBare: false,
+        let worktrees = [WorkspaceWorktree(path: "/repo-feature", branch: "topic/feature", isBare: false,
                                            isLocked: false, isPrunable: false)]
-        let panel = WorkspaceBranchPickerPanel(branches: branches, worktrees: worktrees, root: "/repo", current: "main",
+        let panel = WorkspaceBranchPickerPanel(branches: branches, otherWorktrees: worktrees, current: "main",
                                                opensWorktrees: true, onChoose: { _ in }, onCancel: {})
         try assertSnapshot(render(panel, size: NSSize(width: 340, height: 190)), named: "branch-picker")
         try skipIfRecorded()
