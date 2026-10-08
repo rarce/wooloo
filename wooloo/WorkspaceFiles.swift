@@ -1498,18 +1498,22 @@ enum WorkspaceFiles {
         // the output pipe and wait on us while we wait on it. A command that exits early closes the
         // pipe; writing then fails with EPIPE instead of a SIGPIPE that would end the app.
         var inputError: Error?
-        let inputWritten = DispatchSemaphore(value: 0)
+        var inputWritten: DispatchSemaphore?
         if let input, let source {
             let writer = source.fileHandleForWriting
-            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
+            guard fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+                process.terminate()
+                timer.cancel()
+                throw WorkspaceFileError.message("Could not prepare the command's input")
+            }
+            let written = DispatchSemaphore(value: 0)
+            inputWritten = written
             Thread {
                 do { try writer.write(contentsOf: input) }
                 catch { inputError = error }
                 try? writer.close()
-                inputWritten.signal()
+                written.signal()
             }.start()
-        } else {
-            inputWritten.signal()
         }
         var data = Data()
         var readError: Error?
@@ -1528,18 +1532,22 @@ enum WorkspaceFiles {
         }
         process.waitUntilExit()
         timer.cancel()
-        errorsRead.wait()
-        inputWritten.wait()
-        if let readError { throw readError }
+        // A process the command left running in the background can keep stderr or stdin open after
+        // the command exits. Its threads are then left to finish on their own rather than waited on.
+        let settled = DispatchTime.now() + 2
+        let stderrRead = errorsRead.wait(timeout: settled) == .success
+        let inputSettled = inputWritten.map { $0.wait(timeout: settled) == .success } ?? true
+        let errorOutput = stderrRead ? errorData : Data()
         outputBytes = data.count
         // A signal means the timeout or the output limit stopped the process.
         status = process.terminationReason == .exit ? process.terminationStatus : -process.terminationStatus
-        if status != 0 { errorText = String(decoding: errorData, as: UTF8.self) }
+        if status != 0 { errorText = String(decoding: errorOutput, as: UTF8.self) }
+        if let readError { throw readError }
         guard data.count <= limit else { throw WorkspaceFileError.message("Output is too large") }
         guard process.terminationStatus == 0 else {
-            throw WorkspaceFileError.message(failureMessage(errors: errorData, output: data))
+            throw WorkspaceFileError.message(failureMessage(errors: errorOutput, output: data))
         }
-        if let inputError { throw inputError }
+        if inputSettled, let inputError { throw inputError }
         return data
     }
 }

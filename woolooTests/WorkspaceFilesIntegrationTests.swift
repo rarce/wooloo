@@ -318,25 +318,23 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
     /// Processes started from Swift concurrency all at once must all finish. The cooperative pool
     /// has a thread per core; a process that waited there on work queued to a global queue could
     /// starve that queue and hang every load, as happened on CI's small runners.
-    func testManyConcurrentProcessesFinish() async throws {
+    func testManyConcurrentProcessesFinish() throws {
         let count = ProcessInfo.processInfo.activeProcessorCount * 4
-        let done = expectation(description: "Every process finished")
-        let finished = Counter()
-        // Not awaited directly: if the runs hang, the expectation fails the test instead of hanging it.
-        Task.detached {
-            await withTaskGroup(of: Bool.self) { group in
-                for _ in 0..<count {
-                    group.addTask {
-                        let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "sleep 0.3; echo out; echo err >&2"],
-                                                             limit: 1_000)
-                        return output == Data("out\n".utf8)
-                    }
-                }
-                for await succeeded in group where succeeded { finished.increment() }
+        let runs = DispatchGroup()
+        let finished = Locked(0)
+        // Run on Swift's cooperative threads, as the app's loads do, but waited on from this test's
+        // own thread: awaiting would need a cooperative thread too, so a regression would hang the
+        // test instead of failing it.
+        for _ in 0..<count {
+            runs.enter()
+            Task.detached {
+                let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "sleep 0.3; echo out; echo err >&2"],
+                                                     limit: 1_000)
+                if output == Data("out\n".utf8) { finished.withLock { $0 += 1 } }
+                runs.leave()
             }
-            done.fulfill()
         }
-        await fulfillment(of: [done], timeout: 20)
+        XCTAssertEqual(runs.wait(timeout: .now() + 20), .success, "Every process finished")
         XCTAssertEqual(finished.value, count)
     }
 
@@ -347,6 +345,17 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         let echoed = try WorkspaceFiles.run("/bin/cat", [], input: input, limit: 2_000_000, timeout: 10)
         XCTAssertEqual(echoed.count, input.count)
         XCTAssertThrowsError(try WorkspaceFiles.run("/bin/sh", ["-c", "exit 3"], input: input, limit: 1_000, timeout: 10))
+        // Exits successfully without reading its input: the failed write is reported.
+        XCTAssertThrowsError(try WorkspaceFiles.run("/bin/sh", ["-c", "exec 0<&-; sleep 0.1; exit 0"],
+                                                    input: input, limit: 1_000, timeout: 10))
+    }
+
+    /// A background process that keeps stderr open does not hold the command's result.
+    func testBackgroundProcessDoesNotHoldTheResult() throws {
+        let started = Date()
+        let output = try WorkspaceFiles.run("/bin/sh", ["-c", "sleep 30 >/dev/null & echo done"], limit: 1_000, timeout: 10)
+        XCTAssertEqual(output, Data("done\n".utf8))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8)
     }
 
     // MARK: Branches and worktrees
@@ -531,12 +540,4 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(try WorkspaceFiles.permalink("a b.swift", at: sandbox.location("repo/src")).absoluteString,
                        "https://github.com/owner/repo/blob/\(head)/src/a%20b.swift")
     }
-}
-
-/// A count shared by concurrent tasks.
-private final class Counter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    var value: Int { lock.withLock { count } }
-    func increment() { lock.withLock { count += 1 } }
 }
