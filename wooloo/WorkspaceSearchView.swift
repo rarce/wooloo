@@ -61,9 +61,9 @@ final class WorkspaceSearchModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 guard current == generation else { return }
             }
-            let outcome = await Task.detached(priority: .userInitiated) {
+            let outcome = await BlockingWork.run(priority: .userInitiated) {
                 Result { try WorkspaceSearch.search(options, at: location) }
-            }.value
+            }
             guard current == generation else { return }
             isSearching = false
             switch outcome {
@@ -111,7 +111,7 @@ final class WorkspaceSearchModel: ObservableObject {
         let writable = paths.filter { !skipped.contains($0) }
         isReplacing = true
         Task {
-            let outcome = await Task.detached(priority: .userInitiated) { () -> (count: Int, files: [String], failures: [String]) in
+            guard let outcome = try? await BlockingWork.run(priority: .userInitiated, { () -> (count: Int, files: [String], failures: [String]) in
                 var count = 0
                 var files: [String] = []
                 var failures: [String] = []
@@ -125,7 +125,10 @@ final class WorkspaceSearchModel: ObservableObject {
                     }
                 }
                 return (count, files, failures)
-            }.value
+            }) else {
+                isReplacing = false
+                return
+            }
             isReplacing = false
             var parts = ["Replaced \(outcome.count) match\(outcome.count == 1 ? "" : "es") in \(outcome.files.count) file\(outcome.files.count == 1 ? "" : "s")"]
             if !skipped.isEmpty { parts.append("skipped \(skipped.count) with unsaved edits") }

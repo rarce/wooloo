@@ -229,9 +229,9 @@ final class HostStatsMonitor: ObservableObject {
         previousTicks = nil
         task = Task { [weak self, interval] in
             while !Task.isCancelled {
-                let result = await Task.detached {
+                let result = await BlockingWork.run {
                     Result { try HostProbe.sample(machine: target.machine, directory: target.directory) }
-                }.value
+                }
                 guard !Task.isCancelled else { return }
                 self?.apply(result)
                 try? await Task.sleep(for: interval)

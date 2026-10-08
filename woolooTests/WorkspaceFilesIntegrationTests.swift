@@ -338,6 +338,47 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(finished.value, count)
     }
 
+    /// Loads run through `BlockingWork` leave Swift's cooperative threads free: with more slow
+    /// loads than there are cores, some running and the rest waiting for a slot, an unrelated
+    /// async task still runs at once.
+    func testSlowProcessLoadsLeaveCooperativeThreadsFree() throws {
+        let count = max(ProcessInfo.processInfo.activeProcessorCount, BlockingWork.limit) * 3
+        // The loads stay blocked until the check is done, however slow the machine; on a
+        // regression they hold the pool and the check fails at its timeout instead of hanging.
+        let gate = DispatchSemaphore(value: 0)
+        var opened = false
+        func open() {
+            guard !opened else { return }
+            opened = true
+            for _ in 0..<count { gate.signal() }
+        }
+        defer { open() }
+        let runs = DispatchGroup()
+        let finished = Locked(0)
+        for _ in 0..<count {
+            runs.enter()
+            Task.detached {
+                let output = try? await BlockingWork.run(priority: .utility) {
+                    gate.wait()
+                    return try WorkspaceFiles.run("/bin/sh", ["-c", "echo out"], limit: 1_000)
+                }
+                if output == Data("out\n".utf8) { finished.withLock { $0 += 1 } }
+                runs.leave()
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        // Waited on from this test's own thread, so a regression fails instead of hanging.
+        let progressed = DispatchSemaphore(value: 0)
+        Task.detached {
+            await Task.yield()
+            progressed.signal()
+        }
+        XCTAssertEqual(progressed.wait(timeout: .now() + 10), .success, "An unrelated task ran while the loads did")
+        open()
+        XCTAssertEqual(runs.wait(timeout: .now() + 30), .success, "Every load finished")
+        XCTAssertEqual(finished.value, count)
+    }
+
     /// A command that prints while it reads its input, beyond what a pipe holds, finishes; and one
     /// that exits before reading its input reports its failure instead of ending the app.
     func testInputAndOutputLargerThanAPipe() throws {

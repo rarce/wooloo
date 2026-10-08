@@ -266,9 +266,9 @@ struct ContentCommands {
         }
         if let path = quickOpen.selectedCreatePath {
             return Task { [documents, window] in
-                let created = await Task.detached(priority: .userInitiated) {
+                let created = await BlockingWork.run(priority: .userInitiated) {
                     Result { try WorkspaceFiles.createFile(path, at: location) }
-                }.value
+                }
                 switch created {
                 case .success:
                     quickOpen.dismiss(restoringFocus: false)

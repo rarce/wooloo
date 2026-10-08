@@ -531,7 +531,7 @@ final class WorkspaceRepositoryModel: ObservableObject {
         isLoading = !isReload
         error = nil
         let start = TerminalPipelineMetrics.now()
-        let result = await Task.detached { Result { try WorkspaceFiles.repository(at: location) } }.value
+        let result = await BlockingWork.run { Result { try WorkspaceFiles.repository(at: location) } }
         guard !Task.isCancelled, loadGeneration == generation, self.location?.identity == location.identity else { return }
         switch result {
         case .success(let value): listing = value
@@ -549,9 +549,9 @@ final class WorkspaceRepositoryModel: ObservableObject {
         guard let location, let hash, let key = commitKey else { return }
         let start = TerminalPipelineMetrics.now()
         defer { TerminalPipelineMetrics.spanShown("commit-files", start: start, detail: location.isLocal ? "local" : "ssh") }
-        let result = await Task.detached(priority: .userInitiated) {
+        let result = await BlockingWork.run(priority: .userInitiated) {
             Result { try WorkspaceFiles.commitFiles(hash, at: location) }
-        }.value
+        }
         guard commitKey == key else { return }
         switch result {
         case .success(let files): commitFiles = files
@@ -567,9 +567,9 @@ final class WorkspaceRepositoryModel: ObservableObject {
         fileHistoryKey = key
         fileHistoryError = nil
         guard let location, let path, let key else { fileHistory = nil; return }
-        let result = await Task.detached(priority: .userInitiated) {
+        let result = await BlockingWork.run(priority: .userInitiated) {
             Result { try WorkspaceFiles.fileHistory(path, at: location) }
-        }.value
+        }
         guard fileHistoryKey == key else { return }
         switch result {
         case .success(let commits): fileHistory = commits
@@ -596,7 +596,7 @@ final class WorkspaceRepositoryModel: ObservableObject {
 
     private func run(onSuccess: @escaping () -> Void = {}, _ operation: @escaping @Sendable () throws -> Void) {
         Task {
-            let result = await Task.detached { Result { try operation() } }.value
+            let result = await BlockingWork.run { Result { try operation() } }
             switch result {
             case .success:
                 reloadVersion += 1

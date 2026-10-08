@@ -255,7 +255,8 @@ final class RemoteAccessModel: ObservableObject {
 
     func checkSSH() {
         Task {
-            let accepts = await Task.detached { RemoteAccessSystem.acceptsSSH() }.value
+            // nil when cancelled.
+            guard let accepts = await BlockingWork.run({ Optional(RemoteAccessSystem.acceptsSSH()) }) else { return }
             if acceptsSSH != accepts { acceptsSSH = accepts }
         }
     }
@@ -363,7 +364,8 @@ final class RemoteAccessModel: ObservableObject {
     private func waitUntilPublished(_ hostname: String) async {
         let isPublished = isPublished
         for _ in 0..<30 {
-            if await Task.detached(operation: { isPublished(hostname) }).value { return }
+            // nil, and stops waiting, when cancelled.
+            if await BlockingWork.run({ Optional(isPublished(hostname)) }) ?? true { return }
             try? await Task.sleep(for: .seconds(2))
         }
     }

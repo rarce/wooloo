@@ -705,13 +705,17 @@ final class HerdrStore: ObservableObject {
                     break
                 }
                 do {
-                    try stream.run(path: path) { newSnapshot in
-                        Task { @MainActor in
-                            guard store.generation == currentGeneration else { return }
-                            store.receive(newSnapshot)
-                            if store.errorMessage != nil { store.errorMessage = nil }
-                            if store.isServerStopped { store.isServerStopped = false }
-                            store.repairSelection()
+                    // The stream blocks for as long as it is connected: keep it off the cooperative
+                    // threads, and out of the limit on blocking work.
+                    try await BlockingWork.run(priority: .utility, limited: false) {
+                        try stream.run(path: path) { newSnapshot in
+                            Task { @MainActor in
+                                guard store.generation == currentGeneration else { return }
+                                store.receive(newSnapshot)
+                                if store.errorMessage != nil { store.errorMessage = nil }
+                                if store.isServerStopped { store.isServerStopped = false }
+                                store.repairSelection()
+                            }
                         }
                     }
                 } catch {
@@ -738,9 +742,9 @@ final class HerdrStore: ObservableObject {
                         continue
                     }
                     for paneID in paneIDs {
-                        let paneResult = await Task.detached(priority: .utility) {
+                        let paneResult = await BlockingWork.run(priority: .utility) {
                             Result { try HerdrSocket.paneText(path: path, paneID: paneID) }
-                        }.value
+                        }
                         if generation == currentGeneration, case .success(let text) = paneResult,
                            paneText[paneID] != text {
                             paneText[paneID] = text
@@ -765,7 +769,12 @@ final class HerdrStore: ObservableObject {
                 }
                 guard let size, !Task.isCancelled else { stream.cancel(); break }
                 do {
-                    try await HerdrSurfaceStream.onOwnThread {
+                    // A blocking `run`, on a thread of its own at user-interactive priority. The
+                    // surfaces it reads are what the user is watching: in a `.utility` task, a loaded
+                    // machine starved the thread for up to 0.4 s at a time. It blocks for as long as
+                    // it is connected, so it takes no slot from the limit on blocking work.
+                    try await BlockingWork.run(qualityOfService: .userInteractive, limited: false,
+                                               name: "dev.wooloo.surface-stream") {
                         try stream.run(path: surfacePath, cols: size.0, rows: size.1,
                                        cellWidth: size.2, cellHeight: size.3) {
                             Task { @MainActor in
@@ -944,13 +953,13 @@ final class HerdrStore: ObservableObject {
         let source = cwd == nil ? selectedWorkspaceID : nil
         let currentGeneration = generation
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> (String, HerdrSnapshot) in
                     let id = try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source,
                                                              cwd: cwd, label: label)
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
-            }.value
+            }
             guard generation == currentGeneration else { return }
             switch result {
             case .success(let (id, fresh)):
@@ -967,12 +976,12 @@ final class HerdrStore: ObservableObject {
         let path = socketPath
         let currentGeneration = generation
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> (String, HerdrSnapshot) in
                     let id = try HerdrSocket.createTab(path: path, workspaceID: workspaceID, cwd: cwd)
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
-            }.value
+            }
             guard generation == currentGeneration else { return }
             switch result {
             case .success(let (id, fresh)):
@@ -1040,14 +1049,14 @@ final class HerdrStore: ObservableObject {
         let path = socketPath
         let currentGeneration = generation
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> Void in
                     _ = try HerdrSocket.request(path: path, method: "tab.move",
                                                 params: ["tab_id": tabID, "insert_index": insertIndex])
                 }
-            }.value
+            }
             // Read Herdr's order even when the move failed, to undo the one shown.
-            let fresh = await Task.detached(priority: .userInitiated) { try? HerdrSocket.snapshot(path: path) }.value
+            let fresh = await BlockingWork.run(priority: .userInitiated) { try? HerdrSocket.snapshot(path: path) }
             guard generation == currentGeneration else { return }
             if let fresh {
                 snapshot = fresh
@@ -1078,7 +1087,7 @@ final class HerdrStore: ObservableObject {
         let path = socketPath
         let currentGeneration = generation
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> Void in
                     let moved = try HerdrSocket.request(path: path, method: "pane.move", params: [
                         "pane_id": paneID,
@@ -1093,9 +1102,9 @@ final class HerdrStore: ObservableObject {
                     ])
                     try Self.requireChange(swapped, in: "swap", doing: "place the pane on that side")
                 }
-            }.value
+            }
             // Read Herdr's layout even after a failure, which may follow a successful move.
-            let fresh = await Task.detached(priority: .userInitiated) { try? HerdrSocket.snapshot(path: path) }.value
+            let fresh = await BlockingWork.run(priority: .userInitiated) { try? HerdrSocket.snapshot(path: path) }
             guard generation == currentGeneration else { return }
             if let fresh {
                 self.snapshot = fresh
@@ -1133,7 +1142,7 @@ final class HerdrStore: ObservableObject {
         let path = socketPath
         let currentGeneration = generation
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> Void in
                     let data = try HerdrSocket.request(path: path, method: "server.reload_config")
                     guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1146,7 +1155,7 @@ final class HerdrStore: ObservableObject {
                         throw HerdrConfigError.validation("Herdr reload: \(status). \(details)")
                     }
                 }
-            }.value
+            }
             guard generation == currentGeneration else { return }
             if case .failure(let error) = result { actionError = error.localizedDescription }
             else { actionError = nil }
@@ -1158,12 +1167,12 @@ final class HerdrStore: ObservableObject {
         let path = socketPath
         let currentGeneration = generation
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> HerdrSnapshot in
                     _ = try HerdrSocket.request(path: path, method: method, params: params)
                     return try HerdrSocket.snapshot(path: path)
                 }
-            }.value
+            }
             guard generation == currentGeneration else { return }
             switch result {
             case .success(let fresh):
@@ -1299,9 +1308,9 @@ final class HerdrStore: ObservableObject {
                 case .mouse:
                     continue // JSON pane.send_input has no mouse event field.
                 }
-                let result = await Task.detached(priority: .userInitiated) {
+                let result = await BlockingWork.run(priority: .userInitiated) {
                     Result { try HerdrSocket.sendInput(path: path, paneID: item.paneID, text: text, keys: keys) }
-                }.value
+                }
                 guard generation == currentGeneration else { break }
                 if case .failure(let error) = result {
                     setIfChanged(\.inputError, error.localizedDescription)

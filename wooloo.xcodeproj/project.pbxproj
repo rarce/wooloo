@@ -49,6 +49,7 @@
 		A1000000000000000000005A /* DocumentFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005B /* DocumentFind.swift */; };
 		A10000000000000000000042 /* WorkspaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000043 /* WorkspaceSearch.swift */; };
 		A1000000000000000000005C /* HostStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005D /* HostStats.swift */; };
+		A1000000000000000000C201 /* BlockingWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000C202 /* BlockingWork.swift */; };
 		A1000000000000000000005E /* HostStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005F /* HostStatsView.swift */; };
 		A1D000000000000000000101 /* RemoteAccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000101 /* RemoteAccessView.swift */; };
 		A1D000000000000000000100 /* RemoteAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000100 /* RemoteAccess.swift */; };
@@ -61,6 +62,7 @@
 		A1000000000000000000AB03 /* TerminalTabDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AB04 /* TerminalTabDrop.swift */; };
 		A1000000000000000000AB05 /* ContentPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AB06 /* ContentPanels.swift */; };
 		C30000000000000000000F09 /* QuickOpenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F0A /* QuickOpenTests.swift */; };
+		C3000000000000000000B201 /* BlockingWorkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000B202 /* BlockingWorkTests.swift */; };
 		A10000000000000000000F0B /* CommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F0C /* CommandPalette.swift */; };
 		A10000000000000000000F0D /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F0E /* CommandPaletteView.swift */; };
 		C30000000000000000000F0F /* CommandPaletteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F10 /* CommandPaletteTests.swift */; };
@@ -176,6 +178,7 @@
 		A1000000000000000000005B /* DocumentFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentFind.swift; sourceTree = "<group>"; };
 		A10000000000000000000043 /* WorkspaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearch.swift; sourceTree = "<group>"; };
 		A1000000000000000000005D /* HostStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStats.swift; sourceTree = "<group>"; };
+		A1000000000000000000C202 /* BlockingWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingWork.swift; sourceTree = "<group>"; };
 		A1000000000000000000005F /* HostStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsView.swift; sourceTree = "<group>"; };
 		A1D100000000000000000101 /* RemoteAccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessView.swift; sourceTree = "<group>"; };
 		A1D100000000000000000100 /* RemoteAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccess.swift; sourceTree = "<group>"; };
@@ -188,6 +191,7 @@
 		A1000000000000000000AB04 /* TerminalTabDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabDrop.swift; sourceTree = "<group>"; };
 		A1000000000000000000AB06 /* ContentPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentPanels.swift; sourceTree = "<group>"; };
 		C30000000000000000000F0A /* QuickOpenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenTests.swift; sourceTree = "<group>"; };
+		C3000000000000000000B202 /* BlockingWorkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingWorkTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000F0C /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
 		A10000000000000000000F0E /* CommandPaletteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteView.swift; sourceTree = "<group>"; };
 		C30000000000000000000F10 /* CommandPaletteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteTests.swift; sourceTree = "<group>"; };
@@ -305,6 +309,7 @@
 				A100000000000000000000F1 /* EditorMultiCursor.swift */,
 				A10000000000000000000043 /* WorkspaceSearch.swift */,
 				A1000000000000000000005D /* HostStats.swift */,
+				A1000000000000000000C202 /* BlockingWork.swift */,
 				A1000000000000000000005F /* HostStatsView.swift */,
 				A1D100000000000000000101 /* RemoteAccessView.swift */,
 				A1D100000000000000000100 /* RemoteAccess.swift */,
@@ -359,6 +364,7 @@
 				C3D100000000000000000100 /* RemoteAccessTests.swift */,
 				C30000000000000000000F06 /* AgentQuotaTests.swift */,
 				C30000000000000000000F0A /* QuickOpenTests.swift */,
+				C3000000000000000000B202 /* BlockingWorkTests.swift */,
 				C30000000000000000000F10 /* CommandPaletteTests.swift */,
 				C30000000000000000000065 /* ContentCommandsTests.swift */,
 				C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */,
@@ -561,6 +567,7 @@
 				A100000000000000000000F0 /* EditorMultiCursor.swift in Sources */,
 				A10000000000000000000042 /* WorkspaceSearch.swift in Sources */,
 				A1000000000000000000005C /* HostStats.swift in Sources */,
+				A1000000000000000000C201 /* BlockingWork.swift in Sources */,
 				A1000000000000000000005E /* HostStatsView.swift in Sources */,
 				A1D000000000000000000101 /* RemoteAccessView.swift in Sources */,
 				A1D000000000000000000100 /* RemoteAccess.swift in Sources */,
@@ -605,6 +612,7 @@
 				C3D000000000000000000100 /* RemoteAccessTests.swift in Sources */,
 				C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */,
 				C30000000000000000000F09 /* QuickOpenTests.swift in Sources */,
+				C3000000000000000000B201 /* BlockingWorkTests.swift in Sources */,
 				C30000000000000000000F0F /* CommandPaletteTests.swift in Sources */,
 				C30000000000000000000064 /* ContentCommandsTests.swift in Sources */,
 				C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */,
