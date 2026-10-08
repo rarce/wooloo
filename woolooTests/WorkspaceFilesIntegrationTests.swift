@@ -397,6 +397,10 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.createBranch("main", at: repo), "main already exists")
         XCTAssertThrowsError(try WorkspaceFiles.createBranch("has space", at: repo))
         XCTAssertThrowsError(try WorkspaceFiles.createBranch("--orphan", at: repo))
+        let main = try XCTUnwrap(WorkspaceFiles.repository(at: repo).branches.first { $0.name == "main" })
+        XCTAssertThrowsError(try WorkspaceFiles.addWorktree(at: repo, path: sandbox.path("wt"), branch: main,
+                                                            newBranch: "has space"),
+                             "A new worktree's branch name is checked the same way")
         XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).branch, "topic/new")
     }
 

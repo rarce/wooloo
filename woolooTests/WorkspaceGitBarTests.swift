@@ -159,6 +159,8 @@ final class WorkspaceGitBarModelTests: XCTestCase {
         try sandbox.sh("rm -rf repo-gone")
         await model.load(repo)
         XCTAssertEqual(model.otherWorktrees.map { ($0.path as NSString).lastPathComponent }, ["repo-kept"])
+        XCTAssertEqual(Set(model.worktreesHoldingBranches.compactMap(\.branch)), ["gone", "kept"],
+                       "The deleted one still holds its branch")
     }
 
     func testCreatingABranchSwitchesToIt() async throws {
@@ -195,8 +197,14 @@ final class WorkspaceBranchPickerTests: XCTestCase {
          branch("origin/bugfix", remote: true), branch("origin/main", remote: true), branch("origin/release", remote: true)]
     }
 
-    private func rows(_ query: String, otherWorktrees: [WorkspaceWorktree] = []) -> [WorkspaceBranchPickerRow] {
-        WorkspaceBranchPicker.rows(query: query, branches: branches, otherWorktrees: otherWorktrees)
+    private func rows(_ query: String, branches: [WorkspaceBranch]? = nil, otherWorktrees: [WorkspaceWorktree] = [],
+                      remotes: [String] = ["origin"]) -> [WorkspaceBranchPickerRow] {
+        WorkspaceBranchPicker(branches: branches ?? self.branches, otherWorktrees: otherWorktrees, remotes: remotes)
+            .rows(query: query)
+    }
+
+    private func creates(_ rows: [WorkspaceBranchPickerRow]) -> Bool {
+        rows.contains { if case .create = $0.choice { true } else { false } }
     }
 
     /// The current branch first, then local branches, then remote ones that no local branch
@@ -215,7 +223,7 @@ final class WorkspaceBranchPickerTests: XCTestCase {
     /// Typed letters that only loosely match a branch name a new branch: ↩ creates it.
     func testCreatingComesFirstWhenNoBranchContainsTheName() {
         let found = rows("tf")
-        XCTAssertEqual(found.map(\.choice), [.create("tf"), .branch(branch("topic/feature"), worktreePath: nil)])
+        XCTAssertEqual(found.map(\.choice), [.create("tf"), .branch(branch("topic/feature"), worktree: nil)])
         XCTAssertEqual(found[1].positions, [0, 6])
 
         XCTAssertEqual(rows(" release ").first?.title, "origin/release")
@@ -224,15 +232,16 @@ final class WorkspaceBranchPickerTests: XCTestCase {
     }
 
     func testDoesNotOfferExistingOrInvalidNames() {
-        XCTAssertFalse(rows("bugfix").contains { if case .create = $0.choice { true } else { false } })
-        XCTAssertFalse(rows("MAIN").contains { if case .create = $0.choice { true } else { false } },
-                       "Branch names differing only in case clash on a case-insensitive disk")
+        XCTAssertFalse(creates(rows("bugfix")))
+        XCTAssertFalse(creates(rows("MAIN")), "Branch names differing only in case clash on a case-insensitive disk")
+        XCTAssertFalse(creates(rows("origin/release")), "A remote branch's name would become ambiguous")
+        XCTAssertFalse(creates(rows("origin/new")), "So would any name under a remote's")
         for name in ["has space", "-x", "a..b", "end/", "x.lock", "a:b", "wip~1", "@"] {
-            XCTAssertFalse(WorkspaceBranchPicker.isPlausibleBranchName(name), name)
-            XCTAssertEqual(rows(name).filter { if case .create = $0.choice { true } else { false } }, [], name)
+            XCTAssertFalse(WorkspaceFiles.isValidNewBranchName(name), name)
+            XCTAssertFalse(creates(rows(name)), name)
         }
         for name in ["feature/login", "fix-123", "v2.0", "UPPER_case"] {
-            XCTAssertTrue(WorkspaceBranchPicker.isPlausibleBranchName(name), name)
+            XCTAssertTrue(WorkspaceFiles.isValidNewBranchName(name), name)
         }
     }
 
@@ -243,9 +252,37 @@ final class WorkspaceBranchPickerTests: XCTestCase {
         ]
         let found = rows("", otherWorktrees: worktrees)
         XCTAssertEqual(found.first { $0.title == "topic/feature" }?.choice,
-                       .branch(branch("topic/feature"), worktreePath: "/repo-feature"))
+                       .branch(branch("topic/feature"), worktree: worktrees[0]))
         XCTAssertEqual(found.first { $0.title == "main" }?.choice,
-                       .branch(branch("main", current: true, upstream: "origin/main"), worktreePath: nil))
-        XCTAssertEqual(found.first { $0.title == "bugfix" }?.choice, .branch(branch("bugfix"), worktreePath: nil))
+                       .branch(branch("main", current: true, upstream: "origin/main"), worktree: nil))
+        XCTAssertEqual(found.first { $0.title == "bugfix" }?.choice, .branch(branch("bugfix"), worktree: nil))
+
+        // A worktree deleted without pruning still holds its branch, so the row keeps saying so.
+        let gone = WorkspaceWorktree(path: "/gone", branch: "bugfix", isBare: false, isLocked: false, isPrunable: true)
+        XCTAssertEqual(rows("", otherWorktrees: [gone]).first { $0.title == "bugfix" }?.choice,
+                       .branch(branch("bugfix"), worktree: gone))
+    }
+
+    /// A local branch named like a remote one does not hide it, and both rows stay distinct.
+    func testALocalAndARemoteBranchCanShareAName() {
+        let both = [branch("main", current: true), branch("origin/x"), branch("origin/x", remote: true)]
+        let found = rows("x", branches: both)
+        XCTAssertEqual(found.map(\.id), ["refs/heads/origin/x", "refs/remotes/origin/x", "create:x"])
+    }
+
+    /// Remote names can contain slashes; the local name drops the whole remote name.
+    func testRemoteBranchesOfRemotesWithSlashes() {
+        let fork = branch("team/fork/feature", remote: true)
+        XCTAssertEqual(WorkspaceBranchPicker.localName(of: fork, remotes: ["origin", "team/fork"]), "feature")
+        XCTAssertEqual(WorkspaceBranchPicker.localName(of: fork, remotes: []), "fork/feature",
+                       "Without the remote names, the first component is taken as the remote")
+        let listed = [branch("main", current: true), branch("feature"), fork]
+        XCTAssertEqual(rows("", branches: listed, remotes: ["team/fork"]).map(\.title), ["main", "feature"],
+                       "git switch --track would fail beside the local feature")
+        XCTAssertFalse(WorkspaceBranchPicker.canCheckOut(fork, among: listed, remotes: ["team/fork"]))
+        XCTAssertTrue(WorkspaceBranchPicker.canCheckOut(branch("origin/release", remote: true), among: branches,
+                                                        remotes: ["origin"]))
+        XCTAssertFalse(WorkspaceBranchPicker.canCheckOut(branch("origin/main", remote: true), among: branches,
+                                                         remotes: ["origin"]), "main tracks it")
     }
 }

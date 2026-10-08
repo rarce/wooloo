@@ -3,8 +3,9 @@ import Foundation
 /// What choosing a row of the branch picker does.
 enum WorkspaceBranchChoice: Equatable {
     /// Switch to the branch: a local one, or a remote one through a new local branch that tracks
-    /// it. A branch checked out in another worktree carries that worktree's path, which opens instead.
-    case branch(WorkspaceBranch, worktreePath: String?)
+    /// it. A branch checked out in another worktree carries that worktree: Git will not switch to
+    /// it here, so that worktree opens instead, unless its folder is gone.
+    case branch(WorkspaceBranch, worktree: WorkspaceWorktree?)
     /// Create a branch with the typed name at HEAD and switch to it.
     case create(String)
 }
@@ -24,44 +25,54 @@ struct WorkspaceBranchPickerRow: Equatable, Identifiable {
 }
 
 /// The branch picker's rows: the branches matching what was typed, and a row to create a branch
-/// with that name when no branch has it.
-enum WorkspaceBranchPicker {
-    /// Without a query: the current branch, the other local branches, then remote branches.
-    /// Remote branches are left out when a local branch tracks them or has their name, since
-    /// choosing them could only fail or switch to that local branch. `otherWorktrees` are the
-    /// usable worktrees besides this one; a branch checked out in one of them opens it instead.
-    static func rows(query: String, branches: [WorkspaceBranch],
-                     otherWorktrees: [WorkspaceWorktree]) -> [WorkspaceBranchPickerRow] {
+/// with that name when no branch has it. Built once per list of branches; each query only matches.
+struct WorkspaceBranchPicker {
+    /// The branches listed, in order: the current one, the other local ones, then remote ones.
+    let shown: [WorkspaceBranch]
+    private let index: QuickOpenIndex
+    private let elsewhere: [String: WorkspaceWorktree]
+    private let branches: [WorkspaceBranch]
+    private let remotes: [String]
+
+    /// `otherWorktrees` are the worktrees besides this one, including those whose folder was
+    /// deleted, which still hold their branch. `remotes` are the repository's remote names.
+    init(branches: [WorkspaceBranch], otherWorktrees: [WorkspaceWorktree], remotes: [String]) {
         let locals = branches.filter { !$0.isRemote }
-        let tracked = Set(locals.map(\.upstream).filter { !$0.isEmpty })
-        let localNames = Set(locals.map(\.name))
-        let shown = locals.filter(\.isCurrent) + locals.filter { !$0.isCurrent }
-            + branches.filter { $0.isRemote && !tracked.contains($0.name) && !localNames.contains(localName(of: $0)) }
-        var elsewhere: [String: String] = [:]
-        for tree in otherWorktrees {
-            if let branch = tree.branch { elsewhere[branch] = tree.path }
+        shown = locals.filter(\.isCurrent) + locals.filter { !$0.isCurrent }
+            + branches.filter { $0.isRemote && Self.canCheckOut($0, among: branches, remotes: remotes) }
+        index = QuickOpenIndex(shown.map(\.name))
+        var elsewhere: [String: WorkspaceWorktree] = [:]
+        for tree in otherWorktrees where !tree.isBare {
+            if let branch = tree.branch { elsewhere[branch] = tree }
         }
+        self.elsewhere = elsewhere
+        self.branches = branches
+        self.remotes = remotes
+    }
+
+    func rows(query: String) -> [WorkspaceBranchPickerRow] {
         func row(_ branch: WorkspaceBranch, _ positions: [Int]) -> WorkspaceBranchPickerRow {
-            let path = branch.isRemote || branch.isCurrent ? nil : elsewhere[branch.name]
-            return WorkspaceBranchPickerRow(choice: .branch(branch, worktreePath: path), title: branch.name,
+            let tree = branch.isRemote || branch.isCurrent ? nil : elsewhere[branch.name]
+            return WorkspaceBranchPickerRow(choice: .branch(branch, worktree: tree), title: branch.name,
                                             positions: positions)
         }
-
         let parsed = QuickOpenQuery(query)
         var rows: [WorkspaceBranchPickerRow]
         if parsed.terms.isEmpty {
             rows = shown.map { row($0, []) }
         } else {
-            let byName = Dictionary(shown.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-            let matches = QuickOpenMatcher.match(parsed, in: QuickOpenIndex(shown.map(\.name)), recents: [],
-                                                 limit: shown.count) ?? []
-            rows = matches.compactMap { match in byName[match.path].map { row($0, match.positions) } }
+            // A local branch can share its name with a remote one; each match takes the next branch
+            // of its name, so both stay listed.
+            var byName = Dictionary(grouping: shown, by: \.name)
+            let matches = QuickOpenMatcher.match(parsed, in: index, recents: [], limit: shown.count) ?? []
+            rows = matches.compactMap { match in
+                guard let branch = byName[match.path]?.first else { return nil }
+                byName[match.path]?.removeFirst()
+                return row(branch, match.positions)
+            }
         }
         let name = query.trimmingCharacters(in: .whitespaces)
-        // Git refuses a name that differs from an existing branch only in case on a case-insensitive
-        // disk, or creates a second branch other machines cannot check out.
-        guard isPlausibleBranchName(name),
-              !locals.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { return rows }
+        guard WorkspaceFiles.isValidNewBranchName(name), !clashes(name) else { return rows }
         let create = WorkspaceBranchPickerRow(choice: .create(name), title: name, positions: [])
         // A loose fuzzy match should not take ↩ from a new name: the Create row comes first unless a
         // branch contains what was typed as it was typed.
@@ -69,19 +80,32 @@ enum WorkspaceBranchPicker {
         return contained ? rows + [create] : [create] + rows
     }
 
-    /// The local branch `git switch --track` makes for a remote branch: its name without the remote.
-    static func localName(of remote: WorkspaceBranch) -> String {
-        guard let slash = remote.name.firstIndex(of: "/") else { return remote.name }
-        return String(remote.name[remote.name.index(after: slash)...])
+    /// Whether a new branch `name` would clash: with a branch differing only in case, which Git
+    /// refuses or duplicates on a case-insensitive disk, or with a remote's branches, which it
+    /// would make ambiguous.
+    private func clashes(_ name: String) -> Bool {
+        if branches.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) { return true }
+        let first = name.split(separator: "/").first.map(String.init) ?? name
+        return remotes.contains(first)
     }
 
-    /// Whether `name` could name a new branch. Git checks the full rules when creating it; this
-    /// only keeps the picker from offering names Git always refuses.
-    static func isPlausibleBranchName(_ name: String) -> Bool {
-        guard !name.isEmpty, !name.hasPrefix("-"), !name.hasPrefix("/"), !name.hasSuffix("/"),
-              !name.hasSuffix("."), !name.hasSuffix(".lock"), name != "@",
-              !name.contains(".."), !name.contains("@{"), !name.contains("//") else { return false }
-        let forbidden = CharacterSet(charactersIn: "~^:?*[\\").union(.whitespacesAndNewlines).union(.controlCharacters)
-        return name.unicodeScalars.allSatisfy { !forbidden.contains($0) }
+    /// Whether `git switch --track` can check out a remote branch: no local branch tracks it or
+    /// already has the name it would get.
+    static func canCheckOut(_ remote: WorkspaceBranch, among branches: [WorkspaceBranch], remotes: [String]) -> Bool {
+        guard remote.isRemote else { return false }
+        let locals = branches.filter { !$0.isRemote }
+        let name = localName(of: remote, remotes: remotes)
+        return !locals.contains { $0.upstream == remote.name || $0.name == name }
+    }
+
+    /// The local branch `git switch --track` makes for a remote branch: its name without the
+    /// remote's. Remote names may contain slashes, so the longest known remote that prefixes it
+    /// wins; without remotes, the first path component is taken as the remote.
+    static func localName(of remote: WorkspaceBranch, remotes: [String]) -> String {
+        if let known = remotes.filter({ remote.name.hasPrefix($0 + "/") }).max(by: { $0.count < $1.count }) {
+            return String(remote.name.dropFirst(known.count + 1))
+        }
+        guard let slash = remote.name.firstIndex(of: "/") else { return remote.name }
+        return String(remote.name[remote.name.index(after: slash)...])
     }
 }
