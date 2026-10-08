@@ -392,6 +392,58 @@ final class TerminalMouseTests: XCTestCase {
         XCTAssertEqual(copied(), "left 1")
     }
 
+    /// A selection whose pane closed or moved is dropped, so it never marks other text.
+    func testASelectionEndsWhenItsPaneChanges() {
+        show(splitTextSurface())
+        drag(from: (0, 0), to: (6, 1))
+        var resized = splitTextSurface()
+        resized.revision = 2
+        resized.paneInnerRects["w1:p1"] = HerdrRect(x: 0, y: 0, width: 8, height: 4)
+        TerminalRenderHarness.show(resized, in: view)
+        XCTAssertNil(view.selectedCellText())
+        XCTAssertNil(copied())
+    }
+
+    /// Herdr can send a pane too small for content, or one that reaches past the surface.
+    func testPanesWithoutContentSelectNothing() {
+        var surface = splitTextSurface()
+        surface.paneInnerRects["w1:p2"] = HerdrRect(x: 11, y: 0, width: 9, height: 0)
+        show(surface)
+        drag(from: (12, 0), to: (16, 2))
+        click(13, 1, clicks: 3)
+        XCTAssertNil(copied())
+
+        surface.paneInnerRects["w1:p2"] = HerdrRect(x: 11, y: 2, width: 30, height: 9)
+        surface.revision = 2
+        show(surface)
+        drag(from: (12, 3), to: (19, 3))
+        XCTAssertEqual(copied(), "ight 3", "The selection stops at the surface's edge")
+    }
+
+    /// Double- and triple-click on a pane's border or title select nothing.
+    func testClicksOnAPaneBorderSelectNoContent() {
+        var surface = splitTextSurface()
+        surface.paneInnerRects["w1:p1"] = HerdrRect(x: 0, y: 1, width: 10, height: 3)
+        show(surface)
+        click(2, 0, clicks: 2)
+        XCTAssertNil(copied())
+        click(2, 0, clicks: 3)
+        XCTAssertNil(copied())
+        click(2, 2, clicks: 3)
+        XCTAssertEqual(copied(), "left 2")
+    }
+
+    /// A press in a gap of the layout selects in the focused pane, never across panes.
+    func testSelectingFromAGapStaysInTheFocusedPane() {
+        var surface = splitTextSurface()
+        surface.paneRects["w1:p2"] = HerdrRect(x: 11, y: 0, width: 9, height: 3)
+        surface.paneInnerRects["w1:p2"] = HerdrRect(x: 11, y: 0, width: 9, height: 3)
+        show(surface)
+        view.paneID = "w1:p2"
+        drag(from: (12, 3), to: (12, 1))
+        XCTAssertEqual(copied(), "ight 1\nr", "The press clamps to the right pane's last row")
+    }
+
     /// Edit > Copy (⌘C) is enabled only with a selection, and Edit > Paste (⌘V) sends the
     /// clipboard to the focused pane as a paste.
     func testCopyAndPasteMenuItemsWork() {
@@ -401,10 +453,11 @@ final class TerminalMouseTests: XCTestCase {
         XCTAssertFalse(view.validateUserInterfaceItem(copyItem))
         drag(from: (11, 0), to: (16, 0))
         XCTAssertTrue(view.validateUserInterfaceItem(copyItem))
-        XCTAssertTrue(view.validateUserInterfaceItem(pasteItem))
+        XCTAssertFalse(view.validateUserInterfaceItem(pasteItem), "Paste follows the view's pasteboard, which is empty")
 
         pasteboard.clearContents()
         pasteboard.setString("echo hi\nls", forType: .string)
+        XCTAssertTrue(view.validateUserInterfaceItem(pasteItem))
         view.paneID = "w1:p2"
         view.paste(nil)
         XCTAssertEqual(pastes, ["w1:p2 echo hi\nls"])
