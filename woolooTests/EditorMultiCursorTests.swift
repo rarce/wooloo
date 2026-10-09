@@ -518,6 +518,7 @@ final class EditorMultiCursorTests: XCTestCase {
         coordinator.currentEvent = { event }
 
         event = key("", [], code: kVK_RightArrow)
+        XCTAssertFalse(coordinator.handle(event!), "the key monitor lets it through to the editor")
         for _ in 0..<3 { textView.moveRight(nil) }
         XCTAssertEqual(selectedRanges(textView), [range(3)])
         event = mouse(.leftMouseDown, at: 5, in: textView, flags: [], timestamp: 1)
@@ -538,6 +539,7 @@ final class EditorMultiCursorTests: XCTestCase {
         textView.selectionManager.setSelectedRange(range(5))
         XCTAssertTrue(coordinator.handle(key("d", .command)))
         event = key("", [.shift], code: kVK_RightArrow)
+        XCTAssertFalse(coordinator.handle(event!), "the key monitor lets it through to the editor")
         textView.moveRightAndModifySelection(nil)
         event = nil
         XCTAssertTrue(coordinator.perform(.undoSelection))
@@ -564,6 +566,53 @@ final class EditorMultiCursorTests: XCTestCase {
         var undone = 0
         while coordinator.perform(.undoSelection) { undone += 1 }
         XCTAssertEqual(undone, EditorMultiCursorCoordinator.historyLimit)
+    }
+
+    func testCommandUHistoriesKeepTheLatestStepsWithinTheirRangeLimit() throws {
+        let (coordinator, textView) = try makeEditor(text: "a a a a a a a a a a\n")
+        let matches = (0..<10).map { range($0 * 2, 1) }
+        coordinator.historyRangeLimit = 25
+        textView.selectionManager.setSelectedRange(range(0))
+        textView.selectionManager.setSelectedRange(range(2))       // 2 ranges, before and after
+        textView.selectionManager.setSelectedRanges(matches)       // 11
+        textView.selectionManager.setSelectedRange(range(4))       // 11
+        textView.selectionManager.setSelectedRange(range(6))       // 2: 26 in all, the first goes
+        var undone = 0
+        while coordinator.perform(.undoSelection) { undone += 1 }
+        XCTAssertEqual(undone, 3)
+        XCTAssertEqual(selectedRanges(textView), [range(2)])
+        var redone = 0
+        while coordinator.perform(.redoSelection) { redone += 1 }
+        XCTAssertEqual(redone, 3, "⇧⌘U keeps the same steps, 24 ranges")
+        XCTAssertEqual(selectedRanges(textView), [range(6)])
+
+        // A single step over the limit is still kept, alone.
+        coordinator.historyRangeLimit = 5
+        textView.selectionManager.setSelectedRange(range(8))
+        textView.selectionManager.setSelectedRanges(matches)
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(8)])
+        XCTAssertFalse(coordinator.perform(.undoSelection))
+    }
+
+    func testASelectionMadeInCodeAfterArrowKeysIsAStepOfItsOwn() throws {
+        let (coordinator, textView) = try makeEditor(text: "let foo = foo + 1\n")
+        textView.selectionManager.setSelectedRange(range(0))
+        // As in the app: AppKit's current event stays the last key handled after it is done.
+        let arrow = key("", [], code: kVK_RightArrow)
+        coordinator.currentEvent = { arrow }
+
+        XCTAssertFalse(coordinator.handle(arrow), "the key monitor lets it through to the editor")
+        for _ in 0..<3 { textView.moveRight(nil) }
+        // A later turn of the run loop, once the arrow has been handled.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        textView.selectionManager.setSelectedRange(range(10, 3))
+
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(3)], "the change in code is not part of the arrows' run")
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(0)])
+        XCTAssertFalse(coordinator.perform(.undoSelection))
     }
 
     func testCopyingSelectionsPastesOnePieceAtEachCursor() throws {
@@ -600,10 +649,13 @@ final class EditorMultiCursorTests: XCTestCase {
         textView.selectAll(nil)
         XCTAssertEqual(selectedRanges(textView), [range(0, 28)])
         event = key("n", .control)
+        XCTAssertFalse(coordinator.handle(event!), "the key monitor lets it through to the editor")
         textView.moveDown(nil)
         event = key("e", .control)
+        XCTAssertFalse(coordinator.handle(event!), "the key monitor lets it through to the editor")
         textView.moveToEndOfParagraph(nil)
         event = key("", [], code: kVK_LeftArrow)
+        XCTAssertFalse(coordinator.handle(event!), "the key monitor lets it through to the editor")
         textView.moveLeft(nil)
         let afterKeys = selectedRanges(textView)
         XCTAssertNotEqual(afterKeys, [range(0, 28)])
@@ -653,6 +705,7 @@ final class EditorMultiCursorTests: XCTestCase {
 
         // Arrows after ⌘U start a step of their own rather than extending the one ⌘U returned to.
         event = key("", [], code: kVK_RightArrow)
+        XCTAssertFalse(coordinator.handle(event!), "the key monitor lets it through to the editor")
         textView.moveRight(nil)
         event = nil
         XCTAssertFalse(coordinator.perform(.redoSelection), "a new change ends the redo history")
