@@ -492,45 +492,77 @@ enum WorkspaceFiles {
         }
         let words = folderWalkWords(location, readingSkipped: readingSkipped, links: false)
         let data = try ssh(machine, words.map(quote).joined(separator: " "), limit: maximumListingBytes)
-        return finished(folderWalk(records: nulStrings(data)), readingSkipped: readingSkipped)
+        return folderWalk(scriptOutput: data, readingSkipped: readingSkipped)
     }
 
-    /// `folderWalk` on this Mac.
+    /// A walk from the output of `folderWalkScript` without links.
+    static func folderWalk(scriptOutput data: Data, readingSkipped: Bool) -> WorkspaceFolderWalk {
+        finished(folderWalk(records: folderWalkRecords(data)), readingSkipped: readingSkipped)
+    }
+
+    /// Seconds on a clock that only moves forward, for the walk's time limit; tests replace it.
+    static var folderWalkClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    /// Entries of one folder the walk on this Mac reads between looks at `folderWalkClock`.
+    static let folderWalkClockInterval = 256
+
+    /// `folderWalk` on this Mac. It follows the specification above `folderWalkScript`, and
+    /// `WorkspaceFilesRemoteTests` checks that both find the same files; it differs only in leaving
+    /// out macOS packages, which `find` cannot tell from folders. Folders are read with `readdir`
+    /// rather than `FileManager`, which reads them whole, so the time limit can stop inside one.
     private static func localFolderWalk(root: String, readingSkipped: Bool) -> WorkspaceFolderWalk {
-        let deadline = Date().addingTimeInterval(folderWalkBudget)
+        let deadline = folderWalkClock() + folderWalkBudget
         let skipped = readingSkipped ? [] : Set(folderWalkSkippedFolders)
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey, .isPackageKey]
-        func entries(_ url: URL) -> [URL] {
-            ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: Array(keys))) ?? [])
-                .filter { $0.lastPathComponent != ".git" }
-        }
         var walk = WorkspaceFolderWalk()
-        var level = [(url: URL(fileURLWithPath: root), path: "")]
+        var level = [(absolute: root, path: "")]
         var depth = 1
         while !level.isEmpty {
             if depth > folderWalkMaximumDepth {
                 // Folders at the limit count as unread only when something besides skipped folders is in them.
-                walk.partial = level.contains { entries($0.url).contains { !skipped.contains($0.lastPathComponent) } }
+                walk.partial = level.contains { folder in
+                    var unread = false
+                    forEachFolderEntry(in: folder.absolute) { name, _ in
+                        unread = !skipped.contains(name)
+                        return !unread
+                    }
+                    return unread
+                }
                 break
             }
-            var next: [(url: URL, path: String)] = []
+            // The root is always read in full.
+            let timed = depth > 1
+            var next: [(absolute: String, path: String)] = []
             for folder in level {
-                // The root is always read in full.
-                if depth > 1, Date() >= deadline {
+                if timed, folderWalkClock() >= deadline {
                     walk.partial = true
                     return walk
                 }
-                for entry in entries(folder.url) {
-                    let name = entry.lastPathComponent
-                    let path = folder.path.isEmpty ? name : folder.path + "/" + name
-                    let values = try? entry.resourceValues(forKeys: keys)
-                    if values?.isRegularFile == true || values?.isSymbolicLink == true {
-                        walk.files.append(path)
-                        if walk.files.count > maximumFiles { return walk }
-                    } else if values?.isDirectory == true, values?.isPackage != true {
-                        if skipped.contains(name) { walk.skippedFolders.append(path) } else { next.append((entry, path)) }
+                var read = 0
+                var stopped = false
+                forEachFolderEntry(in: folder.absolute) { name, kind in
+                    read += 1
+                    if timed, read.isMultiple(of: folderWalkClockInterval), folderWalkClock() >= deadline {
+                        walk.partial = true
+                        stopped = true
+                        return false
                     }
+                    let path = folder.path.isEmpty ? name : folder.path + "/" + name
+                    switch kind {
+                    case .file:
+                        walk.files.append(path)
+                        if walk.files.count > maximumFiles {
+                            stopped = true
+                            return false
+                        }
+                    case .folder:
+                        let absolute = folder.absolute + "/" + name
+                        guard !isPackage(absolute) else { break }
+                        if skipped.contains(name) { walk.skippedFolders.append(path) } else { next.append((absolute, path)) }
+                    case .other:
+                        break
+                    }
+                    return true
                 }
+                if stopped { return walk }
             }
             level = next
             depth += 1
@@ -538,7 +570,72 @@ enum WorkspaceFiles {
         return walk
     }
 
-    /// A walk from the records `folderWalkWords` prints: files, skipped folders ending in "/", and
+    private enum FolderEntryKind {
+        /// A regular file or a symbolic link, which the walk lists without following.
+        case file
+        case folder
+        /// Sockets, pipes and devices, which the walk leaves out.
+        case other
+    }
+
+    /// Calls `visit` with the name and kind of each entry in the folder at `path`, besides `.`,
+    /// `..` and `.git`, until it returns false. Names that are not UTF-8 are left out, as the SSH
+    /// walk leaves them out; an unreadable folder has no entries.
+    private static func forEachFolderEntry(in path: String, _ visit: (String, FolderEntryKind) -> Bool) {
+        guard let directory = opendir(path) else { return }
+        defer { closedir(directory) }
+        while let entry = readdir(directory) {
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: entry.pointee.d_name)) {
+                    String(validatingCString: $0)
+                }
+            }
+            guard let name, name != ".", name != "..", name != ".git" else { continue }
+            var type = Int32(entry.pointee.d_type)
+            if type == DT_UNKNOWN {
+                var info = stat()
+                guard lstat(path + "/" + name, &info) == 0 else { continue }
+                switch info.st_mode & S_IFMT {
+                case S_IFREG: type = DT_REG
+                case S_IFLNK: type = DT_LNK
+                case S_IFDIR: type = DT_DIR
+                default: break
+                }
+            }
+            let kind: FolderEntryKind = switch type {
+            case DT_REG, DT_LNK: .file
+            case DT_DIR: .folder
+            default: .other
+            }
+            guard visit(name, kind) else { return }
+        }
+    }
+
+    /// Whether the folder at `path` is a macOS package, such as an app, which the walk leaves out.
+    private static func isPackage(_ path: String) -> Bool {
+        (try? URL(fileURLWithPath: path, isDirectory: true).resourceValues(forKeys: [.isPackageKey]).isPackage) == true
+    }
+
+    /// The records of `folderWalkScript`'s output, in order. A walk stopped by its time limit can
+    /// leave the last record before its `wooloo-partial` cut short; that marker is always printed
+    /// after a NUL, so a record directly before it was cut and is dropped.
+    static func folderWalkRecords(_ data: Data) -> [String] {
+        var records: [String] = []
+        var previousIsRecord = false
+        for field in data.split(separator: 0, omittingEmptySubsequences: false) {
+            // Names that are not UTF-8 are left out, as locally.
+            guard let record = String(data: Data(field), encoding: .utf8) else {
+                previousIsRecord = false
+                continue
+            }
+            if record == "wooloo-partial", previousIsRecord { records.removeLast() }
+            previousIsRecord = !record.isEmpty && record != "wooloo-partial"
+            if !record.isEmpty { records.append(record) }
+        }
+        return records
+    }
+
+    /// A walk from the records `folderWalkScript` prints: files, skipped folders ending in "/", and
     /// `wooloo-partial` when folders were left unread.
     private static func folderWalk(records: some Sequence<String>) -> WorkspaceFolderWalk {
         var walk = WorkspaceFolderWalk()
@@ -576,38 +673,69 @@ enum WorkspaceFiles {
         return walk
     }
 
-    /// The remote command of `folderWalk`, with the same limits as on this Mac. Each level is read
-    /// by `find` on the folders the previous one found, in batches that stop once the time is up,
-    /// so a slow level ends the walk with what was found instead of reaching the SSH timeout.
-    /// Unreadable folders are skipped, as they are locally. With `links`, link metadata follows a
-    /// `wooloo-symbolic-links` record.
     private static func folderWalkWords(_ location: WorkspaceFileLocation, readingSkipped: Bool, links: Bool) -> [String] {
+        ["sh", "-c", folderWalkScript(readingSkipped: readingSkipped, links: links), "sh", location.root]
+    }
+
+    /// The SSH command of `folderWalk`, run as `sh -c <script> sh <root>`.
+    ///
+    /// The walk outside a repository has two implementations, this script and
+    /// `localFolderWalk`, which must find the same files (`WorkspaceFilesRemoteTests` runs both on
+    /// the same folders). One script for both would make the walk on this Mac about twice as slow
+    /// (docs/perf/README.md) and lose its package check. Both follow this specification:
+    /// - Levels are read in turn, the root first, up to `folderWalkMaximumDepth` levels; past that,
+    ///   the walk is partial when a folder at the limit holds anything besides skipped folders.
+    /// - Regular files and symbolic links, unfollowed, are files; sockets, pipes and devices are
+    ///   left out, as are `.git` and unreadable folders, and names that are not UTF-8.
+    /// - Folders named in `folderWalkSkippedFolders` are listed, not read, unless `readingSkipped`.
+    /// - After the root, which is always read in full, the walk stops once `folderWalkBudget`
+    ///   seconds have passed since it started, also inside a folder, and is then partial. Files
+    ///   found until then are kept.
+    ///
+    /// Each level is read by `find` on the folders the previous one found, 256 folders per batch.
+    /// A watchdog marks the time as up and stops the `find` running then, so neither a slow level
+    /// nor one huge folder reaches the SSH timeout. The records it prints are those of
+    /// `folderWalkRecords`; with `links`, link metadata follows a `wooloo-symbolic-links` record.
+    static func folderWalkScript(readingSkipped: Bool, links: Bool) -> String {
         let skipped = readingSkipped ? [] : folderWalkSkippedFolders
         let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
         let entries = #"find "$@" -mindepth 1 -maxdepth 1 ! -name .git"#
-        var batch = #"if [ "$d" -gt 1 ] && [ "$(date +%s)" -ge "$end" ]; then exit 255; fi; "#
-            + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
-            + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
-        if links { batch += entries + #" -type l -print0 2>/dev/null >> "$t/links"; "# }
+        // `r` runs one find of a batch. After the root, the watchdog can stop it: it is started in
+        // the background and its process ID left in "$t/pid" for the watchdog, which marks the
+        // time as up ("$t/late") before reading that file, while `r` writes it before checking
+        // the mark, so one of them always stops it. The batch then ends with status 255.
+        var batch = #"r() { if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
+            + #"[ -e "$t/late" ] && kill "$p" 2>/dev/null; wait "$p"; : > "$t/pid"; [ ! -e "$t/late" ] || exit 255; }; "#
+            + #"if [ "$d" -gt 1 ] && [ -e "$t/late" ]; then exit 255; fi; "#
+            + "r " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
+            + "r " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
+        if links { batch += "r " + entries + #" -type l -print0 2>/dev/null >> "$t/links"; "# }
         if !skipped.isEmpty {
-            batch += entries + #" -type d \( "# + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
+            batch += "r " + entries + #" -type d \( "# + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
                 + #" \) -exec printf '%s/\0' {} + 2>/dev/null; "#
         }
         batch += "exit 0"
         let check = entries + unskipped + " -print 2>/dev/null | head -n 1; exit 0"
-        var script = #"cd "$1" || exit 1; t=$(mktemp -d) || exit 1; trap 'rm -rf "$t"' EXIT; "#
-            + "b=" + quote(batch) + "; c=" + quote(check) + "; "
-            + "end=$(( $(date +%s) + " + String(Int(folderWalkBudget.rounded(.up))) + " )); d=1; export end t d; "
+        // `sleep` takes whole seconds in POSIX, so the budget is rounded up. The watchdog stops its
+        // `sleep` when it is stopped itself at the end, so nothing is left running.
+        let seconds = Int(folderWalkBudget.rounded(.up))
+        let watchdog = seconds <= 0
+            ? #": > "$t/late"; "#
+            : #"( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "# + String(seconds) + #" & s=$!; wait "$s"; "#
+                + #": > "$t/late"; read p < "$t/pid" && kill "$p" ) > /dev/null 2>&1 & w=$!; "#
+        var script = #"cd "$1" || exit 1; t=$(mktemp -d) || exit 1; w=; trap '[ -n "$w" ] && kill "$w" 2>/dev/null; rm -rf "$t"' EXIT; "#
+            + "b=" + quote(batch) + "; c=" + quote(check) + "; d=1; export t d; "
+            + #": > "$t/pid"; "# + watchdog
             + #"printf '.\0' > "$t/level"; : > "$t/links"; while [ -s "$t/level" ]; do "#
             + #"if [ "$d" -gt "# + String(folderWalkMaximumDepth) + " ]; then "
-            + #"[ -n "$(xargs -0 sh -c "$c" sh < "$t/level" | head -n 1)" ] && printf 'wooloo-partial\0'; break; fi; "#
-            + #": > "$t/next"; if ! xargs -0 -n 256 sh -c "$b" sh < "$t/level"; then printf 'wooloo-partial\0'; break; fi; "#
+            + #"[ -n "$(xargs -0 sh -c "$c" sh < "$t/level" | head -n 1)" ] && printf '\0wooloo-partial\0'; break; fi; "#
+            + #": > "$t/next"; if ! xargs -0 -n 256 sh -c "$b" sh < "$t/level"; then printf '\0wooloo-partial\0'; break; fi; "#
             + #"mv "$t/next" "$t/level"; d=$((d + 1)); done; "#
         if links {
             script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && xargs -0 sh -c "#
                 + quote(symbolicLinkMetadataScript) + " sh < \"$t/links\"; "
         }
-        return ["sh", "-c", script + "exit 0", "sh", location.root]
+        return script + "exit 0"
     }
 
     /// What is directly inside `folder` ("" is the root), for an ignored folder being expanded.
@@ -993,7 +1121,7 @@ enum WorkspaceFiles {
         let listing = Result { () throws -> WorkspaceFileListing in
             if rootError != nil {
                 let data = try (batch.otherwise ?? .failure(WorkspaceFileError.message("Remote command output is incomplete"))).get()
-                let records = nulStrings(data)
+                let records = folderWalkRecords(data)
                 let separator = records.firstIndex(of: "wooloo-symbolic-links") ?? records.count
                 var walk = finished(folderWalk(records: records.prefix(separator)), readingSkipped: false)
                 let metadata = Data((records.dropFirst(separator + 1).joined(separator: "\0") + "\0").utf8)

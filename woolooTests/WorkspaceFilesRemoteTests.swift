@@ -19,6 +19,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             echo '\(Self.warning)' >&2
             [ -e '\(sandbox.path("slow"))' ] && sleep 0.4
             for command; do :; done
+            [ -d '\(sandbox.path("shims"))' ] && PATH='\(sandbox.path("shims"))':$PATH && export PATH
             cd '\(sandbox.base)'
             exec /bin/sh -c "$command"
             """], in: ".")
@@ -167,6 +168,96 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let listing = try WorkspaceFiles.listing(at: remote("wide"))
         XCTAssertEqual(listing.files, ["top.txt"])
         XCTAssertTrue(listing.partial)
+    }
+
+    /// Both walks outside Git follow one specification (above `WorkspaceFiles.folderWalkScript`);
+    /// on folders with every kind of entry they must find the same files.
+    func testRemoteAndLocalWalksAgreeOnEveryKindOfEntry() throws {
+        let depth = WorkspaceFiles.folderWalkMaximumDepth
+        let chain = (1...depth).map { "d\($0)" }.joined(separator: "/")
+        try sandbox.write(["top.txt": "x\n", "-dash.txt": "x\n", "back\\slash.txt": "x\n", "star*.txt": "x\n",
+                           "quote\"s 'and' $vars.txt": "x\n", "tab\tname.txt": "x\n", "naïve/über.txt": "x\n",
+                           "wooloo-partial": "x\n", "sub/wooloo-partial": "x\n", "sub/wooloo-symbolic-links": "x\n",
+                           ".hidden/inner.txt": "x\n", "sub/.git/config": "x\n", "lib/node_modules": "file\n",
+                           "a/b/__pycache__/x.pyc": "x\n", "a/b/c.py": "x\n", ".venv/bin/python": "x\n",
+                           "DerivedData/Build/x.o": "x\n", "locked/inner.txt": "x\n", "locked-deep/x/inner.txt": "x\n",
+                           "\(chain)/node_modules/pkg/i.js": "x\n"], in: "rich")
+        try sandbox.sh("""
+            mkdir empty empty-parent empty-parent/empty && mkfifo pipe sub/pipe \
+            && ln -s missing broken && ln -s sub alias && ln -s ../a lib/up && ln -s ../sub lib/__pycache__ \
+            && chmod 000 locked locked-deep/x
+            """, in: "rich")
+        defer { _ = try? sandbox.sh("chmod 755 locked locked-deep/x", in: "rich") }
+        try sandbox.write(["only.txt": "x\n", "\(chain)/.git/HEAD": "x\n", "\(chain)/node_modules/a.js": "x\n"],
+                          in: "limit")
+
+        for name in ["rich", "limit"] {
+            for includeIgnored in [false, true] {
+                let local = try WorkspaceFiles.quickOpenFiles(at: sandbox.location(name), includeIgnored: includeIgnored)
+                XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: remote(name), includeIgnored: includeIgnored), local,
+                               "\(name), ignored: \(includeIgnored)")
+            }
+            WorkspaceFiles.forgetRecentResults()
+            let remoteListing = try WorkspaceFiles.listing(at: remote(name))
+            let localListing = try WorkspaceFiles.listing(at: sandbox.location(name))
+            XCTAssertEqual(remoteListing.files, localListing.files, name)
+            XCTAssertEqual(remoteListing.ignored, localListing.ignored, name)
+            XCTAssertEqual(remoteListing.symbolicLinks, localListing.symbolicLinks, name)
+            XCTAssertEqual(remoteListing.partial, localListing.partial, name)
+        }
+        let rich = try WorkspaceFiles.quickOpenFiles(at: remote("rich"))
+        XCTAssertEqual(rich.files, ["-dash.txt", ".hidden/inner.txt", "a/b/c.py", "alias", "back\\slash.txt", "broken",
+                                    "lib/__pycache__", "lib/node_modules", "lib/up", "naïve/über.txt",
+                                    "quote\"s 'and' $vars.txt", "star*.txt", "sub/wooloo-partial",
+                                    "sub/wooloo-symbolic-links", "tab\tname.txt", "top.txt", "wooloo-partial"])
+        XCTAssertFalse(rich.partial, "Only skipped folders are at the depth limit")
+        XCTAssertEqual(try WorkspaceFiles.listing(at: remote("rich")).ignored.directories,
+                       [".venv", "DerivedData", "a/b/__pycache__"], "A folder at the depth limit is not read")
+        XCTAssertTrue(try WorkspaceFiles.quickOpenFiles(at: remote("rich"), includeIgnored: true).partial,
+                      "Read, the skipped folder at the depth limit has something unread")
+        XCTAssertFalse(try WorkspaceFiles.quickOpenFiles(at: remote("limit")).partial)
+    }
+
+    /// Over SSH, one folder too large to read in time is stopped inside its `find`, here a
+    /// stand-in that prints two names and part of a third and then hangs. The names it printed
+    /// whole are kept and the cut one is dropped.
+    func testRemoteWalkStopsInsideAHugeFolderAtItsTimeBudget() throws {
+        defer { WorkspaceFiles.folderWalkBudget = 2 }
+        try sandbox.write(["top.txt": "x\n", "big/real.txt": "x\n", "other/o.txt": "x\n"], in: "huge")
+        try sandbox.write(["shims/find": """
+            #!/bin/sh
+            case " $* " in
+            *" ./big "*" -type f "*) printf './big/a\\0./big/b\\0./big/cu'; exec sleep 30;;
+            esac
+            exec /usr/bin/find "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/find")
+        WorkspaceFiles.folderWalkBudget = 1
+        let started = Date()
+        let walk = try WorkspaceFiles.quickOpenFiles(at: remote("huge"))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8, "The walk stops at its time limit, not at the SSH timeout")
+        XCTAssertTrue(walk.files.contains("top.txt"), "The root is read in full")
+        XCTAssertTrue(walk.files.contains("big/a") && walk.files.contains("big/b"), "\(walk.files)")
+        XCTAssertFalse(walk.files.contains { $0.hasPrefix("big/c") }, "The name cut short is dropped: \(walk.files)")
+        XCTAssertTrue(walk.partial)
+
+        WorkspaceFiles.forgetRecentResults()
+        let listing = try WorkspaceFiles.listing(at: remote("huge"))
+        XCTAssertTrue(listing.files.contains("big/b"))
+        XCTAssertFalse(listing.files.contains { $0.hasPrefix("big/c") })
+        XCTAssertTrue(listing.partial)
+    }
+
+    func testWalkRecordsDropOnlyANameCutShortByTheTimeLimit() {
+        func records(_ text: String) -> [String] { WorkspaceFiles.folderWalkRecords(Data(text.utf8)) }
+        XCTAssertEqual(records("./a\0./b\0\0wooloo-partial\0"), ["./a", "./b", "wooloo-partial"])
+        XCTAssertEqual(records("./a\0./b/cu\0wooloo-partial\0\0wooloo-partial\0"), ["./a", "wooloo-partial", "wooloo-partial"])
+        XCTAssertEqual(records("./a\0./node_mod\0wooloo-partial\0"), ["./a", "wooloo-partial"])
+        var invalid = Data("./a\0./b".utf8)
+        invalid.append(contentsOf: [0xE2, 0x82])
+        invalid.append(contentsOf: Data("\0wooloo-partial\0".utf8))
+        XCTAssertEqual(WorkspaceFiles.folderWalkRecords(invalid), ["./a", "wooloo-partial"],
+                       "A name cut inside a character is not UTF-8 and left out")
     }
 
     func testRemoteIgnoredFoldersAreListedAndRead() throws {

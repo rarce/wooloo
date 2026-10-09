@@ -56,6 +56,49 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
                                                      root: target.base + "/" + repository.name)
                 try measure(location: location, target: target.name, repository: repository.name)
             }
+            try measureFolderWalks(machine: target.machine, target: target.name, base: target.base)
+        }
+    }
+
+    /// The walk of a folder outside Git (`WorkspaceFiles.folderWalk`): `tree` has 20,000 files in
+    /// 1,040 folders and a skipped `node_modules`, read in full within the time limit; `huge` has
+    /// one folder of 150,000 files below its root, read with a 0.05 s limit (1 s over SSH, where
+    /// the limit is in whole seconds). Locally, the `-script` operations run the SSH script with
+    /// /bin/sh instead, for comparison.
+    private func measureFolderWalks(machine: HerdrMachineProfile?, target: String, base: String) throws {
+        let output = try runSetup(machine: machine, arguments: [base, Self.walkLayoutVersion], script: Self.walkSetupScript)
+        if output.contains("built") { print("Built walk folders at \(machine?.target ?? "local"):\(base)") }
+        defer { WorkspaceFiles.folderWalkBudget = 2 }
+        for (name, budget) in [("tree", 2.0), ("huge", 0.05)] {
+            let location = WorkspaceFileLocation(machine: machine, session: "bench", workspaceID: "walk-" + name,
+                                                 workspaceLabel: name, root: base + "/walk/" + name)
+            WorkspaceFiles.folderWalkBudget = budget
+            var operations: [(String, () throws -> WorkspaceFolderWalk)] = [
+                ("folder-walk", { try WorkspaceFiles.folderWalk(at: location, readingSkipped: false) }),
+            ]
+            if machine == nil {
+                let script = WorkspaceFiles.folderWalkScript(readingSkipped: false, links: false)
+                operations.append(("folder-walk-script", {
+                    let data = try WorkspaceFiles.run("/bin/sh", ["-c", script, "sh", location.root],
+                                                      limit: WorkspaceFiles.maximumListingBytes, label: "sh")
+                    return WorkspaceFiles.folderWalk(scriptOutput: data, readingSkipped: false)
+                }))
+            }
+            for (operation, walk) in operations {
+                _ = try walk()
+                var nanos: [UInt64] = []
+                var processes: [WorkspaceProcessLog.Record] = []
+                var found = WorkspaceFolderWalk()
+                for _ in 0..<repetitions {
+                    let start = DispatchTime.now().uptimeNanoseconds
+                    processes = try WorkspaceProcessLog.collect { found = try walk() }.processes
+                    nanos.append(DispatchTime.now().uptimeNanoseconds - start)
+                }
+                var result = line(target: target, repository: "walk-" + name, operation: operation, nanos: nanos,
+                                  processes: processes)
+                result.removeLast()
+                report(result + #","files":\#(found.files.count),"partial":\#(found.partial)}"#)
+            }
         }
     }
 
@@ -150,7 +193,8 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
         }
     }
 
-    private func runSetup(machine: HerdrMachineProfile?, arguments: [String]) throws -> String {
+    private func runSetup(machine: HerdrMachineProfile?, arguments: [String],
+                          script: String = WorkspaceFilesBenchmarks.setupScript) throws -> String {
         let process = Process()
         if let machine {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -164,7 +208,7 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
         process.standardOutput = output
         process.standardError = output
         try process.run()
-        input.fileHandleForWriting.write(Data(Self.setupScript.utf8))
+        input.fileHandleForWriting.write(Data(script.utf8))
         try input.fileHandleForWriting.close()
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -236,6 +280,41 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
     i=0
     while [ $i -lt 5 ]; do printf '# Note %s\n\nUntracked text.\n' "$i" > notes/new-$i.md; i=$((i + 1)); done
     touch ".git/wooloo-bench-$version"
+    echo built
+    """#
+}
+
+extension WorkspaceFilesBenchmarks {
+    /// Bump when the walk setup script changes.
+    fileprivate static let walkLayoutVersion = "1"
+
+    /// Builds `<base>/walk/tree` and `<base>/walk/huge` for `measureFolderWalks`.
+    fileprivate static let walkSetupScript = #"""
+    set -eu
+    base=$1 version=$2
+    dir=$base/walk
+    if [ -f "$dir/.wooloo-walk-$version" ]; then echo ready; exit 0; fi
+    rm -rf "$dir"
+    mkdir -p "$dir/tree/node_modules/pkg" "$dir/huge/big"
+    cd "$dir/tree"
+    i=0
+    while [ $i -lt 40 ]; do
+        j=0
+        while [ $j -lt 25 ]; do
+            mkdir -p a$i/b$j
+            k=0
+            while [ $k -lt 20 ]; do : > a$i/b$j/f$k.txt; k=$((k + 1)); done
+            j=$((j + 1))
+        done
+        i=$((i + 1))
+    done
+    i=0
+    while [ $i -lt 1000 ]; do : > node_modules/pkg/m$i.js; i=$((i + 1)); done
+    cd "$dir/huge"
+    : > top.txt
+    i=0
+    while [ $i -lt 150000 ]; do : > big/f$i; i=$((i + 1)); done
+    touch "$dir/.wooloo-walk-$version"
     echo built
     """#
 }
