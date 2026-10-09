@@ -168,20 +168,15 @@ struct HerdrSurface: Equatable {
                 result.cells[y * width + x] = cell(symbol)
             }
         }
-        // Keep title glyphs inside the border and leave the close control at the right. Each
-        // cluster takes the cells Herdr gives it (wide characters and emoji two); what takes none
-        // (controls, tabs, a lone combining mark) is left out.
-        var x = outer.x + 2
-        for character in popup.title where !character.isNewline {
-            let span = DisplayColumns.terminalWidth(of: character)
-            guard span > 0 else { continue }
-            guard x + span <= outer.x + outer.width - 3 else { break }
-            let symbol = String(character)
-            result.cells[outer.y * width + x] = cell(symbol)
-            for covered in (x + 1)..<(x + span) {
-                result.cells[outer.y * width + covered] = HerdrCell(symbol: "", foreground: accent, background: panel, modifier: 0, skip: true)
-            }
-            x += span
+        // Keep the title inside the border and leave the close control at the right, laid out as
+        // Herdr's ratatui chrome does: wide clusters cover the cells after them, controls are left
+        // out and zero-width clusters join the cell before.
+        let titleCells = HerdrTitle.cells(of: popup.title, room: outer.width - 5)
+        for (offset, title) in titleCells.enumerated() {
+            guard let title else { continue }
+            result.cells[outer.y * width + outer.x + 2 + offset] = title.covered
+                ? HerdrCell(symbol: title.symbol, foreground: accent, background: panel, modifier: 0, skip: true)
+                : cell(title.symbol)
         }
         result.cells[outer.y * width + outer.x + outer.width - 2] = cell(" ")
         let linkOffset = result.hyperlinks.count

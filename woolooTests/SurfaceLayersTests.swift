@@ -319,9 +319,44 @@ final class HerdrPopupTests: XCTestCase {
         XCTAssertEqual(try titleRow("ｗ☺\u{FE0F}"), ["ｗ", "·", "☺\u{FE0F}", "·", "─", "─", "─", "─"])
     }
 
-    func testPopupTitleKeepsCombiningMarksInTheirCellAndDropsZeroWidthCharacters() throws {
+    func testPopupTitleAddsZeroWidthClustersToTheCellBeforeAndLeavesOutControls() throws {
         XCTAssertEqual(try titleRow("e\u{301}a"), ["e\u{301}", "a", "─", "─", "─", "─", "─", "─"])
-        XCTAssertEqual(try titleRow("\u{301}a\u{200B}\tb"), ["a", "b", "─", "─", "─", "─", "─", "─"])
+        // A leading zero-width cluster and the first visible one share the first cell, as in
+        // ratatui; the tab is left out but still counts toward the title's width (three cells).
+        XCTAssertEqual(try titleRow("\u{301}a\u{200B}\tb"), ["\u{301}a\u{200B}", "b", "─", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("a\u{200B}b"), ["a\u{200B}", "b", "─", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("abcdef\tgh"), ["a", "b", "c", "d", "e", "f", "g", "─"],
+                       "the tab's cell clips the title before h")
+    }
+
+    func testPopupTitleKeepsLineSeparatorsAndRemovesLineBreaks() throws {
+        XCTAssertEqual(try titleRow("\u{2028}a\u{2029}"), ["\u{2028}", "a", "\u{2029}", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("a\nb"), ["a", "b", "─", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("a\r\nb\n"), ["a", "b", "─", "─", "─", "─", "─", "─"])
+    }
+
+    func testPopupTitleIsClippedToItsStringWidthLikeRatatui() throws {
+        // Lam-alef is one cell as a string, so "سلام" gets three cells and loses its last letter.
+        XCTAssertEqual(HerdrTitle.width(of: "سلام"), 3)
+        XCTAssertEqual(HerdrTitle.clusters(of: "سلام").map(HerdrTitle.width(of:)), [1, 1, 1, 1])
+        XCTAssertEqual(try titleRow("سلام"), ["س", "ل", "ا", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("لاab"), ["ل", "ا", "a", "─", "─", "─", "─", "─"])
+    }
+
+    func testPopupTitleJoinsConjunctsAsHerdrsSegmentationDoes() throws {
+        // unicode-segmentation 1.13 (Unicode 17) joins conjuncts in Khmer and other scripts.
+        XCTAssertEqual(HerdrTitle.clusters(of: "ក្ក"), ["ក្ក"])
+        XCTAssertEqual(HerdrTitle.clusters(of: "ក្ខ្គa"), ["ក្ខ្គ", "a"])
+        XCTAssertEqual(HerdrTitle.clusters(of: "क्षि"), ["क्षि"])
+        XCTAssertEqual(HerdrTitle.width(of: "ក្ក"), 1)
+        XCTAssertEqual(HerdrTitle.width(of: "ក្ខ្គ"), 1)
+        XCTAssertEqual(HerdrTitle.width(of: "क्ष"), 2)
+        XCTAssertEqual(try titleRow("ក្ខ្គa"), ["ក្ខ្គ", "a", "─", "─", "─", "─", "─", "─"])
+        // Kirat Rai vowel signs are Hangul-like vowels in Unicode 17 and form one cluster.
+        XCTAssertEqual(HerdrTitle.clusters(of: "\u{16D63}\u{16D67}"), ["\u{16D63}\u{16D67}"])
+        XCTAssertEqual(HerdrTitle.width(of: "\u{16D63}\u{16D67}"), 1)
+        XCTAssertEqual(HerdrTitle.width(of: "\u{16D63}\u{16D67}\u{16D67}"), 1)
+        XCTAssertEqual(HerdrTitle.width(of: "\u{16D63}\u{16D68}"), 1)
     }
 
     func testPopupTitleStopsBeforeAWideCharacterThatWouldReachTheCloseControl() throws {
@@ -371,12 +406,16 @@ final class HerdrPopupTests: XCTestCase {
             ("\u{4DC0}", 2, "a hexagram"),
             ("\u{00AD}", 0, "a soft hyphen"),
             ("\u{0600}1", 2, "a prepended number sign"),
-            ("\t", 0, "a tab"), ("\r\n", 0, "CR LF"), ("e\u{301}", 1, "a combining mark"), ("漢", 2, "CJK"),
+            ("\u{2028}", 1, "a line separator"), ("e\u{301}", 1, "a combining mark"), ("漢", 2, "CJK"),
+            // Emoji newer than some supported macOS versions, from the crate's tables.
+            ("\u{1FAE9}", 2, "Unicode 16 face with bags under eyes"), ("\u{1FAEA}", 2, "a Unicode 17 emoji"),
         ]
         for (text, width, label) in cases {
-            XCTAssertEqual(text.count, 1, label)
-            XCTAssertEqual(DisplayColumns.terminalWidth(of: Character(text)), width, label)
+            XCTAssertEqual(HerdrTitle.clusters(of: text), [text], label)
+            XCTAssertEqual(HerdrTitle.width(of: text), width, label)
         }
+        XCTAssertEqual(HerdrTitle.width(of: "\t"), 1, "a control counts in a string width")
+        XCTAssertEqual(HerdrTitle.width(of: "\r\n"), 1)
         // The editor keeps its own widths for clusters it draws as one glyph.
         XCTAssertEqual(DisplayColumns.width(of: "\u{1F1E6}", at: 0, tabWidth: 4), 2)
         XCTAssertEqual(DisplayColumns.width(of: "1\u{20E3}", at: 0, tabWidth: 4), 2)
