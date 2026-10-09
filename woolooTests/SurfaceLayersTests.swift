@@ -248,11 +248,11 @@ private extension SurfaceWireWriter {
 
 @MainActor
 final class HerdrPopupTests: XCTestCase {
-    private func popup(id: String = "popup-test", width: HerdrPopup.Size? = .cells(12),
+    private func popup(id: String = "popup-test", title: String = "Test Popup", width: HerdrPopup.Size? = .cells(12),
                        height: HerdrPopup.Size? = .cells(6), mouse: Bool = true) -> HerdrPopup {
         var row = RowBuilder(width: 9)
         row.put("POPUP", foreground: Color.ansi(2))
-        return HerdrPopup(terminalID: id, title: "Test Popup", width: width, height: height, cols: 9, rows: 4,
+        return HerdrPopup(terminalID: id, title: title, width: width, height: height, cols: 9, rows: 4,
                           cells: row.cells + Array(repeating: SurfaceModel.blank, count: 27),
                           cursor: HerdrCursor(x: 2, y: 1, visible: true, shape: 0), hyperlinks: ["https://example.com"],
                           mouseReporting: mouse, pixelMouse: false, pixelWidth: 0, pixelHeight: 0)
@@ -296,6 +296,38 @@ final class HerdrPopupTests: XCTestCase {
         let zero = try XCTUnwrap(popup(width: .cells(0), height: .cells(0)).geometry(cols: 30, rows: 12))
         XCTAssertEqual(zero.outer, HerdrRect(x: 12, y: 4, width: 6, height: 4))
         XCTAssertNil(popup().geometry(cols: 5, rows: 3))
+    }
+
+    /// The title row from the first title cell to the close control, as symbols with "·" for the
+    /// trailing half of a wide character.
+    private func titleRow(_ title: String, width: Int = 12) throws -> [String] {
+        var decoder = HerdrSurfaceDecoder()
+        var raw = try XCTUnwrap(decoder.apply(frame: frame(popup())))
+        raw.popup = popup(title: title, width: .cells(width))
+        let outer = try XCTUnwrap(raw.popup?.geometry(cols: raw.width, rows: raw.height)?.outer)
+        let display = raw.displayingPopup(theme: TerminalRenderHarness.theme)
+        return (outer.x + 2..<outer.x + outer.width - 2).map { x in
+            let cell = display.cells[outer.y * display.width + x]
+            return cell.skip ? "·" : cell.symbol
+        }
+    }
+
+    func testPopupTitleGivesWideCharactersTwoCells() throws {
+        XCTAssertEqual(try titleRow("Ab"), ["A", "b", "─", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("漢字x"), ["漢", "·", "字", "·", "x", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("😀👍🏽🇨🇱"), ["😀", "·", "👍🏽", "·", "🇨🇱", "·", "─", "─"])
+        XCTAssertEqual(try titleRow("ｗ☺\u{FE0F}"), ["ｗ", "·", "☺\u{FE0F}", "·", "─", "─", "─", "─"])
+    }
+
+    func testPopupTitleKeepsCombiningMarksInTheirCellAndDropsZeroWidthCharacters() throws {
+        XCTAssertEqual(try titleRow("e\u{301}a"), ["e\u{301}", "a", "─", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("\u{301}a\u{200B}\tb"), ["a", "b", "─", "─", "─", "─", "─", "─"])
+    }
+
+    func testPopupTitleStopsBeforeAWideCharacterThatWouldReachTheCloseControl() throws {
+        // Seven title cells: three wide characters fill six, the fourth does not fit in one.
+        XCTAssertEqual(try titleRow("漢字漢字", width: 12), ["漢", "·", "字", "·", "漢", "·", "─", "─"])
+        XCTAssertEqual(try titleRow("abcdefghij", width: 12), ["a", "b", "c", "d", "e", "f", "g", "─"])
     }
 
     func testCompositionMovesCursorAndRestrictsSelectionToPopupContent() throws {

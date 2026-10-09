@@ -168,13 +168,15 @@ struct HerdrSurface: Equatable {
                 result.cells[y * width + x] = cell(symbol)
             }
         }
-        // Keep title glyphs inside the border and leave the close control at the right.
+        // Keep title glyphs inside the border and leave the close control at the right. Wide
+        // characters and emoji take two cells; what draws nothing (controls, tabs, a lone
+        // combining mark) is left out.
         var x = outer.x + 2
-        for character in popup.title where !character.isNewline {
-            let symbol = String(character)
-            let scalarWidth = symbol.unicodeScalars.map { wcwidth(wchar_t($0.value)) }.max() ?? 1
-            let span = max(1, Int(scalarWidth))
+        for character in popup.title where character != "\t" && !character.isNewline {
+            let span = DisplayColumns.width(of: character, at: 0, tabWidth: 1)
+            guard span > 0 else { continue }
             guard x + span <= outer.x + outer.width - 3 else { break }
+            let symbol = String(character)
             result.cells[outer.y * width + x] = cell(symbol)
             if span == 2 { result.cells[outer.y * width + x + 1] = HerdrCell(symbol: "", foreground: accent, background: panel, modifier: 0, skip: true) }
             x += span
