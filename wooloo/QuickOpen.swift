@@ -335,7 +335,7 @@ final class QuickOpenModel: ObservableObject {
         let load = loadFiles
         let includesIgnored = includesIgnored
         Task {
-            let outcome = await BlockingWork.run(priority: .userInitiated) {
+            let outcome = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
                 Result { () -> (QuickOpenIndex, QuickOpenListing) in
                     let listing = try load(location, includesIgnored)
                     return (QuickOpenIndex(listing.files), listing)

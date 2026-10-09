@@ -7,12 +7,19 @@ import Foundation
 /// Each call gets a new thread rather than a dispatch queue: the system caps the threads of
 /// non-overcommitting queues, and the commands this runs are far slower to start than a thread.
 ///
-/// At most `limit` calls run at once; the rest wait, suspended rather than holding a thread, in
-/// the order they arrived. The pool used to cap them at a thread per core, and a cap still
+/// Each machine has a limit of its own: at most `limit` calls run at once on this Mac, and at
+/// most `machineLimit` on each SSH machine; the rest wait, suspended rather than holding a thread,
+/// in the order they arrived. The pool used to cap them at a thread per core, and a cap still
 /// matters: an SSH Space shares one ControlMaster connection, and sshd refuses more than
 /// `MaxSessions` (10 by default) sessions on it, so a README with many images, read at once,
-/// would fail. Work that blocks for as long as a connection lasts, such as Herdr's event and
+/// would fail. With a limit per machine, local loads run while a slow SSH machine holds every
+/// slot of its own. Work that blocks for as long as a connection lasts, such as Herdr's event and
 /// surface streams, passes `limited: false` so it never holds a slot.
+///
+/// Work that reaches a Space or a machine starts through `WorkspaceFiles.blocking(at:)` or
+/// `WorkspaceFiles.blocking(on:)`, which take the limit from the location or machine, rather
+/// than through `run` here, which counts against this Mac. An SSH command that runs in a slot of
+/// another machine, such as one started with `run` alone, stops a debug build (`holdsSlot(of:)`).
 ///
 /// A call whose task is already cancelled, or is cancelled while it waits for a slot, does not
 /// start: the throwing variant throws `CancellationError`, and the other returns the value's
@@ -26,30 +33,65 @@ import Foundation
 /// such as a `Result { … }` inside a `Task`, so a helper that blocks should be marked as well;
 /// `BlockingWorkLoadTests` covers the models' real load paths.
 enum BlockingWork {
-    /// One limit for every machine, since callers pass closures that do not say which machine they
-    /// reach: below sshd's default `MaxSessions` of 10, leaving room for the few loads that still
-    /// run outside `BlockingWork`, and at least 4 so a small Mac does not queue a refresh behind
-    /// one slow command.
+    /// The limit on this Mac: a call per core, but at least 4, so a small Mac does not queue a
+    /// refresh behind one slow command, and at most 8.
     static let limit = min(8, max(4, ProcessInfo.processInfo.activeProcessorCount))
 
+    /// The limit on each SSH machine, the same as this Mac's, which it was before machines had
+    /// limits of their own: at most 8, below sshd's default `MaxSessions` of 10 on the shared
+    /// ControlMaster connection, leaving room for a terminal or a manual `ssh` that shares it.
+    static let machineLimit = limit
+
+    /// This Mac's slots.
     static let slots = BlockingWorkLimit(limit)
 
+    private static let machineSlotsLock = NSLock()
+    private static var machineSlots: [String: BlockingWorkLimit] = [:]
+
+    /// The slots of `machine`, made on first use.
+    static func slots(for machine: BlockingWorkMachine) -> BlockingWorkLimit {
+        guard case .ssh(let target) = machine else { return slots }
+        return machineSlotsLock.withLock {
+            if let existing = machineSlots[target] { return existing }
+            let created = BlockingWorkLimit(machineLimit)
+            machineSlots[target] = created
+            return created
+        }
+    }
+
+    private static let machineKey = "dev.wooloo.blocking-work.machine"
+
+    /// The machine whose slot the current thread's work holds; nil outside limited work.
+    static var currentMachine: BlockingWorkMachine? {
+        Thread.current.threadDictionary[machineKey] as? BlockingWorkMachine
+    }
+
+    /// False when the current thread's work holds a slot of a machine other than `machine`, as
+    /// when work that reaches an SSH machine was started with `run` and so counts against this
+    /// Mac. True outside limited work.
+    static func holdsSlot(of machine: BlockingWorkMachine) -> Bool {
+        currentMachine.map { $0 == machine } ?? true
+    }
+
     /// `priority` defaults to the calling task's priority. With a `worker`, the work runs on that
-    /// worker's thread instead of a new one.
-    static func run<Value: Sendable>(priority: TaskPriority? = nil, limited: Bool = true, on worker: BlockingWorker? = nil,
+    /// worker's thread instead of a new one. `machine` picks the limit; work that reaches a Space
+    /// or an SSH machine goes through `WorkspaceFiles.blocking`, which sets it.
+    static func run<Value: Sendable>(priority: TaskPriority? = nil, limited: Bool = true,
+                                     reaching machine: BlockingWorkMachine = .local, on worker: BlockingWorker? = nil,
                                      _ work: @escaping @Sendable () throws -> Value) async throws -> Value {
         try await run(qualityOfService: qualityOfService(for: priority ?? Task.currentPriority),
-                      limited: limited, on: worker, work)
+                      limited: limited, reaching: machine, on: worker, work)
     }
 
     /// Returns `Value.cancelled` instead of running `work` when cancelled. A closure returning a
     /// plain value can opt in by wrapping it in `Optional`.
     static func run<Value: BlockingWorkCancellable & Sendable>(priority: TaskPriority? = nil, limited: Bool = true,
+                                                               reaching machine: BlockingWorkMachine = .local,
                                                                on worker: BlockingWorker? = nil,
                                                                _ work: @escaping @Sendable () -> Value) async -> Value {
         do {
             return try await run(qualityOfService: qualityOfService(for: priority ?? Task.currentPriority),
-                                 limited: limited, on: worker, work)
+                                 limited: limited, reaching: machine, on: worker, work)
         } catch {
             return .cancelled
         }
@@ -58,10 +100,12 @@ enum BlockingWork {
     /// Runs `work` at an explicit quality of service, such as `.userInteractive`, which no task
     /// priority maps to.
     static func run<Value: Sendable>(qualityOfService: QualityOfService, limited: Bool = true,
+                                     reaching machine: BlockingWorkMachine = .local,
                                      name: String = "dev.wooloo.blocking-work", on worker: BlockingWorker? = nil,
                                      _ work: @escaping @Sendable () throws -> Value) async throws -> Value {
         try Task.checkCancellation()
-        let limiter = limited ? slots : nil
+        let limiter = limited ? slots(for: machine) : nil
+        let held = limited ? machine : nil
         if let limiter {
             try await limiter.acquire()
             // Cancelled just as the slot came free.
@@ -72,7 +116,7 @@ enum BlockingWork {
         }
         return try await withCheckedThrowingContinuation { continuation in
             let body: @Sendable () -> Void = {
-                let result = Result { try work() }
+                let result = Result { try holdingSlot(of: held, work) }
                 limiter?.release()
                 continuation.resume(with: result)
             }
@@ -87,6 +131,17 @@ enum BlockingWork {
         }
     }
 
+    /// Runs `work` with the current thread marked as holding a slot of `machine`, if any.
+    private static func holdingSlot<Value>(of machine: BlockingWorkMachine?, _ work: () throws -> Value) rethrows -> Value {
+        guard let machine else { return try work() }
+        let dictionary = Thread.current.threadDictionary
+        // A worker's queue reuses its thread, so the previous mark comes back afterwards.
+        let previous = dictionary[machineKey]
+        dictionary[machineKey] = machine
+        defer { dictionary[machineKey] = previous }
+        return try work()
+    }
+
     static func qualityOfService(for priority: TaskPriority) -> QualityOfService {
         switch priority.rawValue {
         case TaskPriority.high.rawValue...: return .userInitiated
@@ -97,8 +152,28 @@ enum BlockingWork {
     }
 }
 
+/// The machine blocking work reaches, which picks the limit it waits for. SSH machines are told
+/// apart by the connection SSH shares for them (`WorkspaceFiles.SSHEndpoint.connectionKey`), so
+/// `ssh://dev@box` and `dev@box` count as one.
+enum BlockingWorkMachine: Hashable, Sendable, CustomStringConvertible {
+    case local
+    case ssh(String)
+
+    init(_ machine: HerdrMachineProfile?) {
+        self = machine.map { .ssh(WorkspaceFiles.SSHEndpoint($0.target).connectionKey) } ?? .local
+    }
+
+    var description: String {
+        switch self {
+        case .local: return "this Mac"
+        case .ssh(let target): return target
+        }
+    }
+}
+
 /// A thread for blocking work that repeats, such as a poll, so each round does not start a thread
-/// of its own. Its calls run one at a time, in order, and still take a slot of `BlockingWork`.
+/// of its own. Its calls run one at a time, in order, and still take a slot of `BlockingWork`, of
+/// the machine each call reaches.
 /// A call takes its slot before it is queued, so one waiting behind another holds a slot too:
 /// give each loop a worker of its own and await each call before making the next, as the
 /// pane-text poll and `HostStatsMonitor` do. A call already queued runs even if its task is

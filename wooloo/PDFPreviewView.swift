@@ -15,7 +15,7 @@ enum WorkspacePDF {
     }
 
     /// Run on a worker, then hand the document to the main thread for exclusive UI use.
-    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func read(_ path: String, at location: WorkspaceFileLocation) throws -> Contents {
         let data = try WorkspaceFiles.readData(path, at: location, limit: maximumFileBytes)
         guard let document = PDFDocument(data: data) else {

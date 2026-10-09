@@ -169,11 +169,11 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         try await waitUntil("Worktree watcher starts") { model.isWatchingFiles }
         // Wait for the initial reconciliation, then prime the repository cache.
         try await Task.sleep(for: .milliseconds(600))
-        _ = try await BlockingWork.run { try WorkspaceFiles.repository(at: linked) }
+        _ = try await WorkspaceFiles.blocking(at: linked) { try WorkspaceFiles.repository(at: linked) }
         let version = model.listingVersion
         try await externalGit(["branch", "external-branch"], at: repo)
         try await waitUntil("Shared refs refresh the linked worktree") { model.listingVersion > version }
-        let repository = try await BlockingWork.run { try WorkspaceFiles.repository(at: linked) }
+        let repository = try await WorkspaceFiles.blocking(at: linked) { try WorkspaceFiles.repository(at: linked) }
         XCTAssertTrue(repository.branches.contains { $0.name == "external-branch" })
         try sandbox.write(["a.txt": "linked edit\n"], in: "linked")
         try await waitUntil("Linked worktree edit appears") { model.listing?.changes.first?.stageState == .none }

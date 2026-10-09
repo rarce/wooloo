@@ -284,3 +284,167 @@ final class NotebookRenderingTests: XCTestCase {
         XCTAssertThrowsError(try resources.data(for: URL(string: "wooloo-notebook://app/vendor/../sources.json")))
     }
 }
+
+/// Which notebook resources wait for a slot of the Space's machine: only image files of the
+/// Space, read over SSH for a remote one. Requests go through the WebKit handler with a fake task,
+/// and SSH through a fake `ssh` that logs its target and runs the command here.
+@MainActor
+final class NotebookResourceSlotTests: XCTestCase {
+    private var sandbox: WorkspaceGitSandbox!
+    private var release: (() -> Void)?
+
+    override func setUpWithError() throws {
+        sandbox = try WorkspaceGitSandbox()
+        try FileManager.default.createDirectory(atPath: sandbox.path("space"), withIntermediateDirectories: true)
+        try Self.png().write(to: URL(fileURLWithPath: sandbox.path("space/plot.png")))
+        try sandbox.write(["bin/ssh": """
+            #!/bin/sh
+            echo "$*" >> '\(sandbox.path("ssh.log"))'
+            for command; do :; done
+            exec /bin/sh -c "$command"
+            """], in: ".")
+        _ = try sandbox.sh("chmod 755 bin/ssh")
+        WorkspaceFiles.sshExecutable = sandbox.path("bin/ssh")
+    }
+
+    override func tearDown() {
+        release?()
+        WorkspaceFiles.sshExecutable = "/usr/bin/ssh"
+        sandbox.tearDown()
+    }
+
+    func testEncodedImagesDoNotWaitForASaturatedMachine() throws {
+        let location = sshLocation("nb-encoded.test")
+        let resources = NotebookResources()
+        let png = try Self.png().base64EncodedString()
+        resources.replace(images: ["saved": .init(base64: png, mime: "image/png")], location: location,
+                          documentPath: "notebook.ipynb", revision: "one")
+        try holdSlots(of: location)
+        let dataURL = try XCTUnwrap(resources.registerImage("data:image/png;base64," + png))
+        for url in ["wooloo-notebook://one/image/saved", dataURL] {
+            let task = FakeSchemeTask(url, test: self)
+            resources.webView(WKWebView(), start: task)
+            wait(for: [task.finished], timeout: 10)
+            XCTAssertEqual(task.mime, "image/png", url)
+        }
+        XCTAssertEqual(resources.pendingReads, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("ssh.log")), "Nothing went over SSH")
+    }
+
+    /// A request stopped while it waits for a slot gives up its place and never reads.
+    func testAStoppedRequestDoesNotReadOverSSH() throws {
+        let location = sshLocation("nb-stopped.test")
+        let resources = NotebookResources()
+        resources.replace(images: [:], location: location, documentPath: "notebook.ipynb", revision: "one")
+        try holdSlots(of: location)
+        let task = FakeSchemeTask(try XCTUnwrap(resources.registerImage("plot.png")), test: self)
+        task.finished.isInverted = true
+        resources.webView(WKWebView(), start: task)
+        let slots = BlockingWork.slots(for: BlockingWorkMachine(location.machine))
+        XCTAssertTrue(spin { slots.waiting == 1 }, "The image file waits for a slot of the machine")
+        XCTAssertEqual(resources.pendingReads, 1)
+        resources.webView(WKWebView(), stop: task)
+        XCTAssertTrue(spin { slots.waiting == 0 }, "The stopped request left the line")
+        XCTAssertEqual(resources.pendingReads, 0)
+        release?()
+        wait(for: [task.finished], timeout: 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("ssh.log")), "The stopped request did not read")
+    }
+
+    /// A file read uses the location its request started with, under that machine's slot, even
+    /// when another document opens while it waits.
+    func testAFileReadKeepsTheLocationItStartedWith() throws {
+        let first = sshLocation("nb-first.test")
+        let resources = NotebookResources()
+        resources.replace(images: [:], location: first, documentPath: "notebook.ipynb", revision: "one")
+        try holdSlots(of: first)
+        let task = FakeSchemeTask(try XCTUnwrap(resources.registerImage("plot.png")), test: self)
+        resources.webView(WKWebView(), start: task)
+        let slots = BlockingWork.slots(for: BlockingWorkMachine(first.machine))
+        XCTAssertTrue(spin { slots.waiting == 1 })
+        resources.replace(images: [:], location: sshLocation("nb-second.test"), documentPath: "other.ipynb", revision: "two")
+        release?()
+        wait(for: [task.finished], timeout: 10)
+        let log = try String(contentsOfFile: sandbox.path("ssh.log"), encoding: .utf8)
+        XCTAssertTrue(log.contains("nb-first.test"), log)
+        XCTAssertFalse(log.contains("nb-second.test"), log)
+        XCTAssertNotNil(task.error, "An image of a replaced document is not served")
+    }
+
+    func testAFileImageOfTheSpaceIsServed() throws {
+        let location = sshLocation("nb-served.test")
+        let resources = NotebookResources()
+        resources.replace(images: [:], location: location, documentPath: "notebook.ipynb", revision: "one")
+        let task = FakeSchemeTask(try XCTUnwrap(resources.registerImage("plot.png")), test: self)
+        resources.webView(WKWebView(), start: task)
+        wait(for: [task.finished], timeout: 10)
+        XCTAssertEqual(task.mime, "image/png")
+        XCTAssertEqual(task.data, try Self.png())
+        XCTAssertEqual(resources.pendingReads, 0)
+    }
+
+    private func sshLocation(_ target: String) -> WorkspaceFileLocation {
+        let machine = HerdrMachineProfile(id: target, label: target, target: target, session: "default", enabled: true)
+        return WorkspaceFileLocation(machine: machine, session: "default", workspaceID: "space",
+                                     workspaceLabel: "space", root: sandbox.path("space"))
+    }
+
+    /// Holds every slot of the location's machine until `release`.
+    private func holdSlots(of location: WorkspaceFileLocation) throws {
+        let machine = BlockingWorkMachine(location.machine)
+        let gate = DispatchSemaphore(value: 0)
+        let started = Locked(0)
+        for _ in 0..<BlockingWork.machineLimit {
+            Task.detached {
+                try? await BlockingWork.run(reaching: machine) { () throws in
+                    started.withLock { $0 += 1 }
+                    gate.wait()
+                }
+            }
+        }
+        var released = false
+        release = {
+            guard !released else { return }
+            released = true
+            for _ in 0..<BlockingWork.machineLimit { gate.signal() }
+        }
+        XCTAssertTrue(spin { started.value == BlockingWork.machineLimit }, "Every slot of the machine is held")
+    }
+
+    private func spin(_ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition() {
+            if Date() > deadline { return false }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        return true
+    }
+
+    private static func png() throws -> Data {
+        let image = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+                                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        return try XCTUnwrap(image.representation(using: .png, properties: [:]))
+    }
+}
+
+private final class FakeSchemeTask: NSObject, WKURLSchemeTask {
+    let request: URLRequest
+    let finished: XCTestExpectation
+    private(set) var mime: String?
+    private(set) var data = Data()
+    private(set) var error: Error?
+
+    init(_ url: String, test: XCTestCase) {
+        request = URLRequest(url: URL(string: url)!)
+        finished = test.expectation(description: "\(url.prefix(60)) finished")
+    }
+
+    func didReceive(_ response: URLResponse) { mime = response.mimeType }
+    func didReceive(_ data: Data) { self.data.append(data) }
+    func didFinish() { finished.fulfill() }
+    func didFailWithError(_ error: Error) {
+        self.error = error
+        finished.fulfill()
+    }
+}

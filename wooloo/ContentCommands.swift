@@ -268,7 +268,7 @@ struct ContentCommands {
             // A listing cut at its limits may not have reached a file that exists; that file is opened.
             let keepingExisting = quickOpen.isPartial || quickOpen.isTruncated
             return Task { [documents, window] in
-                let created = await BlockingWork.run(priority: .userInitiated) {
+                let created = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
                     Result { try WorkspaceFiles.createFile(path, at: location, keepingExisting: keepingExisting) }
                 }
                 switch created {
