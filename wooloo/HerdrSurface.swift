@@ -168,13 +168,15 @@ struct HerdrSurface: Equatable {
                 result.cells[y * width + x] = cell(symbol)
             }
         }
-        // Keep the title inside the border and leave the close control at the right, laid out as
-        // Herdr's ratatui chrome does: wide clusters cover the cells after them, controls are left
-        // out and zero-width clusters join the cell before.
-        let titleCells = HerdrTitle.cells(of: popup.title, room: outer.width - 5)
+        // The title as Herdr's client draws it (a ratatui `Block` with all borders and no padding):
+        // from the first cell after the left corner, laid out by `HerdrTitle`. Herdr's title may run
+        // up to the right corner; wooloo keeps the cell before the corner for its close button, an
+        // overlay `TerminalPaneView` adds that Herdr's chrome does not have, so a title that long
+        // loses that one cell.
+        let titleCells = HerdrTitle.cells(of: popup.title, room: outer.width - 3)
         for (offset, title) in titleCells.enumerated() {
             guard let title else { continue }
-            result.cells[outer.y * width + outer.x + 2 + offset] = title.covered
+            result.cells[outer.y * width + outer.x + 1 + offset] = title.covered
                 ? HerdrCell(symbol: title.symbol, foreground: accent, background: panel, modifier: 0, skip: true)
                 : cell(title.symbol)
         }

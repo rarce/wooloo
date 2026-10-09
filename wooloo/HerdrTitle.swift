@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Popup titles laid out as Herdr's own client draws them: a ratatui-core 0.1.0 `Block` title,
 /// split into grapheme clusters by `unicode-segmentation` 1.13 (Herdr 0.9.3 bundles 1.13.1, whose
@@ -21,8 +22,24 @@ enum HerdrTitle {
     /// ligatures across clusters (Arabic lam-alef, Khmer coeng). Each span starts its string
     /// width after the previous one, and `Span::render` draws its clusters until one does not
     /// fit, leaves out a cluster with a control character, and adds a zero-width cluster to the
-    /// symbol of the cell before it (or of the span's first cell).
+    /// symbol of the cell before it.
+    ///
+    /// One deliberate difference: ratatui gives a zero-width cluster that starts a span a cell of
+    /// its own, which the next cluster then joins, so a title starting with U+0301 would shape a
+    /// combining mark with no base. Here such a cluster joins the cell before it, or is left out
+    /// at the start of the title (or after a cell the title leaves blank); the visible clusters
+    /// keep their cells. The last layout is kept, since a popup's title rarely changes while
+    /// frames stream in.
     static func cells(of title: String, room: Int) -> [Cell?] {
+        if let last = lastLayout.withLock({ $0 }), last.title == title, last.room == room { return last.cells }
+        let cells = layOut(title, room: room)
+        lastLayout.withLock { $0 = (title, room, cells) }
+        return cells
+    }
+
+    private static let lastLayout = OSAllocatedUnfairLock<(title: String, room: Int, cells: [Cell?])?>(initialState: nil)
+
+    private static func layOut(_ title: String, room: Int) -> [Cell?] {
         let spans = lines(of: Array(title.unicodeScalars))
         let widths = spans.map(stringWidth)
         let areaWidth = min(widths.reduce(0, +), max(room, 0))
@@ -32,29 +49,23 @@ enum HerdrTitle {
             guard spanX < areaWidth else { break }
             let scalars = Array(span)
             var x = spanX
-            var drawn = 0
             for range in clusterRanges(scalars) {
                 let cluster = scalars[range]
                 if cluster.contains(where: { $0.value < 0x20 || (0x7F...0x9F).contains($0.value) }) { continue }
-                let width = stringWidth(cluster)
-                let next = x + width
-                if next > areaWidth { break }
                 var symbol = ""
                 symbol.unicodeScalars.append(contentsOf: cluster)
-                if drawn == 0 {
-                    cells[x] = Cell(symbol: symbol)
-                } else if x == spanX {
-                    cells[x]?.symbol += symbol
-                } else if width == 0 {
-                    cells[x - 1]?.symbol += symbol
-                } else {
-                    cells[x] = Cell(symbol: symbol)
+                let width = stringWidth(cluster)
+                if width == 0 {
+                    if x > 0 { cells[x - 1]?.symbol += symbol }
+                    continue
                 }
-                for hidden in (x + 1)..<max(next, x + 1) {
+                let next = x + width
+                if next > areaWidth { break }
+                cells[x] = Cell(symbol: symbol)
+                for hidden in (x + 1)..<next {
                     cells[hidden] = Cell(symbol: "", covered: true)
                 }
                 x = next
-                drawn += 1
             }
             spanX += spanWidth
         }
@@ -74,21 +85,18 @@ enum HerdrTitle {
         return lines
     }
 
-    /// The cells of `text` by itself: `UnicodeWidthStr::width`, which ratatui applies to each
-    /// cluster and to the whole title.
-    static func width(of text: String) -> Int {
-        stringWidth(Array(text.unicodeScalars)[...])
-    }
-
-    /// The grapheme clusters of `text` as `unicode-segmentation` 1.13.3 splits them (extended,
-    /// Unicode 17), which can differ from `Character`: GB9c joins conjuncts in more scripts.
-    static func clusters(of text: String) -> [String] {
+    /// For tests and comparisons with the crates only (the app lays out titles through
+    /// `cells(of:room:)`): the grapheme clusters of `text` as `unicode-segmentation` splits them,
+    /// the `UnicodeWidthStr` width of each, and the string width of the whole text.
+    static func measure(_ text: String) -> (clusters: [String], widths: [Int], width: Int) {
         let scalars = Array(text.unicodeScalars)
-        return clusterRanges(scalars).map { range in
+        let ranges = clusterRanges(scalars)
+        let clusters = ranges.map { range in
             var cluster = ""
             cluster.unicodeScalars.append(contentsOf: scalars[range])
             return cluster
         }
+        return (clusters, ranges.map { stringWidth(scalars[$0]) }, stringWidth(scalars[...]))
     }
 
     // MARK: - Grapheme clusters (unicode-segmentation 1.13.3)
