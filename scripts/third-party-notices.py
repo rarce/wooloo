@@ -28,6 +28,9 @@ VENDORED = [
     ("CodeEditTextView", "https://github.com/CodeEditApp/CodeEditTextView", "Vendor/CodeEditTextView/LICENSE.md"),
     ("MarkdownView", "https://github.com/LiYanan2004/MarkdownView", "Vendor/MarkdownView/LICENSE"),
     ("BeautifulMermaid", "https://github.com/lukilabs/beautiful-mermaid-swift", "Vendor/BeautifulMermaid/LICENSE"),
+    ("Popup title layout (unicode-width, unicode-segmentation, ratatui)",
+     "https://github.com/unicode-rs/unicode-width, https://github.com/unicode-rs/unicode-segmentation,\n"
+     "https://github.com/ratatui/ratatui", "Vendor/HerdrTitle/LICENSES.txt"),
 ]
 
 # (name, url, license files relative to the checkout) for packages resolved by SwiftPM.

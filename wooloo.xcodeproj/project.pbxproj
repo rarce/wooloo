@@ -26,6 +26,8 @@
 		A10000000000000000000016 /* TerminalPaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* TerminalPaneView.swift */; };
 		A10000000000000000000018 /* HerdrSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* HerdrSurface.swift */; };
 		A1D200000000000000000100 /* DisplayColumns.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D200000000000000000101 /* DisplayColumns.swift */; };
+		A1D200000000000000000202 /* HerdrTitleTables.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D200000000000000000203 /* HerdrTitleTables.swift */; };
+		A1D200000000000000000200 /* HerdrTitle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D200000000000000000201 /* HerdrTitle.swift */; };
 		A1000000000000000000AC01 /* HerdrAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AC02 /* HerdrAgentView.swift */; };
 		A10000000000000000000020 /* HerdrConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* HerdrConfig.swift */; };
 		A10000000000000000000022 /* HerdrSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* HerdrSettingsView.swift */; };
@@ -158,6 +160,8 @@
 		A10000000000000000000017 /* TerminalPaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPaneView.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* HerdrSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSurface.swift; sourceTree = "<group>"; };
 		A1D200000000000000000101 /* DisplayColumns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayColumns.swift; sourceTree = "<group>"; };
+		A1D200000000000000000203 /* HerdrTitleTables.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrTitleTables.swift; sourceTree = "<group>"; };
+		A1D200000000000000000201 /* HerdrTitle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrTitle.swift; sourceTree = "<group>"; };
 		A1000000000000000000AC02 /* HerdrAgentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrAgentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000021 /* HerdrConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConfig.swift; sourceTree = "<group>"; };
 		A10000000000000000000023 /* HerdrSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsView.swift; sourceTree = "<group>"; };
@@ -285,6 +289,8 @@
 				A10000000000000000000017 /* TerminalPaneView.swift */,
 				A10000000000000000000019 /* HerdrSurface.swift */,
 				A1D200000000000000000101 /* DisplayColumns.swift */,
+				A1D200000000000000000203 /* HerdrTitleTables.swift */,
+				A1D200000000000000000201 /* HerdrTitle.swift */,
 				A1000000000000000000AC02 /* HerdrAgentView.swift */,
 				B20000000000000000000002 /* TerminalPipelineMetrics.swift */,
 				A10000000000000000000021 /* HerdrConfig.swift */,
@@ -549,6 +555,8 @@
 				A10000000000000000000016 /* TerminalPaneView.swift in Sources */,
 				A10000000000000000000018 /* HerdrSurface.swift in Sources */,
 				A1D200000000000000000100 /* DisplayColumns.swift in Sources */,
+				A1D200000000000000000202 /* HerdrTitleTables.swift in Sources */,
+				A1D200000000000000000200 /* HerdrTitle.swift in Sources */,
 				A1000000000000000000AC01 /* HerdrAgentView.swift in Sources */,
 				B20000000000000000000001 /* TerminalPipelineMetrics.swift in Sources */,
 				A10000000000000000000020 /* HerdrConfig.swift in Sources */,

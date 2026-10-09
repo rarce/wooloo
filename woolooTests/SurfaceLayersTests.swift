@@ -298,48 +298,120 @@ final class HerdrPopupTests: XCTestCase {
         XCTAssertNil(popup().geometry(cols: 5, rows: 3))
     }
 
-    /// The title row from the first title cell to the close control, as symbols with "·" for the
-    /// trailing half of a wide character.
-    private func titleRow(_ title: String, width: Int = 12) throws -> [String] {
+    private func titleWidth(_ text: String) -> Int { HerdrTitle.measure(text).width }
+
+    private func titleClusters(_ text: String) -> [String] { HerdrTitle.measure(text).clusters }
+
+    /// The popup's top row from corner to corner, as symbols with "·" for cells hidden behind a
+    /// wide cluster.
+    private func topRow(_ title: String, width: Int = 12) throws -> [String] {
         var decoder = HerdrSurfaceDecoder()
         var raw = try XCTUnwrap(decoder.apply(frame: frame(popup())))
         raw.popup = popup(title: title, width: .cells(width))
         let outer = try XCTUnwrap(raw.popup?.geometry(cols: raw.width, rows: raw.height)?.outer)
         let display = raw.displayingPopup(theme: TerminalRenderHarness.theme)
-        return (outer.x + 2..<outer.x + outer.width - 2).map { x in
+        return (outer.x..<outer.x + outer.width).map { x in
             let cell = display.cells[outer.y * display.width + x]
             return cell.skip ? "·" : cell.symbol
         }
     }
 
-    func testPopupTitleGivesWideCharactersTwoCells() throws {
-        XCTAssertEqual(try titleRow("Ab"), ["A", "b", "─", "─", "─", "─", "─", "─"])
-        XCTAssertEqual(try titleRow("漢字x"), ["漢", "·", "字", "·", "x", "─", "─", "─"])
-        XCTAssertEqual(try titleRow("😀👍🏽🇨🇱"), ["😀", "·", "👍🏽", "·", "🇨🇱", "·", "─", "─"])
-        XCTAssertEqual(try titleRow("ｗ☺\u{FE0F}"), ["ｗ", "·", "☺\u{FE0F}", "·", "─", "─", "─", "─"])
+    /// The title cells, from the first cell after the corner to the cell before the close control,
+    /// without the border left after the title.
+    private func titleRow(_ title: String, width: Int = 12) throws -> [String] {
+        var row = Array(try topRow(title, width: width).dropFirst().dropLast(2))
+        while row.last == "─" { row.removeLast() }
+        return row
     }
 
-    func testPopupTitleKeepsCombiningMarksInTheirCellAndDropsZeroWidthCharacters() throws {
-        XCTAssertEqual(try titleRow("e\u{301}a"), ["e\u{301}", "a", "─", "─", "─", "─", "─", "─"])
-        XCTAssertEqual(try titleRow("\u{301}a\u{200B}\tb"), ["a", "b", "─", "─", "─", "─", "─", "─"])
+    func testPopupTitleStartsAfterTheCornerAndKeepsTheCloseControlCell() throws {
+        // As in Herdr's ratatui Block, the title starts right after the corner; wooloo keeps the
+        // cell before the right corner for its close button.
+        XCTAssertEqual(try topRow("Ab"), ["╭", "A", "b", "─", "─", "─", "─", "─", "─", "─", " ", "╮"])
+        XCTAssertEqual(try topRow("abcdefghijkl"), ["╭", "a", "b", "c", "d", "e", "f", "g", "h", "i", " ", "╮"])
+    }
+
+    func testPopupTitleGivesWideCharactersTwoCells() throws {
+        XCTAssertEqual(try titleRow("Ab"), ["A", "b"])
+        XCTAssertEqual(try titleRow("漢字x"), ["漢", "·", "字", "·", "x"])
+        XCTAssertEqual(try titleRow("😀👍🏽🇨🇱"), ["😀", "·", "👍🏽", "·", "🇨🇱", "·"])
+        XCTAssertEqual(try titleRow("ｗ☺\u{FE0F}"), ["ｗ", "·", "☺\u{FE0F}", "·"])
+    }
+
+    func testPopupTitleAddsZeroWidthClustersToTheCellBeforeAndLeavesOutControls() throws {
+        XCTAssertEqual(try titleRow("e\u{301}a"), ["e\u{301}", "a"])
+        XCTAssertEqual(try titleRow("a\u{200B}b"), ["a\u{200B}", "b"])
+        // The tab is left out but still counts toward the title's width (three cells).
+        XCTAssertEqual(try topRow("a\u{200B}\tb").prefix(5), ["╭", "a\u{200B}", "b", "─", "─"])
+        XCTAssertEqual(HerdrTitle.cells(of: "a\u{200B}\tb", room: 9).count, 3)
+        // After a wide cluster, a zero-width one joins the hidden cell, as in ratatui.
+        XCTAssertEqual(HerdrTitle.cells(of: "漢\u{200B}a", room: 9),
+                       [.init(symbol: "漢"), .init(symbol: "\u{200B}", covered: true), .init(symbol: "a")])
+    }
+
+    func testPopupTitleLeavesOutAZeroWidthClusterWithNoCellBefore() throws {
+        // ratatui would give it the first cell for the next cluster to join, a combining mark with
+        // no base; wooloo leaves it out instead, and joins one that starts a later line to the
+        // cell before.
+        XCTAssertEqual(try titleRow("\u{301}abc"), ["a", "b", "c"])
+        XCTAssertEqual(try titleRow("\u{301}a\u{200B}\tb"), ["a\u{200B}", "b"])
+        XCTAssertEqual(try titleRow("\u{200B}漢"), ["漢", "·"])
+        XCTAssertEqual(try titleRow("a\n\u{301}b"), ["a\u{301}", "b"])
+        XCTAssertEqual(try titleRow("\u{200B}\u{301}"), [])
+    }
+
+    func testPopupTitleKeepsLineSeparatorsAndRemovesLineBreaks() throws {
+        XCTAssertEqual(try titleRow("\u{2028}a\u{2029}"), ["\u{2028}", "a", "\u{2029}"])
+        XCTAssertEqual(try titleRow("a\nb"), ["a", "b"])
+        XCTAssertEqual(try titleRow("a\r\nb\n"), ["a", "b"])
+    }
+
+    func testPopupTitleIsClippedToItsStringWidthLikeRatatui() throws {
+        // Lam-alef is one cell as a string, so "سلام" gets three cells and loses its last letter.
+        XCTAssertEqual(titleWidth("سلام"), 3)
+        XCTAssertEqual(titleClusters("سلام").map(titleWidth), [1, 1, 1, 1])
+        XCTAssertEqual(try titleRow("سلام"), ["س", "ل", "ا"])
+        XCTAssertEqual(try titleRow("لاab"), ["ل", "ا", "a"])
+    }
+
+    func testPopupTitleJoinsConjunctsAsHerdrsSegmentationDoes() throws {
+        // unicode-segmentation 1.13 (Unicode 17) joins conjuncts in Khmer and other scripts.
+        XCTAssertEqual(titleClusters("ក្ក"), ["ក្ក"])
+        XCTAssertEqual(titleClusters("ក្ខ្គa"), ["ក្ខ្គ", "a"])
+        XCTAssertEqual(titleClusters("क्षि"), ["क्षि"])
+        XCTAssertEqual(titleWidth("ក្ក"), 1)
+        XCTAssertEqual(titleWidth("ក្ខ្គ"), 1)
+        XCTAssertEqual(titleWidth("क्ष"), 2)
+        XCTAssertEqual(try titleRow("ក្ខ្គa"), ["ក្ខ្គ", "a"])
+        // Kirat Rai vowel signs are Hangul-like vowels in Unicode 17 and form one cluster.
+        XCTAssertEqual(titleClusters("\u{16D63}\u{16D67}"), ["\u{16D63}\u{16D67}"])
+        XCTAssertEqual(titleWidth("\u{16D63}\u{16D67}"), 1)
+        XCTAssertEqual(titleWidth("\u{16D63}\u{16D67}\u{16D67}"), 1)
+        XCTAssertEqual(titleWidth("\u{16D63}\u{16D68}"), 1)
     }
 
     func testPopupTitleStopsBeforeAWideCharacterThatWouldReachTheCloseControl() throws {
-        // Seven title cells: three wide characters fill six, the fourth does not fit in one.
-        XCTAssertEqual(try titleRow("漢字漢字", width: 12), ["漢", "·", "字", "·", "漢", "·", "─", "─"])
-        XCTAssertEqual(try titleRow("abcdefghij", width: 12), ["a", "b", "c", "d", "e", "f", "g", "─"])
+        // Nine title cells: four wide characters fill eight, the fifth does not fit in one.
+        XCTAssertEqual(try titleRow("漢字漢字漢"), ["漢", "·", "字", "·", "漢", "·", "字", "·"])
+        XCTAssertEqual(try titleRow("abcdefghij"), ["a", "b", "c", "d", "e", "f", "g", "h", "i"])
     }
 
-    func testPopupTitleHandlesEmptyTitlesAndPopupsWithRoomForOneTitleCell() throws {
-        XCTAssertEqual(try titleRow(""), ["─", "─", "─", "─", "─", "─", "─", "─"])
-        XCTAssertEqual(try titleRow("\u{200B}\u{301}"), ["─", "─", "─", "─", "─", "─", "─", "─"])
-        // One title cell, then the border cell kept before the close control.
-        XCTAssertEqual(try titleRow("漢a", width: 6), ["─", "─"], "a wide first character does not fit")
-        XCTAssertEqual(try titleRow("a漢", width: 6), ["a", "─"])
+    func testPopupTitleHandlesEmptyTitlesAndTheNarrowestPopups() throws {
+        XCTAssertEqual(try titleRow(""), [])
+        // A six-cell popup has three title cells.
+        XCTAssertEqual(try titleRow("漢漢", width: 6), ["漢", "·"], "the second wide character does not fit")
+        XCTAssertEqual(try titleRow("a漢b", width: 6), ["a", "漢", "·"])
+    }
+
+    func testPopupTitleRepeatsTheLastLayoutForTheSameTitleAndRoom() {
+        let first = HerdrTitle.cells(of: "漢a", room: 9)
+        XCTAssertEqual(HerdrTitle.cells(of: "漢a", room: 9), first)
+        XCTAssertEqual(HerdrTitle.cells(of: "漢a", room: 2), [.init(symbol: "漢"), .init(symbol: "", covered: true)])
+        XCTAssertEqual(HerdrTitle.cells(of: "a漢", room: 9).first, .init(symbol: "a"))
     }
 
     func testPopupTitleGivesSkinTonedTextDefaultEmojiTwoCells() throws {
-        XCTAssertEqual(try titleRow("✌\u{1F3FB}✌"), ["✌\u{1F3FB}", "·", "✌", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("✌\u{1F3FB}✌"), ["✌\u{1F3FB}", "·", "✌"])
     }
 
     /// Expected widths come from `unicode-width` 0.2.2 per grapheme cluster, as ratatui-core 0.1.0
@@ -371,12 +443,16 @@ final class HerdrPopupTests: XCTestCase {
             ("\u{4DC0}", 2, "a hexagram"),
             ("\u{00AD}", 0, "a soft hyphen"),
             ("\u{0600}1", 2, "a prepended number sign"),
-            ("\t", 0, "a tab"), ("\r\n", 0, "CR LF"), ("e\u{301}", 1, "a combining mark"), ("漢", 2, "CJK"),
+            ("\u{2028}", 1, "a line separator"), ("e\u{301}", 1, "a combining mark"), ("漢", 2, "CJK"),
+            // Emoji newer than some supported macOS versions, from the crate's tables.
+            ("\u{1FAE9}", 2, "Unicode 16 face with bags under eyes"), ("\u{1FAEA}", 2, "a Unicode 17 emoji"),
         ]
         for (text, width, label) in cases {
-            XCTAssertEqual(text.count, 1, label)
-            XCTAssertEqual(DisplayColumns.terminalWidth(of: Character(text)), width, label)
+            XCTAssertEqual(titleClusters(text), [text], label)
+            XCTAssertEqual(titleWidth(text), width, label)
         }
+        XCTAssertEqual(titleWidth("\t"), 1, "a control counts in a string width")
+        XCTAssertEqual(titleWidth("\r\n"), 1)
         // The editor keeps its own widths for clusters it draws as one glyph.
         XCTAssertEqual(DisplayColumns.width(of: "\u{1F1E6}", at: 0, tabWidth: 4), 2)
         XCTAssertEqual(DisplayColumns.width(of: "1\u{20E3}", at: 0, tabWidth: 4), 2)
@@ -384,9 +460,9 @@ final class HerdrPopupTests: XCTestCase {
     }
 
     func testPopupTitleGivesClustersHerdrsCells() throws {
-        XCTAssertEqual(try titleRow("\u{1F1E6}1\u{20E3}a"), ["\u{1F1E6}", "1\u{20E3}", "a", "─", "─", "─", "─", "─"])
-        XCTAssertEqual(try titleRow("🏳\u{200D}🌈😀\u{FE0E}"), ["🏳\u{200D}🌈", "·", "·", "😀\u{FE0E}", "·", "─", "─", "─"])
-        XCTAssertEqual(try titleRow("ก\u{0E33}\u{1161}x"), ["ก\u{0E33}", "·", "x", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("\u{1F1E6}1\u{20E3}a"), ["\u{1F1E6}", "1\u{20E3}", "a"])
+        XCTAssertEqual(try titleRow("🏳\u{200D}🌈😀\u{FE0E}"), ["🏳\u{200D}🌈", "·", "·", "😀\u{FE0E}", "·"])
+        XCTAssertEqual(try titleRow("ก\u{0E33}\u{1161}x"), ["ก\u{0E33}", "·", "x"])
     }
 
     func testCompositionMovesCursorAndRestrictsSelectionToPopupContent() throws {
