@@ -25,6 +25,18 @@ enum MultiCursor {
     /// `replaceNewest` (⌘K ⌘D) the newest selection is dropped in favor of the next occurrence.
     static func selectNext(_ selection: MultiCursorSelection, in text: NSString, wordwise: Bool,
                            replaceNewest: Bool = false) -> MultiCursorSelection? {
+        selectOccurrence(selection, in: text, wordwise: wordwise, replaceNewest: replaceNewest, backward: false)
+    }
+
+    /// ⌃⌘D: as ⌘D, but adds the previous occurrence before the newest selection, wrapping around
+    /// to the end. ⌘K ⌃⌘D replaces the newest selection.
+    static func selectPrevious(_ selection: MultiCursorSelection, in text: NSString, wordwise: Bool,
+                               replaceNewest: Bool = false) -> MultiCursorSelection? {
+        selectOccurrence(selection, in: text, wordwise: wordwise, replaceNewest: replaceNewest, backward: true)
+    }
+
+    private static func selectOccurrence(_ selection: MultiCursorSelection, in text: NSString, wordwise: Bool,
+                                         replaceNewest: Bool, backward: Bool) -> MultiCursorSelection? {
         if selection.newest.length == 0 {
             guard let newest = wordRange(at: selection.newest.location, in: text) else { return nil }
             let ranges = selection.ranges.map { $0.length == 0 ? wordRange(at: $0.location, in: text) ?? $0 : $0 }
@@ -35,9 +47,11 @@ enum MultiCursor {
         let candidates = occurrences(of: query, in: text, wholeWord: wordwise).filter { match in
             match != selection.newest && !others.contains { NSIntersectionRange($0, match).length > 0 || $0 == match }
         }
-        guard let next = candidates.first(where: { $0.location >= NSMaxRange(selection.newest) })
-                ?? candidates.first else { return nil }
-        return MultiCursorSelection(ranges: others + [next], newest: next)
+        let found = backward
+            ? candidates.last(where: { NSMaxRange($0) <= selection.newest.location }) ?? candidates.last
+            : candidates.first(where: { $0.location >= NSMaxRange(selection.newest) }) ?? candidates.first
+        guard let found else { return nil }
+        return MultiCursorSelection(ranges: others + [found], newest: found)
     }
 
     /// ⇧⌘L: selects every occurrence of the newest selection, or of the word under it when empty.
@@ -58,16 +72,13 @@ enum MultiCursor {
     /// ⌥⌘↑ / ⌥⌘↓: adds a cursor on the line above the topmost selection or below the bottommost
     /// (below where it ends, when it spans lines), at display column `goalColumn` (clamped to the
     /// line). A selection on one line adds the same display columns, on the nearest line long
-    /// enough to hold part of them.
+    /// enough to hold part of them. `width` overrides the base selection's own display width, so
+    /// a run of presses keeps the width it started with after adding a shorter part on a short line.
     static func addCursor(_ selection: MultiCursorSelection, in text: NSString, above: Bool,
-                          goalColumn: Int, tabWidth: Int = 4) -> MultiCursorSelection? {
+                          goalColumn: Int, width: Int? = nil, tabWidth: Int = 4) -> MultiCursorSelection? {
         guard let base = above ? selection.ranges.first : selection.ranges.last else { return nil }
         let startLine = text.lineRange(for: NSRange(location: base.location, length: 0))
-        let singleLine = base.length > 0 && NSMaxRange(base) <= contentsEnd(of: startLine, in: text)
-        let width = singleLine
-            ? DisplayColumns.column(of: NSMaxRange(base), in: text, tabWidth: tabWidth)
-                - DisplayColumns.column(of: base.location, in: text, tabWidth: tabWidth)
-            : 0
+        let width = width ?? displayWidth(of: base, in: text, tabWidth: tabWidth)
         var line = above ? startLine : text.lineRange(for: NSRange(location: NSMaxRange(base), length: 0))
         while true {
             if above {
@@ -90,6 +101,55 @@ enum MultiCursor {
             let added = NSRange(location: line.location + start, length: end - start)
             return MultiCursorSelection(ranges: selection.ranges + [added], newest: added)
         }
+    }
+
+    /// The display columns a selection on one line covers; 0 for a cursor or one spanning lines,
+    /// which ⌥⌘↑/↓ repeat as cursors.
+    static func displayWidth(of range: NSRange, in text: NSString, tabWidth: Int) -> Int {
+        let line = text.lineRange(for: NSRange(location: range.location, length: 0))
+        guard range.length > 0, NSMaxRange(range) <= contentsEnd(of: line, in: text) else { return 0 }
+        return DisplayColumns.column(of: NSMaxRange(range), in: text, tabWidth: tabWidth)
+            - DisplayColumns.column(of: range.location, in: text, tabWidth: tabWidth)
+    }
+
+    /// Option-drag: one selection per line from the line holding `anchor` to the one holding
+    /// `head`, covering display columns `anchorColumn` to `headColumn` (either way round). As in
+    /// Zed, a line whose display width is less than the left column is skipped, and one that
+    /// ends inside the columns is selected to its end, so a line exactly as long as the left
+    /// column gets a cursor at its end. The selection on the head's line is the newest; nil when
+    /// every line is too short.
+    static func columnSelection(in text: NSString, anchor: Int, anchorColumn: Int, head: Int, headColumn: Int,
+                                tabWidth: Int = 4) -> MultiCursorSelection? {
+        let left = max(min(anchorColumn, headColumn), 0)
+        let right = max(anchorColumn, headColumn, 0)
+        let anchorLine = text.lineRange(for: NSRange(location: min(max(anchor, 0), text.length), length: 0))
+        let headLine = text.lineRange(for: NSRange(location: min(max(head, 0), text.length), length: 0))
+        var line = anchorLine.location <= headLine.location ? anchorLine : headLine
+        let last = max(anchorLine.location, headLine.location)
+        var ranges: [NSRange] = []
+        var newest: NSRange?
+        while true {
+            let end = contentsEnd(of: line, in: text)
+            let contents = text.substring(with: NSRange(location: line.location, length: end - line.location))
+            let width = DisplayColumns.column(ofUTF16Offset: contents.utf16.count, in: contents, tabWidth: tabWidth)
+            if width >= left {
+                let start = DisplayColumns.offset(forColumn: left, in: contents, tabWidth: tabWidth)
+                let stop = DisplayColumns.offset(forColumn: right, in: contents, tabWidth: tabWidth)
+                let range = NSRange(location: line.location + start, length: max(stop - start, 0))
+                ranges.append(range)
+                if line.location == headLine.location { newest = range }
+            }
+            guard line.location < last else { break }
+            if NSMaxRange(line) < text.length {
+                line = text.lineRange(for: NSRange(location: NSMaxRange(line), length: 0))
+            } else if endsWithNewline(line, text) {
+                line = NSRange(location: text.length, length: 0)
+            } else {
+                break
+            }
+        }
+        guard let fallback = ranges.last else { return nil }
+        return MultiCursorSelection(ranges: ranges, newest: newest ?? fallback)
     }
 
     /// Esc: keeps only the newest selection.
@@ -131,7 +191,7 @@ enum MultiCursor {
         return scalar == "_" || CharacterSet.alphanumerics.contains(scalar)
     }
 
-    private static func contentsEnd(of line: NSRange, in text: NSString) -> Int {
+    static func contentsEnd(of line: NSRange, in text: NSString) -> Int {
         var end = NSMaxRange(line)
         while end > line.location, [0x0A, 0x0D].contains(text.character(at: end - 1)) { end -= 1 }
         return end
@@ -142,28 +202,59 @@ enum MultiCursor {
     }
 }
 
-/// Runs the multi-cursor shortcuts while the document editor has focus, and keeps track of the
-/// newest selection, which the editor itself does not order.
+/// Runs the multi-cursor shortcuts and Option-drag column selection while the document editor
+/// has focus, keeps track of the newest selection, which the editor itself does not order, and
+/// of the selection changes ⌘U goes back through.
 final class EditorMultiCursorCoordinator: TextViewCoordinator {
+    /// What changed the selections, for ⌘U: a cursor command, navigation keys (arrows, Home,
+    /// End, Page Up and Down, with or without modifiers; a run of them is one step), or the mouse
+    /// (a click, or a click and its drag, as one step).
+    enum SelectionChange: Equatable { case command, keys, mouse }
+
+    /// How many selection changes ⌘U can go back through.
+    static let historyLimit = 100
+
     private weak var controller: TextViewController?
     private var keyMonitor: Any?
+    private var mouseMonitor: Any?
     /// The selections last seen, sorted, and the newest of them.
     private var ranges: [NSRange] = []
     private var newest: NSRange?
     /// The text a ⌘D or ⇧⌘L run started from a cursor selected, matched as a whole word.
     private var wordwiseQuery: String?
-    /// The column ⌥⌘↑/↓ keeps while adding cursors, and the selection it left.
-    private var goalColumn: (column: Int, after: [NSRange])?
-    /// Selections before each command, for ⌘U, with the ranges the command left.
-    private var history: [(before: MultiCursorSelection, after: [NSRange])] = []
-    /// ⌘K was pressed and the next key may complete ⌘K ⌘D.
+    /// The display column and width ⌥⌘↑/↓ keep while adding cursors, and the selection they left.
+    /// A press that follows any other change starts over from the selection it adds to.
+    private var addCursorGoal: (column: Int, width: Int, after: [NSRange])?
+    /// Selections before each change, for ⌘U, with the ranges the change left.
+    private var history: [(before: MultiCursorSelection, after: [NSRange], change: SelectionChange)] = []
+    /// The mouse-down that began the last mouse gesture in the editor's window, and the one whose
+    /// changes were last recorded, so that a click and its drag are one step but a later drag is not.
+    private var mouseDown: TimeInterval?
+    private var recordedMouseDown: TimeInterval?
+    /// ⌘K was pressed and the next key may complete ⌘K ⌘D or ⌘K ⌃⌘D.
     private var awaitsChord = false
+    /// An Option-drag: the offset and display column it started at, and whether it has left them.
+    private var columnDrag: (anchor: Int, column: Int, started: Bool)?
+    /// Repeats the last drag event of an Option-drag while the mouse is held still, so that the
+    /// block keeps growing as the editor scrolls under a mouse past its edge, or as it is scrolled.
+    private var columnDragTimer: Timer?
+    private var columnDragEvent: NSEvent?
+    /// The coordinator is setting the selections itself and records them on its own.
+    private var isApplying = false
+    /// The event behind a selection change, which tells clicks and arrows from edits. Internal
+    /// for tests, which have no real events.
+    var currentEvent: () -> NSEvent? = { NSApp.currentEvent }
 
     func prepareCoordinator(controller: TextViewController) {
         self.controller = controller
         track(controller.textView.selectionManager.textSelections.map(\.range))
         keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handle(event) == true ? nil : event
+        }
+        mouseMonitor = mouseMonitor ?? NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            self?.handleMouse(event) == true ? nil : event
         }
     }
 
@@ -173,11 +264,15 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
 
     func textViewDidChangeText(controller: TextViewController) {
         history.removeAll()
+        addCursorGoal = nil
     }
 
     func destroy() {
+        endColumnDrag()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
         keyMonitor = nil
+        mouseMonitor = nil
         controller = nil
     }
 
@@ -191,6 +286,8 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     // MARK: Keys
 
     /// Runs the shortcut in `event`, returning whether it was used. Internal for tests.
+    ///
+    /// ⌃⌘D only arrives while macOS's Look Up shortcut is turned off: the system takes it first.
     func handle(_ event: NSEvent) -> Bool {
         guard let textView = controller?.textView, textView.isEditable, let window = textView.window,
               event.window === window || event.windowNumber == window.windowNumber,
@@ -203,12 +300,21 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         let code = Int(event.keyCode)
         if awaitsChord {
             awaitsChord = false
-            if flags == .command && key == "d" { run { self.selectNext($0, text: $1, replaceNewest: true) } }
-            return flags == .command && key == "d"
+            switch (flags, key) {
+            case (.command, "d"):
+                run { self.selectOccurrence($0, text: $1, backward: false, replaceNewest: true) }
+            case ([.command, .control], "d"):
+                run { self.selectOccurrence($0, text: $1, backward: true, replaceNewest: true) }
+            default:
+                return false
+            }
+            return true
         }
         switch (flags, key, code) {
         case (.command, "d", _):
             perform(.selectNextOccurrence)
+        case ([.command, .control], "d", _):
+            perform(.selectPreviousOccurrence)
         case (.command, "k", _):
             awaitsChord = true
         case ([.command, .shift], "l", _), (.command, _, kVK_F2):
@@ -228,6 +334,121 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         return true
     }
 
+    // MARK: Mouse
+
+    /// Option-click adds a cursor, or removes the selection under it, as the editor does; dragging
+    /// on from there to another column or line selects that block of columns instead
+    /// (`MultiCursor.columnSelection`). The coordinator takes the whole gesture from the editor,
+    /// whose own drag handling would replace the block with one range. Internal for tests.
+    func handleMouse(_ event: NSEvent) -> Bool {
+        guard let textView = controller?.textView, let window = textView.window,
+              event.window === window || event.windowNumber == window.windowNumber else {
+            endColumnDrag()
+            return false
+        }
+        let point = textView.convert(event.locationInWindow, from: nil)
+        let text = textView.textStorage.string as NSString
+        switch event.type {
+        case .leftMouseDown:
+            endColumnDrag()
+            mouseDown = event.timestamp
+            let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard flags == .option, event.clickCount == 1, textView.isEditable, isOverTextView(event, textView),
+                  let offset = textView.layoutManager.textOffsetAtPoint(point) else { return false }
+            // The window does not see the click, so it would not become key on its own.
+            if !window.isKeyWindow { window.makeKey() }
+            if window.firstResponder !== textView { window.makeFirstResponder(textView) }
+            columnDrag = (offset, displayColumn(at: point, offset: offset, in: text), false)
+            optionClick(at: offset)
+            return true
+        case .leftMouseDragged:
+            guard columnDrag != nil else { return false }
+            columnDragEvent = event
+            dragColumns(to: event)
+            textView.autoscroll(with: event)
+            // Like the editor's own drag: mouse events stop while the mouse is held still past the
+            // edge, but the selection should go on growing as the view scrolls.
+            columnDragTimer = columnDragTimer ?? Timer.scheduledTimer(withTimeInterval: 0.022, repeats: true) {
+                [weak self] _ in
+                guard let self, let event = self.columnDragEvent, let textView = self.controller?.textView else { return }
+                textView.autoscroll(with: event)
+                self.dragColumns(to: event)
+            }
+            return true
+        case .leftMouseUp:
+            guard columnDrag != nil else { return false }
+            endColumnDrag()
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Selects the block from where the Option-drag started to the mouse in `event`.
+    private func dragColumns(to event: NSEvent) {
+        guard var drag = columnDrag, let textView = controller?.textView else { return }
+        let point = textView.convert(event.locationInWindow, from: nil)
+        let text = textView.textStorage.string as NSString
+        let offset = textView.layoutManager.textOffsetAtPoint(point) ?? (point.y < 0 ? 0 : text.length)
+        let column = displayColumn(at: point, offset: offset, in: text)
+        let sameLine = text.lineRange(for: NSRange(location: offset, length: 0))
+            == text.lineRange(for: NSRange(location: drag.anchor, length: 0))
+        if !drag.started {
+            guard column != drag.column || !sameLine else { return }
+            drag.started = true
+            columnDrag = drag
+        }
+        guard let block = MultiCursor.columnSelection(in: text, anchor: drag.anchor, anchorColumn: drag.column,
+                                                      head: offset, headColumn: column, tabWidth: tabWidth),
+              block.ranges != ranges || block.newest != newest else { return }
+        record(block.ranges, change: .mouse, continues: mouseDown != nil && recordedMouseDown == mouseDown)
+        recordedMouseDown = mouseDown
+        apply(block)
+    }
+
+    private func endColumnDrag() {
+        columnDragTimer?.invalidate()
+        columnDragTimer = nil
+        columnDragEvent = nil
+        columnDrag = nil
+    }
+
+    private func isOverTextView(_ event: NSEvent, _ textView: NSView) -> Bool {
+        guard let contentView = textView.window?.contentView else { return false }
+        let point = contentView.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+        guard let hit = contentView.hitTest(point) else { return false }
+        return hit === textView || hit.isDescendant(of: textView)
+    }
+
+    /// The display column under `point`, at the character boundary `offset` the editor found
+    /// there, plus the columns past the end of a short line.
+    private func displayColumn(at point: NSPoint, offset: Int, in text: NSString) -> Int {
+        let column = DisplayColumns.column(of: offset, in: text, tabWidth: tabWidth)
+        let line = text.lineRange(for: NSRange(location: offset, length: 0))
+        guard let controller, let layout = controller.textView.layoutManager,
+              offset == MultiCursor.contentsEnd(of: line, in: text) else { return column }
+        guard let endX = layout.rectForOffset(offset)?.minX
+                ?? (offset > line.location ? layout.rectForOffset(offset - 1)?.maxX : nil) else { return column }
+        let charWidth = (" " as NSString).size(withAttributes: [.font: controller.font]).width
+        guard charWidth > 0, point.x > endX else { return column }
+        return column + Int(((point.x - endX) / charWidth).rounded())
+    }
+
+    /// The editor's Option-click, which `track` records as a click.
+    private func optionClick(at offset: Int) {
+        guard let textView = controller?.textView else { return }
+        textView.unmarkText()
+        let selections = textView.selectionManager.textSelections.map(\.range)
+        if selections.count > 1, let hit = selections.firstIndex(where: {
+            $0.length == 0 ? $0.location == offset : NSLocationInRange(offset, $0)
+        }) {
+            textView.selectionManager.setSelectedRanges(selections.indices.filter { $0 != hit }.map { selections[$0] })
+        } else {
+            textView.selectionManager.addSelectedRange(NSRange(location: offset, length: 0))
+        }
+        textView.needsDisplay = true
+    }
+
     // MARK: Commands
 
     /// Runs a cursor command, from its key or the command palette, giving the editor the keyboard.
@@ -238,7 +459,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         if textView.window?.firstResponder !== textView { textView.window?.makeFirstResponder(textView) }
         switch command {
         case .selectNextOccurrence:
-            run { self.selectNext($0, text: $1, replaceNewest: false) }
+            run { self.selectOccurrence($0, text: $1, backward: false, replaceNewest: false) }
+        case .selectPreviousOccurrence:
+            run { self.selectOccurrence($0, text: $1, backward: true, replaceNewest: false) }
         case .selectAllOccurrences:
             run { selection, text in
                 let result = MultiCursor.selectAll(selection, in: text, wordwise: self.isWordwise(selection, text))
@@ -257,20 +480,26 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         return true
     }
 
-    private func selectNext(_ selection: MultiCursorSelection, text: NSString,
-                            replaceNewest: Bool) -> MultiCursorSelection? {
-        let result = MultiCursor.selectNext(selection, in: text, wordwise: isWordwise(selection, text),
-                                            replaceNewest: replaceNewest)
+    private func selectOccurrence(_ selection: MultiCursorSelection, text: NSString, backward: Bool,
+                                  replaceNewest: Bool) -> MultiCursorSelection? {
+        let wordwise = isWordwise(selection, text)
+        let result = backward
+            ? MultiCursor.selectPrevious(selection, in: text, wordwise: wordwise, replaceNewest: replaceNewest)
+            : MultiCursor.selectNext(selection, in: text, wordwise: wordwise, replaceNewest: replaceNewest)
         if selection.newest.length == 0, let result { wordwiseQuery = text.substring(with: result.newest) }
         return result
     }
 
+    /// Keeps the first press's display column and width while each press adds to what the last
+    /// one left, so a part clamped to a short line does not narrow the lines after it.
     private func addCursor(_ selection: MultiCursorSelection, text: NSString, above: Bool) -> MultiCursorSelection? {
-        let column = goalColumn.flatMap { $0.after == selection.ranges ? $0.column : nil }
-            ?? DisplayColumns.column(of: (above ? selection.ranges.first : selection.ranges.last)?.location ?? 0,
-                                     in: text, tabWidth: tabWidth)
-        let result = MultiCursor.addCursor(selection, in: text, above: above, goalColumn: column, tabWidth: tabWidth)
-        goalColumn = result.map { (column, $0.ranges) }
+        let goal = addCursorGoal.flatMap { $0.after == selection.ranges ? $0 : nil }
+        let base = above ? selection.ranges.first : selection.ranges.last
+        let column = goal?.column ?? DisplayColumns.column(of: base?.location ?? 0, in: text, tabWidth: tabWidth)
+        let width = goal?.width ?? base.map { MultiCursor.displayWidth(of: $0, in: text, tabWidth: tabWidth) } ?? 0
+        guard let result = MultiCursor.addCursor(selection, in: text, above: above, goalColumn: column,
+                                                 width: width, tabWidth: tabWidth) else { return nil }
+        addCursorGoal = (column, width, result.ranges)
         return result
     }
 
@@ -281,7 +510,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         selection.newest.length > 0 && wordwiseQuery == text.substring(with: selection.newest)
     }
 
-    /// ⌘U: returns to the selections before the last command, while they are unchanged since.
+    // MARK: Selection history
+
+    /// ⌘U: returns to the selections before the last change, while they are unchanged since.
     private func undoSelection() -> Bool {
         guard let last = history.last, last.after == ranges else {
             history.removeAll()
@@ -292,11 +523,55 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         return true
     }
 
+    /// Records a change from the current selections to `after`. With `continues`, a change of
+    /// the same kind right after the last one extends that step instead of adding one, and a
+    /// step that ends where it began is dropped.
+    private func record(_ after: [NSRange], change: SelectionChange, continues: Bool) {
+        guard after != ranges else { return }
+        if continues, let last = history.last, last.change == change, last.after == ranges {
+            if last.before.ranges == after {
+                history.removeLast()
+            } else {
+                history[history.count - 1].after = after
+            }
+            return
+        }
+        let before = MultiCursorSelection(ranges: ranges, newest: newest ?? ranges.last ?? NSRange(location: 0, length: 0))
+        history.append((before, after, change))
+        if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }
+    }
+
+    /// The kind of change the current event makes, if ⌘U should return from it, and whether it
+    /// continues the last step: more navigation keys, or more of the click (and its drag) that
+    /// started the step. Edits, ⌘A and other commands are not recorded.
+    private func userChange() -> (change: SelectionChange, continues: Bool)? {
+        guard let event = currentEvent() else { return nil }
+        switch event.type {
+        case .keyDown:
+            return Self.isNavigationKey(event) ? (.keys, true) : nil
+        case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+            if event.type == .leftMouseDown { mouseDown = event.timestamp }
+            // A drag continues its click's step only when that click was recorded: a click that
+            // left the selections alone must not join its drag to an earlier click.
+            let continues = mouseDown != nil && recordedMouseDown == mouseDown
+            recordedMouseDown = mouseDown
+            return (.mouse, continues)
+        default:
+            return nil
+        }
+    }
+
+    /// Arrows, Home, End, Page Up and Page Down, which move or extend the selections.
+    static func isNavigationKey(_ event: NSEvent) -> Bool {
+        [kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow, kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown]
+            .contains(Int(event.keyCode))
+    }
+
     private func run(_ command: (MultiCursorSelection, NSString) -> MultiCursorSelection?) {
         guard let textView = controller?.textView else { return }
         let current = MultiCursorSelection(ranges: ranges, newest: newest ?? ranges.last ?? NSRange(location: 0, length: 0))
         guard let result = command(current, textView.textStorage.string as NSString), result != current else { return }
-        history.append((current, result.ranges))
+        record(result.ranges, change: .command, continues: false)
         apply(result)
     }
 
@@ -304,7 +579,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         guard let textView = controller?.textView else { return }
         newest = selection.newest
         ranges = selection.ranges
+        isApplying = true
         textView.selectionManager.setSelectedRanges(selection.ranges)
+        isApplying = false
         textView.needsDisplay = true
         if let rect = textView.layoutManager.rectForOffset(selection.newest.location) {
             textView.scrollToVisible(rect.insetBy(dx: -20, dy: -rect.height))
@@ -312,9 +589,13 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     }
 
     /// Follows the selections as the editor changes them, keeping `newest` on the same cursor
-    /// across edits and on the cursor an Option-click adds.
+    /// across edits and on the cursor an Option-click adds, and records clicks and arrow moves
+    /// for ⌘U.
     private func track(_ new: [NSRange]) {
         let sorted = new.sorted { $0.location < $1.location }
+        if !isApplying, sorted != ranges, !ranges.isEmpty, let user = userChange() {
+            record(sorted, change: user.change, continues: user.continues)
+        }
         defer { ranges = sorted }
         if let newest, sorted.contains(newest) { return }
         if sorted.count == ranges.count, let index = newest.flatMap({ ranges.firstIndex(of: $0) }) {
