@@ -423,6 +423,54 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertFalse(coordinator.handleMouse(plain), "a plain click stays with the editor")
     }
 
+    func testOptionDragGoesOnGrowingWhileTheEditorScrollsUnderAStillMouse() throws {
+        let text = Array(repeating: "abcdef", count: 60).joined(separator: "\n") + "\n"
+        let (coordinator, textView) = try makeEditor(text: text)
+        textView.selectionManager.setSelectedRange(range(0))
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDown, at: 1, in: textView, timestamp: 1)))
+        let drag = mouse(.leftMouseDragged, at: 5 * 7 + 4, in: textView, timestamp: 2)
+        XCTAssertTrue(coordinator.handleMouse(drag))
+        XCTAssertEqual(selectedRanges(textView).count, 6, "lines 0–5")
+
+        // No more mouse events arrive while the mouse is held still and the view scrolls under it
+        // (here, as by a scroll wheel), yet the block follows the line now under the mouse.
+        let lineHeight = try XCTUnwrap(textView.layoutManager.rectForOffset(0)).height
+        let clip = try XCTUnwrap(textView.enclosingScrollView?.contentView)
+        clip.scroll(to: NSPoint(x: 0, y: clip.bounds.minY + 10 * lineHeight))
+        textView.enclosingScrollView?.reflectScrolledClipView(clip)
+        try waitUntil { self.selectedRanges(textView).count == 16 }
+        XCTAssertEqual(selectedRanges(textView).last, range(15 * 7 + 1, 3), "columns 1–4 on line 15")
+
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseUp, at: 15 * 7 + 4, in: textView, timestamp: 3)))
+        clip.scroll(to: NSPoint(x: 0, y: clip.bounds.minY + 10 * lineHeight))
+        textView.enclosingScrollView?.reflectScrolledClipView(clip)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(selectedRanges(textView).count, 16, "the mouse-up ends the drag")
+    }
+
+    func testCommandUKeepsAClickAndALaterDragApart() throws {
+        let (coordinator, textView) = try makeEditor(text: "let foo = foo + 1\n")
+        textView.selectionManager.setSelectedRange(range(0))
+        var event: NSEvent?
+        coordinator.currentEvent = { event }
+
+        event = mouse(.leftMouseDown, at: 5, in: textView, flags: [], timestamp: 1)
+        textView.selectionManager.setSelectedRange(range(5))
+        // A second click on the same spot changes nothing; its drag is a step of its own. The
+        // mouse monitor sees the click, which it leaves to the editor.
+        event = mouse(.leftMouseDown, at: 5, in: textView, flags: [], timestamp: 2)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        textView.selectionManager.setSelectedRange(range(5))
+        event = mouse(.leftMouseDragged, at: 8, in: textView, flags: [], timestamp: 3)
+        textView.selectionManager.setSelectedRange(range(5, 3))
+        event = nil
+
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(5)])
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(0)])
+    }
+
     func testCommandUReturnsFromClicksAndRunsOfArrowKeys() throws {
         let (coordinator, textView) = try makeEditor(text: "let foo = foo + 1\n")
         textView.selectionManager.setSelectedRange(range(0))

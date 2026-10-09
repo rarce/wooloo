@@ -227,12 +227,18 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     private var addCursorGoal: (column: Int, width: Int, after: [NSRange])?
     /// Selections before each change, for ⌘U, with the ranges the change left.
     private var history: [(before: MultiCursorSelection, after: [NSRange], change: SelectionChange)] = []
-    /// The event of the last recorded change, so that several changes from one event are one step.
-    private var recordedEvent: (type: NSEvent.EventType, timestamp: TimeInterval)?
+    /// The mouse-down that began the last mouse gesture in the editor's window, and the one whose
+    /// changes were last recorded, so that a click and its drag are one step but a later drag is not.
+    private var mouseDown: TimeInterval?
+    private var recordedMouseDown: TimeInterval?
     /// ⌘K was pressed and the next key may complete ⌘K ⌘D or ⌘K ⌃⌘D.
     private var awaitsChord = false
     /// An Option-drag: the offset and display column it started at, and whether it has left them.
     private var columnDrag: (anchor: Int, column: Int, started: Bool)?
+    /// Repeats the last drag event of an Option-drag while the mouse is held still, so that the
+    /// block keeps growing as the editor scrolls under a mouse past its edge, or as it is scrolled.
+    private var columnDragTimer: Timer?
+    private var columnDragEvent: NSEvent?
     /// The coordinator is setting the selections itself and records them on its own.
     private var isApplying = false
     /// The event behind a selection change, which tells clicks and arrows from edits. Internal
@@ -258,9 +264,11 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
 
     func textViewDidChangeText(controller: TextViewController) {
         history.removeAll()
+        addCursorGoal = nil
     }
 
     func destroy() {
+        endColumnDrag()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
         keyMonitor = nil
@@ -335,14 +343,15 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     func handleMouse(_ event: NSEvent) -> Bool {
         guard let textView = controller?.textView, let window = textView.window,
               event.window === window || event.windowNumber == window.windowNumber else {
-            columnDrag = nil
+            endColumnDrag()
             return false
         }
         let point = textView.convert(event.locationInWindow, from: nil)
         let text = textView.textStorage.string as NSString
         switch event.type {
         case .leftMouseDown:
-            columnDrag = nil
+            endColumnDrag()
+            mouseDown = event.timestamp
             let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
             guard flags == .option, event.clickCount == 1, textView.isEditable, isOverTextView(event, textView),
                   let offset = textView.layoutManager.textOffsetAtPoint(point) else { return false }
@@ -353,30 +362,55 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             optionClick(at: offset)
             return true
         case .leftMouseDragged:
-            guard var drag = columnDrag else { return false }
-            let offset = textView.layoutManager.textOffsetAtPoint(point) ?? (point.y < 0 ? 0 : text.length)
-            let column = displayColumn(at: point, offset: offset, in: text)
-            let sameLine = text.lineRange(for: NSRange(location: offset, length: 0))
-                == text.lineRange(for: NSRange(location: drag.anchor, length: 0))
-            if !drag.started {
-                guard column != drag.column || !sameLine else { return true }
-                drag.started = true
-                columnDrag = drag
-            }
-            if let block = MultiCursor.columnSelection(in: text, anchor: drag.anchor, anchorColumn: drag.column,
-                                                       head: offset, headColumn: column, tabWidth: tabWidth) {
-                record(block.ranges, change: .mouse, continues: true)
-                apply(block)
-            }
+            guard columnDrag != nil else { return false }
+            columnDragEvent = event
+            dragColumns(to: event)
             textView.autoscroll(with: event)
+            // Like the editor's own drag: mouse events stop while the mouse is held still past the
+            // edge, but the selection should go on growing as the view scrolls.
+            columnDragTimer = columnDragTimer ?? Timer.scheduledTimer(withTimeInterval: 0.022, repeats: true) {
+                [weak self] _ in
+                guard let self, let event = self.columnDragEvent, let textView = self.controller?.textView else { return }
+                textView.autoscroll(with: event)
+                self.dragColumns(to: event)
+            }
             return true
         case .leftMouseUp:
             guard columnDrag != nil else { return false }
-            columnDrag = nil
+            endColumnDrag()
             return true
         default:
             return false
         }
+    }
+
+    /// Selects the block from where the Option-drag started to the mouse in `event`.
+    private func dragColumns(to event: NSEvent) {
+        guard var drag = columnDrag, let textView = controller?.textView else { return }
+        let point = textView.convert(event.locationInWindow, from: nil)
+        let text = textView.textStorage.string as NSString
+        let offset = textView.layoutManager.textOffsetAtPoint(point) ?? (point.y < 0 ? 0 : text.length)
+        let column = displayColumn(at: point, offset: offset, in: text)
+        let sameLine = text.lineRange(for: NSRange(location: offset, length: 0))
+            == text.lineRange(for: NSRange(location: drag.anchor, length: 0))
+        if !drag.started {
+            guard column != drag.column || !sameLine else { return }
+            drag.started = true
+            columnDrag = drag
+        }
+        guard let block = MultiCursor.columnSelection(in: text, anchor: drag.anchor, anchorColumn: drag.column,
+                                                      head: offset, headColumn: column, tabWidth: tabWidth),
+              block.ranges != ranges || block.newest != newest else { return }
+        record(block.ranges, change: .mouse, continues: mouseDown != nil && recordedMouseDown == mouseDown)
+        recordedMouseDown = mouseDown
+        apply(block)
+    }
+
+    private func endColumnDrag() {
+        columnDragTimer?.invalidate()
+        columnDragTimer = nil
+        columnDragEvent = nil
+        columnDrag = nil
     }
 
     private func isOverTextView(_ event: NSEvent, _ textView: NSView) -> Bool {
@@ -508,19 +542,20 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     }
 
     /// The kind of change the current event makes, if ⌘U should return from it, and whether it
-    /// continues the last step: the same event again, more navigation keys, or the drag of the
-    /// click that started the step. Edits, ⌘A and other commands are not recorded.
+    /// continues the last step: more navigation keys, or more of the click (and its drag) that
+    /// started the step. Edits, ⌘A and other commands are not recorded.
     private func userChange() -> (change: SelectionChange, continues: Bool)? {
         guard let event = currentEvent() else { return nil }
-        let sameEvent = recordedEvent.map { $0.type == event.type && $0.timestamp == event.timestamp } ?? false
-        recordedEvent = (event.type, event.timestamp)
         switch event.type {
         case .keyDown:
             return Self.isNavigationKey(event) ? (.keys, true) : nil
-        case .leftMouseDown:
-            return (.mouse, sameEvent)
-        case .leftMouseDragged, .leftMouseUp:
-            return (.mouse, true)
+        case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+            if event.type == .leftMouseDown { mouseDown = event.timestamp }
+            // A drag continues its click's step only when that click was recorded: a click that
+            // left the selections alone must not join its drag to an earlier click.
+            let continues = mouseDown != nil && recordedMouseDown == mouseDown
+            recordedMouseDown = mouseDown
+            return (.mouse, continues)
         default:
             return nil
         }
