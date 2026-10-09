@@ -212,11 +212,12 @@ struct NotebookWebView: NSViewRepresentable {
 }
 
 /// Only bundled assets and registered, bounded raster images can cross the webview boundary.
-final class NotebookResources: NSObject, WKURLSchemeHandler {
+/// Not isolated to the main actor, which `WKURLSchemeHandler` would imply: images are read off
+/// it, in `WorkspaceFiles.blocking`, and the lock guards the state.
+nonisolated final class NotebookResources: NSObject, WKURLSchemeHandler, @unchecked Sendable {
     static let scheme = "wooloo-notebook"
     private enum Resource { case encoded(NotebookDocument.Image), file(String) }
     private let lock = NSLock()
-    private let queue = DispatchQueue(label: "dev.wooloo.notebook-resources", qos: .userInitiated)
     private var active = Set<ObjectIdentifier>()
     private var entries: [String: Resource] = [:]
     private var location: WorkspaceFileLocation?
@@ -272,11 +273,16 @@ final class NotebookResources: NSObject, WKURLSchemeHandler {
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         let key = ObjectIdentifier(task)
-        lock.lock(); active.insert(key); lock.unlock()
+        lock.lock(); active.insert(key); let location = self.location; lock.unlock()
         let url = task.request.url
-        queue.async { [weak self] in
+        // An image file is read from the Space, over SSH for a remote one, so it takes a slot of
+        // the Space's machine; bundled assets take one of this Mac.
+        let machine = url?.path.hasPrefix("/image/") == true ? location?.machine : nil
+        Task { [weak self] in
             guard let self else { return }
-            let result = Result { try self.data(for: url) }
+            let result = await WorkspaceFiles.blocking(on: machine, priority: .userInitiated) {
+                Result { try self.data(for: url) }
+            }
             DispatchQueue.main.async {
                 self.lock.lock(); let isActive = self.active.remove(key) != nil; self.lock.unlock()
                 guard isActive else { return }
@@ -294,6 +300,7 @@ final class NotebookResources: NSObject, WKURLSchemeHandler {
         lock.lock(); active.remove(ObjectIdentifier(task)); lock.unlock()
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     func data(for url: URL?) throws -> (Data, String) {
         guard let url, url.scheme == Self.scheme else { throw URLError(.badURL) }
         let components = url.path.split(separator: "/").map(String.init)

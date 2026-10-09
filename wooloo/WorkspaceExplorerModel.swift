@@ -262,6 +262,8 @@ final class WorkspaceExplorerModel: ObservableObject {
     }
 
     private func installLocalWatcher(at location: WorkspaceFileLocation, token: UUID) async {
+        // Not over SSH, where it would only wait for a slot of the machine to learn nothing.
+        guard location.isLocal else { return }
         guard let paths = await WorkspaceFiles.blocking(at: location, priority: .utility, {
             Optional(WorkspaceFiles.localGitWatchPaths(at: location).map(WorkspaceFileWatcher.canonicalPath))
         }) else { return }

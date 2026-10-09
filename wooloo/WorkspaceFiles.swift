@@ -370,7 +370,9 @@ enum WorkspaceFiles {
         return try JSONDecoder().decode([HerdrMachineProfile].self, from: data).filter(\.enabled)
     }
 
-    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    /// Runs `herdr --machine` here, which reaches the machine on a connection of its own rather
+    /// than the shared ControlMaster, so it counts against this Mac's limit.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func remoteSnapshot(_ machine: HerdrMachineProfile) throws -> HerdrSnapshot {
         let executable = try herdrExecutable()
         let data = try run(executable, ["--machine", machine.id, "api", "snapshot"], limit: 8_000_000)
@@ -1774,15 +1776,17 @@ enum WorkspaceFiles {
     /// cooperative pool (see `BlockingWork`), under the limit of the location's machine: a slow
     /// SSH machine then holds only its own slots, and local loads keep running.
     static func blocking<Value: Sendable>(at location: WorkspaceFileLocation, priority: TaskPriority? = nil,
+                                          worker: BlockingWorker? = nil,
                                           _ work: @escaping @Sendable () throws -> Value) async throws -> Value {
-        try await BlockingWork.run(priority: priority, reaching: BlockingWorkMachine(location.machine), work)
+        try await blocking(on: location.machine, priority: priority, worker: worker, work)
     }
 
     /// Returns `Value.cancelled` instead of running `work` when cancelled.
     static func blocking<Value: BlockingWorkCancellable & Sendable>(at location: WorkspaceFileLocation,
                                                                     priority: TaskPriority? = nil,
+                                                                    worker: BlockingWorker? = nil,
                                                                     _ work: @escaping @Sendable () -> Value) async -> Value {
-        await BlockingWork.run(priority: priority, reaching: BlockingWorkMachine(location.machine), work)
+        await blocking(on: location.machine, priority: priority, worker: worker, work)
     }
 
     /// Runs blocking work that reaches `machine`, or this Mac when nil, under that machine's limit.
@@ -1801,18 +1805,39 @@ enum WorkspaceFiles {
         await BlockingWork.run(priority: priority, reaching: BlockingWorkMachine(machine), on: worker, work)
     }
 
+    /// Where `ssh` connects for a machine: the destination and port it passes, from a target such
+    /// as `user@host` or `ssh://user@host:2222`.
+    struct SSHEndpoint: Hashable {
+        let destination: String
+        let port: String?
+
+        init(_ target: String) {
+            if target.hasPrefix("ssh://"), let url = URLComponents(string: target), let host = url.host {
+                destination = (url.user.map { "\($0)@" } ?? "") + host
+                port = url.port.map(String.init)
+            } else {
+                destination = target
+                port = nil
+            }
+        }
+
+        /// Names the connection SSH shares for this endpoint (`ControlPath=%C` hashes the user,
+        /// host and port), so two spellings of one machine share one limit: the host in lower
+        /// case, as SSH compares it, and port 22 the same as none. A `Host` alias in ssh_config
+        /// that resolves to the same `HostName`, or a user left to ssh_config, would take
+        /// `ssh -G` to tell apart, and gets a limit of its own.
+        var connectionKey: String {
+            let user = destination.range(of: "@", options: .backwards).map { String(destination[..<$0.upperBound]) } ?? ""
+            let host = String(destination.dropFirst(user.count)).lowercased()
+            return user + host + (port.flatMap { $0 == "22" ? nil : ":" + $0 } ?? "")
+        }
+    }
+
     private static func ssh(_ machine: HerdrMachineProfile, _ command: String,
                             input: Data? = nil, limit: Int, timeout: TimeInterval = 15,
                             label: String = "sh") throws -> Data {
-        let target: String
-        var port: String?
-        if machine.target.hasPrefix("ssh://"), let url = URLComponents(string: machine.target),
-           let host = url.host {
-            target = (url.user.map { "\($0)@" } ?? "") + host
-            port = url.port.map(String.init)
-        } else {
-            target = machine.target
-        }
+        let endpoint = SSHEndpoint(machine.target)
+        let target = endpoint.destination
         guard !target.isEmpty, !target.hasPrefix("-") else {
             throw WorkspaceFileError.message("Invalid SSH target")
         }
@@ -1825,7 +1850,7 @@ enum WorkspaceFiles {
             // One connection per machine, kept for a minute, instead of a handshake per command.
             args += ["-o", "ControlMaster=auto", "-o", "ControlPath=\(directory)/%C", "-o", "ControlPersist=60"]
         }
-        if let port { args += ["-p", port] }
+        if let port = endpoint.port { args += ["-p", port] }
         args += [target, command]
         return try run(sshExecutable, args, input: input, limit: limit, timeout: timeout, label: label, remote: true)
     }
@@ -1855,7 +1880,7 @@ enum WorkspaceFiles {
 
     /// Runs a process and returns its output. `label` names it in the process log, for
     /// example `git status`, and `remote` marks commands sent over SSH.
-    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking, or BlockingWork.run for work on this Mac")
     static func run(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
                             input: Data? = nil, limit: Int, timeout: TimeInterval = 15,
                             label: String? = nil, remote: Bool = false) throws -> Data {
@@ -2351,7 +2376,7 @@ final class SharedLoads<Value> {
     /// The result of a load of `key` running now, or of one that finished less than `maxAge`
     /// ago, or else of `load`. Without `reusingFinished`, only a load that finishes after this
     /// call is shared: its caller needs results read after it asked.
-    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking, or BlockingWork.run for work on this Mac")
     func value(for key: String, reusingFinished: Bool = true, load: () throws -> Value) throws -> Value {
         condition.lock()
         let asked = ProcessInfo.processInfo.systemUptime

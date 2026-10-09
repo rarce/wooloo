@@ -287,6 +287,31 @@ final class BlockingWorkTests: XCTestCase {
         XCTAssertEqual(BlockingWorkMachine(machine), .ssh("user@box.test"))
     }
 
+    /// Spellings of one SSH connection, which SSH shares through `ControlPath=%C`, share one
+    /// limit; another user or port is another connection.
+    func testSpellingsOfOneSSHConnectionShareALimit() {
+        func machine(_ target: String) -> BlockingWorkMachine {
+            BlockingWorkMachine(HerdrMachineProfile(id: target, label: target, target: target, session: "default", enabled: true))
+        }
+        XCTAssertEqual(machine("ssh://dev@box"), machine("dev@box"))
+        XCTAssertEqual(machine("ssh://dev@Box:22"), machine("dev@box"))
+        XCTAssertEqual(machine("ssh://box.test"), machine("box.test"))
+        XCTAssertNotEqual(machine("ssh://dev@box:2222"), machine("dev@box"))
+        XCTAssertNotEqual(machine("ssh://ops@box"), machine("dev@box"))
+        XCTAssertTrue(BlockingWork.slots(for: machine("ssh://dev@box")) === BlockingWork.slots(for: machine("dev@box")))
+        XCTAssertFalse(BlockingWork.slots(for: machine("ssh://dev@box:2222")) === BlockingWork.slots(for: machine("dev@box")))
+
+        let endpoint = WorkspaceFiles.SSHEndpoint("ssh://dev@box:2222")
+        XCTAssertEqual(endpoint.destination, "dev@box", "What ssh is given")
+        XCTAssertEqual(endpoint.port, "2222")
+        XCTAssertEqual(WorkspaceFiles.SSHEndpoint("dev@box").port, nil)
+    }
+
+    func testEachSSHMachineHasTheLimitOfThisMac() {
+        XCTAssertEqual(BlockingWork.machineLimit, BlockingWork.limit)
+        XCTAssertLessThan(BlockingWork.machineLimit, 10, "Below sshd's default MaxSessions")
+    }
+
     private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {

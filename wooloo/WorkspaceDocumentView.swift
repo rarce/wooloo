@@ -461,6 +461,11 @@ struct WorkspaceDocumentView: View {
     /// a terminal. Local repositories only; over SSH the bases reload on refresh or reactivation.
     private func watchGitDirectory() async {
         let location = document.location
+        // Not over SSH, where it would only wait for a slot of the machine to learn nothing.
+        guard location.isLocal else {
+            gitDirectoryWatcher = nil
+            return
+        }
         let directory = await WorkspaceFiles.blocking(at: location, priority: .utility) {
             WorkspaceFiles.localGitDirectory(at: location)
         }

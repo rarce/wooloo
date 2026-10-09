@@ -37,10 +37,10 @@ enum BlockingWork {
     /// refresh behind one slow command, and at most 8.
     static let limit = min(8, max(4, ProcessInfo.processInfo.activeProcessorCount))
 
-    /// The limit on each SSH machine, whatever this Mac's core count: below sshd's default
-    /// `MaxSessions` of 10 on the shared ControlMaster connection, leaving room for the few
-    /// commands that reach it outside `BlockingWork`.
-    static let machineLimit = 8
+    /// The limit on each SSH machine, the same as this Mac's, which it was before machines had
+    /// limits of their own: at most 8, below sshd's default `MaxSessions` of 10 on the shared
+    /// ControlMaster connection, leaving room for a terminal or a manual `ssh` that shares it.
+    static let machineLimit = limit
 
     /// This Mac's slots.
     static let slots = BlockingWorkLimit(limit)
@@ -153,13 +153,14 @@ enum BlockingWork {
 }
 
 /// The machine blocking work reaches, which picks the limit it waits for. SSH machines are told
-/// apart by their target, which names the shared ControlMaster connection.
+/// apart by the connection SSH shares for them (`WorkspaceFiles.SSHEndpoint.connectionKey`), so
+/// `ssh://dev@box` and `dev@box` count as one.
 enum BlockingWorkMachine: Hashable, Sendable, CustomStringConvertible {
     case local
     case ssh(String)
 
     init(_ machine: HerdrMachineProfile?) {
-        self = machine.map { .ssh($0.target) } ?? .local
+        self = machine.map { .ssh(WorkspaceFiles.SSHEndpoint($0.target).connectionKey) } ?? .local
     }
 
     var description: String {
