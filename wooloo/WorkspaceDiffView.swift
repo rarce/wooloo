@@ -100,14 +100,24 @@ enum DiffRow {
 struct ParsedDiff {
     var files: [DiffFile] = []
 
-    init(_ patch: String, old: String? = nil, new: String? = nil) {
+    init(_ patch: String) {
         files = Self.parse(patch)
         for index in files.indices {
             for hunk in files[index].hunks.indices {
                 Self.highlightEdits(&files[index].hunks[hunk].lines)
             }
         }
-        if files.count == 1 { attachSides(old: old, new: new) }
+    }
+
+    init(_ patch: String, old: String?, new: String?) {
+        self = ParsedDiff(patch).withSides(old: old, new: new)
+    }
+
+    /// This diff with syntax colors from the whole files, without parsing the patch again.
+    func withSides(old: String?, new: String?) -> ParsedDiff {
+        var diff = self
+        if files.count == 1 { diff.attachSides(old: old, new: new) }
+        return diff
     }
 
     func rows(_ mode: DiffDisplayMode, expanded: Set<DiffGap>) -> [DiffRow] {
@@ -371,8 +381,20 @@ struct ParsedDiff {
         let language = CodeLanguage.detectLanguageFrom(url: URL(fileURLWithPath: files[0].path),
                                                        prefixBuffer: String(sample.prefix(512)),
                                                        suffixBuffer: String(sample.suffix(512)))
-        let oldSyntax = oldMatches ? old.map { DiffHighlighter.highlight($0, language: language) } ?? [] : []
-        let newSyntax = newMatches ? new.map { DiffHighlighter.highlight($0, language: language) } ?? [] : []
+        var newDocument: DiffHighlighter.Document?
+        var newSyntax: [[DiffSyntaxSpan]] = [], oldSyntax: [[DiffSyntaxSpan]] = []
+        if newMatches, let new {
+            newDocument = DiffHighlighter.Document(new, language: language)
+            newSyntax = newDocument?.syntax() ?? []
+        }
+        // Only removed lines take colors from the old file: it is skipped without any, parsed by
+        // editing the new file's tree where the patch changed it, and queried only around them.
+        let changes = Self.changes(files[0].hunks)
+        let removed = changes.filter { $0.removed > 0 }.map { $0.old..<($0.old + $0.removed) }
+        if oldMatches, let old, !removed.isEmpty {
+            let document = newDocument?.reparsed(as: old, changes: changes) ?? DiffHighlighter.Document(old, language: language)
+            oldSyntax = document?.syntax(lines: removed) ?? []
+        }
         for hunk in files[0].hunks.indices {
             for index in files[0].hunks[hunk].lines.indices {
                 let line = files[0].hunks[hunk].lines[index]
@@ -389,51 +411,219 @@ struct ParsedDiff {
             files[0].newSyntax = newSyntax
         }
     }
+
+    /// Each run of removed and added lines between context lines, in 0-based line numbers.
+    private static func changes(_ hunks: [DiffHunk]) -> [DiffHighlighter.Change] {
+        var result: [DiffHighlighter.Change] = []
+        for hunk in hunks {
+            var old = hunk.oldFirst - 1, new = hunk.newFirst - 1
+            var change: DiffHighlighter.Change?
+            for line in hunk.lines {
+                if line.kind == .context {
+                    if let current = change { result.append(current) }
+                    change = nil
+                    old += 1
+                    new += 1
+                    continue
+                }
+                if change == nil { change = DiffHighlighter.Change(old: old, removed: 0, new: new, added: 0) }
+                if line.kind == .removed {
+                    change?.removed += 1
+                    old += 1
+                } else {
+                    change?.added += 1
+                    new += 1
+                }
+            }
+            if let current = change { result.append(current) }
+        }
+        return result
+    }
 }
 
 /// Runs a language's tree-sitter highlight query over a whole file, as CodeEditSourceEditor does
 /// for the editor, and splits the captures by line.
 enum DiffHighlighter {
-    /// `TreeSitterModel` loads its queries lazily and isn't thread-safe.
+    /// `TreeSitterModel` loads its queries lazily and isn't thread-safe; a loaded `Query` is
+    /// immutable and can run on any thread, each with its own parser and cursor.
     private static let lock = NSLock()
 
-    static func highlight(_ text: String, language: CodeLanguage) -> [[DiffSyntaxSpan]] {
+    private static func query(for language: CodeLanguage) -> Query? {
         lock.lock()
         defer { lock.unlock() }
-        guard let treeSitterLanguage = language.language,
-              let query = TreeSitterModel.shared.query(for: language.id) else { return [] }
-        let parser = Parser()
-        guard (try? parser.setLanguage(treeSitterLanguage)) != nil, let tree = parser.parse(text) else { return [] }
+        return TreeSitterModel.shared.query(for: language.id)
+    }
 
-        var lineStarts = [0]
-        var length = 0
-        for unit in text.utf16 {
-            length += 1
-            if unit == 10 { lineStarts.append(length) }
-        }
+    /// Lines `old..<old + removed` of the old file became lines `new..<new + added` of the new
+    /// file, counted from 0.
+    struct Change {
+        var old: Int
+        var removed: Int
+        var new: Int
+        var added: Int
+    }
 
-        // For the same range the lowest capture index wins, as in CodeEditSourceEditor.
-        var captures: [NSRange: (index: Int, name: CaptureName)] = [:]
-        for match in query.execute(in: tree).resolve(with: .init(string: text)) {
-            for capture in match.captures {
-                guard let name = CaptureName.fromString(capture.name), capture.range.length > 0 else { continue }
-                if let existing = captures[capture.range], existing.index <= capture.index { continue }
-                captures[capture.range] = (capture.index, name)
+    private struct Capture {
+        let location: Int
+        let length: Int
+        let index: Int
+        let name: CaptureName
+    }
+
+    static func highlight(_ text: String, language: CodeLanguage) -> [[DiffSyntaxSpan]] {
+        Document(text, language: language)?.syntax() ?? []
+    }
+
+    /// A parsed file. Offsets are in UTF-16 units, which tree-sitter reads as UTF-16LE bytes.
+    struct Document {
+        private let text: String
+        private let units: [UInt16]
+        /// Where each line starts; a final newline starts an empty last line.
+        private let lineStarts: [Int]
+        private let language: Language
+        private let query: Query
+        private let tree: MutableTree
+
+        init?(_ text: String, language: CodeLanguage) {
+            guard let treeSitterLanguage = language.language, let query = DiffHighlighter.query(for: language) else {
+                return nil
             }
+            self.init(text, language: treeSitterLanguage, query: query, editing: nil)
         }
 
-        var result = Array(repeating: [DiffSyntaxSpan](), count: lineStarts.count)
-        for (range, capture) in captures.sorted(by: { $0.key.length > $1.key.length }) {
-            var line = max(0, (lineStarts.firstIndex { $0 > range.location } ?? lineStarts.count) - 1)
-            while line < lineStarts.count, lineStarts[line] < range.upperBound {
-                let start = lineStarts[line]
-                let end = line + 1 < lineStarts.count ? lineStarts[line + 1] - 1 : length
-                let lower = max(range.location, start) - start, upper = min(range.upperBound, end) - start
-                if upper > lower { result[line].append(DiffSyntaxSpan(range: lower..<upper, capture: capture.name)) }
-                line += 1
-            }
+        private init?(_ text: String, language: Language, query: Query, editing tree: MutableTree?) {
+            let parser = Parser()
+            guard (try? parser.setLanguage(language)) != nil else { return nil }
+            let parsed = tree.map { parser.parse(tree: $0, string: text) } ?? parser.parse(text)
+            guard let parsed else { return nil }
+            self.text = text
+            self.units = Array(text.utf16)
+            self.lineStarts = Self.lineStarts(units)
+            self.language = language
+            self.query = query
+            self.tree = parsed
         }
-        return result
+
+        private static func lineStarts(_ units: [UInt16]) -> [Int] {
+            var starts = [0]
+            for (offset, unit) in units.enumerated() where unit == 10 { starts.append(offset + 1) }
+            return starts
+        }
+
+        /// The last line starting at or before `offset`.
+        private static func line(at offset: Int, _ starts: [Int]) -> Int {
+            var low = 0, high = starts.count
+            while low < high {
+                let middle = (low + high) / 2
+                if starts[middle] <= offset { low = middle + 1 } else { high = middle }
+            }
+            return max(0, low - 1)
+        }
+
+        /// Where line `line` starts, the end of the text just past the last line, else nil.
+        private static func offset(_ line: Int, _ starts: [Int], _ count: Int) -> Int? {
+            line < starts.count ? starts[line] : line == starts.count ? count : nil
+        }
+
+        private static func point(_ offset: Int, _ starts: [Int]) -> Point {
+            let row = line(at: offset, starts)
+            return Point(row: row, column: (offset - starts[row]) * 2)
+        }
+
+        /// `old`, the old side of `changes` with this document as the new side, parsed by editing
+        /// this tree so that tree-sitter reparses only around the changes. Nil when the files also
+        /// differ elsewhere, as when one was edited after the patch was taken.
+        func reparsed(as old: String, changes: [Change]) -> Document? {
+            let oldUnits = Array(old.utf16), oldStarts = Self.lineStarts(oldUnits)
+            func oldOffset(_ line: Int) -> Int? { Self.offset(line, oldStarts, oldUnits.count) }
+            func newOffset(_ line: Int) -> Int? { Self.offset(line, lineStarts, units.count) }
+
+            // The text between changes must be the same on both sides.
+            var oldLine = 0, newLine = 0
+            var edits: [InputEdit] = []
+            for change in changes {
+                guard change.old >= oldLine, change.new >= newLine,
+                      let keptOld = oldOffset(oldLine), let removedStart = oldOffset(change.old),
+                      let removedEnd = oldOffset(change.old + change.removed),
+                      let keptNew = newOffset(newLine), let start = newOffset(change.new),
+                      let addedEnd = newOffset(change.new + change.added),
+                      oldUnits[keptOld..<removedStart] == units[keptNew..<start] else { return nil }
+                let startPoint = Self.point(start, lineStarts)
+                let lower = Self.point(removedStart, oldStarts), upper = Self.point(removedEnd, oldStarts)
+                let endPoint = upper.row == lower.row
+                    ? Point(row: startPoint.row, column: startPoint.column + upper.column - lower.column)
+                    : Point(row: startPoint.row + upper.row - lower.row, column: upper.column)
+                edits.append(InputEdit(startByte: start * 2, oldEndByte: addedEnd * 2,
+                                       newEndByte: (start + removedEnd - removedStart) * 2, startPoint: startPoint,
+                                       oldEndPoint: Self.point(addedEnd, lineStarts), newEndPoint: endPoint))
+                oldLine = change.old + change.removed
+                newLine = change.new + change.added
+            }
+            guard let keptOld = oldOffset(oldLine), let keptNew = newOffset(newLine),
+                  oldUnits[keptOld...] == units[keptNew...], let tree = tree.mutableCopy() else { return nil }
+            // From the last change back, so each edit starts where it did in this text.
+            for edit in edits.reversed() { tree.edit(edit) }
+            return Document(old, language: language, query: query, editing: tree)
+        }
+
+        /// Captures split by line: for every line, or for the lines in `lines` and maybe others.
+        func syntax(lines: [Range<Int>]? = nil) -> [[DiffSyntaxSpan]] {
+            // Capture indexes name the same capture in every match; look each name up once.
+            var names: [Int: CaptureName?] = [:]
+            var captures: [Capture] = []
+            func collect(_ cursor: QueryCursor) {
+                for match in cursor.resolve(with: .init(string: text)) {
+                    for capture in match.captures {
+                        let range = capture.range
+                        guard range.length > 0 else { continue }
+                        let name: CaptureName?
+                        if let known = names[capture.index] {
+                            name = known
+                        } else {
+                            name = CaptureName.fromString(capture.name)
+                            names[capture.index] = name
+                        }
+                        guard let name else { continue }
+                        captures.append(Capture(location: range.location, length: range.length, index: capture.index,
+                                                name: name))
+                    }
+                }
+            }
+            // One cursor per run of lines: even a run every few lines costs less than querying
+            // everything between them.
+            if lines == nil { collect(query.execute(in: tree)) }
+            for range in lines ?? [] {
+                let start = Self.offset(range.lowerBound, lineStarts, units.count) ?? units.count
+                let end = Self.offset(range.upperBound, lineStarts, units.count) ?? units.count
+                let cursor = query.execute(in: tree)
+                cursor.setRange(NSRange(location: start, length: end - start))
+                collect(cursor)
+            }
+            // Outer captures first, so inner ones paint over them. For the same range the lowest
+            // capture index wins, as in CodeEditSourceEditor; one found by two cursors counts once.
+            captures.sort {
+                if $0.length != $1.length { return $0.length > $1.length }
+                if $0.location != $1.location { return $0.location < $1.location }
+                return $0.index < $1.index
+            }
+
+            var result = Array(repeating: [DiffSyntaxSpan](), count: lineStarts.count)
+            var previous: Capture?
+            for capture in captures {
+                if let previous, previous.location == capture.location, previous.length == capture.length { continue }
+                previous = capture
+                let end = capture.location + capture.length
+                var line = Self.line(at: capture.location, lineStarts)
+                while line < lineStarts.count, lineStarts[line] < end {
+                    let start = lineStarts[line]
+                    let lineEnd = line + 1 < lineStarts.count ? lineStarts[line + 1] - 1 : units.count
+                    let lower = max(capture.location, start) - start, upper = min(end, lineEnd) - start
+                    if upper > lower { result[line].append(DiffSyntaxSpan(range: lower..<upper, capture: capture.name)) }
+                    line += 1
+                }
+            }
+            return result
+        }
     }
 }
 
@@ -511,7 +701,7 @@ struct WorkspaceDiffView: View {
                 let source = key.source
                 let sides = WorkspaceFiles.diffSides(source.path, originalPath: source.originalPath, commit: source.commit,
                                                      scope: source.scope, at: source.location)
-                return ParsedDiff(key.text, old: sides.old, new: sides.new)
+                return plain.withSides(old: sides.old, new: sides.new)
             }) else { return }
             guard !Task.isCancelled else { return }
             parsed = full

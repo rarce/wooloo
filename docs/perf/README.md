@@ -332,3 +332,24 @@ Measured on 2026-10-02 under machine load 10–14, against the OrbStack VM, comp
 | repository alone | 1 | 39 → 69 ms | 117 → 176 ms |
 
 Each load alone now runs the whole script, so it costs about what a refresh does. In the app the Git bar never loads alone, since it follows the listing; the repository panel does when it is expanded.
+
+## Syntax colors for diffs
+
+`ParsedDiff` with both sides parsed each whole file with tree-sitter, ran the highlight query over it, and placed every capture on its lines. Sampled on the benchmark's diff, each side spent about 40 % parsing, 35 % in the query (half of it in SwiftTreeSitter building capture names, which the app can't avoid through its API) and 25 % finding each capture's first line with a linear search over the line starts.
+
+1. **Captures find their line by binary search**, and are sorted by length and position instead of being deduplicated in a dictionary. The capture name is looked up once per capture index. One side took about 70 instead of 90 ms.
+2. **The old file serves only removed lines.** It is skipped when nothing was removed, and queried with one cursor per run of removed lines (`QueryCursor.setRange`), which even for a run every third line costs less than querying the whole file.
+3. **The old file is parsed by editing the new file's tree** at each change, after checking that the text between changes is the same on both sides; otherwise it is parsed whole. How much tree-sitter reuses depends on the grammar: for a 5,000-line file with two one-line edits, JavaScript took 4.7 instead of 22 ms, Rust 3.5 instead of 15 ms, Python 12 instead of 22 ms, Swift 36 instead of 44 ms, and Go 25 ms either way.
+4. **The diff view adds colors to the patch it already parsed** (`ParsedDiff.withSides`), which saves the 23 ms the benchmark's plain parse takes.
+
+Running the two sides on two threads made them slower than running them one after the other (two concurrent parses took 110 ms against 37 ms for one), so they stay serial.
+
+`DiffHighlighterTests` checks the colors against the previous implementation, kept as `ReferenceDiffHighlighter`, on the benchmark file, a source file, mixed Unicode, and diffs from `git diff --no-index` that open and close comments and strings or change the first and last lines.
+
+Measured on 2026-10-09, alternating runs of main and this change (9 repetitions, load 3–10 from other builds):
+
+| operation | local small, before → after | local large, before → after |
+|---|---|---|
+| parse-big-diff-highlighted | 192–201 → 151 ms | 190–196 → 148 ms |
+
+Three one-line edits in the same 5,000-line Swift file took about 105 ms instead of 180 ms. Parsing is now about half of what remains.
