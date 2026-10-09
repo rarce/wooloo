@@ -203,9 +203,11 @@ final class WorkspaceExplorerModel: ObservableObject {
                 WorkspaceFiles.forgetRecentResults(at: location)
                 let listing = try readListing(location)
                 let kept = created.filter(exists)
-                // Expanded ignored and linked folders are read again, so they stay open across reloads.
+                // Expanded ignored and linked folders and nested repositories are read again, so
+                // they stay open across reloads.
                 let folders = WorkspaceExplorer.ignoredFoldersToRead(expanded: expanded, ignored: listing.ignored, read: [],
-                                                                      symbolicLinkDirectories: Set(listing.symbolicLinks.filter { $0.value.isDirectory }.keys))
+                                                                      symbolicLinkDirectories: Set(listing.symbolicLinks.filter { $0.value.isDirectory }.keys),
+                                                                      nestedRepositories: listing.nestedRepositories)
                 let contents = Self.readFolders(folders, at: location)
                 let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: contents, created: kept)
                 return (listing, WorkspaceTree(paths: entries.paths, directories: entries.directories, symbolicLinks: entries.symbolicLinks), kept, contents)
@@ -332,6 +334,11 @@ final class WorkspaceExplorerModel: ObservableObject {
                 for folder in listing.ignored.directories where relative.hasPrefix(folder + "/") {
                     if !tree.expanded.contains("\(location.identity)|files|\(folder)") { return false }
                 }
+                // The same for work in a collapsed nested repository, such as an agent's worktree,
+                // unless its `.git` itself comes or goes, which changes what Git lists.
+                for folder in listing.nestedRepositories where relative.hasPrefix(folder + "/") && relative != folder + "/.git" {
+                    if !tree.expanded.contains("\(location.identity)|files|\(folder)") { return false }
+                }
             }
             return true
         }
@@ -385,7 +392,8 @@ final class WorkspaceExplorerModel: ObservableObject {
         let toRead = WorkspaceExplorer.ignoredFoldersToRead(expanded: folders, ignored: listing.ignored,
                                                            read: Set(ignoredContents.keys),
                                                            symbolicLinkDirectories: Set(listing.symbolicLinks.filter { $0.value.isDirectory }.keys)
-                                                               .union(ignoredContents.values.flatMap { $0.symbolicLinks.filter { $0.value.isDirectory }.keys }))
+                                                               .union(ignoredContents.values.flatMap { $0.symbolicLinks.filter { $0.value.isDirectory }.keys }),
+                                                           nestedRepositories: listing.nestedRepositories)
         guard !toRead.isEmpty else { return nil }
         let version = listingVersion
         return Task {

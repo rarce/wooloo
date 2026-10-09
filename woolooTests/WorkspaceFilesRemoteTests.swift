@@ -186,6 +186,29 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.folderContents("build/up/..", at: location))
     }
 
+    func testRemoteListingShowsNestedRepositoriesAsFolders() throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n", ".gitignore": "ignored/\n"])
+        try sandbox.write(["nested repo/f.txt": "f\n", "ignored/inner/g.txt": "g\n"], in: "repo")
+        try sandbox.sh("git init -q 'nested repo' && git init -q ignored/inner && git init -q ünï"
+                       + " && mkdir -p .claude/worktrees && git worktree add -q -b feature '.claude/worktrees/feature x'",
+                       in: "repo")
+        let listing = try WorkspaceFiles.listing(at: remote("repo"))
+        let local = try WorkspaceFiles.listing(at: sandbox.location("repo"))
+        XCTAssertEqual(listing.files, [".gitignore", "a.txt"])
+        XCTAssertEqual(listing.nestedRepositories, [".claude/worktrees/feature x", "nested repo", "ünï"])
+        XCTAssertEqual(listing.nestedRepositories, local.nestedRepositories)
+        XCTAssertEqual(listing.ignored, local.ignored)
+        XCTAssertEqual(listing.symbolicLinks, local.symbolicLinks)
+        XCTAssertEqual(listing.changes.map(\.path), local.changes.map(\.path))
+        XCTAssertEqual(try WorkspaceFiles.folderContents("nested repo", at: remote("repo")).files, ["nested repo/f.txt"])
+        for includeIgnored in [false, true] {
+            XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: remote("repo"), includeIgnored: includeIgnored),
+                           try WorkspaceFiles.quickOpenFiles(at: sandbox.location("repo"), includeIgnored: includeIgnored))
+            XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: remote("repo"), includeIgnored: includeIgnored)
+                .files.filter { $0.hasSuffix("/") }, [])
+        }
+    }
+
     func testRemoteFolderWithoutGitIsListedWithFind() throws {
         try sandbox.write(["plain/a.txt": "a", "plain/sub/c.txt": "c", "plain/.git/config": "not a repo"], in: ".")
         try sandbox.sh("ln -s sub alias && ln -s missing broken", in: "plain")

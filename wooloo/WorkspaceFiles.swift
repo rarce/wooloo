@@ -94,6 +94,9 @@ struct WorkspaceFileListing {
     /// What Git ignores: its files are in `files`, after tracked and untracked ones; its folders
     /// are listed without their contents, which the explorer reads when one is expanded.
     var ignored = WorkspaceIgnoredEntries()
+    /// Untracked folders holding another repository, such as a worktree. Git lists each as
+    /// "folder/" without its contents, which the explorer reads when one is expanded.
+    var nestedRepositories: Set<String> = []
     var symbolicLinks: [String: WorkspaceSymbolicLink] = [:]
     /// True when a folder outside a repository was read only near its root (`WorkspaceFolderWalk`).
     var partial = false
@@ -401,7 +404,7 @@ enum WorkspaceFiles {
             hasGit = true
         }
         var listing = try makeListing(hasGit ? results : nil) { try folderWalk(at: location, readingSkipped: false) }
-        listing.symbolicLinks = try localSymbolicLinks(listing.files + listing.ignored.directories, root: location.root)
+        listing.symbolicLinks = localSymbolicLinks(listing.files + listing.ignored.directories, root: location.root)
         return listing
     }
 
@@ -421,13 +424,18 @@ enum WorkspaceFiles {
                                     withoutGit: () throws -> WorkspaceFolderWalk) throws -> WorkspaceFileListing {
         guard let results else { return nonGitListing(try withoutGit()) }
         let outputs = Array(results)
-        let (tracked, untracked) = trackedFirst(nulStrings(try outputs[0].get()))
+        let (tracked, untrackedEntries) = trackedFirst(nulStrings(try outputs[0].get()))
+        // Git does not descend into an untracked folder holding another repository, such as a
+        // worktree, and lists it as "folder/": a folder, not a file.
+        let nested = untrackedEntries.filter { $0.hasSuffix("/") }
+        let untracked = nested.isEmpty ? untrackedEntries : untrackedEntries.filter { !$0.hasSuffix("/") }
         let ignored = WorkspaceIgnoredEntries(gitEntries: nulStrings(try outputs[1].get()))
         let ignoredFiles = ignored.files.sorted()
         let files = (tracked + untracked + ignoredFiles).prefix(maximumFiles).sorted()
         let visible = Set(files).union(ignored.directories)
         return WorkspaceFileListing(files: files, changes: parseStatus(try outputs[2].get()), hasGit: true,
                                     totalFiles: tracked.count + untracked.count + ignoredFiles.count, ignored: ignored,
+                                    nestedRepositories: Set(nested.map { String($0.dropLast()) }.filter { !$0.isEmpty }),
                                     symbolicLinks: outputs.count > 3 ? parseSymbolicLinks(try outputs[3].get()).filter { visible.contains($0.key) } : [:])
     }
 
@@ -441,13 +449,14 @@ enum WorkspaceFiles {
         }
         let data = try git(location, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
                            limit: maximumListingBytes)
-        // A conflicted file is listed once per stage.
-        var files = Array(Set(nulStrings(data))).sorted()
+        // A conflicted file is listed once per stage. A folder holding another repository is
+        // listed as "folder/", which is not a file to open.
+        var files = Array(Set(nulStrings(data))).filter { !$0.hasSuffix("/") }.sorted()
         var ignored: Set<String> = []
         if includeIgnored {
             let ignoredData = try git(location, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", "."],
                                       limit: maximumListingBytes)
-            let ignoredFiles = nulStrings(ignoredData).sorted()
+            let ignoredFiles = nulStrings(ignoredData).filter { !$0.hasSuffix("/") }.sorted()
             ignored = Set(ignoredFiles)
             files += ignoredFiles
         }
@@ -668,7 +677,7 @@ enum WorkspaceFiles {
                 }
                 add(item.lastPathComponent, isDirectory: isDirectory.boolValue)
             }
-            contents.symbolicLinks = try localSymbolicLinks(contents.files + contents.directories, root: location.root)
+            contents.symbolicLinks = localSymbolicLinks(contents.files + contents.directories, root: location.root)
         }
         return contents
     }
@@ -1508,10 +1517,12 @@ enum WorkspaceFiles {
         return links
     }
 
-    private static func localSymbolicLinks(_ paths: [String], root: String) throws -> [String: WorkspaceSymbolicLink] {
+    /// The links among `paths`. A path that is not a valid one inside the Space is skipped, so
+    /// one odd entry cannot fail a whole listing.
+    private static func localSymbolicLinks(_ paths: [String], root: String) -> [String: WorkspaceSymbolicLink] {
         var links: [String: WorkspaceSymbolicLink] = [:]
         for path in paths {
-            try validateRelativePath(path)
+            guard (try? validateRelativePath(path)) != nil else { continue }
             let absolute = (root as NSString).appendingPathComponent(path)
             guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: absolute) else { continue }
             var isDirectory: ObjCBool = false

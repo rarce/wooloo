@@ -55,6 +55,49 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertFalse(try WorkspaceFiles.folderContents("", at: repo).directories.contains(".git"))
     }
 
+    /// Git lists an untracked folder holding another repository, such as an agent's worktree, as
+    /// "folder/" without descending into it. Such an entry once failed the whole listing.
+    func testNestedRepositoriesAreListedAsFoldersReadWhenExpanded() throws {
+        let repo = try nestedRepositories()
+        let listing = try WorkspaceFiles.listing(at: repo)
+        XCTAssertEqual(listing.files, [".gitignore", "a.txt", "dir/b.txt"])
+        XCTAssertEqual(listing.nestedRepositories, [".claude/worktrees/feature x", "nested repo", "ünï"])
+        XCTAssertEqual(listing.ignored.directories, ["ignored"])
+        XCTAssertEqual(listing.totalFiles, 3)
+        let kinds = WorkspaceExplorer.directoryKinds(listing.changes)
+        XCTAssertEqual(kinds["nested repo"], .untracked)
+        XCTAssertEqual(kinds[".claude/worktrees/feature x"], .untracked)
+        XCTAssertEqual(kinds[".claude"], .untracked)
+
+        XCTAssertEqual(try WorkspaceFiles.folderContents("nested repo", at: repo).files, ["nested repo/f.txt"])
+        let worktree = try WorkspaceFiles.folderContents(".claude/worktrees/feature x", at: repo)
+        XCTAssertEqual(worktree.files.sorted(), [".claude/worktrees/feature x/.gitignore", ".claude/worktrees/feature x/a.txt"])
+        XCTAssertEqual(worktree.directories, [".claude/worktrees/feature x/dir"])
+
+        for includeIgnored in [false, true] {
+            let files = try WorkspaceFiles.quickOpenFiles(at: repo, includeIgnored: includeIgnored).files
+            XCTAssertEqual(files.filter { $0.hasSuffix("/") }, [], "ignored: \(includeIgnored)")
+            XCTAssertTrue(files.contains("a.txt"))
+        }
+
+        // Once added it is a gitlink, which Git lists like a submodule, without a slash.
+        try sandbox.sh("git add '.claude/worktrees/feature x' 2>/dev/null", in: "repo")
+        let added = try WorkspaceFiles.listing(at: repo)
+        XCTAssertEqual(added.nestedRepositories, ["nested repo", "ünï"])
+        XCTAssertTrue(added.files.contains(".claude/worktrees/feature x"))
+    }
+
+    /// A repository with untracked nested repositories at its root, a worktree in an untracked
+    /// folder, and a repository inside an ignored folder.
+    private func nestedRepositories() throws -> WorkspaceFileLocation {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "one\n", "dir/b.txt": "b\n", ".gitignore": "ignored/\n"])
+        try sandbox.write(["nested repo/f.txt": "f\n", "ignored/inner/g.txt": "g\n"], in: "repo")
+        try sandbox.sh("git init -q 'nested repo' && git init -q ignored/inner && git init -q ünï"
+                       + " && mkdir -p .claude/worktrees && git worktree add -q -b feature '.claude/worktrees/feature x'",
+                       in: "repo")
+        return repo
+    }
+
     func testFolderContentsStayInsideTheSpace() throws {
         let repo = try sandbox.repository("repo")
         try sandbox.write(["outside/secret.txt": "s"], in: ".")
