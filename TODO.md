@@ -71,8 +71,9 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 
 - [ ] Symbol search in the open file (⇧⌘O) and across the Space (⌘T), or as `@` and `#` prefixes in Go to File. Postponed until there is a document outline panel to share its symbols with.
 - [x] Bound the walk of a folder outside Git, shared by Go to File and the explorer: it reads one folder level at a time, locally and over SSH, for at most 12 levels and 2 seconds after the root, lists `node_modules`, `.build`, `DerivedData`, `__pycache__` and `.venv` like ignored folders unless ignored files are included, and says when only folders near the root were read. Creating a file the walk missed opens it instead.
-- [ ] The walk outside Git checks its time limit per folder, so a single huge folder is still read in full. Locally it could stop inside a folder; over SSH, inside a `find` batch.
-- [ ] The walk outside Git has two implementations, a Swift one for this Mac and a `find` script for SSH; one script run through `shell(_:at:limit:)` would keep them from drifting.
+- [x] The walk outside Git stops inside a huge folder once its time is up, and keeps the files it read: locally it reads folders with `readdir` and looks at the clock every 256 entries; over SSH a watchdog stops the running `find`, and a name it cut short is dropped. No `find` runs a command with `-exec`, which would outlive it and print after the walk.
+- [x] The walk outside Git keeps two implementations, a Swift one for this Mac and a `find` script for SSH, under one specification (above `WorkspaceFiles.folderWalkScript`); tests run both on the same folders, with every kind of entry, and require the same files. One script for both was measured and not taken: run locally it took 250 ms instead of 40 ms for 20,000 files, and `find` cannot leave out macOS packages.
+- [ ] The walk outside Git always reads the Space's root folder in full: on this Mac until `maximumFiles` files, over SSH whole, so a remote root with hundreds of thousands of entries can reach the output limit. A limit there would need the explorer to show a root it could not list completely.
 
 ## Notebook preview
 

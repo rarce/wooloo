@@ -353,3 +353,26 @@ Measured on 2026-10-09, alternating runs of main and this change (9 repetitions,
 | parse-big-diff-highlighted | 192–201 → 151 ms | 190–196 → 148 ms |
 
 Three one-line edits in the same 5,000-line Swift file took about 105 ms instead of 180 ms. Parsing is now about half of what remains.
+
+## The walk of a folder outside Git
+
+Outside a work tree, Go to File and the explorer list a folder with `WorkspaceFiles.folderWalk`: in Swift on this Mac, and with a `find` script over SSH. The benchmark walks two folders built beside the repositories (`walk-tree` and `walk-huge` in the results):
+
+- `tree`: 20,000 files in 1,040 folders, with a skipped `node_modules`, read in full within the time limit.
+- `huge`: one folder of 150,000 files below the root, read with a 0.05 s limit (1 s over SSH, where the script counts whole seconds).
+
+Locally, the `folder-walk-script` operations run the SSH script with `/bin/sh` instead of the Swift walk. That measures the alternative of one script for both, which was not taken:
+
+| operation | before | after |
+|---|---|---|
+| tree, Swift on this Mac | 136–137 ms | 37–41 ms |
+| tree, the script on this Mac | 247–263 ms | 250–280 ms |
+| tree, SSH | 163 ms | 145 ms |
+| huge, Swift on this Mac, 0.05 s limit | 730–862 ms, read in full | 55 ms, stopped with 72,704 files |
+| huge, SSH | 222 ms | 207 ms, read in full within 1 s |
+
+Measured on 2026-10-09 (Mac16,5, load 8–28 from other builds, 5 repetitions), against the OrbStack VM (dash, GNU find).
+
+1. **The Swift walk reads folders with `readdir`.** `FileManager.contentsOfDirectory` read each folder whole, with resource values for every entry. `readdir` gives the entry type directly, and only folders are asked whether they are packages. The walk looks at the clock every 256 entries, so a huge folder is stopped inside once the time is up.
+2. **Over SSH, a watchdog stops the running `find`.** It sleeps for the limit, marks the time as up and stops the `find` whose process ID the batch left for it; the batch checks the mark and ends. A name the stopped `find` printed only in part is dropped. Batches no longer run `date`, which saved a process each, and skipped folders are printed by `find` itself between two marker records rather than through `-exec printf`, which a stopped `find` would leave running.
+3. **One script for both was not taken.** Run locally, it took six times as long as the Swift walk on `tree`, and `find` cannot leave out macOS packages. The two implementations follow one specification instead (above `WorkspaceFiles.folderWalkScript`). `WorkspaceFilesRemoteTests` runs both on the same folders, with odd names, links, pipes, unreadable and skipped folders and the depth limit, and requires the same files.
