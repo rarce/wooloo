@@ -330,6 +330,18 @@ final class HerdrPopupTests: XCTestCase {
         XCTAssertEqual(try titleRow("abcdefghij", width: 12), ["a", "b", "c", "d", "e", "f", "g", "─"])
     }
 
+    func testPopupTitleHandlesEmptyTitlesAndPopupsWithRoomForOneTitleCell() throws {
+        XCTAssertEqual(try titleRow(""), ["─", "─", "─", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("\u{200B}\u{301}"), ["─", "─", "─", "─", "─", "─", "─", "─"])
+        // One title cell, then the border cell kept before the close control.
+        XCTAssertEqual(try titleRow("漢a", width: 6), ["─", "─"], "a wide first character does not fit")
+        XCTAssertEqual(try titleRow("a漢", width: 6), ["a", "─"])
+    }
+
+    func testPopupTitleGivesSkinTonedTextDefaultEmojiTwoCells() throws {
+        XCTAssertEqual(try titleRow("✌\u{1F3FB}✌"), ["✌\u{1F3FB}", "·", "✌", "─", "─", "─", "─", "─"])
+    }
+
     func testCompositionMovesCursorAndRestrictsSelectionToPopupContent() throws {
         var decoder = HerdrSurfaceDecoder()
         let raw = try XCTUnwrap(decoder.apply(frame: frame(popup())))

@@ -169,6 +169,9 @@ final class EditorMultiCursorTests: XCTestCase {
                        "U+FE0E narrows an emoji-default watch too")
         XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 1, in: "⌚x", tabWidth: 4), 2)
         XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 3, in: "1\u{FE0F}\u{20E3}x", tabWidth: 4), 2, "a keycap")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 3, in: "✌\u{1F3FB}x", tabWidth: 4), 2,
+                       "a skin tone makes a text-default emoji wide")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 1, in: "✌x", tabWidth: 4), 1)
         XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "\u{0600}1x", tabWidth: 4), 1,
                        "a prepended format character leads a visible cluster")
         XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 1, in: "\u{200B}x", tabWidth: 4), 0, "a lone format character")
