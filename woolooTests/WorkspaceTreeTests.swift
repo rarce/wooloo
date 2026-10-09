@@ -270,7 +270,10 @@ final class MarkdownPreviewInteractionTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     }
 
-    func testClickingACheckboxTogglesItsLine() {
+    func testClickingACheckboxTogglesItsLine() throws {
+        // The checkbox is a SwiftUI button, whose action runs in SwiftUI's display updates; with
+        // every display asleep, as on an idle Mac, those wait and the click never reaches it.
+        try XCTSkipIf(CGDisplayIsAsleep(CGMainDisplayID()) != 0, "SwiftUI buttons need an awake display")
         for style in MarkdownPreviewStyle.allCases {
             toggles = []
             let (window, host) = host(style)
