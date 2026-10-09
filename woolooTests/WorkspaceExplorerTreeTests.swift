@@ -186,6 +186,24 @@ final class WorkspaceExplorerTests: XCTestCase {
                        ["build/obj", "cache"])
     }
 
+    func testFilesTreeShowsNestedRepositoriesAsFoldersReadWhenExpanded() {
+        var listing = WorkspaceFileListing(files: ["a.txt"], changes: [], hasGit: true, totalFiles: 1)
+        listing.nestedRepositories = ["wt/one", "repo"]
+        let contents = ["repo": WorkspaceFolderContents(files: ["repo/f.txt"], directories: ["repo/src"])]
+        let entries = WorkspaceExplorer.filesTreeEntries(listing, ignoredContents: contents, created: [])
+        XCTAssertEqual(entries.paths, ["a.txt", "repo/f.txt"])
+        XCTAssertEqual(entries.directories, ["wt/one", "repo", "repo/src"])
+        let tree = WorkspaceTree(paths: entries.paths, directories: entries.directories)
+        XCTAssertTrue(tree.directories.contains("wt/one"), "an unread nested repository is a folder, not a file")
+
+        XCTAssertEqual(WorkspaceExplorer.ignoredFoldersToRead(expanded: ["src", "wt", "wt/one", "repo", "repo/src"],
+                                                              ignored: listing.ignored, read: ["repo"],
+                                                              nestedRepositories: listing.nestedRepositories),
+                       ["repo/src", "wt/one"])
+        let untracked = WorkspaceFileChange(path: "wt/one/", indexStatus: "?", worktreeStatus: "?", originalPath: nil)
+        XCTAssertEqual(WorkspaceExplorer.directoryKinds([untracked]), ["wt/one": .untracked, "wt": .untracked])
+    }
+
     func testShortcutTargets() {
         let folders = WorkspaceTree(paths: ["src/a.swift", "src/lib/b.swift", "README.md"]).directories
         XCTAssertTrue(WorkspaceExplorer.isDirectory("", directories: folders, created: []))

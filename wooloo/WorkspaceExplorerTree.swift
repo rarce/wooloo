@@ -190,7 +190,9 @@ enum WorkspaceExplorer {
     static func directoryKinds(_ changes: [WorkspaceFileChange]) -> [String: WorkspaceFileChange.Kind] {
         var kinds: [String: WorkspaceFileChange.Kind] = [:]
         for change in changes {
-            var directory = (change.path as NSString).deletingLastPathComponent
+            // A folder holding another repository is listed as "folder/" and has the kind itself.
+            var directory = change.path.hasSuffix("/") ? String(change.path.dropLast())
+                : (change.path as NSString).deletingLastPathComponent
             while !directory.isEmpty {
                 if let existing = kinds[directory], existing.folderPriority >= change.kind.folderPriority { break }
                 kinds[directory] = change.kind
@@ -226,13 +228,14 @@ enum WorkspaceExplorer {
         }
     }
 
-    /// The files and folders of the Files tree: the listing's, the ignored folders Git lists
-    /// without contents, what was read of the expanded ones, and folders created empty.
+    /// The files and folders of the Files tree: the listing's, the ignored folders and nested
+    /// repositories Git lists without contents, what was read of the expanded ones, and folders
+    /// created empty.
     static func filesTreeEntries(_ listing: WorkspaceFileListing, ignoredContents: [String: WorkspaceFolderContents],
                                  created: Set<String>) -> (paths: [String], directories: Set<String>, symbolicLinks: [String: WorkspaceSymbolicLink]) {
         var symbolicLinks = listing.symbolicLinks
         var paths = listing.files
-        var directories = created.union(listing.ignored.directories)
+        var directories = created.union(listing.ignored.directories).union(listing.nestedRepositories)
         for contents in ignoredContents.values {
             paths += contents.files
             directories.formUnion(contents.directories)
@@ -242,13 +245,17 @@ enum WorkspaceExplorer {
         return (paths, directories, symbolicLinks)
     }
 
-    /// Ignored or linked folders among `expanded` whose contents have not been read yet, parents first.
+    /// Ignored or linked folders and nested repositories, or folders inside them, among
+    /// `expanded` whose contents have not been read yet, parents first.
     static func ignoredFoldersToRead(expanded: [String], ignored: WorkspaceIgnoredEntries,
-                                     read: Set<String>, symbolicLinkDirectories: Set<String> = [], limit: Int = 50) -> [String] {
-        Array(expanded.filter { path in
-            !read.contains(path) && (ignored.contains(path) || symbolicLinkDirectories.contains { link in
-                path == link || path.hasPrefix(link + "/")
-            })
+                                     read: Set<String>, symbolicLinkDirectories: Set<String> = [],
+                                     nestedRepositories: Set<String> = [], limit: Int = 50) -> [String] {
+        func isInside(_ path: String, _ folders: Set<String>) -> Bool {
+            folders.contains { path == $0 || path.hasPrefix($0 + "/") }
+        }
+        return Array(expanded.filter { path in
+            !read.contains(path) && (ignored.contains(path) || isInside(path, symbolicLinkDirectories)
+                                     || isInside(path, nestedRepositories))
         }.sorted().prefix(limit))
     }
 
