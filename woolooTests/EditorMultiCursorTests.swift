@@ -156,6 +156,69 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(fromAccent.newest, range(secondLine + 2))
     }
 
+    func testTabsAfterWideCharactersAdvanceToTheNextTabStop() {
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "日\tx", tabWidth: 4), 4)
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 4, in: "日本語\tx", tabWidth: 4), 8, "from 6 to 8")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 3, in: "日本\tx", tabWidth: 4), 8, "a full tab from a stop")
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 7, in: "日本語\tx", tabWidth: 4), 4, "a tie inside the tab goes to its end")
+    }
+
+    func testVariationSelectorsKeycapsAndPrependedCharacters() {
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "❤\u{FE0E}x", tabWidth: 4), 1, "U+FE0E: text style")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "⌚\u{FE0E}x", tabWidth: 4), 1,
+                       "U+FE0E narrows an emoji-default watch too")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 1, in: "⌚x", tabWidth: 4), 2)
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 3, in: "1\u{FE0F}\u{20E3}x", tabWidth: 4), 2, "a keycap")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "\u{0600}1x", tabWidth: 4), 1,
+                       "a prepended format character leads a visible cluster")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 1, in: "\u{200B}x", tabWidth: 4), 0, "a lone format character")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 3, in: "a\u{7}b", tabWidth: 4), 2, "a control character")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 3, in: "a\u{7}bé", tabWidth: 4), 2,
+                       "the same outside the all-ASCII path")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 1, in: "\u{3248}", tabWidth: 4), 1,
+                       "ambiguous-width circled numbers stay narrow")
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: 2, in: "\u{1AFF0}", tabWidth: 4), 2, "Kana Extended-B")
+    }
+
+    func testColumnsInsideAClusterCountFromItsStart() {
+        let text = "ae\u{301}b\n👍x" as NSString
+        XCTAssertEqual(DisplayColumns.column(of: 2, in: text, tabWidth: 4), 1, "between e and its accent")
+        XCTAssertEqual(DisplayColumns.column(of: 3, in: text, tabWidth: 4), 2)
+        XCTAssertEqual(DisplayColumns.column(of: 6, in: text, tabWidth: 4), 0, "between the surrogates of 👍")
+        XCTAssertEqual(DisplayColumns.column(of: 7, in: text, tabWidth: 4), 2)
+        XCTAssertEqual(DisplayColumns.column(of: 99, in: text, tabWidth: 4), 3, "clamped to the text")
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 3, in: "", tabWidth: 4), 0, "an empty line")
+    }
+
+    func testAddingCursorsAcrossCRLFLinesStaysOutOfTheLineBreaks() throws {
+        let text = "a\tb\r\nxy\r\n12345" as NSString
+        var selection = try XCTUnwrap(MultiCursor.addCursor(cursor(2), in: text, above: false, goalColumn: 4))
+        XCTAssertEqual(selection.newest, range(7), "clamped before the CR of \"xy\"")
+        selection = try XCTUnwrap(MultiCursor.addCursor(selection, in: text, above: false, goalColumn: 4))
+        XCTAssertEqual(selection.newest, range(13))
+        XCTAssertNil(MultiCursor.addCursor(selection, in: text, above: false, goalColumn: 4), "the last line")
+        let above = try XCTUnwrap(MultiCursor.addCursor(cursor(13), in: text, above: true, goalColumn: 3))
+        XCTAssertEqual(above.newest, range(7))
+    }
+
+    func testAddingACursorBelowASelectionSpanningLinesStartsAfterItsEnd() throws {
+        let text = "abc\ndef\nghi\njkl" as NSString
+        let start = MultiCursorSelection(ranges: [range(1, 5)], newest: range(1, 5))
+        let below = try XCTUnwrap(MultiCursor.addCursor(start, in: text, above: false, goalColumn: 1))
+        XCTAssertEqual(below.ranges, [range(1, 5), range(9)], "on \"ghi\", not inside the selection on \"def\"")
+        let above = try XCTUnwrap(MultiCursor.addCursor(
+            MultiCursorSelection(ranges: [range(5, 5)], newest: range(5, 5)), in: text, above: true, goalColumn: 1))
+        XCTAssertEqual(above.newest, range(1), "above its start")
+    }
+
+    func testLongASCIILinesMapColumnsBothWays() {
+        let line = String(repeating: "abc\t", count: 50_000)
+        XCTAssertEqual(DisplayColumns.column(ofUTF16Offset: line.utf16.count, in: line, tabWidth: 4), 200_000)
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 4_002, in: line, tabWidth: 4), 4_002)
+        XCTAssertEqual(DisplayColumns.offset(forColumn: 4_004, in: "日" + line, tabWidth: 4), 4_001,
+                       "behind a wide character, through grapheme breaking")
+    }
+
     // MARK: - Editor
 
     func testCommandDTwiceThenTypingReplacesBothOccurrencesAsOneUndoStep() throws {
@@ -229,6 +292,15 @@ final class EditorMultiCursorTests: XCTestCase {
         textView.selectionManager.setSelectedRange(range(1))
         XCTAssertTrue(coordinator.perform(.addCursorBelow))
         XCTAssertEqual(selectedRanges(textView), [range(1), range(7)], "a tab of 4 columns, not one")
+    }
+
+    func testRepeatedAddCursorBelowKeepsTheDisplayGoalAcrossAShortLine() throws {
+        let (coordinator, textView) = try makeEditor(text: "\t\tx\nab\n\t\ty\n")
+        textView.selectionManager.setSelectedRange(range(2))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertEqual(selectedRanges(textView), [range(2), range(6)], "clamped to the end of \"ab\"")
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertEqual(selectedRanges(textView), [range(2), range(6), range(9)], "column 8 again, after both tabs")
     }
 
     func testCopyingSelectionsPastesOnePieceAtEachCursor() throws {

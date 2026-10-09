@@ -52,7 +52,10 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 
 ## Editor
 
-- [x] Multiple cursors: ⌥⌘↑/↓ keep the goal as a display column (`DisplayColumns`), expanding tabs to the editor's tab width and counting wide characters and emoji as two columns, so they no longer shift it.
+- [x] Multiple cursors: ⌥⌘↑/↓ keep the goal as a display column (`DisplayColumns`), expanding tabs to the editor's tab width and counting wide characters and emoji as two columns, so they no longer shift it. ⌥⌘↓ from a selection spanning lines adds below its end, not inside it.
+- [ ] Multiple cursors: display columns assume a wide character is exactly two cells, but the editor draws CJK and emoji with a fallback font whose advance is not a whole number of cells (with the 13 pt system monospaced font, about 1.6 for 日 and 2.4 for 👍), and places tab stops in points. After several wide characters, or a tab behind them, the added cursor can sit a column or two off the one above. Keeping the goal as an x position from the editor's layout would match exactly, but needs lines that are not laid out yet.
+- [ ] Multiple cursors: a selection added as a shorter part on a short line becomes the base for the next ⌥⌘↓, so the following lines get the shorter width instead of the original one. Keep the original width with the goal column.
+- [ ] Terminal popup titles (`HerdrSurface`) size wide characters with `wcwidth`, which answers -1 for anything non-ASCII in the app's C locale, so they likely get one cell instead of two. Use `DisplayColumns.width(of:at:tabWidth:)` there, measured with `scripts/terminal-bench.sh`.
 - [ ] Multiple cursors still missing from Zed's set: ⌃⌘D (select previous occurrence, taken by macOS's Look Up unless disabled), Option-drag column selection, and ⌘U for selection changes made by clicks or arrows.
 
 ## Go to File and command palette
