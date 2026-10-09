@@ -697,7 +697,7 @@ struct WorkspaceDiffView: View {
             parsedKey = key
             TerminalPipelineMetrics.spanShown("diff-patch", start: start, detail: detail)
             guard !plain.files.isEmpty else { return }
-            guard let full = try? await BlockingWork.run(priority: .utility, { () -> ParsedDiff in
+            guard let full = try? await WorkspaceFiles.blocking(at: key.source.location, priority: .utility, { () -> ParsedDiff in
                 let source = key.source
                 let sides = WorkspaceFiles.diffSides(source.path, originalPath: source.originalPath, commit: source.commit,
                                                      scope: source.scope, at: source.location)

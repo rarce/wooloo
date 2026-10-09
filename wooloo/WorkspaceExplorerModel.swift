@@ -198,7 +198,7 @@ final class WorkspaceExplorerModel: ObservableObject {
         let exists = { Self.folderExists($0, at: location) }
         let readListing = readListing
         // The Files tree is built here too, so a large Space is not sorted on the main thread.
-        let result = await BlockingWork.run {
+        let result = await WorkspaceFiles.blocking(at: location) {
             Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>, [String: WorkspaceFolderContents]) in
                 WorkspaceFiles.forgetRecentResults(at: location)
                 let listing = try readListing(location)
@@ -262,7 +262,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     }
 
     private func installLocalWatcher(at location: WorkspaceFileLocation, token: UUID) async {
-        guard let paths = await BlockingWork.run(priority: .utility, {
+        guard let paths = await WorkspaceFiles.blocking(at: location, priority: .utility, {
             Optional(WorkspaceFiles.localGitWatchPaths(at: location).map(WorkspaceFileWatcher.canonicalPath))
         }) else { return }
         guard !Task.isCancelled, monitoringToken == token else { return }
@@ -397,7 +397,7 @@ final class WorkspaceExplorerModel: ObservableObject {
         guard !toRead.isEmpty else { return nil }
         let version = listingVersion
         return Task {
-            guard let results = await BlockingWork.run({
+            guard let results = await WorkspaceFiles.blocking(at: location, {
                 Optional(toRead.map { folder in (folder, Result { try WorkspaceFiles.folderContents(folder, at: location) }) })
             }) else { return }
             guard self.location?.identity == location.identity, listingVersion == version else { return }
@@ -414,7 +414,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     }
 
     /// Folders that cannot be read, such as one deleted since, are left out.
-    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     nonisolated private static func readFolders(_ folders: [String],
                                                 at location: WorkspaceFileLocation) -> [String: WorkspaceFolderContents] {
         var read: [String: WorkspaceFolderContents] = [:]
@@ -456,7 +456,7 @@ final class WorkspaceExplorerModel: ObservableObject {
                              completion: @escaping (Value) -> Void = { _ in },
                              failure: @escaping () -> Void = {}) -> Task<Void, Never> {
         let task = Task {
-            let result = await BlockingWork.run(priority: .userInitiated) { Result { try operation() } }
+            let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) { Result { try operation() } }
             switch result {
             case .success(let value): completion(value)
             case .failure(let error):

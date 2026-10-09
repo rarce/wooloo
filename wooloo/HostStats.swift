@@ -187,7 +187,7 @@ enum HostProbe {
     /// Samples this Mac; tests replace it, since real stats change on every run.
     static var localSample: (_ directory: String?) -> HostSample = { local(directory: $0) }
 
-    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func sample(machine: HerdrMachineProfile?, directory: String?) throws -> HostSample {
         guard let machine else { return localSample(directory) }
         let data = try WorkspaceFiles.remoteOutput(machine, script: script(directory: directory), label: "host-stats")
@@ -233,7 +233,7 @@ final class HostStatsMonitor: ObservableObject {
         let worker = BlockingWorker(label: "dev.wooloo.host-stats")
         task = Task { [weak self, interval] in
             while !Task.isCancelled {
-                let result = await BlockingWork.run(on: worker) {
+                let result = await WorkspaceFiles.blocking(on: target.machine, worker: worker) {
                     Result { try HostProbe.sample(machine: target.machine, directory: target.directory) }
                 }
                 // A monitor released without `stop()` ends the loop rather than sampling forever.

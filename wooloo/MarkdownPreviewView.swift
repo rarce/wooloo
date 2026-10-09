@@ -271,7 +271,7 @@ private struct SpaceImage: View {
         }
         .task(id: location.identity + path) {
             let (location, path) = (location, path)
-            let data = await BlockingWork.run(priority: .utility) {
+            let data = await WorkspaceFiles.blocking(at: location, priority: .utility) {
                 try? WorkspaceFiles.readData(path, at: location, limit: 12_000_000)
             }
             if let data, let loaded = NSImage(data: data) { image = loaded } else { failed = true }

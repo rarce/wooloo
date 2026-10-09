@@ -243,7 +243,7 @@ enum AgentQuotaProbe {
     /// Reads `machine`, or this Mac when nil; `environment` overrides this Mac's, for tests. On this
     /// Mac the Keychain is read by wooloo itself, so macOS names wooloo when it asks for permission
     /// and "Always Allow" does not open the item to every process that can run `security`.
-    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func read(machine: HerdrMachineProfile?, keychain: Bool,
                      environment: [String: String] = [:],
                      readKeychain: () -> Data?? = AgentQuotaKeychain.claudeCredentials) throws -> AgentQuotaFiles {
@@ -323,7 +323,7 @@ actor AgentQuotaReader {
         if keychain { nextKeychainRead = now.addingTimeInterval(5 * 60) }
         let files: AgentQuotaFiles
         do {
-            files = try await BlockingWork.run { [machine, environment] in
+            files = try await WorkspaceFiles.blocking(on: machine) { [machine, environment] in
                 try AgentQuotaProbe.read(machine: machine, keychain: keychain, environment: environment)
             }
         } catch {

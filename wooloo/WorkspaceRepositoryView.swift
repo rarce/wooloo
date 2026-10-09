@@ -531,7 +531,7 @@ final class WorkspaceRepositoryModel: ObservableObject {
         isLoading = !isReload
         error = nil
         let start = TerminalPipelineMetrics.now()
-        let result = await BlockingWork.run { Result { try WorkspaceFiles.repository(at: location) } }
+        let result = await WorkspaceFiles.blocking(at: location) { Result { try WorkspaceFiles.repository(at: location) } }
         guard !Task.isCancelled, loadGeneration == generation, self.location?.identity == location.identity else { return }
         switch result {
         case .success(let value): listing = value
@@ -549,7 +549,7 @@ final class WorkspaceRepositoryModel: ObservableObject {
         guard let location, let hash, let key = commitKey else { return }
         let start = TerminalPipelineMetrics.now()
         defer { TerminalPipelineMetrics.spanShown("commit-files", start: start, detail: location.isLocal ? "local" : "ssh") }
-        let result = await BlockingWork.run(priority: .userInitiated) {
+        let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
             Result { try WorkspaceFiles.commitFiles(hash, at: location) }
         }
         guard commitKey == key else { return }
@@ -567,7 +567,7 @@ final class WorkspaceRepositoryModel: ObservableObject {
         fileHistoryKey = key
         fileHistoryError = nil
         guard let location, let path, let key else { fileHistory = nil; return }
-        let result = await BlockingWork.run(priority: .userInitiated) {
+        let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
             Result { try WorkspaceFiles.fileHistory(path, at: location) }
         }
         guard fileHistoryKey == key else { return }
@@ -580,23 +580,24 @@ final class WorkspaceRepositoryModel: ObservableObject {
     func addWorktree(at location: WorkspaceFileLocation, branch: WorkspaceBranch, path: String, newBranch: String) {
         let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = newBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-        run {
+        run(at: location) {
             try WorkspaceFiles.addWorktree(at: location, path: path, branch: branch, newBranch: name.isEmpty ? nil : name)
         }
     }
 
     func switchBranch(_ branch: WorkspaceBranch, at location: WorkspaceFileLocation, onSwitched: @escaping () -> Void) {
-        run(onSuccess: onSwitched) { try WorkspaceFiles.switchBranch(branch, at: location) }
+        run(at: location, onSuccess: onSwitched) { try WorkspaceFiles.switchBranch(branch, at: location) }
     }
 
     /// Git refuses to remove a worktree with uncommitted changes; that refusal is reported.
     func removeWorktree(_ tree: WorkspaceWorktree, at location: WorkspaceFileLocation) {
-        run { try WorkspaceFiles.removeWorktree(at: location, path: tree.path) }
+        run(at: location) { try WorkspaceFiles.removeWorktree(at: location, path: tree.path) }
     }
 
-    private func run(onSuccess: @escaping () -> Void = {}, _ operation: @escaping @Sendable () throws -> Void) {
+    private func run(at location: WorkspaceFileLocation, onSuccess: @escaping () -> Void = {},
+                     _ operation: @escaping @Sendable () throws -> Void) {
         Task {
-            let result = await BlockingWork.run { Result { try operation() } }
+            let result = await WorkspaceFiles.blocking(at: location) { Result { try operation() } }
             switch result {
             case .success:
                 reloadVersion += 1

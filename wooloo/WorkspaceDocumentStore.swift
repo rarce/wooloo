@@ -305,7 +305,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         guard !WorkspaceImage.supports(path) else { return "Image files can only be previewed; choose a text file extension" }
         let (text, location) = (document.text, document.location)
         documents[index].isSaving = true
-        let result = await BlockingWork.run(priority: .userInitiated) {
+        let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
             Result { () throws -> String in
                 try WorkspaceFiles.createFile(path, at: location)
                 return try WorkspaceFiles.save(text, path: path, expectedVersion: WorkspaceFiles.gitBlobHash(Data()),
@@ -393,7 +393,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             defer {
                 TerminalPipelineMetrics.spanShown("open-\(kind)", start: start, detail: location.isLocal ? "local" : "ssh")
             }
-            let result = await BlockingWork.run(priority: .userInitiated) {
+            let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
                 Result { () throws -> LoadedContents in
                     if kind == .commit, let commit {
                         return .text(WorkspaceFileContents(text: try WorkspaceFiles.commitDiff(
@@ -456,7 +456,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         let document = documents[index]
         documents[index].isSaving = true
         Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
+            let result = await WorkspaceFiles.blocking(at: document.location, priority: .userInitiated) {
                 Result { try WorkspaceFiles.save(document.text, path: document.path,
                                                  expectedVersion: version, at: document.location) }
             }

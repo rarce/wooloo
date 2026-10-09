@@ -394,7 +394,7 @@ final class WorkspaceGitBarModel: ObservableObject {
         self.location = location
         let start = TerminalPipelineMetrics.now()
         defer { TerminalPipelineMetrics.spanShown("git-bar", start: start, detail: location.isLocal ? "local" : "ssh") }
-        let result = await BlockingWork.run(priority: .utility) {
+        let result = await WorkspaceFiles.blocking(at: location, priority: .utility) {
             Result { try WorkspaceFiles.gitBar(at: location) }
         }
         guard !Task.isCancelled, loadGeneration == generation, location.identity == self.location?.identity else { return }
@@ -434,7 +434,9 @@ final class WorkspaceGitBarModel: ObservableObject {
         guard running == nil, let location else { return }
         running = label
         Task {
-            let result = await BlockingWork.run(priority: .userInitiated) { Result { try operation(location) } }
+            let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
+                Result { try operation(location) }
+            }
             running = nil
             switch result {
             case .success:

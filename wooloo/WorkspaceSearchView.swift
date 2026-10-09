@@ -61,7 +61,7 @@ final class WorkspaceSearchModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 guard current == generation else { return }
             }
-            let outcome = await BlockingWork.run(priority: .userInitiated) {
+            let outcome = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
                 Result { try WorkspaceSearch.search(options, at: location) }
             }
             guard current == generation else { return }
@@ -111,7 +111,7 @@ final class WorkspaceSearchModel: ObservableObject {
         let writable = paths.filter { !skipped.contains($0) }
         isReplacing = true
         Task {
-            guard let outcome = try? await BlockingWork.run(priority: .userInitiated, { () -> (count: Int, files: [String], failures: [String]) in
+            guard let outcome = try? await WorkspaceFiles.blocking(at: location, priority: .userInitiated, { () -> (count: Int, files: [String], failures: [String]) in
                 var count = 0
                 var files: [String] = []
                 var failures: [String] = []

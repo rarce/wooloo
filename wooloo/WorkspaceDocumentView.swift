@@ -450,7 +450,7 @@ struct WorkspaceDocumentView: View {
     private func loadGitBases() async {
         guard document.version != nil else { return }
         let (path, location) = (document.path, document.location)
-        guard let bases = await BlockingWork.run(priority: .utility, {
+        guard let bases = await WorkspaceFiles.blocking(at: location, priority: .utility, {
             Optional(WorkspaceFiles.gitBases(path, at: location))
         }) else { return }
         guard !Task.isCancelled else { return }
@@ -461,7 +461,7 @@ struct WorkspaceDocumentView: View {
     /// a terminal. Local repositories only; over SSH the bases reload on refresh or reactivation.
     private func watchGitDirectory() async {
         let location = document.location
-        let directory = await BlockingWork.run(priority: .utility) {
+        let directory = await WorkspaceFiles.blocking(at: location, priority: .utility) {
             WorkspaceFiles.localGitDirectory(at: location)
         }
         guard !Task.isCancelled else { return }

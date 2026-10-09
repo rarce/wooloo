@@ -944,7 +944,7 @@ struct WorkspaceBrowserView: View {
         model.isLoading = true
         model.error = nil
         Task {
-            let result = await BlockingWork.run { Result { try WorkspaceFiles.remoteSnapshot(profile) } }
+            let result = await WorkspaceFiles.blocking(on: profile) { Result { try WorkspaceFiles.remoteSnapshot(profile) } }
             guard machine?.id == profile.id else { return }
             switch result {
             case .success(let snapshot):
