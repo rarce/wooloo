@@ -287,3 +287,156 @@ extension DiffHighlighterTests {
         return (patch, old, new)
     }
 }
+
+// MARK: Random edits
+
+/// SplitMix64, so a failing case can be replayed from its seed.
+private struct SeededGenerator: RandomNumberGenerator {
+    var state: UInt64
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+extension DiffHighlighterTests {
+    private func spanKeys(_ syntax: [[DiffSyntaxSpan]]) -> [[String]] {
+        syntax.map { $0.map { "\($0.range):\($0.capture)" } }
+    }
+
+    /// Sources in several grammars, with lines that open and close comments, strings and blocks.
+    private static func corpora() throws -> [(name: String, language: CodeLanguage, path: String, base: [String],
+                                              pool: [String])] {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("wooloo/WorkspaceDiffView.swift")
+        let swift = try String(contentsOf: source, encoding: .utf8).components(separatedBy: "\n")
+        func repeated(_ template: [String], _ count: Int) -> [String] {
+            (0..<count).flatMap { index in template.map { $0.replacingOccurrences(of: "#", with: "\(index)") } }
+        }
+        let javascript = repeated([
+            "/** Doc for f# 👍 */", "function f#(a, b = `t ${a}`) {", "  const s = \"ü#\"; // note",
+            "  return a?.b ?? [1, 2, #];", "}", "",
+        ], 60)
+        let python = repeated([
+            "# comment #", "def f#(x: int) -> str:", "    \"\"\"Doc 文字 #", "    more\"\"\"",
+            "    return f\"{x!r} ✓ #\"", "",
+        ], 60)
+        let rust = repeated([
+            "/// Doc #", "fn f#(x: &str) -> u32 {", "    let s = \"é #\"; /* inline */", "    x.len() as u32 + #",
+            "}", "",
+        ], 60)
+        let go = repeated([
+            "// F# does things", "func F#(x int) string {", "\ts := `raw #`", "\treturn fmt.Sprint(x, \"ñ\", s)",
+            "}", "",
+        ], 60)
+        let common = ["/*", "*/", "\"", "`", "\"\"\"", "{", "}", "(", ")", "// 日本 👨‍👩‍👧", "", "    "]
+        return [
+            ("swift", .swift, "f.swift", swift, common + ["#\"", "\"#", "@MainActor final class A {"]),
+            ("javascript", .javascript, "f.js", javascript, common + ["${", "/** open", "const t = `"]),
+            ("python", .python, "f.py", python, common + ["'''", "def g():", "    pass"]),
+            ("rust", .rust, "f.rs", rust, common + ["r#\"", "\"#", "/* nested /* open"]),
+            ("go", .go, "f.go", ["package main", ""] + go, common + ["func g() {", "var x = `"]),
+        ]
+    }
+
+    /// Random line edits: replacements, insertions and deletions anywhere, including the first
+    /// and last lines, with or without a final newline on either side, and CRLF line ends.
+    private static func randomEdit(_ base: [String], pool: [String], _ random: inout SeededGenerator)
+        -> (old: String, new: String) {
+        var new = base
+        let count = Int.random(in: 1...6, using: &random)
+        // Positions from the end back, so earlier ones still point at the same lines.
+        var positions = (0..<count).map { _ in Int.random(in: 0...base.count, using: &random) }
+        if Bool.random(using: &random) { positions.append(0) }
+        if Bool.random(using: &random) { positions.append(base.count) }
+        for position in Set(positions).sorted(by: >) {
+            let removed = min(Int.random(in: 0...3, using: &random), new.count - position)
+            let added = (0..<Int.random(in: 0...3, using: &random)).map { _ in
+                Bool.random(using: &random) ? pool.randomElement(using: &random)! : base.randomElement(using: &random)!
+            }
+            new.replaceSubrange(position..<(position + removed), with: added)
+        }
+        let separator = Int.random(in: 0..<5, using: &random) == 0 ? "\r\n" : "\n"
+        func text(_ lines: [String]) -> String {
+            lines.joined(separator: separator) + (Int.random(in: 0..<4, using: &random) == 0 ? "" : separator)
+        }
+        return (text(base), text(new))
+    }
+
+    /// The old side parsed by editing the new side's tree must give the same colors as parsing it
+    /// whole, on every line, and querying only the removed lines must color them the same.
+    func testOldSideFromRandomEditsMatchesAWholeParse() throws {
+        var random = SeededGenerator(state: 20_261_009)
+        var fastPaths = 0
+        for corpus in try Self.corpora() {
+            for round in 0..<16 {
+                let (old, new) = Self.randomEdit(corpus.base, pool: corpus.pool, &random)
+                guard old != new else { continue }
+                let name = "\(corpus.name) round \(round)"
+                let patch = try gitDiff(old, new, path: corpus.path)
+                let diff = ParsedDiff(patch)
+                XCTAssertEqual(diff.files.count, 1, name)
+                guard let hunks = diff.files.first?.hunks else { continue }
+                let changes = ParsedDiff.changes(hunks)
+                let document = try XCTUnwrap(DiffHighlighter.Document(new, language: corpus.language), name)
+                let whole = try XCTUnwrap(DiffHighlighter.Document(old, language: corpus.language), name)
+                guard let edited = document.reparsed(as: old, changes: changes) else {
+                    XCTFail("\(name): the old side was not parsed from the new one's tree")
+                    continue
+                }
+                fastPaths += 1
+                let expected = spanKeys(whole.syntax())
+                XCTAssertEqual(spanKeys(edited.syntax()), expected, "\(name): whole old side")
+                let removed = changes.filter { $0.removed > 0 }.map { $0.old..<($0.old + $0.removed) }
+                let queried = spanKeys(edited.syntax(lines: removed))
+                for line in removed.joined() {
+                    XCTAssertEqual(queried[line], expected[line], "\(name): removed line \(line + 1)")
+                }
+                // The view's path: every patch line against the first highlighter.
+                let reference = ReferenceDiffHighlighter.highlight(old, language: corpus.language)
+                let colored = ParsedDiff(patch, old: old, new: new)
+                for line in colored.files[0].hunks.flatMap(\.lines) where line.kind == .removed {
+                    XCTAssertEqual(spanKeys([line.syntax])[0].sorted(),
+                                   spanKeys([reference[line.oldNumber! - 1]])[0].sorted(),
+                                   "\(name): patch line \(line.oldNumber!)")
+                }
+            }
+        }
+        XCTAssertGreaterThan(fastPaths, 60)
+    }
+
+    /// Querying runs of lines must color them as querying the whole file does, including
+    /// captures that start before a run, like multi-line comments and strings.
+    func testQueryingLineRunsMatchesTheWholeFile() throws {
+        var random = SeededGenerator(state: 42)
+        for corpus in try Self.corpora() {
+            let text = corpus.base.joined(separator: "\n")
+            let document = try XCTUnwrap(DiffHighlighter.Document(text, language: corpus.language))
+            let expected = spanKeys(document.syntax())
+            // Every line, as runs of one line every third line, then random longer runs.
+            var runs: [[Range<Int>]] = (0..<3).map { phase in
+                stride(from: phase, to: corpus.base.count, by: 3).map { $0..<($0 + 1) }
+            }
+            for _ in 0..<20 {
+                var start = 0, set: [Range<Int>] = []
+                while true {
+                    start += Int.random(in: 1...40, using: &random)
+                    let end = start + Int.random(in: 1...15, using: &random)
+                    guard end <= corpus.base.count else { break }
+                    set.append(start..<end)
+                    start = end
+                }
+                runs.append(set)
+            }
+            for set in runs {
+                let actual = spanKeys(document.syntax(lines: set))
+                for line in set.joined() {
+                    XCTAssertEqual(actual[line], expected[line], "\(corpus.name): line \(line + 1)")
+                }
+            }
+        }
+    }
+}

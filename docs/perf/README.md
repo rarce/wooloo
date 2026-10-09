@@ -344,7 +344,7 @@ Each load alone now runs the whole script, so it costs about what a refresh does
 
 Running the two sides on two threads made them slower than running them one after the other (two concurrent parses took 110 ms against 37 ms for one), so they stay serial.
 
-`DiffHighlighterTests` checks the colors against the previous implementation, kept as `ReferenceDiffHighlighter`, on the benchmark file, a source file, mixed Unicode, and diffs from `git diff --no-index` that open and close comments and strings or change the first and last lines.
+`DiffHighlighterTests` checks the colors against the previous implementation, kept as `ReferenceDiffHighlighter`, on the benchmark file, a source file, mixed Unicode, and diffs from `git diff --no-index` that open and close comments and strings or change the first and last lines. Seeded random line edits in Swift, JavaScript, Python, Rust and Go, with and without a final newline and with CRLF, check that the old file parsed by editing the new tree colors every line as a whole parse does, and that querying runs of lines colors them as querying the whole file does.
 
 Measured on 2026-10-09, alternating runs of main and this change (9 repetitions, load 3–10 from other builds):
 

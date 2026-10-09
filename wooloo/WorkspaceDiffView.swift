@@ -413,7 +413,7 @@ struct ParsedDiff {
     }
 
     /// Each run of removed and added lines between context lines, in 0-based line numbers.
-    private static func changes(_ hunks: [DiffHunk]) -> [DiffHighlighter.Change] {
+    static func changes(_ hunks: [DiffHunk]) -> [DiffHighlighter.Change] {
         var result: [DiffHighlighter.Change] = []
         for hunk in hunks {
             var old = hunk.oldFirst - 1, new = hunk.newFirst - 1
