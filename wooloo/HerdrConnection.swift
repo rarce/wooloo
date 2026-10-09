@@ -378,6 +378,21 @@ enum HerdrSocket {
         return id
     }
 
+    /// Opens the Space of a Git worktree checkout: the one already open there, or a new one.
+    /// `repository` is the repository's main checkout, from which Herdr opens its worktrees.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    static func openWorktree(path: String, checkout: String, repository: String) throws -> String {
+        let params: [String: Any] = ["cwd": repository, "path": checkout, "focus": true]
+        let data = try request(path: path, method: "worktree.open", params: params)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let workspace = result["workspace"] as? [String: Any],
+              let id = workspace["workspace_id"] as? String else {
+            throw HerdrSocketError.message("Herdr did not return the worktree's space")
+        }
+        return id
+    }
+
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func createTab(path: String, workspaceID: String, cwd: String? = nil) throws -> String {
         var params: [String: Any] = ["workspace_id": workspaceID, "focus": true]
@@ -969,6 +984,42 @@ final class HerdrStore: ObservableObject {
                     let id = try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source,
                                                              cwd: cwd, label: label)
                     return (id, try HerdrSocket.snapshot(path: path))
+                }
+            }
+            guard generation == currentGeneration else { return }
+            switch result {
+            case .success(let (id, fresh)):
+                snapshot = fresh
+                select(workspaceID: id)
+                actionError = nil
+            case .failure(let error): actionError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Focuses the Space of a Git worktree checkout, opening one there if none is, as Herdr's
+    /// `worktree.open` does: each checkout has one Space, and the Spaces of other checkouts keep
+    /// their terminals and agents running. `repository` is the main checkout; without one (a bare
+    /// repository), or when Herdr refuses the worktree, a plain Space opens in the checkout.
+    func openWorktree(_ checkout: String, repository: String?) {
+        guard isConnected else { return }
+        if let open = snapshot?.workspaces.first(where: { $0.worktree?.checkoutPath == checkout })?.workspaceID
+            ?? snapshot?.panes.first(where: { $0.cwd == checkout })?.workspaceID {
+            select(workspaceID: open)
+            return
+        }
+        let path = socketPath
+        let currentGeneration = generation
+        Task {
+            let result = await BlockingWork.run(priority: .userInitiated) {
+                Result { () throws -> (String, HerdrSnapshot) in
+                    var id: String?
+                    if let repository {
+                        id = try? HerdrSocket.openWorktree(path: path, checkout: checkout, repository: repository)
+                    }
+                    let opened = try id ?? HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: nil,
+                                                                       cwd: checkout)
+                    return (opened, try HerdrSocket.snapshot(path: path))
                 }
             }
             guard generation == currentGeneration else { return }

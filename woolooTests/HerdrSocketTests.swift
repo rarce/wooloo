@@ -12,6 +12,7 @@ final class HerdrSocketTests: XCTestCase {
             case "pane.read": return ["result": ["read": ["text": "$ ls\nREADME.md\n"]]]
             case "workspace.create": return ["result": ["workspace": ["workspace_id": "w9"]]]
             case "tab.create": return ["result": ["tab": ["tab_id": "w1:t9"]]]
+            case "worktree.open": return ["result": ["already_open": true, "workspace": ["workspace_id": "w4"]]]
             case "pane.send_input": return ["result": [:]]
             default: return ["error": ["message": "unknown method \(method)"]]
             }
@@ -20,6 +21,15 @@ final class HerdrSocketTests: XCTestCase {
 
     override func tearDown() {
         server.stop()
+    }
+
+    func testOpeningAWorktreeStartsFromTheRepository() throws {
+        XCTAssertEqual(try HerdrSocket.openWorktree(path: server.path, checkout: "/r/feature", repository: "/r"), "w4")
+        let request = try XCTUnwrap(server.requests.last)
+        XCTAssertEqual(request.method, "worktree.open")
+        XCTAssertEqual(request.params["cwd"] as? String, "/r")
+        XCTAssertEqual(request.params["path"] as? String, "/r/feature")
+        XCTAssertEqual(request.params["focus"] as? Bool, true)
     }
 
     func testRequestsCarryTheirParameters() throws {

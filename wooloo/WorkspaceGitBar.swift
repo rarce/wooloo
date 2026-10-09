@@ -10,8 +10,11 @@ struct WorkspaceGitBar: View {
     /// Working tree changes; non-nil shows the commit editor.
     let changes: [WorkspaceFileChange]?
     let onChange: () -> Void
-    let onOpenWorktree: ((String, String) -> Void)?
+    /// Opens a worktree checkout's Space, given the repository's main checkout.
+    let onOpenWorktree: ((_ path: String, _ repository: String?) -> Void)?
     let onError: (String) -> Void
+    /// The Herdr Spaces of this Mac, to tell which worktrees already have one.
+    var spaces: [HerdrWorkspace] = []
 
     /// Injectable so tests can wait for its load.
     @StateObject var model = WorkspaceGitBarModel()
@@ -119,18 +122,42 @@ struct WorkspaceGitBar: View {
     @ViewBuilder
     private var worktreeMenu: some View {
         let others = model.otherWorktrees
+        // Each worktree has its own Space, as in Herdr: opening one leaves this Space, its terminals
+        // and agents as they are, so the menu says which worktrees already have a Space.
+        let open = others.filter { WorkspaceGitBarModel.space(of: $0, in: spaces) != nil }
+        let closed = others.filter { WorkspaceGitBarModel.space(of: $0, in: spaces) == nil }
         if !others.isEmpty {
             Menu {
-                Section("Worktrees") {
-                    if let currentWorktree = model.currentWorktree {
+                if let currentWorktree = model.currentWorktree {
+                    Section("This Space") {
                         Button {} label: { Label(worktreeName(currentWorktree), systemImage: "checkmark") }
                             .disabled(true)
                     }
-                    ForEach(others) { tree in
-                        Button(worktreeName(tree)) {
-                            onOpenWorktree?(tree.path, tree.branch ?? (tree.path as NSString).lastPathComponent)
+                }
+                if !open.isEmpty {
+                    Section("Go to Space") {
+                        ForEach(open) { tree in
+                            Button {
+                                onOpenWorktree?(tree.path, model.repositoryCheckout)
+                            } label: {
+                                Label(WorkspaceGitBarModel.spaceTitle(worktreeName(tree),
+                                                                      space: WorkspaceGitBarModel.space(of: tree, in: spaces)),
+                                      systemImage: "rectangle.stack")
+                            }
+                            .disabled(onOpenWorktree == nil)
                         }
-                        .disabled(onOpenWorktree == nil)
+                    }
+                }
+                if !closed.isEmpty {
+                    Section("Open in New Space") {
+                        ForEach(closed) { tree in
+                            Button {
+                                onOpenWorktree?(tree.path, model.repositoryCheckout)
+                            } label: {
+                                Label(worktreeName(tree), systemImage: "plus.rectangle.on.rectangle")
+                            }
+                            .disabled(onOpenWorktree == nil)
+                        }
                     }
                 }
             } label: {
@@ -140,7 +167,7 @@ struct WorkspaceGitBar: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize(horizontal: false, vertical: true)
-            .help("Switch worktree")
+            .help("Open a worktree in its Space")
             Text("/").foregroundStyle(.tertiary)
         }
     }
@@ -173,9 +200,9 @@ struct WorkspaceGitBar: View {
     private func choose(_ choice: WorkspaceBranchChoice) {
         showsBranchPicker = false
         switch choice {
-        case .branch(let branch, worktree: let tree?):
+        case .branch(_, worktree: let tree?):
             // A deleted worktree still holds its branch until pruned; there is nothing to open.
-            if !tree.isPrunable { onOpenWorktree?(tree.path, branch.name) }
+            if !tree.isPrunable { onOpenWorktree?(tree.path, model.repositoryCheckout) }
         case .branch(let branch, worktree: nil):
             if !branch.isCurrent { model.switchBranch(branch, finished: finished) }
         case .create(let name):
@@ -376,6 +403,31 @@ final class WorkspaceGitBarModel: ObservableObject {
     /// The worktrees besides this one that can be opened: not bare, and not deleted without pruning.
     var otherWorktrees: [WorkspaceWorktree] {
         (repository?.worktrees ?? []).filter { $0.path != repository?.root && !$0.isBare && !$0.isPrunable }
+    }
+
+    /// The repository's main checkout, from which Herdr opens worktrees: Git lists it first.
+    /// Nil for a bare repository, which has none.
+    var repositoryCheckout: String? {
+        repository?.worktrees.first.flatMap { $0.isBare ? nil : $0.path }
+    }
+
+    /// The Herdr Space open on a worktree, if any.
+    static func space(of tree: WorkspaceWorktree, in spaces: [HerdrWorkspace]) -> HerdrWorkspace? {
+        spaces.first { $0.worktree?.checkoutPath == tree.path }
+    }
+
+    /// A worktree's row among those with a Space: its name, the Space's label when it differs, and
+    /// its agents' status when they are working or waiting.
+    static func spaceTitle(_ name: String, space: HerdrWorkspace?) -> String {
+        var title = name
+        if let label = space?.label, label != name { title += " — " + label }
+        switch space?.agentStatus {
+        case "working": title += " · working"
+        case "blocked": title += " · needs input"
+        case "done": title += " · done"
+        default: break
+        }
+        return title
     }
 
     /// The worktrees besides this one, including deleted ones not yet pruned: Git keeps their
@@ -623,7 +675,7 @@ struct WorkspaceBranchPickerPanel: View {
                 if tree.isPrunable {
                     return "Checked out in \(tree.path), which was deleted; run git worktree prune to free the branch"
                 }
-                return opensWorktrees ? "Checked out in \(tree.path); choose it to open that worktree"
+                return opensWorktrees ? "Checked out in \(tree.path); choose it to open that worktree's Space"
                                       : "Checked out in \(tree.path), so Git cannot switch to it here"
             }
             if branch.isRemote { return "Create a local branch tracking \(branch.name) and switch to it" }

@@ -59,6 +59,17 @@ final class HerdrStoreTests: XCTestCase {
                 state.tabs.append(["tab_id": "w2:t1", "workspace_id": "w2", "label": "1"])
                 state.panes.append(["pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w2:t1"])
                 return ["result": ["workspace": ["workspace_id": "w2"]]]
+            case "worktree.open":
+                // As Herdr 0.9.3 does: worktrees open from the repository's main checkout.
+                guard params["cwd"] as? String == "/r" else {
+                    return ["error": ["code": "linked_worktree_source",
+                                      "message": "New and open worktree actions start from the repo parent workspace."]]
+                }
+                state.workspaces.append(["workspace_id": "w3", "label": "feature", "active_tab_id": "w3:t1",
+                                         "worktree": ["checkout_path": params["path"] ?? ""]])
+                state.tabs.append(["tab_id": "w3:t1", "workspace_id": "w3", "label": "1"])
+                state.panes.append(["pane_id": "w3:p1", "workspace_id": "w3", "tab_id": "w3:t1"])
+                return ["result": ["already_open": false, "workspace": ["workspace_id": "w3"]]]
             case "pane.split":
                 state.panes.append(["pane_id": "w1:p9", "workspace_id": "w1", "tab_id": "w1:t1"])
                 state.focus = ("w1", "w1:t1", "w1:p9")
@@ -169,6 +180,34 @@ final class HerdrStoreTests: XCTestCase {
         let request = server.requests.first { $0.method == "workspace.create" }
         XCTAssertEqual(request?.params["source_workspace_id"] as? String, "w1")
         XCTAssertEqual(request?.params["focus"] as? Bool, true)
+    }
+
+    /// A worktree opens through Herdr in its own Space, which a second open only focuses.
+    func testOpeningAWorktreeFocusesItsSpace() async {
+        await connect()
+        store.openWorktree("/r/feature", repository: "/r")
+        await waitUntil("worktree space selected") { store.selectedWorkspaceID == "w3" }
+        let request = server.requests.first { $0.method == "worktree.open" }
+        XCTAssertEqual(request?.params["cwd"] as? String, "/r")
+        XCTAssertEqual(request?.params["path"] as? String, "/r/feature")
+        XCTAssertEqual(request?.params["focus"] as? Bool, true)
+
+        store.select(workspaceID: "w1")
+        store.openWorktree("/r/feature", repository: "/r")
+        XCTAssertEqual(store.selectedWorkspaceID, "w3", "The open Space is selected at once")
+        XCTAssertEqual(server.requests.filter { $0.method == "worktree.open" }.count, 1)
+        XCTAssertTrue(server.requests.filter { $0.method == "workspace.create" }.isEmpty)
+    }
+
+    /// When Herdr will not open the worktree, such as in a bare repository, a plain Space opens there.
+    func testOpeningAWorktreeFallsBackToAPlainSpace() async {
+        await connect()
+        store.openWorktree("/elsewhere/feature", repository: "/elsewhere")
+        await waitUntil("new space selected") { store.selectedWorkspaceID == "w2" }
+        let request = server.requests.first { $0.method == "workspace.create" }
+        XCTAssertEqual(request?.params["cwd"] as? String, "/elsewhere/feature")
+        XCTAssertNil(request?.params["source_workspace_id"])
+        XCTAssertNil(store.actionError)
     }
 
     func testSplitFollowsTheServersFocus() async {
