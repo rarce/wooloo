@@ -212,8 +212,9 @@ struct NotebookWebView: NSViewRepresentable {
 }
 
 /// Only bundled assets and registered, bounded raster images can cross the webview boundary.
-/// Not isolated to the main actor, which `WKURLSchemeHandler` would imply: images are read off
-/// it, in `WorkspaceFiles.blocking`, and the lock guards the state.
+/// Not isolated to the main actor, which `WKURLSchemeHandler` would imply: resources are read off
+/// it, image files of the Space in `WorkspaceFiles.blocking` and the rest on a private queue, and
+/// the lock guards the state.
 nonisolated final class NotebookResources: NSObject, WKURLSchemeHandler, @unchecked Sendable {
     static let scheme = "wooloo-notebook"
     private enum Resource { case encoded(NotebookDocument.Image), file(String) }
@@ -245,8 +246,12 @@ nonisolated final class NotebookResources: NSObject, WKURLSchemeHandler, @unchec
     }
 
     func clear() {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         entries.removeAll(); active.removeAll(); location = nil; revision = ""; decodedBytes = 0; countedImages.removeAll()
+        let stopped = reads.values
+        reads.removeAll()
+        lock.unlock()
+        stopped.forEach { $0.cancel() }
     }
 
     static func localPath(_ target: String, documentPath: String) -> String? {
@@ -271,37 +276,99 @@ nonisolated final class NotebookResources: NSObject, WKURLSchemeHandler, @unchec
         return "\(Self.scheme)://\(revision)/image/\(id)"
     }
 
-    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
-        let key = ObjectIdentifier(task)
-        lock.lock(); active.insert(key); let location = self.location; lock.unlock()
-        let url = task.request.url
-        // An image file is read from the Space, over SSH for a remote one, so it takes a slot of
-        // the Space's machine; bundled assets take one of this Mac.
-        let machine = url?.path.hasPrefix("/image/") == true ? location?.machine : nil
-        Task { [weak self] in
-            guard let self else { return }
-            let result = await WorkspaceFiles.blocking(on: machine, priority: .userInitiated) {
-                Result { try self.data(for: url) }
-            }
-            DispatchQueue.main.async {
-                self.lock.lock(); let isActive = self.active.remove(key) != nil; self.lock.unlock()
-                guard isActive else { return }
-                switch result {
-                case .success(let (data, mime)):
-                    task.didReceive(URLResponse(url: url!, mimeType: mime, expectedContentLength: data.count, textEncodingName: nil))
-                    task.didReceive(data); task.didFinish()
-                case .failure(let error): task.didFailWithError(error)
-                }
-            }
+    /// What a request asks for, resolved when it starts, so a document opened while it waits
+    /// cannot change the file it reads or the machine it reads it from.
+    enum Request {
+        case asset(URL, mime: String)
+        case encoded(id: String, revision: String, image: NotebookDocument.Image)
+        case file(id: String, revision: String, path: String, location: WorkspaceFileLocation?)
+
+        /// Where an image file is read, with a process and over SSH for a remote Space, so the
+        /// read takes a slot of its machine. Nil for requests served without one.
+        var fileLocation: WorkspaceFileLocation? {
+            guard case .file(_, _, _, let location) = self else { return nil }
+            return location
         }
     }
 
-    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
-        lock.lock(); active.remove(ObjectIdentifier(task)); lock.unlock()
+    /// Requests waiting for or running a read of an image file, cancelled when WebKit stops them.
+    private var reads: [ObjectIdentifier: Task<Void, Never>] = [:]
+    /// Carries WebKit's task to the main thread, where it is answered.
+    private struct SchemeTaskReply: @unchecked Sendable {
+        let task: WKURLSchemeTask
     }
 
-    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
-    func data(for url: URL?) throws -> (Data, String) {
+    /// Bundled assets and encoded images are served here, without a slot or a thread each.
+    private let queue = DispatchQueue(label: "dev.wooloo.notebook-resources", qos: .userInitiated)
+
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        let key = ObjectIdentifier(task)
+        let url = task.request.url
+        lock.lock(); active.insert(key); lock.unlock()
+        let request = Result { try self.request(for: url) }
+        // WebKit's task is answered on the main thread only.
+        let reply = SchemeTaskReply(task: task)
+        let finish: @Sendable (Result<(Data, String), Error>) -> Void = { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.lock.lock()
+                let isActive = self.active.remove(key) != nil
+                self.reads[key] = nil
+                self.lock.unlock()
+                guard isActive else { return }
+                switch result {
+                case .success(let (data, mime)):
+                    reply.task.didReceive(URLResponse(url: url!, mimeType: mime, expectedContentLength: data.count, textEncodingName: nil))
+                    reply.task.didReceive(data); reply.task.didFinish()
+                case .failure(let error): reply.task.didFailWithError(error)
+                }
+            }
+        }
+        guard case .success(let resolved) = request, let location = resolved.fileLocation else {
+            queue.async { [weak self] in
+                guard let self, self.isActive(key) else { return }
+                finish(request.flatMap { resolved in Result { try self.data(for: resolved) } })
+            }
+            return
+        }
+        let read = Task { [weak self] in
+            guard let self else { return }
+            // A stopped request cancels this task, so it gives up its place in line, and one
+            // stopped as its slot came free does not read.
+            let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) { () -> Result<(Data, String), Error> in
+                guard self.isActive(key) else { return .failure(CancellationError()) }
+                return Result { try self.data(for: resolved) }
+            }
+            finish(result)
+        }
+        lock.lock()
+        // Kept only while the request is open: `finish` may have run already.
+        if active.contains(key) { reads[key] = read }
+        lock.unlock()
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
+        let key = ObjectIdentifier(task)
+        lock.lock()
+        active.remove(key)
+        let read = reads.removeValue(forKey: key)
+        lock.unlock()
+        read?.cancel()
+    }
+
+    private func isActive(_ key: ObjectIdentifier) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return active.contains(key)
+    }
+
+    /// Requests waiting for or running a read; for tests.
+    var pendingReads: Int {
+        lock.lock(); defer { lock.unlock() }
+        return reads.count
+    }
+
+    /// Resolves `url` against the bundled assets and the current document's images.
+    func request(for url: URL?) throws -> Request {
         guard let url, url.scheme == Self.scheme else { throw URLError(.badURL) }
         let components = url.path.split(separator: "/").map(String.init)
         if url.host == "app", components.count >= 2, ["preview", "vendor"].contains(components[0]) {
@@ -312,21 +379,38 @@ nonisolated final class NotebookResources: NSObject, WKURLSchemeHandler, @unchec
             guard file.path.hasPrefix(directory.resolvingSymlinksInPath().path + "/") else { throw URLError(.noPermissionsToReadFile) }
             let types = ["js": "application/javascript", "css": "text/css", "woff2": "font/woff2"]
             guard let mime = types[file.pathExtension] else { throw URLError(.unsupportedURL) }
-            return (try Data(contentsOf: file), mime)
+            return .asset(file, mime: mime)
         }
-        lock.lock()
-        let token = revision, resource = components.count == 2 && components[0] == "image" && url.host == revision ? entries[components[1]] : nil
-        let location = self.location
-        lock.unlock()
-        guard let resource else { throw URLError(.fileDoesNotExist) }
-        let data: Data
+        lock.lock(); defer { lock.unlock() }
+        guard components.count == 2, components[0] == "image", url.host == revision, let resource = entries[components[1]] else {
+            throw URLError(.fileDoesNotExist)
+        }
         switch resource {
-        case .encoded(let image):
+        case .encoded(let image): return .encoded(id: components[1], revision: revision, image: image)
+        case .file(let path): return .file(id: components[1], revision: revision, path: path, location: location)
+        }
+    }
+
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    func data(for url: URL?) throws -> (Data, String) {
+        try data(for: request(for: url))
+    }
+
+    /// Reads a resolved request; an image file at the location it was resolved with.
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    func data(for request: Request) throws -> (Data, String) {
+        let data: Data
+        let id: String, token: String
+        switch request {
+        case .asset(let file, let mime):
+            return (try Data(contentsOf: file), mime)
+        case .encoded(let imageID, let revision, let image):
             guard let decoded = Data(base64Encoded: image.base64, options: .ignoreUnknownCharacters) else { throw URLError(.cannotDecodeContentData) }
-            data = decoded
-        case .file(let path):
+            (data, id, token) = (decoded, imageID, revision)
+        case .file(let imageID, let revision, let path, let location):
             guard let location else { throw URLError(.fileDoesNotExist) }
             data = try WorkspaceFiles.readData(path, at: location, limit: NotebookDocument.maximumImageBytes)
+            (id, token) = (imageID, revision)
         }
         guard data.count <= NotebookDocument.maximumImageBytes,
               let source = CGImageSourceCreateWithData(data as CFData, nil),
@@ -342,9 +426,9 @@ nonisolated final class NotebookResources: NSObject, WKURLSchemeHandler, @unchec
             throw URLError(.dataLengthExceedsMaximum)
         }
         lock.lock(); defer { lock.unlock() }
-        let additionalBytes = countedImages.contains(components[1]) ? 0 : data.count
+        let additionalBytes = countedImages.contains(id) ? 0 : data.count
         guard revision == token, decodedBytes + additionalBytes <= 64 * 1024 * 1024 else { throw URLError(.dataLengthExceedsMaximum) }
-        decodedBytes += additionalBytes; countedImages.insert(components[1])
+        decodedBytes += additionalBytes; countedImages.insert(id)
         let mime = ["public.png": "image/png", "public.jpeg": "image/jpeg", "com.compuserve.gif": "image/gif", "org.webmproject.webp": "image/webp"][type]!
         return (data, mime)
     }

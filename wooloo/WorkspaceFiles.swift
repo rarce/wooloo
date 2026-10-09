@@ -1825,7 +1825,8 @@ enum WorkspaceFiles {
         /// host and port), so two spellings of one machine share one limit: the host in lower
         /// case, as SSH compares it, and port 22 the same as none. A `Host` alias in ssh_config
         /// that resolves to the same `HostName`, or a user left to ssh_config, would take
-        /// `ssh -G` to tell apart, and gets a limit of its own.
+        /// `ssh -G` to tell apart, and gets a limit of its own: `box` and `dev@box`, where `dev`
+        /// is the default user, also count as two machines.
         var connectionKey: String {
             let user = destination.range(of: "@", options: .backwards).map { String(destination[..<$0.upperBound]) } ?? ""
             let host = String(destination.dropFirst(user.count)).lowercased()
