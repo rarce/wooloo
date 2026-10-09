@@ -406,6 +406,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     }
 
     /// Folders that cannot be read, such as one deleted since, are left out.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     nonisolated private static func readFolders(_ folders: [String],
                                                 at location: WorkspaceFileLocation) -> [String: WorkspaceFolderContents] {
         var read: [String: WorkspaceFolderContents] = [:]

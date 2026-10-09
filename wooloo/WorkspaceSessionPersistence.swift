@@ -118,7 +118,13 @@ private enum WorkspaceSessionError: LocalizedError {
 
 /// All disk access runs on this actor. Writes are ordered, each file is replaced atomically,
 /// and the session index is committed only after all of its dirty buffers are backed up.
+///
+/// The actor runs on a serial queue of its own: its methods read and write files synchronously,
+/// which would otherwise hold one of Swift's cooperative threads while the disk is slow.
 actor WorkspaceSessionPersistence {
+    private let queue = DispatchSerialQueue(label: "dev.wooloo.session-persistence", qos: .utility)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
     static let shared: WorkspaceSessionPersistence = {
         // A separate location lets interactive checks avoid the user's real editor sessions.
         let override = ProcessInfo.processInfo.environment["WOOLOO_SESSION_STORAGE_ROOT"]

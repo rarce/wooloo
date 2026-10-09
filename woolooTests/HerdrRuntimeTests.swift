@@ -83,6 +83,23 @@ final class HerdrRuntimeTests: XCTestCase {
         XCTAssertEqual(running.requests.map(\.method), ["ping"])
     }
 
+    /// Setup blocks on sockets, files and `launchctl`, so it runs on the service's own queue
+    /// rather than Swift's cooperative threads.
+    func testSetupRunsOnTheServicesOwnQueue() async throws {
+        let label = Locked<String?>(nil)
+        let runtime = service(launcher: { _, _, _, _, _ in
+            label.value = String(cString: __dispatch_queue_get_label(nil))
+            throw HerdrRuntimeError.message("stop here")
+        })
+        do {
+            try await runtime.ensureServer(executable: helper, session: "wooloo-ui-test")
+            XCTFail("The launcher's error ends setup")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "stop here")
+        }
+        XCTAssertEqual(label.value, "dev.wooloo.herdr-runtime")
+    }
+
     func testExistingModeDoesNotLaunchAnAbsentServer() async throws {
         do {
             try await service().ensureServer(executable: helper, session: "wooloo-ui-test", mayStart: false)
@@ -157,10 +174,11 @@ final class HerdrRuntimeTests: XCTestCase {
         let identity = SHA256.hash(data: Data((configRoot.path + "|" + session).utf8))
             .prefix(8).map { String(format: "%02x", $0) }.joined()
         let job = "gui/\(getuid())/dev.wooloo.herdr.\(identity)"
-        defer {
+        let cleanUp = {
             _ = try? HerdrSocket.request(path: socket, method: "server.stop")
             _ = try? WorkspaceFiles.run("/bin/launchctl", ["bootout", job], limit: 16_000)
         }
+        defer { cleanUp() }
         try FileManager.default.createDirectory(at: configRoot, withIntermediateDirectories: true)
         try Data("onboarding = false\n[terminal]\ndefault_shell = '/bin/sh'\nshell_mode = 'non_login'\n[update]\nversion_check = false\n".utf8)
             .write(to: configRoot.appendingPathComponent("config.toml"))
@@ -169,12 +187,14 @@ final class HerdrRuntimeTests: XCTestCase {
                                                        "PATH": "", "SHELL": "/bin/sh"])
         let installed = try await runtime.installBundledExecutable()
         try await runtime.ensureServer(executable: installed, session: session, folder: root)
-        let snapshot = try HerdrSocket.snapshot(path: socket)
+        let snapshot = try await BlockingWork.run { try HerdrSocket.snapshot(path: socket) }
         let pane = try XCTUnwrap(snapshot.panes.first?.paneID)
-        try HerdrSocket.sendInput(path: socket, paneID: pane, text: "printf 'WOOLOO_RUNTIME_%s\\n' OK\n")
+        try await BlockingWork.run {
+            try HerdrSocket.sendInput(path: socket, paneID: pane, text: "printf 'WOOLOO_RUNTIME_%s\\n' OK\n")
+        }
         var output = ""
         for _ in 0..<30 {
-            output = try HerdrSocket.paneText(path: socket, paneID: pane)
+            output = try await BlockingWork.run { try HerdrSocket.paneText(path: socket, paneID: pane) }
             if output.contains("WOOLOO_RUNTIME_OK") { break }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -182,18 +202,20 @@ final class HerdrRuntimeTests: XCTestCase {
         // All client sockets above have closed. A new service attaches to the same pane.
         let reopened = HerdrRuntimeService(supportRoot: support, configRoot: configRoot)
         try await reopened.ensureServer(executable: installed, session: session)
-        XCTAssertEqual(try HerdrSocket.snapshot(path: socket).panes.first?.paneID, pane)
-        let jobInfo = try WorkspaceFiles.run("/bin/launchctl", ["print", job], limit: 64_000)
+        let reattached = try await BlockingWork.run { try HerdrSocket.snapshot(path: socket) }
+        XCTAssertEqual(reattached.panes.first?.paneID, pane)
+        let jobInfo = try await BlockingWork.run { try WorkspaceFiles.run("/bin/launchctl", ["print", job], limit: 64_000) }
         XCTAssertTrue(String(decoding: jobInfo, as: UTF8.self).contains("state = running"))
         // An explicit stop leaves an exited launchd job loaded. Opening wooloo again must
         // start a fresh server instead of leaving that job stuck on its previous binary.
-        _ = try HerdrSocket.request(path: socket, method: "server.stop")
+        _ = try await BlockingWork.run { try HerdrSocket.request(path: socket, method: "server.stop") }
         for _ in 0..<50 {
-            if (try? HerdrSocket.request(path: socket, method: "ping")) == nil { break }
+            if await BlockingWork.run({ try? HerdrSocket.request(path: socket, method: "ping") }) == nil { break }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         try await runtime.ensureServer(executable: installed, session: session)
-        XCTAssertFalse(try HerdrSocket.snapshot(path: socket).workspaces.isEmpty)
+        let restarted = try await BlockingWork.run { try HerdrSocket.snapshot(path: socket) }
+        XCTAssertFalse(restarted.workspaces.isEmpty)
     }
 
     @MainActor

@@ -56,6 +56,7 @@ enum WorkspaceSearch {
         }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func search(_ options: WorkspaceSearchOptions, at location: WorkspaceFileLocation) throws -> WorkspaceSearchResult {
         let expression = try expression(for: options)
         let data = try WorkspaceFiles.shell(script(for: options), at: location, limit: 24_000_000)
@@ -218,6 +219,7 @@ enum WorkspaceSearch {
     /// Replaces every match in one file, or only `occurrence` on `line` (1-based) when given.
     /// Saving checks the version read here, so a file changed meanwhile is rejected.
     @discardableResult
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func replace(in path: String, options: WorkspaceSearchOptions, replacement: String,
                         only target: WorkspaceSearchMatchRef? = nil,
                         at location: WorkspaceFileLocation) throws -> Int {

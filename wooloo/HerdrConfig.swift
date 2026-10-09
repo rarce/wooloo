@@ -27,6 +27,7 @@ enum HerdrConfigFile {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func validate(_ text: String) throws {
         guard let executable = WorkspaceFiles.herdrCandidates.first(where: FileManager.default.isExecutableFile(atPath:)) else {
             throw HerdrConfigError.herdrUnavailable
@@ -54,6 +55,7 @@ enum HerdrConfigFile {
         }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func save(_ text: String, original: String, at url: URL) throws {
         guard try read(at: url) == original else { throw HerdrConfigError.changedOnDisk }
         try validate(text)
@@ -64,6 +66,7 @@ enum HerdrConfigFile {
 
     /// Saves a validated config and asks the running session to reload it. Returns what to
     /// tell the user; a session that cannot reload does not undo the save.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func saveAndReload(_ text: String, original: String, at url: URL,
                               socketPath: String, session: String) throws -> String {
         try save(text, original: original, at: url)
@@ -74,6 +77,7 @@ enum HerdrConfigFile {
         }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func reloadServer(socketPath: String) throws -> String {
         let data = try HerdrSocket.request(path: socketPath, method: "server.reload_config")
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],

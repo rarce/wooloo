@@ -360,12 +360,14 @@ enum WorkspaceFiles {
         return executable
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func machines() throws -> [HerdrMachineProfile] {
         let executable = try herdrExecutable()
         let data = try run(executable, ["machine", "list", "--json"], limit: 200_000)
         return try JSONDecoder().decode([HerdrMachineProfile].self, from: data).filter(\.enabled)
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func remoteSnapshot(_ machine: HerdrMachineProfile) throws -> HerdrSnapshot {
         let executable = try herdrExecutable()
         let data = try run(executable, ["--machine", machine.id, "api", "snapshot"], limit: 8_000_000)
@@ -383,6 +385,7 @@ enum WorkspaceFiles {
                                      workspaceID: workspaceID, workspaceLabel: workspace.label, root: root)
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func listing(at location: WorkspaceFileLocation) throws -> WorkspaceFileListing {
         // Over SSH the listing comes from the refresh batch, which the Git bar and repository
         // panel share. It never reuses a finished one: it joins a running batch or starts one.
@@ -431,6 +434,7 @@ enum WorkspaceFiles {
     /// The files Go to File searches: tracked and untracked ones, and with `includeIgnored` those
     /// Git ignores, cut to `maximumFiles`; with the status of changed files for their colors.
     /// Lighter than `listing`, which also lists ignored folders for the explorer tree.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func quickOpenFiles(at location: WorkspaceFileLocation, includeIgnored: Bool = false) throws -> QuickOpenListing {
         guard (try? git(location, ["rev-parse", "--is-inside-work-tree"], limit: 100)) != nil else {
             return try quickOpenFilesWithoutGit(at: location, includeIgnored: includeIgnored)
@@ -481,6 +485,7 @@ enum WorkspaceFiles {
     /// explorer and Go to File. The walk reads one folder level at a time, so it always has the
     /// files nearest the root, and stops after `folderWalkMaximumDepth` levels or once
     /// `folderWalkBudget` seconds have passed after the root.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func folderWalk(at location: WorkspaceFileLocation, readingSkipped: Bool) throws -> WorkspaceFolderWalk {
         guard let machine = location.machine else {
             return finished(localFolderWalk(root: location.root, readingSkipped: readingSkipped), readingSkipped: readingSkipped)
@@ -606,6 +611,7 @@ enum WorkspaceFiles {
     }
 
     /// What is directly inside `folder` ("" is the root), for an ignored folder being expanded.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func folderContents(_ folder: String, at location: WorkspaceFileLocation) throws -> WorkspaceFolderContents {
         if !folder.isEmpty { try validateRelativePath(folder) }
         var contents = WorkspaceFolderContents()
@@ -679,6 +685,7 @@ enum WorkspaceFiles {
         return (tracked.sorted(), untracked.subtracting(tracked).sorted())
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func read(_ path: String, at location: WorkspaceFileLocation) throws -> WorkspaceFileContents {
         let data = try readData(path, at: location, limit: fileByteLimit(for: path))
         guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
@@ -688,6 +695,7 @@ enum WorkspaceFiles {
     }
 
     /// Raw bytes of a file in the Space, e.g. an image referenced by a Markdown preview.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func readData(_ path: String, at location: WorkspaceFileLocation, limit: Int) throws -> Data {
         let data: Data
         if let machine = location.machine {
@@ -704,6 +712,7 @@ enum WorkspaceFiles {
         return data
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func save(_ text: String, path: String, expectedVersion: String,
                      at location: WorkspaceFileLocation) throws -> String {
         let data = Data(text.utf8)
@@ -739,6 +748,7 @@ enum WorkspaceFiles {
 
     /// A changed file's patches. `.all` compares HEAD with the working tree; `.staged` and
     /// `.unstaged` are added when the file has both kinds of changes.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func diff(_ path: String, at location: WorkspaceFileLocation) throws -> [WorkspaceDiffScope: String] {
         try validateRelativePath(path)
         let options = ["--no-ext-diff", "--no-textconv", "--"]
@@ -774,6 +784,7 @@ enum WorkspaceFiles {
 
     /// The whole file before and after a patch, for syntax highlighting and expanding unchanged lines.
     /// A side is nil when it doesn't exist, isn't UTF-8 text, or is too large.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func diffSides(_ path: String, originalPath: String?, commit: String?, scope: WorkspaceDiffScope,
                           at location: WorkspaceFileLocation) -> (old: String?, new: String?) {
         guard (try? validateRelativePath(path)) != nil,
@@ -842,6 +853,7 @@ enum WorkspaceFiles {
 
     /// A file's text at HEAD and in the index, for the editor's change bars. Nil when that version
     /// doesn't exist or isn't UTF-8 text.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func gitBases(_ path: String, at location: WorkspaceFileLocation) -> (head: String?, index: String?) {
         guard (try? validateRelativePath(path)) != nil else { return (nil, nil) }
         guard let index = blob(":./\(path)", at: location) else { return (nil, nil) }
@@ -850,6 +862,7 @@ enum WorkspaceFiles {
 
     /// The Git directory of a local repository, e.g. `.git` or `.git/worktrees/<name>`, which an
     /// editor watches for index and HEAD changes. Nil for SSH locations and outside a repository.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func localGitDirectory(at location: WorkspaceFileLocation) -> String? {
         guard location.isLocal,
               let data = try? git(location, ["rev-parse", "--absolute-git-dir"], limit: 4096),
@@ -859,6 +872,7 @@ enum WorkspaceFiles {
     }
 
     /// Both paths matter in a linked worktree: index/HEAD are private, refs are shared.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func localGitWatchPaths(at location: WorkspaceFileLocation) -> [String] {
         guard location.isLocal,
               let data = try? git(location, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], limit: 16_384)
@@ -866,6 +880,7 @@ enum WorkspaceFiles {
         return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init).filter { $0.hasPrefix("/") }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func repository(at location: WorkspaceFileLocation) throws -> WorkspaceRepositoryListing {
         if location.machine != nil { return try remoteRefresh(at: location).repository.get() }
         return try repositoryLoads.value(for: location.identity) { try loadRepository(at: location).repository.get() }
@@ -873,6 +888,7 @@ enum WorkspaceFiles {
 
     /// The Git bar's branch status and the repository, which it shows together. Over SSH both
     /// come from the refresh batch, which the listing that comes before the Git bar just ran.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func gitBar(at location: WorkspaceFileLocation) throws -> (status: WorkspaceBranchStatus,
                                                                       repository: WorkspaceRepositoryListing?) {
         if location.machine != nil {
@@ -1055,6 +1071,7 @@ enum WorkspaceFiles {
     }
 
     /// Files touched by a commit, compared with its first parent (or the empty tree for a root commit).
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func commitFiles(_ hash: String, at location: WorkspaceFileLocation) throws -> [WorkspaceCommitFile] {
         try validateCommit(hash)
         let base = ["diff-tree", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "-M", "-z"]
@@ -1099,6 +1116,7 @@ enum WorkspaceFiles {
         }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func commitDiff(_ hash: String, path: String, originalPath: String?,
                            at location: WorkspaceFileLocation) throws -> String {
         try validateCommit(hash)
@@ -1120,6 +1138,7 @@ enum WorkspaceFiles {
         }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func addWorktree(at location: WorkspaceFileLocation, path: String,
                             branch: WorkspaceBranch, newBranch: String?) throws {
         defer { forgetRecentResults() }
@@ -1144,6 +1163,7 @@ enum WorkspaceFiles {
         _ = try git(location, args, limit: 20_000)
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func removeWorktree(at location: WorkspaceFileLocation, path: String) throws {
         defer { forgetRecentResults() }
         let repository = try repository(at: location)
@@ -1156,12 +1176,14 @@ enum WorkspaceFiles {
     }
 
     /// Stages a file or folder; an empty path stages everything under the Space root.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func stage(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         _ = try git(location, ["add", "--", try pathspec(path)], limit: 20_000)
     }
 
     /// Unstages a file or folder; an empty path unstages everything under the Space root.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func unstage(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         _ = try git(location, ["restore", "--staged", "--", try pathspec(path)], limit: 20_000)
@@ -1170,6 +1192,7 @@ enum WorkspaceFiles {
     /// Discards a file's staged and unstaged changes, as Zed's Discard Changes does: a path in
     /// HEAD goes back to its committed version, and one that is not (untracked or newly added) is
     /// deleted. A rename also restores its source.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func discard(_ change: WorkspaceFileChange, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         let paths = [change.path] + (change.originalPath.map { [$0] } ?? [])
@@ -1185,6 +1208,7 @@ enum WorkspaceFiles {
     }
 
     /// The latest commits that changed a file, following it across renames.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func fileHistory(_ path: String, at location: WorkspaceFileLocation) throws -> [WorkspaceCommit] {
         try validateRelativePath(path)
         return parseLog(try git(location, ["log", "-n", "100", "--follow", "--format=\(logFormat)", "--", path], limit: 400_000))
@@ -1196,6 +1220,7 @@ enum WorkspaceFiles {
         return path
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func branchStatus(at location: WorkspaceFileLocation) throws -> WorkspaceBranchStatus {
         try branchStatus(from: gitBatch(location, branchStatusSections)[...])
     }
@@ -1224,6 +1249,7 @@ enum WorkspaceFiles {
                                      ahead: ahead, behind: behind, remotes: remotes)
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func sync(_ action: WorkspaceGitSync, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         let args: [String]
@@ -1242,6 +1268,7 @@ enum WorkspaceFiles {
         _ = try git(location, args, limit: 200_000, timeout: 120)
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func commit(message: String, mode: WorkspaceCommitMode, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         let message = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1264,6 +1291,7 @@ enum WorkspaceFiles {
     }
 
     /// Switches to a local branch, or to a remote one through a new local branch that tracks it.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func switchBranch(_ branch: WorkspaceBranch, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         guard !branch.isCurrent, !branch.name.hasPrefix("-") else {
@@ -1275,6 +1303,7 @@ enum WorkspaceFiles {
     }
 
     /// Creates a branch at HEAD and switches to it; uncommitted changes stay in the working tree.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func createBranch(_ name: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         guard isValidNewBranchName(name) else {
@@ -1295,6 +1324,7 @@ enum WorkspaceFiles {
 
     /// Runs a POSIX shell script in the Space root: locally with /bin/sh, remotely over SSH,
     /// so both paths execute the same text.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func shell(_ script: String, at location: WorkspaceFileLocation, limit: Int) throws -> Data {
         let rooted = "cd \(quote(location.root)) || exit 3\n" + script
         if let machine = location.machine { return try ssh(machine, rooted, limit: limit) }
@@ -1341,6 +1371,7 @@ enum WorkspaceFiles {
     /// own process, as `git` runs it. Over SSH they run in one remote script, which costs one
     /// round trip instead of one per command. Throws only when the batch as a whole fails, for
     /// example when SSH cannot connect.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func gitBatch(_ location: WorkspaceFileLocation, _ sections: [GitSection],
                          timeout: TimeInterval = 15) throws -> [Result<Data, Error>] {
         guard let machine = location.machine else {
@@ -1578,6 +1609,7 @@ enum WorkspaceFiles {
     }
 
     /// Output of a short read-only script on an SSH machine, e.g. the sidebar's host stats probe.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func remoteOutput(_ machine: HerdrMachineProfile, script: String, label: String,
                              limit: Int = 64_000) throws -> Data {
         try ssh(machine, script, limit: limit, timeout: 10, label: label)
@@ -1601,6 +1633,7 @@ enum WorkspaceFiles {
 
     /// Runs a process and returns its output. `label` names it in the process log, for
     /// example `git status`, and `remote` marks commands sent over SSH.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func run(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
                             input: Data? = nil, limit: Int, timeout: TimeInterval = 15,
                             label: String? = nil, remote: Bool = false) throws -> Data {
@@ -1719,6 +1752,7 @@ extension WorkspaceFiles {
     /// Creates an empty file. With `keepingExisting`, a file already at `path` is left as it is
     /// and false is returned, for Go to File, whose listing may not have reached it.
     @discardableResult
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func createFile(_ path: String, at location: WorkspaceFileLocation, keepingExisting: Bool = false) throws -> Bool {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
@@ -1728,6 +1762,7 @@ extension WorkspaceFiles {
         return String(decoding: output, as: UTF8.self) != "existing\n"
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func createFolder(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
@@ -1736,6 +1771,7 @@ extension WorkspaceFiles {
     }
 
     /// Renames a file or folder in place and returns its new path.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func renameItem(_ path: String, to name: String, at location: WorkspaceFileLocation) throws -> String {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
@@ -1751,6 +1787,7 @@ extension WorkspaceFiles {
     }
 
     /// Deletes a file or folder permanently.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func delete(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
@@ -1759,6 +1796,7 @@ extension WorkspaceFiles {
 
     /// Moves a file or folder of a local Space to the Trash and returns where it went there.
     @discardableResult
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func trash(_ path: String, at location: WorkspaceFileLocation) throws -> String {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
@@ -1775,6 +1813,7 @@ extension WorkspaceFiles {
     }
 
     /// Puts an item moved to the Trash back at `path` in a local Space.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func restore(_ trashed: String, to path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
@@ -1794,6 +1833,7 @@ extension WorkspaceFiles {
 
     /// Moves a file or folder to another path in the Space, creating the folders above it.
     /// An item already at `destination` is refused.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func moveItem(_ path: String, to destination: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
@@ -1808,6 +1848,7 @@ extension WorkspaceFiles {
     /// Copies or moves files and folders, given by absolute paths on the Space's machine, into
     /// `directory` ("" is the Space root) and returns their new Space-relative paths. A copy that
     /// would land on an existing name gets a free "name copy" one instead, as in Finder.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func paste(_ sources: [String], into directory: String, move: Bool,
                       at location: WorkspaceFileLocation) throws -> [String] {
         defer { forgetRecentResults() }
@@ -1850,6 +1891,7 @@ extension WorkspaceFiles {
     /// ("" is the Space root) and returns their new Space-relative paths; a name already taken
     /// gets a free "name copy" one, as a paste does. An SSH machine is sent each one as a tar
     /// archive over the shared connection, unpacked beside its destination and then moved there.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func importItems(_ sources: [String], into directory: String,
                             at location: WorkspaceFileLocation) throws -> [String] {
         guard let machine = location.machine else { return try paste(sources, into: directory, move: false, at: location) }
@@ -1894,6 +1936,7 @@ extension WorkspaceFiles {
 
     /// Appends a pattern matching exactly this file or folder to the Space's `.gitignore`, or to
     /// the repository's `.git/info/exclude`, unless it is already there.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func ignore(_ path: String, isDirectory: Bool, inExclude: Bool, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         try validateRelativePath(path)
@@ -1929,6 +1972,7 @@ extension WorkspaceFiles {
 
     /// A link to the file at the checked-out commit on the hosting site of the upstream remote
     /// (or `origin`, or the only remote).
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func permalink(_ path: String, at location: WorkspaceFileLocation) throws -> URL {
         try validateRelativePath(path)
         let lines = String(decoding: try git(location, ["rev-parse", "HEAD", "--show-prefix"], limit: 8_000), as: UTF8.self)
@@ -2085,6 +2129,7 @@ final class SharedLoads<Value> {
     /// The result of a load of `key` running now, or of one that finished less than `maxAge`
     /// ago, or else of `load`. Without `reusingFinished`, only a load that finishes after this
     /// call is shared: its caller needs results read after it asked.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     func value(for key: String, reusingFinished: Bool = true, load: () throws -> Value) throws -> Value {
         condition.lock()
         let asked = ProcessInfo.processInfo.systemUptime

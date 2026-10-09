@@ -23,6 +23,7 @@ enum WorkspaceImage {
         var isDownsampled: Bool { size.width > CGFloat(image.width) || size.height > CGFloat(image.height) }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func read(_ path: String, at location: WorkspaceFileLocation) throws -> Contents {
         let data = try WorkspaceFiles.readData(path, at: location, limit: maximumFileBytes)
         return try decode(data)

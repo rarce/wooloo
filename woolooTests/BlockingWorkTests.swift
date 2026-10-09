@@ -147,11 +147,125 @@ final class BlockingWorkTests: XCTestCase {
         XCTAssertEqual(quality.value, .utility)
     }
 
+    /// A worker runs its calls in order on its own queue, at the quality of service each asks for,
+    /// and they still take a slot.
+    func testWorkerRunsCallsInOrderOnItsQueue() {
+        let worker = BlockingWorker(label: "dev.wooloo.test-worker")
+        let order = Locked<[Int]>([])
+        let labels = Locked<Set<String>>([])
+        let quality = Locked<QualityOfService?>(nil)
+        let done = DispatchSemaphore(value: 0)
+        Task.detached(priority: .utility) {
+            for index in 0..<20 {
+                try? await BlockingWork.run(on: worker) { () throws in
+                    order.withLock { $0.append(index) }
+                    labels.withLock { _ = $0.insert(String(cString: __dispatch_queue_get_label(nil))) }
+                }
+            }
+            try? await BlockingWork.run(qualityOfService: .userInitiated, on: worker) { () throws in
+                quality.value = Thread.current.qualityOfService
+            }
+            done.signal()
+        }
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
+        XCTAssertEqual(order.value, Array(0..<20))
+        XCTAssertEqual(labels.value, ["dev.wooloo.test-worker"])
+        XCTAssertEqual(quality.value, .userInitiated)
+
+        let gate = SlotGate(holding: BlockingWork.limit)
+        defer { gate.open() }
+        XCTAssertTrue(waitUntil(10) { gate.started.value == BlockingWork.limit }, "Every slot is held")
+        let ran = Locked(false)
+        let finished = DispatchSemaphore(value: 0)
+        Task.detached {
+            try? await BlockingWork.run(on: worker) { () throws in ran.value = true }
+            finished.signal()
+        }
+        XCTAssertTrue(waitUntil(10) { BlockingWork.slots.waiting >= 1 }, "The worker's call waits for a slot")
+        XCTAssertFalse(ran.value)
+        gate.open()
+        XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(ran.value)
+    }
+
     private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {
             if Date() > deadline { return false }
             Thread.sleep(forTimeInterval: 0.01)
+        }
+        return true
+    }
+}
+
+/// A model's real load path, not `BlockingWork` alone: many Git bar loads of an SSH machine that
+/// hangs. Waits spin the main run loop from the test's own thread with timeouts, so the main
+/// actor's tasks run and a regression fails instead of hanging.
+@MainActor
+final class BlockingWorkLoadTests: XCTestCase {
+    func testSlowGitBarLoadsLeaveCooperativeThreadsAndTheMainActorFree() throws {
+        let sandbox = try WorkspaceGitSandbox()
+        defer {
+            try? FileManager.default.createDirectory(atPath: sandbox.path("gate"), withIntermediateDirectories: true)
+            WorkspaceFiles.sshExecutable = "/usr/bin/ssh"
+            sandbox.tearDown()
+        }
+        try sandbox.repository("repo")
+        // Holds every command until the gate exists, for at most 12 s, below the 15 s timeout of
+        // a load, so a regression that blocks the main thread still ends.
+        try sandbox.write(["bin/ssh": """
+            #!/bin/sh
+            echo start >> '\(sandbox.path("started"))'
+            i=0
+            while [ ! -e '\(sandbox.path("gate"))' ] && [ $i -lt 240 ]; do sleep 0.05; i=$((i + 1)); done
+            for command; do :; done
+            cd '\(sandbox.base)'
+            exec /bin/sh -c "$command"
+            """], in: ".")
+        try sandbox.sh("chmod 755 bin/ssh")
+        WorkspaceFiles.sshExecutable = sandbox.path("bin/ssh")
+        let started = { ((try? String(contentsOfFile: sandbox.path("started"), encoding: .utf8)) ?? "")
+            .split(separator: "\n").count }
+
+        let machine = HerdrMachineProfile(id: "slow", label: "Slow", target: "slow.test", session: "default", enabled: true)
+        // More loads than cooperative threads, besides the ones that get a slot.
+        let count = BlockingWork.limit + ProcessInfo.processInfo.activeProcessorCount * 2
+        let models = (0..<count).map { _ in WorkspaceGitBarModel() }
+        let loaded = expectation(description: "Every load finished")
+        loaded.expectedFulfillmentCount = count
+        for (index, model) in models.enumerated() {
+            // Separate Spaces, so no load shares another's result.
+            let location = WorkspaceFileLocation(machine: machine, session: "default", workspaceID: "space-\(index)",
+                                                 workspaceLabel: "repo", root: sandbox.path("repo"))
+            Task {
+                await model.load(location)
+                loaded.fulfill()
+            }
+        }
+        XCTAssertTrue(spin(10) { started() == BlockingWork.limit && BlockingWork.slots.waiting == count - BlockingWork.limit },
+                      "Loads hold every slot and the rest wait: \(started()) started, \(BlockingWork.slots.waiting) waiting")
+
+        let pool = expectation(description: "An unrelated task ran on the cooperative threads")
+        Task.detached {
+            await Task.yield()
+            pool.fulfill()
+        }
+        let mainActor = expectation(description: "The main actor ran other work")
+        Task { mainActor.fulfill() }
+        wait(for: [pool, mainActor], timeout: 10)
+        XCTAssertEqual(started(), BlockingWork.limit, "No more than the limit ran at once")
+
+        try FileManager.default.createDirectory(atPath: sandbox.path("gate"), withIntermediateDirectories: true)
+        wait(for: [loaded], timeout: 60)
+        XCTAssertEqual(started(), count)
+        XCTAssertEqual(models.compactMap { $0.status?.branch }, Array(repeating: "main", count: count))
+    }
+
+    private func spin(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { return false }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
         return true
     }
