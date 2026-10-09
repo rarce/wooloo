@@ -242,6 +242,10 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
 
     /// How many selection changes ⌘U can go back through, and ⇧⌘U forward again.
     static let historyLimit = 100
+    /// How many ranges each of the two histories keeps across its steps, the selections before
+    /// and after each, so that a few ⇧⌘L over tens of thousands of matches do not keep millions
+    /// of them; the oldest steps go first, but the latest is always kept. Internal for tests.
+    var historyRangeLimit = 100_000
 
     private weak var controller: TextViewController?
     private var keyMonitor: Any?
@@ -290,6 +294,11 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     /// The event behind a selection change, which tells clicks and arrows from edits. Internal
     /// for tests, which have no real events.
     var currentEvent: () -> NSEvent? = { NSApp.currentEvent }
+    /// The key event the key monitor last let through to the editor, until the end of the turn
+    /// of the run loop that dispatches it. `NSApp.currentEvent` is still the last event handled
+    /// long after it, so a change made in code later counts as made by a key only while that key
+    /// is being handled.
+    private var dispatchingKey: NSEvent?
 
     func prepareCoordinator(controller: TextViewController) {
         if self.controller !== controller {
@@ -383,6 +392,10 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         }
         // A new key ends the turn of any edit before it.
         isEditing = false
+        dispatchingKey = event
+        DispatchQueue.main.async { [weak self] in
+            if self?.dispatchingKey === event { self?.dispatchingKey = nil }
+        }
         syncSelection()
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
@@ -711,7 +724,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         }
         history.removeLast()
         redoHistory.append((last.before.ranges, currentSelection, last.change))
-        if redoHistory.count > Self.historyLimit { redoHistory.removeFirst(redoHistory.count - Self.historyLimit) }
+        trim(&redoHistory) { $0.before.count + $0.after.ranges.count }
         steppedThroughHistory = true
         apply(last.before)
         return true
@@ -726,7 +739,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         }
         redoHistory.removeLast()
         history.append((currentSelection, next.after.ranges, next.change))
-        if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }
+        trimHistory()
         steppedThroughHistory = true
         apply(next.after)
         return true
@@ -748,11 +761,29 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
                 history.removeLast()
             } else {
                 history[history.count - 1].after = after
+                trimHistory()
             }
             return
         }
         history.append((currentSelection, after, change))
-        if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }
+        trimHistory()
+    }
+
+    private func trimHistory() {
+        trim(&history) { $0.before.ranges.count + $0.after.count }
+    }
+
+    /// Drops the oldest steps past `historyLimit`, then while the steps hold more than
+    /// `historyRangeLimit` ranges in all, keeping the latest step whatever its size.
+    private func trim<Step>(_ steps: inout [Step], ranges: (Step) -> Int) {
+        if steps.count > Self.historyLimit { steps.removeFirst(steps.count - Self.historyLimit) }
+        var total = steps.reduce(0) { $0 + ranges($1) }
+        var dropped = 0
+        while total > historyRangeLimit, dropped < steps.count - 1 {
+            total -= ranges(steps[dropped])
+            dropped += 1
+        }
+        steps.removeFirst(dropped)
     }
 
     /// The kind of change the current event makes, and whether it continues the last step: more
@@ -767,6 +798,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         guard let event = currentEvent() else { return (.other, false) }
         switch event.type {
         case .keyDown:
+            // Only while the key is being handled: a change made in code after it is a step of
+            // its own, not part of the key's run.
+            guard event === dispatchingKey else { return (.other, false) }
             return Self.isNavigationKey(event) ? (.keys, true) : (.other, false)
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
             if event.type == .leftMouseDown { mouseDown = event.timestamp }
