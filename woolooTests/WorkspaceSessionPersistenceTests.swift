@@ -49,6 +49,12 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
     }
 
     /// A new persistence actor represents a fresh process; the working file is untouched.
+    /// Disk access runs on the persistence's own queue rather than Swift's cooperative threads.
+    func testDiskWorkRunsOnItsOwnQueue() async {
+        let label = await disk.currentQueueLabel()
+        XCTAssertEqual(label, "dev.wooloo.session-persistence")
+    }
+
     func testRestartRestoresDirtyFilesDraftsOrderSelectionAndEditorPosition() async throws {
         let first = await store()
         await open("a.txt", in: first, preview: true)
@@ -437,4 +443,9 @@ private final class SessionTestWindowDelegate: NSObject, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool { closeChecks += 1; return true }
     func windowWillClose(_ notification: Notification) { closes += 1 }
+}
+
+private extension WorkspaceSessionPersistence {
+    /// The label of the queue the actor's code runs on.
+    func currentQueueLabel() -> String { String(cString: __dispatch_queue_get_label(nil)) }
 }

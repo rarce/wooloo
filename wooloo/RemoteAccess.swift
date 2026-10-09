@@ -145,6 +145,7 @@ enum RemoteAccessSystem {
     }
 
     /// Whether something accepts connections on this Mac's SSH port, which Remote Login opens.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     nonisolated static func acceptsSSH(port: UInt16 = 22) -> Bool {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return false }
@@ -163,6 +164,7 @@ enum RemoteAccessSystem {
     /// Whether Cloudflare's own nameservers already answer for a new quick tunnel hostname. Asking
     /// them directly caches nothing: a resolver asked too early caches the miss for a minute
     /// (the zone's negative TTL), and a phone scanning the QR code then cannot connect.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     nonisolated static func isPublished(_ hostname: String) -> Bool {
         guard let zone = hostname.split(separator: ".", maxSplits: 1).last.map(String.init),
               let servers = try? WorkspaceFiles.run("/usr/bin/dig", ["+short", "NS", zone], limit: 16_000),

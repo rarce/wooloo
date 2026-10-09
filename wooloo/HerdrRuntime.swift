@@ -65,8 +65,15 @@ enum HerdrRuntimeError: LocalizedError {
 
 /// One actor serializes installation and launch across all windows. Socket and process work
 /// never runs on the main actor. launchd owns the server after the app exits.
+///
+/// The actor runs on a serial queue of its own instead of Swift's cooperative threads, since
+/// its work blocks: copying the helper, `launchctl`, and socket requests to a server that may
+/// still be starting. Its blocking steps are synchronous methods, which the async `ensureServer`
+/// calls between its waits.
 actor HerdrRuntimeService {
     typealias Launcher = @Sendable (URL, String, [String: String], URL, URL) throws -> Void
+    private let queue = DispatchSerialQueue(label: "dev.wooloo.herdr-runtime", qos: .userInitiated)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
     let supportRoot: URL
     let configRoot: URL
     let bundledExecutable: URL
@@ -124,29 +131,17 @@ actor HerdrRuntimeService {
         try HerdrRuntimePaths.validateSession(session)
         let selectedFolder = try folder.map(Self.validateFolder)
         let path = HerdrRuntimePaths.socket(in: configRoot, session: session)
-        if let health = try? HerdrSocket.request(path: path, method: "ping") {
-            try Self.validateHealth(health)
-        } else {
+        if try !isHealthy(path) {
             guard mayStart else {
                 throw HerdrRuntimeError.message("The selected session is not running. Start it with Herdr, or choose the included Herdr to create a session.")
             }
-            // A reachable but unresponsive server may still own live terminals. Never replace it.
-            if let fd = try? HerdrSocket.open(path: path) {
-                close(fd)
-                throw HerdrRuntimeError.message("Herdr is reachable but is not responding. Retry when the server is ready.")
-            }
-            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
-                throw HerdrRuntimeError.message("The Herdr executable is missing. Run setup again to repair it.")
-            }
-            try createInitialConfig()
-            try launcher(executable, session, serverEnvironment(executable: executable), configRoot, supportRoot)
+            try launch(executable, session: session, path: path)
             let deadline = Date().addingTimeInterval(12)
             var nextLaunchCheck = Date().addingTimeInterval(1)
             var ready = false
             while Date() < deadline {
                 try Task.checkCancellation()
-                if let health = try? HerdrSocket.request(path: path, method: "ping") {
-                    try Self.validateHealth(health)
+                if try isHealthy(path) {
                     ready = true
                     break
                 }
@@ -162,10 +157,34 @@ actor HerdrRuntimeService {
                 throw HerdrRuntimeError.message("Herdr did not become ready. See \(supportRoot.appendingPathComponent("runtime/logs").path) for its startup log, then retry.")
             }
         }
+        try createFirstSpace(path: path, folder: selectedFolder)
+    }
+
+    /// Whether a compatible server answers on `path`. Throws for a server wooloo cannot use.
+    private func isHealthy(_ path: String) throws -> Bool {
+        guard let health = try? HerdrSocket.request(path: path, method: "ping") else { return false }
+        try Self.validateHealth(health)
+        return true
+    }
+
+    private func launch(_ executable: URL, session: String, path: String) throws {
+        // A reachable but unresponsive server may still own live terminals. Never replace it.
+        if let fd = try? HerdrSocket.open(path: path) {
+            close(fd)
+            throw HerdrRuntimeError.message("Herdr is reachable but is not responding. Retry when the server is ready.")
+        }
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+            throw HerdrRuntimeError.message("The Herdr executable is missing. Run setup again to repair it.")
+        }
+        try createInitialConfig()
+        try launcher(executable, session, serverEnvironment(executable: executable), configRoot, supportRoot)
+    }
+
+    private func createFirstSpace(path: String, folder: URL?) throws {
         let snapshot = try HerdrSocket.snapshot(path: path)
-        if snapshot.workspaces.isEmpty, let selectedFolder {
+        if snapshot.workspaces.isEmpty, let folder {
             _ = try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: nil,
-                                               cwd: selectedFolder.path, label: selectedFolder.lastPathComponent)
+                                               cwd: folder.path, label: folder.lastPathComponent)
             _ = try HerdrSocket.snapshot(path: path)
         }
     }

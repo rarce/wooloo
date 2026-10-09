@@ -324,12 +324,15 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         let finished = Locked(0)
         // Run on Swift's cooperative threads, as the app's loads do, but waited on from this test's
         // own thread: awaiting would need a cooperative thread too, so a regression would hang the
-        // test instead of failing it.
+        // test instead of failing it. The app no longer blocks the pool (`run` is unavailable from
+        // async code), so a synchronous closure does it here on purpose.
+        let runOnce: @Sendable () -> Data? = {
+            try? WorkspaceFiles.run("/bin/sh", ["-c", "sleep 0.3; echo out; echo err >&2"], limit: 1_000)
+        }
         for _ in 0..<count {
             runs.enter()
             Task.detached {
-                let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "sleep 0.3; echo out; echo err >&2"],
-                                                     limit: 1_000)
+                let output = runOnce()
                 if output == Data("out\n".utf8) { finished.withLock { $0 += 1 } }
                 runs.leave()
             }

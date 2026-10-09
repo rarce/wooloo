@@ -317,6 +317,23 @@ final class HostStatsTests: XCTestCase {
         try await stopAndSettle(monitor, sandbox)
     }
 
+    /// The loop's samples share one worker queue instead of starting a thread each.
+    @MainActor
+    func testMonitorSamplesOnOneWorkerQueue() async throws {
+        let labels = Locked<[String]>([])
+        let saved = HostProbe.localSample
+        HostProbe.localSample = { directory in
+            labels.withLock { $0.append(String(cString: __dispatch_queue_get_label(nil))) }
+            return saved(directory)
+        }
+        defer { HostProbe.localSample = saved }
+        let monitor = HostStatsMonitor(interval: .milliseconds(10))
+        monitor.start(.init(machine: nil, directory: NSTemporaryDirectory()))
+        try await waitUntil("three samples are taken") { labels.value.count >= 3 }
+        monitor.stop()
+        XCTAssertEqual(Set(labels.value), ["dev.wooloo.host-stats"])
+    }
+
     @MainActor
     func testMonitorSamplesThisMacWithoutAMachine() async throws {
         let monitor = HostStatsMonitor(interval: .milliseconds(20))

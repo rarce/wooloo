@@ -18,6 +18,13 @@ import Foundation
 /// start: the throwing variant throws `CancellationError`, and the other returns the value's
 /// cancelled form (a failed `Result` or `nil`). Work that has started is not interrupted; callers
 /// check `Task.isCancelled` once it returns.
+///
+/// The synchronous APIs that block, such as `WorkspaceFiles`, `SharedLoads.value` and
+/// `HerdrSocket`, are marked `@available(*, noasync)`, so calling one straight from async code is
+/// a compiler warning (an error in the Swift 6 language mode). Call them inside the closure passed
+/// here, which is synchronous. The check stops at any synchronous function or closure in between,
+/// such as a `Result { … }` inside a `Task`, so a helper that blocks should be marked as well;
+/// `BlockingWorkLoadTests` covers the models' real load paths.
 enum BlockingWork {
     /// One limit for every machine, since callers pass closures that do not say which machine they
     /// reach: below sshd's default `MaxSessions` of 10, leaving room for the few loads that still
@@ -27,20 +34,22 @@ enum BlockingWork {
 
     static let slots = BlockingWorkLimit(limit)
 
-    /// `priority` defaults to the calling task's priority.
-    static func run<Value: Sendable>(priority: TaskPriority? = nil, limited: Bool = true,
+    /// `priority` defaults to the calling task's priority. With a `worker`, the work runs on that
+    /// worker's thread instead of a new one.
+    static func run<Value: Sendable>(priority: TaskPriority? = nil, limited: Bool = true, on worker: BlockingWorker? = nil,
                                      _ work: @escaping @Sendable () throws -> Value) async throws -> Value {
         try await run(qualityOfService: qualityOfService(for: priority ?? Task.currentPriority),
-                      limited: limited, work)
+                      limited: limited, on: worker, work)
     }
 
     /// Returns `Value.cancelled` instead of running `work` when cancelled. A closure returning a
     /// plain value can opt in by wrapping it in `Optional`.
     static func run<Value: BlockingWorkCancellable & Sendable>(priority: TaskPriority? = nil, limited: Bool = true,
+                                                               on worker: BlockingWorker? = nil,
                                                                _ work: @escaping @Sendable () -> Value) async -> Value {
         do {
             return try await run(qualityOfService: qualityOfService(for: priority ?? Task.currentPriority),
-                                 limited: limited, work)
+                                 limited: limited, on: worker, work)
         } catch {
             return .cancelled
         }
@@ -49,7 +58,7 @@ enum BlockingWork {
     /// Runs `work` at an explicit quality of service, such as `.userInteractive`, which no task
     /// priority maps to.
     static func run<Value: Sendable>(qualityOfService: QualityOfService, limited: Bool = true,
-                                     name: String = "dev.wooloo.blocking-work",
+                                     name: String = "dev.wooloo.blocking-work", on worker: BlockingWorker? = nil,
                                      _ work: @escaping @Sendable () throws -> Value) async throws -> Value {
         try Task.checkCancellation()
         let limiter = limited ? slots : nil
@@ -62,11 +71,16 @@ enum BlockingWork {
             }
         }
         return try await withCheckedThrowingContinuation { continuation in
-            let thread = Thread {
+            let body: @Sendable () -> Void = {
                 let result = Result { try work() }
                 limiter?.release()
                 continuation.resume(with: result)
             }
+            if let worker {
+                worker.execute(qualityOfService: qualityOfService, body)
+                return
+            }
+            let thread = Thread(block: body)
             thread.name = name
             thread.qualityOfService = qualityOfService
             thread.start()
@@ -79,6 +93,34 @@ enum BlockingWork {
         case TaskPriority.medium.rawValue...: return .default
         case TaskPriority.low.rawValue...: return .utility
         default: return .background
+        }
+    }
+}
+
+/// A thread for blocking work that repeats, such as a poll, so each round does not start a thread
+/// of its own. Its calls run one at a time, in order, and still take a slot of `BlockingWork`.
+///
+/// It is a private serial queue: unlike the global queues, the system gives one a thread even when
+/// its limit on threads for queues is reached, and keeps reusing that thread while work comes in.
+final class BlockingWorker: Sendable {
+    private let queue: DispatchQueue
+
+    init(label: String) {
+        queue = DispatchQueue(label: label)
+    }
+
+    func execute(qualityOfService: QualityOfService, _ body: @escaping @Sendable () -> Void) {
+        queue.async(qos: DispatchQoS(qosClass: Self.qosClass(qualityOfService), relativePriority: 0),
+                    flags: .enforceQoS, execute: body)
+    }
+
+    static func qosClass(_ quality: QualityOfService) -> DispatchQoS.QoSClass {
+        switch quality {
+        case .userInteractive: return .userInteractive
+        case .userInitiated: return .userInitiated
+        case .utility: return .utility
+        case .background: return .background
+        default: return .default
         }
     }
 }

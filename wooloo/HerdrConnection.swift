@@ -249,6 +249,7 @@ enum HerdrSocketError: LocalizedError {
 }
 
 enum HerdrSocket {
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func open(path: String) throws -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw HerdrSocketError.message(String(cString: strerror(errno))) }
@@ -285,6 +286,7 @@ enum HerdrSocket {
         return fd
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func send(fd: Int32, method: String, params: [String: Any] = [:]) throws {
         let payload: [String: Any] = [
             "id": UUID().uuidString,
@@ -304,6 +306,7 @@ enum HerdrSocket {
         }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func request(path: String, method: String, params: [String: Any] = [:]) throws -> Data {
         let fd = try open(path: path)
         defer { close(fd) }
@@ -334,11 +337,13 @@ enum HerdrSocket {
         throw HerdrSocketError.message("Herdr response exceeded size limit")
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func snapshot(path: String) throws -> HerdrSnapshot {
         let data = try request(path: path, method: "session.snapshot")
         return try JSONDecoder().decode(SnapshotResponse.self, from: data).result.snapshot
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func paneText(path: String, paneID: String) throws -> String {
         let data = try request(path: path, method: "pane.read", params: [
             "pane_id": paneID,
@@ -348,6 +353,7 @@ enum HerdrSocket {
         return try JSONDecoder().decode(PaneReadResponse.self, from: data).result.read.text
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func sendInput(path: String, paneID: String, text: String? = nil, keys: [String] = []) throws {
         var params: [String: Any] = ["pane_id": paneID]
         if let text { params["text"] = text }
@@ -355,6 +361,7 @@ enum HerdrSocket {
         _ = try request(path: path, method: "pane.send_input", params: params)
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func createWorkspace(path: String, sourceWorkspaceID: String?,
                                 cwd: String? = nil, label: String? = nil) throws -> String {
         var params: [String: Any] = ["focus": true]
@@ -371,6 +378,7 @@ enum HerdrSocket {
         return id
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func createTab(path: String, workspaceID: String, cwd: String? = nil) throws -> String {
         var params: [String: Any] = ["workspace_id": workspaceID, "focus": true]
         if let cwd { params["cwd"] = cwd }
@@ -405,6 +413,7 @@ final class HerdrEventStream {
         lock.unlock()
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     func run(path: String, onSnapshot: (HerdrSnapshot) -> Void) throws {
         let beforeSubscription = try HerdrSocket.snapshot(path: path)
         let subscribedPaneIDs = Set(beforeSubscription.panes.map(\.paneID))
@@ -733,6 +742,8 @@ final class HerdrStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
+        // The fallback poll reads every second: one thread for all its reads, not one per read.
+        let paneTextWorker = BlockingWorker(label: "dev.wooloo.pane-text")
         paneTask = Task {
             while !Task.isCancelled {
                 if let snapshot, isConnected {
@@ -742,7 +753,7 @@ final class HerdrStore: ObservableObject {
                         continue
                     }
                     for paneID in paneIDs {
-                        let paneResult = await BlockingWork.run(priority: .utility) {
+                        let paneResult = await BlockingWork.run(priority: .utility, on: paneTextWorker) {
                             Result { try HerdrSocket.paneText(path: path, paneID: paneID) }
                         }
                         if generation == currentGeneration, case .success(let text) = paneResult,

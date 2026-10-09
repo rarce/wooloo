@@ -64,6 +64,7 @@ enum HerdrConfigFile {
 
     /// Saves a validated config and asks the running session to reload it. Returns what to
     /// tell the user; a session that cannot reload does not undo the save.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func saveAndReload(_ text: String, original: String, at url: URL,
                               socketPath: String, session: String) throws -> String {
         try save(text, original: original, at: url)
