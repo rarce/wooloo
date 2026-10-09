@@ -29,6 +29,7 @@ enum EditorCommand: String, CaseIterable {
     case findNext = "editor_find_next"
     case findPrevious = "editor_find_previous"
     case selectNextOccurrence = "editor_select_next"
+    case selectPreviousOccurrence = "editor_select_previous"
     case selectAllOccurrences = "editor_select_all_occurrences"
     case addCursorAbove = "editor_add_cursor_above"
     case addCursorBelow = "editor_add_cursor_below"
@@ -42,6 +43,7 @@ enum EditorCommand: String, CaseIterable {
         case .findNext: return "Find Next"
         case .findPrevious: return "Find Previous"
         case .selectNextOccurrence: return "Add Next Occurrence to Selection"
+        case .selectPreviousOccurrence: return "Add Previous Occurrence to Selection"
         case .selectAllOccurrences: return "Select All Occurrences"
         case .addCursorAbove: return "Add Cursor Above"
         case .addCursorBelow: return "Add Cursor Below"
@@ -57,6 +59,8 @@ enum EditorCommand: String, CaseIterable {
         case .findNext: return KeyboardShortcut("g", modifiers: .command)
         case .findPrevious: return KeyboardShortcut("g", modifiers: [.command, .shift])
         case .selectNextOccurrence: return KeyboardShortcut("d", modifiers: .command)
+        // The key reaches the editor only while macOS's Look Up shortcut, also ⌃⌘D, is off.
+        case .selectPreviousOccurrence: return KeyboardShortcut("d", modifiers: [.command, .control])
         case .selectAllOccurrences: return KeyboardShortcut("l", modifiers: [.command, .shift])
         case .addCursorAbove: return KeyboardShortcut(.upArrow, modifiers: [.command, .option])
         case .addCursorBelow: return KeyboardShortcut(.downArrow, modifiers: [.command, .option])

@@ -329,7 +329,8 @@ struct WorkspaceDocumentView: View {
         case .findAndReplace: openFind(replace: true)
         case .findNext: find.isVisible ? find.move(1) : openFind(replace: false)
         case .findPrevious: find.isVisible ? find.move(-1) : openFind(replace: false)
-        case .selectNextOccurrence, .selectAllOccurrences, .addCursorAbove, .addCursorBelow, .undoSelection:
+        case .selectNextOccurrence, .selectPreviousOccurrence, .selectAllOccurrences, .addCursorAbove,
+             .addCursorBelow, .undoSelection:
             multiCursorCoordinator.perform(command)
         }
     }
