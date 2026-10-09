@@ -47,11 +47,7 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
             let machine = HerdrMachineProfile(id: "bench", label: "Benchmark", target: target, session: "default", enabled: true)
             targets.append(("ssh", machine, "/tmp/wooloo-bench"))
         }
-        // Runs SSH batches one command after another, as before they ran at once, to compare.
-        let sequential = environment["WOOLOO_BENCH_SEQUENTIAL_SSH"] == "1"
-        WorkspaceFiles.concurrentRemoteBatches = !sequential
-        defer { WorkspaceFiles.concurrentRemoteBatches = true }
-        report(#"{"config":{"repeat":\#(repetitions),"ssh_target":"\#(environment["WOOLOO_BENCH_SSH_TARGET"] ?? "")","sequential_ssh":\#(sequential)}}"#)
+        report(#"{"config":{"repeat":\#(repetitions),"ssh_target":"\#(environment["WOOLOO_BENCH_SSH_TARGET"] ?? "")"}}"#)
         for target in targets {
             try prepareRepositories(machine: target.machine, base: target.base)
             for repository in Self.repositories {

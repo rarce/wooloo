@@ -10,7 +10,6 @@
 # WOOLOO_BENCH_SSH_TARGET also measures a remote over SSH (key authentication, git installed);
 # it defaults to the first enabled Herdr machine that answers. Set it to "none" to skip SSH.
 # WOOLOO_BENCH_REPEAT changes the repetitions (5).
-# WOOLOO_BENCH_SEQUENTIAL_SSH=1 runs the commands of each SSH batch one after another, to compare.
 set -euo pipefail
 
 root=${0:A:h:h}
@@ -40,7 +39,6 @@ echo "{\"machine\":\"$(sysctl -n hw.model)\",\"commit\":\"$(git -C $root rev-par
 export TEST_RUNNER_WOOLOO_BENCH_FILES=1 TEST_RUNNER_WOOLOO_BENCH_OUT=$results
 export TEST_RUNNER_WOOLOO_BENCH_SSH_TARGET=$target
 [[ -n ${WOOLOO_BENCH_REPEAT:-} ]] && export TEST_RUNNER_WOOLOO_BENCH_REPEAT=$WOOLOO_BENCH_REPEAT
-[[ -n ${WOOLOO_BENCH_SEQUENTIAL_SSH:-} ]] && export TEST_RUNNER_WOOLOO_BENCH_SEQUENTIAL_SSH=$WOOLOO_BENCH_SEQUENTIAL_SSH
 
 echo "Running workspace benchmarks (Release${target:+, SSH to $target}) — log: $log"
 if ! xcodebuild test -project $root/wooloo.xcodeproj -scheme wooloo -configuration Release \

@@ -633,12 +633,30 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertNil(try? stopped[0].get())
     }
 
-    /// The batch script's sections, from a run through the fake ssh, in the folder `name`.
-    private func batchSections(_ name: String, _ commands: [(words: [String], gate: Bool)], otherwise: [String]? = nil,
-                               concurrent: Bool) throws -> [String] {
-        let script = "cd " + WorkspaceFiles.quote(sandbox.path(name)) + " && sh -c "
-            + WorkspaceFiles.quote(WorkspaceFiles.remoteBatchScript(commands, otherwise: otherwise, concurrent: concurrent))
-        let output = try WorkspaceFiles.remoteOutput(machine, script: script, label: "batch", limit: 1_000_000)
+    /// The batch script from before its commands ran at once, one after another: the reference
+    /// `remoteBatchScript` must print the same sections as, except that a failing last command
+    /// failed the whole script.
+    private static func sequentialBatchScript(_ commands: [(words: [String], gate: Bool)], otherwise: [String]?) -> String {
+        var lines = [
+            #"d=$(mktemp -d) || exit 1"#,
+            #"trap 'rm -rf "$d"' EXIT"#,
+            #"trap 'exit 1' HUP INT TERM"#,
+            #"section() { "$@" >"$d/o" 2>"$d/e"; r=$?; "#
+                + #"printf 'wooloo-section %s %s %s\n' "$r" $(wc -c <"$d/o") $(wc -c <"$d/e"); "#
+                + #"cat "$d/o" "$d/e"; return $r; }"#,
+        ]
+        let quote = WorkspaceFiles.quote
+        let stop = otherwise.map { " || { section " + $0.map(quote).joined(separator: " ") + "; exit 0; }" } ?? " || exit 0"
+        for command in commands {
+            lines.append("section " + command.words.map(quote).joined(separator: " ") + (command.gate ? stop : ""))
+        }
+        return (lines + ["exit 0"]).joined(separator: "\n") + "\n"
+    }
+
+    /// The sections `script` prints when `shell` runs it through the fake ssh, in the folder `name`.
+    private func batchSections(_ name: String, _ script: String, shell: String = "sh") throws -> [String] {
+        let command = "cd " + WorkspaceFiles.quote(sandbox.path(name)) + " && " + shell + " -c " + WorkspaceFiles.quote(script)
+        let output = try WorkspaceFiles.remoteOutput(machine, script: command, label: "batch", limit: 1_000_000)
         return try WorkspaceFiles.parseBatchOutput(output).map {
             "\($0.status) " + String(decoding: $0.output, as: UTF8.self) + " | " + String(decoding: $0.errors, as: UTF8.self)
         }
@@ -646,7 +664,8 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
 
     /// Run at once, a batch prints the same sections in the same order as one after another:
     /// failures, a passed gate, a failed gate with and without its fallback, and a failing
-    /// last command, which no longer fails the whole batch.
+    /// last command, which no longer fails the whole batch. Checked with the system `sh` and
+    /// with dash, the `sh` of Debian and Ubuntu remotes.
     func testConcurrentBatchMatchesSequentialOne() throws {
         try sandbox.repository("repo", files: ["a.txt": "one\n", "b.txt": "two\n"])
         try sandbox.write(["repo/a.txt": "changed\n", "repo/new.txt": "new\n", "plain/c.txt": "c"], in: ".")
@@ -661,25 +680,58 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             (git + ["log", "--format=%s"], false),
             (git + ["cat-file", "-p", "HEAD:missing.txt"], false),
         ]
-        for name in ["repo", "plain"] {
-            for otherwise in [nil, ["ls"]] as [[String]?] {
-                let sequential = try batchSections(name, commands, otherwise: otherwise, concurrent: false)
-                XCTAssertEqual(try batchSections(name, commands, otherwise: otherwise, concurrent: true), sequential)
-                XCTAssertEqual(sequential.count, name == "repo" ? commands.count : 4 + (otherwise == nil ? 0 : 1))
+        let shells = ["sh"] + (FileManager.default.isExecutableFile(atPath: "/bin/dash") ? ["/bin/dash"] : [])
+        for shell in shells {
+            for name in ["repo", "plain"] {
+                for otherwise in [nil, ["ls"]] as [[String]?] {
+                    let sequential = try batchSections(name, Self.sequentialBatchScript(commands, otherwise: otherwise))
+                    let concurrent = try batchSections(name, WorkspaceFiles.remoteBatchScript(commands, otherwise: otherwise),
+                                                       shell: shell)
+                    XCTAssertEqual(concurrent, sequential, "\(shell) in \(name)")
+                    XCTAssertEqual(sequential.count, name == "repo" ? commands.count : 4 + (otherwise == nil ? 0 : 1))
+                }
             }
+            XCTAssertEqual(try batchSections("repo", WorkspaceFiles.remoteBatchScript([]), shell: shell), [])
+            XCTAssertEqual(try batchSections("repo", WorkspaceFiles.remoteBatchScript([(git + ["no-such-command"], false)]),
+                                             shell: shell).count, 1)
         }
-        XCTAssertEqual(try batchSections("repo", [], concurrent: true), [])
-        XCTAssertEqual(try batchSections("repo", [(git + ["no-such-command"], false)], concurrent: true).count, 1)
     }
 
-    /// The commands of a batch run at once: three that each take 0.4 s take less than 1.2 s together.
+    /// The commands of a batch run at once, on both sides of a gate: each waits until all three
+    /// have started, which one after another would never happen, and gives up after 10 s.
     func testRemoteBatchRunsItsCommandsAtOnce() throws {
         try sandbox.repository("repo")
-        let sleep = WorkspaceFiles.GitSection([], limit: 100, script: "sleep 0.4; echo done")
-        let start = Date()
-        let results = try WorkspaceFiles.gitBatch(remote("repo"), [sleep, .root, sleep, sleep])
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
-        XCTAssertEqual(results.compactMap { try? String(decoding: $0.get(), as: UTF8.self) }.count, 4)
+        let names = ["one", "two", "three"]
+        let meeting = WorkspaceFiles.quote(sandbox.path("meeting"))
+        try FileManager.default.createDirectory(atPath: sandbox.path("meeting"), withIntermediateDirectories: true)
+        let sections = names.map { name in
+            WorkspaceFiles.GitSection([], limit: 100, script: "cd \(meeting) && touch \(name) && n=0; "
+                + "while [ ! -e one ] || [ ! -e two ] || [ ! -e three ]; do "
+                + "n=$((n + 1)); [ $n -le 200 ] || exit 1; sleep 0.05; done; echo \(name)")
+        }
+        let results = try WorkspaceFiles.gitBatch(remote("repo"), [sections[0], .root, sections[1], sections[2]])
+        XCTAssertEqual(results.map { (try? String(decoding: $0.get(), as: UTF8.self)) ?? "failed" },
+                       ["one\n", sandbox.path("repo") + "\n", "two\n", "three\n"])
+    }
+
+    /// The script removes its temporary folder when the connection closes before it printed
+    /// everything, which it learns from SIGPIPE, or when it is stopped while its commands run.
+    func testBatchScriptCleansUpWhenCutShort() throws {
+        try sandbox.repository("repo")
+        let script = WorkspaceFiles.remoteBatchScript([
+            // More than a pipe holds, so writing it blocks until the reader goes away.
+            (["sh", "-c", "sleep 0.2; yes line | head -n 100000"], false),
+            (["git", "rev-parse", "--show-toplevel"], true),
+            (["sh", "-c", "sleep 0.3; echo late"], false),
+        ])
+        try FileManager.default.createDirectory(atPath: sandbox.path("tmp"), withIntermediateDirectories: true)
+        let shells = ["sh"] + (FileManager.default.isExecutableFile(atPath: "/bin/dash") ? ["/bin/dash"] : [])
+        for shell in shells {
+            let run = "TMPDIR=" + WorkspaceFiles.quote(sandbox.path("tmp")) + " " + shell + " -c " + WorkspaceFiles.quote(script)
+            try sandbox.sh("cd repo && " + run + " | head -c 10 > /dev/null; " + run + " > /dev/null & pid=$!; "
+                           + "sleep 0.1; kill $pid; status=0; wait $pid || status=$?; [ $status -ne 0 ]")
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("tmp")), [], shell)
+        }
     }
 
     /// Two `git status` and the rest of a refresh run at once in a repository whose index is
