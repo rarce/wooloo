@@ -34,6 +34,7 @@ enum EditorCommand: String, CaseIterable {
     case addCursorAbove = "editor_add_cursor_above"
     case addCursorBelow = "editor_add_cursor_below"
     case undoSelection = "editor_undo_selection"
+    case redoSelection = "editor_redo_selection"
 
     var title: String {
         switch self {
@@ -48,6 +49,7 @@ enum EditorCommand: String, CaseIterable {
         case .addCursorAbove: return "Add Cursor Above"
         case .addCursorBelow: return "Add Cursor Below"
         case .undoSelection: return "Undo Selection"
+        case .redoSelection: return "Redo Selection"
         }
     }
 
@@ -65,6 +67,7 @@ enum EditorCommand: String, CaseIterable {
         case .addCursorAbove: return KeyboardShortcut(.upArrow, modifiers: [.command, .option])
         case .addCursorBelow: return KeyboardShortcut(.downArrow, modifiers: [.command, .option])
         case .undoSelection: return KeyboardShortcut("u", modifiers: .command)
+        case .redoSelection: return KeyboardShortcut("u", modifiers: [.command, .shift])
         }
     }
 
