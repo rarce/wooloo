@@ -307,23 +307,37 @@ final class RemoteAccessModel: ObservableObject {
         isWaitingForDNS = false
         lastError = nil
         let lines = RemoteAccessLineBuffer()
+        // The exit is reported once the output is read to its end, so the last error line, such
+        // as a quick tunnel refused with 429, is handled before it.
+        let outputRead = DispatchGroup()
+        outputRead.enter()
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            if data.isEmpty { handle.readabilityHandler = nil; return }
+            if data.isEmpty { handle.readabilityHandler = nil; outputRead.leave(); return }
             let complete = lines.append(data)
             guard !complete.isEmpty else { return }
-            Task { @MainActor in
-                guard let self, self.generation == generation else { return }
-                complete.forEach(self.handle)
+            // The main queue, not a task: tasks may run out of order, and these lines must come
+            // before the exit below.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == generation else { return }
+                    complete.forEach(self.handle)
+                }
             }
         }
         process.terminationHandler = { [weak self] process in
             let status = process.terminationStatus
-            Task { @MainActor in
-                guard let self, self.generation == generation else { return }
-                self.process = nil
-                self.state = .failed(self.lastError ?? "cloudflared exited with status \(status).")
+            let report: @Sendable () -> Void = { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == generation, self.process === process else { return }
+                    self.process = nil
+                    self.state = .failed(self.lastError ?? "cloudflared exited with status \(status).")
+                }
             }
+            // After the last lines, which reach the main queue before the end of the output; a
+            // child that inherited the pipe can keep it open, so at most a second later.
+            outputRead.notify(queue: .main, execute: report)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: report)
         }
         do {
             try process.run()
