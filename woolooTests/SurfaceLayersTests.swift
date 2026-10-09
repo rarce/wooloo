@@ -342,6 +342,53 @@ final class HerdrPopupTests: XCTestCase {
         XCTAssertEqual(try titleRow("✌\u{1F3FB}✌"), ["✌\u{1F3FB}", "·", "✌", "─", "─", "─", "─", "─"])
     }
 
+    /// Expected widths come from `unicode-width` 0.2.2 per grapheme cluster, as ratatui-core 0.1.0
+    /// (bundled Herdr) draws popup titles.
+    func testPopupTitleClusterWidthsMatchHerdrsUnicodeWidth() {
+        let cases: [(String, Int, String)] = [
+            ("\u{1F1E6}", 1, "a lone regional indicator"),
+            ("\u{1F1E8}\u{1F1F1}", 2, "a flag"),
+            ("😀\u{FE0E}", 2, "U+FE0E after an emoji without a text variation"),
+            ("🈁\u{FE0E}", 2, "U+FE0E in the Enclosed Ideographic Supplement"),
+            ("⌚\u{FE0E}", 1, "U+FE0E after an emoji with a text variation"),
+            ("❤\u{FE0E}", 1, "U+FE0E after a text-default emoji"),
+            ("1\u{20E3}", 1, "a keycap without U+FE0F"),
+            ("1\u{FE0F}\u{20E3}", 2, "a keycap"),
+            ("🏳\u{200D}🌈", 3, "a ZWJ sequence without U+FE0F"),
+            ("🏳\u{FE0F}\u{200D}🌈", 2, "a ZWJ sequence"),
+            ("👨\u{200D}👩\u{200D}👧", 2, "a family"),
+            ("👍\u{1F3FD}", 2, "a skin tone"),
+            ("✌\u{1F3FB}", 2, "a skin tone on a text-default emoji"),
+            ("\u{FF76}\u{FF9E}", 1, "halfwidth kana with a sound mark (ratatui-core 0.1.2 gives 2)"),
+            ("ก\u{0E33}", 2, "Thai SARA AM after a consonant"),
+            ("\u{0E33}", 1, "a lone SARA AM"),
+            ("\u{0915}\u{093E}", 2, "a Devanagari spacing mark"),
+            ("\u{1161}", 0, "a lone Hangul vowel"),
+            ("\u{11A8}", 0, "a lone Hangul trailing consonant"),
+            ("\u{1100}\u{1161}\u{11A8}", 2, "a Hangul syllable of jamo"),
+            ("\u{17D8}", 3, "Khmer sign beyyal"),
+            ("\u{2018}\u{FE01}", 2, "a quote with U+FE01"),
+            ("\u{4DC0}", 2, "a hexagram"),
+            ("\u{00AD}", 0, "a soft hyphen"),
+            ("\u{0600}1", 2, "a prepended number sign"),
+            ("\t", 0, "a tab"), ("\r\n", 0, "CR LF"), ("e\u{301}", 1, "a combining mark"), ("漢", 2, "CJK"),
+        ]
+        for (text, width, label) in cases {
+            XCTAssertEqual(text.count, 1, label)
+            XCTAssertEqual(DisplayColumns.terminalWidth(of: Character(text)), width, label)
+        }
+        // The editor keeps its own widths for clusters it draws as one glyph.
+        XCTAssertEqual(DisplayColumns.width(of: "\u{1F1E6}", at: 0, tabWidth: 4), 2)
+        XCTAssertEqual(DisplayColumns.width(of: "1\u{20E3}", at: 0, tabWidth: 4), 2)
+        XCTAssertEqual(DisplayColumns.width(of: "🏳\u{200D}🌈", at: 0, tabWidth: 4), 2)
+    }
+
+    func testPopupTitleGivesClustersHerdrsCells() throws {
+        XCTAssertEqual(try titleRow("\u{1F1E6}1\u{20E3}a"), ["\u{1F1E6}", "1\u{20E3}", "a", "─", "─", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("🏳\u{200D}🌈😀\u{FE0E}"), ["🏳\u{200D}🌈", "·", "·", "😀\u{FE0E}", "·", "─", "─", "─"])
+        XCTAssertEqual(try titleRow("ก\u{0E33}\u{1161}x"), ["ก\u{0E33}", "·", "x", "─", "─", "─", "─", "─"])
+    }
+
     func testCompositionMovesCursorAndRestrictsSelectionToPopupContent() throws {
         var decoder = HerdrSurfaceDecoder()
         let raw = try XCTUnwrap(decoder.apply(frame: frame(popup())))
