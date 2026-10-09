@@ -51,10 +51,12 @@ By contributing, you agree that your contributions are licensed under the MIT Li
 
 Maintainers release by tag; `.github/workflows/release.yml` does the rest.
 
-1. Raise `MARKETING_VERSION` in `wooloo.xcodeproj/project.pbxproj` (both configurations of the app target) and merge it. The build number follows it, and Sparkle compares versions by it.
+1. Raise `MARKETING_VERSION` in `wooloo.xcodeproj/project.pbxproj` (both configurations of the app target) and merge it. The build number follows it, and Sparkle compares versions by it, so versions are plain `X.Y.Z`: no prerelease suffixes, and a broken release is replaced by the next patch version, never rebuilt under the same one.
 2. Optionally write the notes in `docs/releases/vX.Y.Z.md`; otherwise GitHub generates them from the merged pull requests. They appear in the release and in the update dialog.
-3. Push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. A tag with a suffix (`v0.3.0-beta.1`) becomes a prerelease, which installed copies do not see.
+3. Once CI has passed on that commit of `main`, push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow refuses a commit that is not on `main` or has not passed CI.
 
-The workflow builds the universal app, publishes `wooloo-X.Y.Z.zip` and `appcast.xml`, and installed copies find the update through `https://github.com/rarce/wooloo/releases/latest/download/appcast.xml`. Every non-prerelease must therefore carry `appcast.xml`; do not publish releases by hand.
+The workflow builds the universal app, publishes `wooloo-X.Y.Z.zip` and `appcast.xml`, and installed copies find the update through `https://github.com/rarce/wooloo/releases/latest/download/appcast.xml`. Every release must therefore carry `appcast.xml`; do not publish releases by hand. A fix to an older line (0.2.1 after 0.3.0) is published without becoming the latest release, so it does not replace the feed.
+
+Only Release builds check for updates (`WOOLOO_UPDATES` compilation condition): Debug builds and tests never do, and `WOOLOO_DISABLE_UPDATES=1` turns the updater off in a Release build, as `scripts/terminal-e2e.sh` does.
 
 The archive and the feed are signed with an EdDSA key whose public half is `SUPublicEDKey` in `wooloo/Info.plist`. The private key is the `SPARKLE_PRIVATE_KEY` repository secret, with a copy in the maintainer's Keychain (account `wooloo`, Sparkle's `generate_keys`). Losing it means installed copies can no longer be updated; `scripts/release-appcast.sh` signs a local build with the Keychain copy to try a release without CI.

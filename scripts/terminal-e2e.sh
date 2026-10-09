@@ -93,7 +93,7 @@ workspace=${created% *}
 pane=${created#* }
 echo "Session $session, pane $pane"
 
-WOOLOO_METRICS_FILE=$metrics WOOLOO_SURFACE_TRACE=$trace WOOLOO_TYPING_PROBE=1 \
+WOOLOO_METRICS_FILE=$metrics WOOLOO_SURFACE_TRACE=$trace WOOLOO_TYPING_PROBE=1 WOOLOO_DISABLE_UPDATES=1 \
     WOOLOO_WINDOW_SIZE=${WOOLOO_E2E_WINDOW:-1600x1000} $app -HerdrLastSession $session -ApplePersistenceIgnoreState YES \
     > $run/app.log 2>&1 &
 app_pid=$!

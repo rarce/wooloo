@@ -1,42 +1,73 @@
 name: Release
 
-# Pushing a tag vX.Y.Z, matching MARKETING_VERSION, builds wooloo and publishes the GitHub release
-# with the archive and the signed Sparkle feed. Installed copies read the feed from the latest
-# release (SUFeedURL in wooloo/Info.plist), so every non-prerelease must carry appcast.xml.
+# Pushing a tag vX.Y.Z, matching MARKETING_VERSION, on a commit of main whose CI passed builds
+# wooloo and publishes the GitHub release with the archive and the signed Sparkle feed. Installed
+# copies read the feed from the latest release (SUFeedURL in wooloo/Info.plist), so every release
+# must carry appcast.xml.
+#
+# The build job runs Swift packages and build scripts with a read-only token and no signing key;
+# only the publish job, which builds nothing, can write releases and read SPARKLE_PRIVATE_KEY.
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish
+  build:
+    name: Build
     runs-on: macos-26
     timeout-minutes: 45
+    permissions:
+      contents: read
+      checks: read
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
-      - name: Select Xcode 26
-        run: |
-          xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)
-          sudo xcode-select -s "$xcode"
-          xcodebuild -version
-
+      # Sparkle compares CFBundleVersion, which follows MARKETING_VERSION and must stay numeric.
       - name: Check the version
         run: |
           version=${GITHUB_REF_NAME#v}
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Release tags look like v1.2.3, not $GITHUB_REF_NAME"
+            exit 1
+          fi
           marketing=$(sed -n 's/.*MARKETING_VERSION = \(.*\);/\1/p' wooloo.xcodeproj/project.pbxproj | sort -u)
           if [ "$marketing" != "$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match MARKETING_VERSION ($marketing)"
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # Installed copies update to this build within a day, so it must be what main tested.
+      - name: Check the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
+          if [ "$status" != ahead ] && [ "$status" != identical ]; then
+            echo "::error::$GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=Build%20and%20test" \
+            --jq '[.check_runs[] | select(.conclusion == "success")] | length')
+          if [ "$passed" = 0 ]; then
+            echo "::error::CI has not passed on $GITHUB_SHA; wait for it, then push the tag again"
+            exit 1
+          fi
+
+      - name: Select Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
 
       - name: Cache Swift packages
         uses: actions/cache@v5
@@ -77,10 +108,43 @@ jobs:
           mkdir -p build/release
           ditto -c -k --sequesterRsrc --keepParent "$app" "build/release/wooloo-$VERSION.zip"
 
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wooloo-archive
+          path: build/release/wooloo-${{ env.VERSION }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Sign and publish
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set the version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: wooloo-archive
+          path: build/release
+
+      - name: Cache Sparkle's tools
+        uses: actions/cache@v5
+        with:
+          path: build/sparkle
+          key: sparkle-${{ hashFiles('scripts/release-appcast.sh') }}
+
       # docs/releases/vX.Y.Z.md when written by hand, otherwise GitHub's notes since the last release.
       - name: Release notes
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
             cp "docs/releases/$GITHUB_REF_NAME.md" build/release/notes.md
@@ -101,8 +165,6 @@ jobs:
             "$GITHUB_REF_NAME" build/release
 
       - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           archive="wooloo-$VERSION.zip"
           hash=$(shasum -a 256 "build/release/$archive" | awk '{print $1}')
@@ -118,7 +180,13 @@ jobs:
             printf 'Requires macOS 14 or later. Universal build (Apple silicon and Intel). Herdr %s is included.\n\n' "$herdr"
             printf 'SHA-256 (`shasum -a 256 %s`):\n\n```\n%s\n```\n' "$archive" "$hash"
           } > build/release/body.md
-          # A prerelease is never "latest", so installed copies do not see it.
-          case "$VERSION" in *-*) prerelease=--prerelease ;; *) prerelease= ;; esac
+          # The feed is read from the latest release: a fix to an older line must not replace it.
+          latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          latest=${latest#v}
+          if [ -z "$latest" ] || [ "$(printf '%s\n%s\n' "$latest" "$VERSION" | sort -V | tail -n 1)" = "$VERSION" ]; then
+            make_latest=true
+          else
+            make_latest=false
+          fi
           gh release create "$GITHUB_REF_NAME" "build/release/$archive" build/release/appcast.xml \
-            --verify-tag --title "wooloo $VERSION" --notes-file build/release/body.md $prerelease
+            --verify-tag --title "wooloo $VERSION" --notes-file build/release/body.md --latest="$make_latest"

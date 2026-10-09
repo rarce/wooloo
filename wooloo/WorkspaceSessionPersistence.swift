@@ -317,10 +317,8 @@ final class WoolooAppDelegate: NSObject, NSApplicationDelegate {
     private var isFlushing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard !WoolooApp.isHostingTests else { return }
-        // Starts Sparkle's scheduled checks.
-        _ = AppUpdater.shared
-        if RemoteAccessModel.shared.startsAtLaunch { RemoteAccessModel.shared.start() }
+        AppUpdater.shared.start()
+        if !WoolooApp.isHostingTests, RemoteAccessModel.shared.startsAtLaunch { RemoteAccessModel.shared.start() }
     }
 
     /// The tunnel belongs to wooloo; cloudflared would otherwise keep publishing SSH after quitting.
