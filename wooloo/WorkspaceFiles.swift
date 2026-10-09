@@ -1588,19 +1588,47 @@ enum WorkspaceFiles {
     /// files, then prints a header line, `wooloo-section <status> <output bytes> <error bytes>`,
     /// followed by both. The lengths delimit them, so no output can be mistaken for a header.
     /// After a failed gate, the script runs `otherwise` when given, then stops.
+    ///
+    /// The commands run at once, as background jobs, and the sections are printed in order once
+    /// all have finished, so a batch costs its slowest command rather than their sum. A gate runs
+    /// once the commands before it have started, and the commands after it only once it passed.
+    /// This is safe because a batch only reads: its git commands run with `GIT_OPTIONAL_LOCKS=0`,
+    /// so `git status` never takes `index.lock` to refresh the index. The script exits 0 once it
+    /// printed every section, whatever their statuses, so each command fails on its own.
     static func remoteBatchScript(_ commands: [(words: [String], gate: Bool)], otherwise: [String]? = nil) -> String {
+        // `start` runs a command in the background and `run` in the foreground, each into files
+        // numbered by its section; `emit` prints sections. A signal stops the jobs still running,
+        // and the exit then removes the folder. SIGPIPE is among them: without a terminal, sshd
+        // sends no SIGHUP when the client goes away, so the script only learns it when `emit`
+        // writes, and dash or BusyBox would otherwise die there without running the EXIT trap.
+        // The folder is named from a template, which every `mktemp` takes and macOS needs to
+        // honor TMPDIR, and the name shows what left it behind.
         var lines = [
-            #"d=$(mktemp -d) || exit 1"#,
+            #"d=$(mktemp -d "${TMPDIR:-/tmp}/wooloo-batch.XXXXXX") || exit 1"#,
+            #"p="#,
             #"trap 'rm -rf "$d"' EXIT"#,
-            #"trap 'exit 1' HUP INT TERM"#,
-            #"section() { "$@" >"$d/o" 2>"$d/e"; r=$?; "#
-                + #"printf 'wooloo-section %s %s %s\n' "$r" $(wc -c <"$d/o") $(wc -c <"$d/e"); "#
-                + #"cat "$d/o" "$d/e"; return $r; }"#,
+            #"trap 'kill $p 2>/dev/null; exit 1' HUP INT PIPE TERM"#,
+            #"export GIT_OPTIONAL_LOCKS=0"#,
+            #"run() { i=$1; shift; "$@" >"$d/o$i" 2>"$d/e$i"; r=$?; echo "$r" >"$d/r$i"; return $r; }"#,
+            #"start() { run "$@" & p="$p $!"; }"#,
+            #"emit() { for i do r=$(cat "$d/r$i" 2>/dev/null); "#
+                + #"printf 'wooloo-section %s %s %s\n' "${r:-1}" $(wc -c <"$d/o$i") $(wc -c <"$d/e$i"); "#
+                + #"cat "$d/o$i" "$d/e$i"; done; }"#,
         ]
-        let stop = otherwise.map { " || { section " + $0.map(quote).joined(separator: " ") + "; exit 0; }" } ?? " || exit 0"
-        for command in commands {
-            lines.append("section " + command.words.map(quote).joined(separator: " ") + (command.gate ? stop : ""))
+        func words(_ words: [String]) -> String { words.map(quote).joined(separator: " ") }
+        for (index, command) in commands.enumerated() {
+            guard command.gate else {
+                lines.append("start \(index) " + words(command.words))
+                continue
+            }
+            let printed = Array(0...index) + (otherwise == nil ? [] : [index + 1])
+            lines.append("run \(index) " + words(command.words) + " || { "
+                + (otherwise.map { "run \(index + 1) " + words($0) + "; " } ?? "")
+                + "wait; emit " + printed.map(String.init).joined(separator: " ") + "; exit 0; }")
         }
+        lines.append("wait")
+        if !commands.isEmpty { lines.append("emit " + commands.indices.map(String.init).joined(separator: " ")) }
+        lines.append("exit 0")
         return lines.joined(separator: "\n") + "\n"
     }
 

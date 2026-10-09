@@ -333,6 +333,22 @@ Measured on 2026-10-02 under machine load 10–14, against the OrbStack VM, comp
 
 Each load alone now runs the whole script, so it costs about what a refresh does. In the app the Git bar never loads alone, since it follows the listing; the repository panel does when it is expanded.
 
+## Commands of the refresh script at once
+
+The commands of an SSH batch (`WorkspaceFiles.remoteBatchScript`) now run as background jobs of the remote shell, each into its own temporary files, and the script prints their sections in the original order once all have finished, so a batch costs about its slowest command instead of their sum. A gate (the root check) runs once the commands before it have started, and the commands after it only once it passed; when it fails, the fallback listing runs while the branch status finishes. The output format is unchanged, and the script now always exits 0, so a failing last command no longer fails the whole batch. The script is plain POSIX `sh` and was checked with `dash`, BusyBox `ash`, `mksh` and `bash` on the VM. Its signal trap also covers SIGPIPE: without a terminal, sshd sends no SIGHUP when the client goes away, so a script whose client timed out learns it only when it prints, and `dash` and BusyBox died there without running the EXIT trap, leaving the temporary folder behind.
+
+This is safe because a batch only reads. Its git commands run with `GIT_OPTIONAL_LOCKS=0`, so neither `git status` tries to take `index.lock` to write back a refreshed index; without that variable `git status` also gives up the write quietly when the lock is taken. 100 rounds of all the refresh's commands at once, after touching every file so the index was out of date, printed no error and the same status every time, with and without the variable, on this Mac and on the VM. `WorkspaceFilesRemoteTests` keeps the old script as a reference and checks that both print the same sections, with the system `sh` and `dash`, including failures and a failed root check with and without its fallback, and that concurrent refreshes of a repository with a stale index never fail.
+
+Before the old script was removed, a benchmark switch ran the batches one command after another, to compare. Measured on 2026-10-09 against the OrbStack VM, alternating the two modes twice under machine load 20–35, p50 of 10 repetitions. A single SSH command (`open-file`) took 105–120 ms in these runs, so most of each refresh is the round trip:
+
+| operation | SSH small, one by one → at once | SSH large, one by one → at once |
+|---|---|---|
+| refresh | 151–153 → 143–146 ms | 205–214 → 192–193 ms |
+| file-list alone | 144–146 → 142–147 ms | 208–212 → 191–195 ms |
+| repository alone | 145 → 141–145 ms | 207–212 → 194–195 ms |
+
+The script alone, run with `sh` in the large repository without SSH, took 59 → 49 ms at p50 on the VM and 332 → 215 ms on this Mac under load 25–40. A remote with more cores or a slower disk gains more; a single-core remote gains little, since the work is the same.
+
 ## Syntax colors for diffs
 
 `ParsedDiff` with both sides parsed each whole file with tree-sitter, ran the highlight query over it, and placed every capture on its lines. Sampled on the benchmark's diff, each side spent about 40 % parsing, 35 % in the query (half of it in SwiftTreeSitter building capture names, which the app can't avoid through its API) and 25 % finding each capture's first line with a linear search over the line starts.
