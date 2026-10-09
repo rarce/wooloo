@@ -616,9 +616,23 @@ enum WorkspaceFiles {
         (try? URL(fileURLWithPath: path, isDirectory: true).resourceValues(forKeys: [.isPackageKey]).isPackage) == true
     }
 
+    /// The output of `folderWalkScript` with links: the walk's records, and the link metadata
+    /// after its `wooloo-symbolic-links` record, which is left as printed since a link or its
+    /// target can be named like the walk's markers.
+    static func folderWalkSections(_ data: Data) -> (records: [String], linkMetadata: Data) {
+        let marker = Data("wooloo-symbolic-links".utf8)
+        let fields = data.split(separator: 0, omittingEmptySubsequences: false)
+        guard let separator = fields.first(where: { $0.elementsEqual(marker) }) else {
+            return (folderWalkRecords(data), Data())
+        }
+        let metadataStart = min(separator.endIndex + 1, data.endIndex)
+        return (folderWalkRecords(data[data.startIndex..<separator.startIndex]), Data(data[metadataStart...]))
+    }
+
     /// The records of `folderWalkScript`'s output, in order. A walk stopped by its time limit can
     /// leave the last record before its `wooloo-partial` cut short; that marker is always printed
-    /// after a NUL, so a record directly before it was cut and is dropped.
+    /// after a NUL, so a record directly before it, with no empty record between, was cut and is
+    /// dropped. Names from `find` start with "./", so none is taken for a marker.
     static func folderWalkRecords(_ data: Data) -> [String] {
         var records: [String] = []
         var previousIsRecord = false
@@ -635,22 +649,24 @@ enum WorkspaceFiles {
         return records
     }
 
-    /// A walk from the records `folderWalkScript` prints: files, skipped folders ending in "/", and
-    /// `wooloo-partial` when folders were left unread.
+    /// A walk from the records `folderWalkScript` prints: files, skipped folders between
+    /// `wooloo-skipped` and `wooloo-files`, and `wooloo-partial` when folders were left unread.
     private static func folderWalk(records: some Sequence<String>) -> WorkspaceFolderWalk {
         var walk = WorkspaceFolderWalk()
+        var skipped = false
         for record in records {
-            guard record != "wooloo-partial" else {
+            switch record {
+            case "wooloo-partial":
                 walk.partial = true
-                continue
-            }
-            var path = record.hasPrefix("./") ? String(record.dropFirst(2)) : record
-            guard !path.isEmpty else { continue }
-            if path.hasSuffix("/") {
-                path.removeLast()
-                walk.skippedFolders.append(path)
-            } else {
-                walk.files.append(path)
+                skipped = false
+            case "wooloo-skipped":
+                skipped = true
+            case "wooloo-files":
+                skipped = false
+            default:
+                let path = record.hasPrefix("./") ? String(record.dropFirst(2)) : record
+                guard !path.isEmpty else { continue }
+                if skipped { walk.skippedFolders.append(path) } else { walk.files.append(path) }
             }
         }
         return walk
@@ -700,30 +716,34 @@ enum WorkspaceFiles {
         let skipped = readingSkipped ? [] : folderWalkSkippedFolders
         let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
         let entries = #"find "$@" -mindepth 1 -maxdepth 1 ! -name .git"#
-        // `r` runs one find of a batch. After the root, the watchdog can stop it: it is started in
-        // the background and its process ID left in "$t/pid" for the watchdog, which marks the
-        // time as up ("$t/late") before reading that file, while `r` writes it before checking
-        // the mark, so one of them always stops it. The batch then ends with status 255.
-        var batch = #"r() { if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
+        // `run_find` runs one find of a batch. After the root, the watchdog can stop it: it is
+        // started in the background and its process ID left in "$t/pid" for the watchdog, which
+        // marks the time as up ("$t/late") before reading that file, while `run_find` writes it
+        // before checking the mark, so one of them always stops it. The batch then ends with
+        // status 255. (Not `r`, which some shells, such as mksh, define as an alias.) No find runs
+        // a command with -exec: a command it started would outlive it and print after the walk.
+        var batch = #"run_find() { if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
             + #"[ -e "$t/late" ] && kill "$p" 2>/dev/null; wait "$p"; : > "$t/pid"; [ ! -e "$t/late" ] || exit 255; }; "#
             + #"if [ "$d" -gt 1 ] && [ -e "$t/late" ]; then exit 255; fi; "#
-            + "r " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
-            + "r " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
-        if links { batch += "r " + entries + #" -type l -print0 2>/dev/null >> "$t/links"; "# }
+            + "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
+            + "run_find " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
+        if links { batch += "run_find " + entries + #" -type l -print0 2>/dev/null >> "$t/links"; "# }
         if !skipped.isEmpty {
-            batch += "r " + entries + #" -type d \( "# + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
-                + #" \) -exec printf '%s/\0' {} + 2>/dev/null; "#
+            batch += #"printf 'wooloo-skipped\0'; run_find "# + entries + #" -type d \( "#
+                + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
+                + #" \) -print0 2>/dev/null; printf 'wooloo-files\0'; "#
         }
         batch += "exit 0"
         let check = entries + unskipped + " -print 2>/dev/null | head -n 1; exit 0"
         // `sleep` takes whole seconds in POSIX, so the budget is rounded up. The watchdog stops its
-        // `sleep` when it is stopped itself at the end, so nothing is left running.
+        // `sleep` when it is stopped itself at the end, and is waited for before "$t" is removed,
+        // so nothing is left running or writing there.
         let seconds = Int(folderWalkBudget.rounded(.up))
         let watchdog = seconds <= 0
             ? #": > "$t/late"; "#
             : #"( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "# + String(seconds) + #" & s=$!; wait "$s"; "#
                 + #": > "$t/late"; read p < "$t/pid" && kill "$p" ) > /dev/null 2>&1 & w=$!; "#
-        var script = #"cd "$1" || exit 1; t=$(mktemp -d) || exit 1; w=; trap '[ -n "$w" ] && kill "$w" 2>/dev/null; rm -rf "$t"' EXIT; "#
+        var script = #"cd "$1" || exit 1; t=$(mktemp -d) || exit 1; w=; trap '[ -n "$w" ] && kill "$w" 2>/dev/null && wait "$w"; rm -rf "$t"' EXIT; "#
             + "b=" + quote(batch) + "; c=" + quote(check) + "; d=1; export t d; "
             + #": > "$t/pid"; "# + watchdog
             + #"printf '.\0' > "$t/level"; : > "$t/links"; while [ -s "$t/level" ]; do "#
@@ -1121,12 +1141,10 @@ enum WorkspaceFiles {
         let listing = Result { () throws -> WorkspaceFileListing in
             if rootError != nil {
                 let data = try (batch.otherwise ?? .failure(WorkspaceFileError.message("Remote command output is incomplete"))).get()
-                let records = folderWalkRecords(data)
-                let separator = records.firstIndex(of: "wooloo-symbolic-links") ?? records.count
-                var walk = finished(folderWalk(records: records.prefix(separator)), readingSkipped: false)
-                let metadata = Data((records.dropFirst(separator + 1).joined(separator: "\0") + "\0").utf8)
+                let sections = folderWalkSections(data)
+                var walk = finished(folderWalk(records: sections.records), readingSkipped: false)
                 let listed = Set(walk.files)
-                walk.symbolicLinks = parseSymbolicLinks(metadata).filter { listed.contains($0.key) }
+                walk.symbolicLinks = parseSymbolicLinks(sections.linkMetadata).filter { listed.contains($0.key) }
                 return nonGitListing(walk)
             }
             return try makeListing(listingResults) { WorkspaceFolderWalk() }
