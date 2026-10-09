@@ -737,6 +737,31 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(0)])
     }
 
+    func testOptionDragOverWrappedLinesPastTheEndSkipsEmptyLinesAndKeepsTheLastRow() throws {
+        let long = Array(repeating: "word", count: 30).joined(separator: " ")
+        let text = long + "\n\n" + "abcdefgh"
+        let (coordinator, textView) = try makeEditor(text: text, wrapLines: true, width: 320)
+        let rows = displayRows(textView)
+        textView.selectionManager.setSelectedRange(range(0))
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDown, at: 2, in: textView, timestamp: 1)))
+        // Below the last line, past its end: the block runs to the last row and its end.
+        let last = try XCTUnwrap(textView.layoutManager.rectForOffset(text.utf16.count - 1))
+        let below = textView.convert(NSPoint(x: last.maxX + 200, y: last.maxY + 400), to: nil)
+        let drag = NSEvent.mouseEvent(with: .leftMouseDragged, location: below, modifierFlags: .option,
+                                      timestamp: 2, windowNumber: window?.windowNumber ?? 0, context: nil,
+                                      eventNumber: 0, clickCount: 1, pressure: 1)!
+        XCTAssertTrue(coordinator.handleMouse(drag))
+        XCTAssertTrue(coordinator.handleMouse(NSEvent.mouseEvent(
+            with: .leftMouseUp, location: below, modifierFlags: .option, timestamp: 3,
+            windowNumber: window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!))
+        let selected = selectedRanges(textView)
+        let lastRow = try XCTUnwrap(rows.last)
+        XCTAssertEqual(lastRow, range(long.utf16.count + 2, 8))
+        XCTAssertEqual(selected.last, range(lastRow.location + 2, 6), "the last row from column 2 to its end")
+        XCTAssertFalse(selected.contains { $0.location == long.utf16.count + 1 }, "the empty line is too short")
+        XCTAssertEqual(selected.count, rows.count - 1, "every row but the empty line")
+    }
+
     func testOptionDragWithoutWrappingFollowsWholeLines() throws {
         let long = Array(repeating: "word", count: 30).joined(separator: " ")
         let (coordinator, textView) = try makeEditor(text: long + "\nabcdefgh\n", width: 320)
@@ -747,6 +772,46 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDragged, at: head, in: textView, timestamp: 2)))
         XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseUp, at: head, in: textView, timestamp: 3)))
         XCTAssertEqual(selectedRanges(textView), [range(2, 3), range(long.utf16.count + 3, 3)])
+    }
+
+    func testAReplacedEditorStartsAFreshHistoryAndKeepsTheCoordinator() throws {
+        // As when a document is reloaded or its Markdown mode changes: the view keeps its
+        // coordinator while SwiftUI replaces the editor.
+        let model = SwappedEditorModel()
+        let coordinator = EditorMultiCursorCoordinator()
+        coordinator.currentEvent = { nil }
+        let spy = ControllerSpy()
+        let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
+        let host = NSHostingView(rootView: SwappedEditor(model: model, theme: theme.editorTheme,
+                                                         coordinators: [spy, coordinator])
+            .frame(width: 500, height: 300))
+        host.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
+        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        self.window = window
+        host.layoutSubtreeIfNeeded()
+        try waitUntil { spy.controller?.textView.visibleTextRange != nil }
+        let first = try XCTUnwrap(spy.controller?.textView)
+        window.makeFirstResponder(first)
+        first.selectionManager.setSelectedRange(range(0))
+        first.selectionManager.setSelectedRange(range(4))
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(first), [range(0)])
+
+        for split in [true, false] {
+            let old = spy.controller
+            model.split = split
+            try waitUntil { spy.controller != nil && spy.controller !== old }
+            let textView = try XCTUnwrap(spy.controller?.textView)
+            try waitUntil { textView.window != nil }
+            window.makeFirstResponder(textView)
+            textView.selectionManager.setSelectedRange(range(4))
+            XCTAssertFalse(coordinator.perform(.redoSelection), "nothing to redo in the new editor")
+            XCTAssertFalse(coordinator.perform(.undoSelection), "nor to undo")
+            XCTAssertTrue(coordinator.perform(.selectNextOccurrence), "the coordinator still runs the new editor")
+            XCTAssertEqual(selectedRanges(textView), [range(4, 3)])
+        }
     }
 
     /// The rows the editor shows, wrapped or not, without their line breaks, laying every line out.
@@ -768,6 +833,32 @@ final class EditorMultiCursorTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private final class SwappedEditorModel: ObservableObject {
+        @Published var split = false
+    }
+
+    /// An editor shown alone or beside another view, which SwiftUI builds anew on each change.
+    private struct SwappedEditor: View {
+        @ObservedObject var model: SwappedEditorModel
+        let theme: EditorTheme
+        let coordinators: [TextViewCoordinator]
+
+        var body: some View {
+            if model.split {
+                HSplitView { editor; Text("Preview") }
+            } else {
+                editor
+            }
+        }
+
+        private var editor: some View {
+            CodeEditSourceEditor(.constant("let foo = 1\nfoo\n"), language: .default, theme: theme,
+                                 font: .monospacedSystemFont(ofSize: 13, weight: .regular), tabWidth: 4,
+                                 lineHeight: 1.15, wrapLines: false, cursorPositions: .constant([]),
+                                 highlightProviders: [], coordinators: coordinators)
+        }
+    }
 
     private func selectedRanges(_ textView: TextView) -> [NSRange] {
         textView.selectionManager.textSelections.map(\.range).sorted { $0.location < $1.location }

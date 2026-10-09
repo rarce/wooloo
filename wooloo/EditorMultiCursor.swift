@@ -292,6 +292,18 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     var currentEvent: () -> NSEvent? = { NSApp.currentEvent }
 
     func prepareCoordinator(controller: TextViewController) {
+        if self.controller !== controller {
+            // A new editor, as when the document is reloaded or its Markdown mode changes: the
+            // view keeps this coordinator, but the old selections and history mean nothing in it.
+            endColumnDrag()
+            ranges = []
+            newest = nil
+            history.removeAll()
+            redoHistory.removeAll()
+            addCursorGoal = nil
+            wordwiseQuery = nil
+            isEditing = false
+        }
         self.controller = controller
         textStorageID = ObjectIdentifier(controller.textView.textStorage)
         track(controller.textView.selectionManager.textSelections.map(\.range))
@@ -313,6 +325,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         history.removeAll()
         redoHistory.removeAll()
         addCursorGoal = nil
+        // Called once per range an edit replaces, so once for each of many cursors: only the
+        // first schedules the end of the turn.
+        guard !isEditing else { return }
         isEditing = true
         editGeneration += 1
         let generation = editGeneration
@@ -322,6 +337,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     }
 
     func destroy() {
+        // An editor being released no longer reads as `controller`, so one that is set belongs
+        // to a newer editor, which SwiftUI made before releasing this one; it keeps the monitors.
+        guard controller == nil else { return }
         endColumnDrag()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
