@@ -1536,6 +1536,9 @@ enum WorkspaceFiles {
         return try remoteGitBatch(machine, location, sections, timeout: timeout).results
     }
 
+    /// Whether SSH batches run their commands at once; benchmarks turn it off to compare.
+    static var concurrentRemoteBatches = true
+
     /// `gitBatch` over SSH. `otherwise` runs in place of the commands after a failed gate, as
     /// a command of its own whose result comes back apart; nil when no gate failed.
     private static func remoteGitBatch(_ machine: HerdrMachineProfile, _ location: WorkspaceFileLocation,
@@ -1547,7 +1550,8 @@ enum WorkspaceFiles {
                 ?? (["env", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "git", "-C", location.root] + section.args), gate: section.gate)
         }
         let limit = sections.reduce(1_000) { $0 + $1.limit + 100 } + (otherwise.map { $0.limit + 100 } ?? 0)
-        let output = try ssh(machine, "sh -c " + quote(remoteBatchScript(commands, otherwise: otherwise?.words)),
+        let script = remoteBatchScript(commands, otherwise: otherwise?.words, concurrent: concurrentRemoteBatches)
+        let output = try ssh(machine, "sh -c " + quote(script),
                              limit: limit, timeout: timeout * Double(max(1, sections.count)), label: "git batch")
         let parsed = try parseBatchOutput(output)
         let incomplete = WorkspaceFileError.message("Remote command output is incomplete")
@@ -1579,7 +1583,48 @@ enum WorkspaceFiles {
     /// files, then prints a header line, `wooloo-section <status> <output bytes> <error bytes>`,
     /// followed by both. The lengths delimit them, so no output can be mistaken for a header.
     /// After a failed gate, the script runs `otherwise` when given, then stops.
-    static func remoteBatchScript(_ commands: [(words: [String], gate: Bool)], otherwise: [String]? = nil) -> String {
+    ///
+    /// The commands run at once, as background jobs, and the sections are printed in order once
+    /// all have finished, so a batch costs its slowest command rather than their sum. A gate runs
+    /// once the commands before it have started, and the commands after it only once it passed.
+    /// This is safe because a batch only reads: its git commands run with `GIT_OPTIONAL_LOCKS=0`,
+    /// so `git status` never takes `index.lock` to refresh the index. With `concurrent` false
+    /// the commands run one after another, as tests and benchmarks compare.
+    static func remoteBatchScript(_ commands: [(words: [String], gate: Bool)], otherwise: [String]? = nil,
+                                  concurrent: Bool = true) -> String {
+        guard concurrent else { return sequentialBatchScript(commands, otherwise: otherwise) }
+        // `start` runs a command in the background and `run` in the foreground, each into files
+        // numbered by its section; `emit` prints sections. The trap stops jobs still running.
+        var lines = [
+            #"d=$(mktemp -d) || exit 1"#,
+            #"p="#,
+            #"trap 'rm -rf "$d"' EXIT"#,
+            #"trap 'kill $p 2>/dev/null; exit 1' HUP INT TERM"#,
+            #"export GIT_OPTIONAL_LOCKS=0"#,
+            #"run() { i=$1; shift; "$@" >"$d/o$i" 2>"$d/e$i"; r=$?; echo "$r" >"$d/r$i"; return $r; }"#,
+            #"start() { run "$@" & p="$p $!"; }"#,
+            #"emit() { for i do r=$(cat "$d/r$i" 2>/dev/null); "#
+                + #"printf 'wooloo-section %s %s %s\n' "${r:-1}" $(wc -c <"$d/o$i") $(wc -c <"$d/e$i"); "#
+                + #"cat "$d/o$i" "$d/e$i"; done; }"#,
+        ]
+        func words(_ words: [String]) -> String { words.map(quote).joined(separator: " ") }
+        for (index, command) in commands.enumerated() {
+            guard command.gate else {
+                lines.append("start \(index) " + words(command.words))
+                continue
+            }
+            let printed = Array(0...index) + (otherwise == nil ? [] : [index + 1])
+            lines.append("run \(index) " + words(command.words) + " || { "
+                + (otherwise.map { "run \(index + 1) " + words($0) + "; " } ?? "")
+                + "wait; emit " + printed.map(String.init).joined(separator: " ") + "; exit 0; }")
+        }
+        lines.append("wait")
+        if !commands.isEmpty { lines.append("emit " + commands.indices.map(String.init).joined(separator: " ")) }
+        lines.append("exit 0")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func sequentialBatchScript(_ commands: [(words: [String], gate: Bool)], otherwise: [String]?) -> String {
         var lines = [
             #"d=$(mktemp -d) || exit 1"#,
             #"trap 'rm -rf "$d"' EXIT"#,
@@ -1592,7 +1637,7 @@ enum WorkspaceFiles {
         for command in commands {
             lines.append("section " + command.words.map(quote).joined(separator: " ") + (command.gate ? stop : ""))
         }
-        return lines.joined(separator: "\n") + "\n"
+        return (lines + ["exit 0"]).joined(separator: "\n") + "\n"
     }
 
     /// Splits the output of `remoteBatchScript` into each command's exit status, output and errors.

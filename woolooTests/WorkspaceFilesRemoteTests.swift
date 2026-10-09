@@ -633,6 +633,84 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertNil(try? stopped[0].get())
     }
 
+    /// The batch script's sections, from a run through the fake ssh, in the folder `name`.
+    private func batchSections(_ name: String, _ commands: [(words: [String], gate: Bool)], otherwise: [String]? = nil,
+                               concurrent: Bool) throws -> [String] {
+        let script = "cd " + WorkspaceFiles.quote(sandbox.path(name)) + " && sh -c "
+            + WorkspaceFiles.quote(WorkspaceFiles.remoteBatchScript(commands, otherwise: otherwise, concurrent: concurrent))
+        let output = try WorkspaceFiles.remoteOutput(machine, script: script, label: "batch", limit: 1_000_000)
+        return try WorkspaceFiles.parseBatchOutput(output).map {
+            "\($0.status) " + String(decoding: $0.output, as: UTF8.self) + " | " + String(decoding: $0.errors, as: UTF8.self)
+        }
+    }
+
+    /// Run at once, a batch prints the same sections in the same order as one after another:
+    /// failures, a passed gate, a failed gate with and without its fallback, and a failing
+    /// last command, which no longer fails the whole batch.
+    func testConcurrentBatchMatchesSequentialOne() throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n", "b.txt": "two\n"])
+        try sandbox.write(["repo/a.txt": "changed\n", "repo/new.txt": "new\n", "plain/c.txt": "c"], in: ".")
+        let git = ["env", "GIT_OPTIONAL_LOCKS=0", "git"]
+        let commands: [(words: [String], gate: Bool)] = [
+            (git + ["status", "--porcelain=v2", "--branch"], false),
+            (git + ["no-such-command"], false),
+            (["sh", "-c", "sleep 0.1; echo late; echo warn >&2; exit 3"], false),
+            (git + ["rev-parse", "--show-toplevel"], true),
+            (git + ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], false),
+            (git + ["status", "--porcelain=v1", "-z", "--untracked-files=all"], false),
+            (git + ["log", "--format=%s"], false),
+            (git + ["cat-file", "-p", "HEAD:missing.txt"], false),
+        ]
+        for name in ["repo", "plain"] {
+            for otherwise in [nil, ["ls"]] as [[String]?] {
+                let sequential = try batchSections(name, commands, otherwise: otherwise, concurrent: false)
+                XCTAssertEqual(try batchSections(name, commands, otherwise: otherwise, concurrent: true), sequential)
+                XCTAssertEqual(sequential.count, name == "repo" ? commands.count : 4 + (otherwise == nil ? 0 : 1))
+            }
+        }
+        XCTAssertEqual(try batchSections("repo", [], concurrent: true), [])
+        XCTAssertEqual(try batchSections("repo", [(git + ["no-such-command"], false)], concurrent: true).count, 1)
+    }
+
+    /// The commands of a batch run at once: three that each take 0.4 s take less than 1.2 s together.
+    func testRemoteBatchRunsItsCommandsAtOnce() throws {
+        try sandbox.repository("repo")
+        let sleep = WorkspaceFiles.GitSection([], limit: 100, script: "sleep 0.4; echo done")
+        let start = Date()
+        let results = try WorkspaceFiles.gitBatch(remote("repo"), [sleep, .root, sleep, sleep])
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+        XCTAssertEqual(results.compactMap { try? String(decoding: $0.get(), as: UTF8.self) }.count, 4)
+    }
+
+    /// Two `git status` and the rest of a refresh run at once in a repository whose index is
+    /// out of date, many times over and from several refreshes at once: none fails on
+    /// `index.lock`, all read the same status, and no lock is left behind.
+    func testConcurrentRefreshesTakeNoIndexLock() throws {
+        var files: [String: String] = [:]
+        for index in 0..<200 { files["dir\(index % 10)/file\(index).txt"] = "\(index)\n" }
+        try sandbox.repository("repo", files: files)
+        try sandbox.write(["repo/dir0/file0.txt": "changed\n", "repo/new.txt": "new\n"], in: ".")
+        let location = remote("repo")
+        let expected = try WorkspaceFiles.listing(at: location).changes.map(\.path)
+        XCTAssertEqual(Set(expected), ["dir0/file0.txt", "new.txt"])
+        let lock = NSLock()
+        var outcomes: [String] = []
+        for _ in 0..<5 {
+            // A changed modification time leaves every index entry out of date for `git status`.
+            try sandbox.sh("find . -path ./.git -prune -o -type f -exec touch {} +", in: "repo")
+            DispatchQueue.concurrentPerform(iterations: 4) { _ in
+                WorkspaceFiles.forgetRecentResults(at: location)
+                let listing = outcome { try WorkspaceFiles.listing(at: location).changes.map(\.path) }
+                let bar = outcome { try WorkspaceFiles.gitBar(at: location).status.branch ?? "detached" }
+                lock.withLock { outcomes += [listing, bar] }
+            }
+        }
+        XCTAssertEqual(outcomes.count, 40)
+        XCTAssertFalse(outcomes.contains { $0.hasPrefix("error: ") }, "\(outcomes.filter { $0.hasPrefix("error: ") })")
+        XCTAssertEqual(Set(outcomes), [String(describing: expected), "main"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("repo/.git/index.lock")))
+    }
+
     func testBatchOutputIsSplitByItsLengths() throws {
         let output = Data("wooloo-section 0 3 0\na\nbwooloo-section 128 0 5\nfatal".utf8)
         let sections = try WorkspaceFiles.parseBatchOutput(output)
