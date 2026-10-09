@@ -1260,16 +1260,9 @@ struct ContentView: View {
     }
 
     /// Focuses the Space already open on a worktree, or opens a new one there.
-    private func openWorktree(path: String, label: String) {
+    private func openWorktree(path: String, repository: String?) {
         activeDocumentID = nil
-        let snapshot = herdr.snapshot
-        let existing = snapshot?.workspaces.first { $0.worktree?.checkoutPath == path }?.workspaceID
-            ?? snapshot?.panes.first { $0.cwd == path }?.workspaceID
-        if let existing {
-            herdr.select(workspaceID: existing)
-        } else {
-            herdr.createWorkspace(cwd: path, label: label)
-        }
+        herdr.openWorktree(path, repository: repository)
     }
 
     private func focusAgent(_ agent: HerdrAgent) {

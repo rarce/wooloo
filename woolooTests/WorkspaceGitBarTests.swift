@@ -163,6 +163,33 @@ final class WorkspaceGitBarModelTests: XCTestCase {
                        "The deleted one still holds its branch")
     }
 
+    /// Herdr opens worktrees from the main checkout, which a linked worktree also names.
+    func testRepositoryCheckoutIsTheMainOne() async throws {
+        try sandbox.sh("git worktree add -q ../repo-linked -b linked", in: "repo")
+        await model.load(sandbox.location("repo-linked"))
+        let main = try XCTUnwrap(model.repositoryCheckout)
+        XCTAssertEqual((main as NSString).lastPathComponent, "repo")
+        XCTAssertEqual(model.otherWorktrees.map(\.path), [main])
+    }
+
+    /// The worktree menu tells which worktrees have a Space, and how its agents are doing.
+    func testWorktreesWithASpace() {
+        let tree = WorkspaceWorktree(path: "/r/feature", branch: "feature", isBare: false, isLocked: false,
+                                     isPrunable: false)
+        func space(_ path: String, _ label: String, _ status: String?) -> HerdrWorkspace {
+            HerdrWorkspace(workspaceID: "w1", label: label, agentStatus: status, activeTabID: nil,
+                           worktree: HerdrWorktree(checkoutPath: path))
+        }
+        XCTAssertNil(WorkspaceGitBarModel.spaces(of: [tree], in: [space("/r", "r", nil)]).first?.space)
+        let open = WorkspaceGitBarModel.spaces(of: [tree], in: [space("/r", "r", nil),
+                                                                space("/r/feature", "feature", "working")]).first?.space
+        XCTAssertEqual(open?.label, "feature")
+        XCTAssertEqual(WorkspaceGitBarModel.spaceTitle("feature", space: open), "feature · working")
+        XCTAssertEqual(WorkspaceGitBarModel.spaceTitle("feature", space: space("/r/feature", "Fix", "blocked")),
+                       "feature — Fix · needs input")
+        XCTAssertEqual(WorkspaceGitBarModel.spaceTitle("feature", space: space("/r/feature", "feature", "idle")), "feature")
+    }
+
     func testCreatingABranchSwitchesToIt() async throws {
         var outcome: String??
         model.createBranch("topic") { outcome = .some($0) }

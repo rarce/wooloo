@@ -17,7 +17,8 @@ struct WorkspaceBrowserView: View {
     let onNewSpace: (String, String) -> Void
     let onLocationChange: (WorkspaceFileLocation?) -> Void
     let onFindInFolder: (WorkspaceFileLocation, String) -> Void
-    let onOpenWorktree: (String, String) -> Void
+    /// Opens a worktree checkout's Space, given the repository's main checkout.
+    let onOpenWorktree: (_ path: String, _ repository: String?) -> Void
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
     /// The active editor tab's file, selected in the tree when it changes.
     var activeFile: WorkspaceActiveFile?
@@ -305,7 +306,8 @@ struct WorkspaceBrowserView: View {
                                     loadListing(quietly: true)
                                 },
                                 onOpenWorktree: location.isLocal ? onOpenWorktree : nil,
-                                onError: { model.operationError = $0 })
+                                onError: { model.operationError = $0 },
+                                spaces: location.isLocal ? snapshot?.workspaces ?? [] : [])
             }
         }
         .background(theme.sidebarBackground)
