@@ -86,6 +86,7 @@ Settings → Remote Access (also in the command palette) publishes this Mac's SS
 wooloo has no analytics or telemetry. It talks to the Herdr server on this Mac, to SSH machines you saved in Herdr, and over the network only to:
 
 - GitHub, at build time, to download the pinned Herdr binaries and Swift packages;
+- GitHub, to check for and download updates, once a day if you allow automatic checks;
 - your Git remotes, when you fetch, pull or push;
 - web images that a Markdown file you preview links to;
 - Anthropic's and OpenAI's usage endpoints, when you turn on QUOTAS;
@@ -107,6 +108,8 @@ xattr -dr com.apple.quarantine /Applications/wooloo.app
 ```
 
 Check the download against the SHA-256 in the release notes (`shasum -a 256 wooloo-<version>.zip`), or build from source below.
+
+From 0.2.0 on, wooloo updates itself from the GitHub releases with [Sparkle](https://sparkle-project.org): **wooloo → Check for Updates…**, or automatically once a day if you allow it when asked on the second launch. Updates are installed only when signed with the project's EdDSA key, and they skip the Gatekeeper prompt of the first install. Version 0.1.0 has no updater; download 0.2.0 or later once by hand.
 
 ## Build and run
 
@@ -136,7 +139,7 @@ for plist in ~/Library/Application\ Support/wooloo/runtime/services/*.plist; do
   launchctl bootout "gui/$(id -u)" "$plist"
 done
 # Remove the runtime, document backups and settings, then delete the app itself.
-rm -rf ~/Library/Application\ Support/wooloo
+rm -rf ~/Library/Application\ Support/wooloo ~/Library/Caches/dev.wooloo.app
 defaults delete dev.wooloo.app
 # Only if you used a named tunnel in Remote Access:
 security delete-generic-password -s dev.wooloo.remote-access

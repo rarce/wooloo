@@ -42,6 +42,8 @@ final class ContentCommandsTests: XCTestCase {
     private var copied: [String] = []
     private var revealed: [String] = []
     private var appConfigReloads = 0
+    private var updateChecks = 0
+    private var canCheckForUpdates = true
     private var fileResultsForgotten = 0
 
     override func setUp() async throws {
@@ -84,7 +86,9 @@ final class ContentCommandsTests: XCTestCase {
                             reloadAppConfig: { self.appConfigReloads += 1 },
                             forgetRecentFileResults: { self.fileResultsForgotten += 1 },
                             copy: { self.copied.append($0) },
-                            reveal: { self.revealed.append($0) }))
+                            reveal: { self.revealed.append($0) },
+                            canCheckForUpdates: { self.canCheckForUpdates },
+                            checkForUpdates: { self.updateChecks += 1 }))
     }
 
     private func waitUntil(_ description: String, _ condition: () -> Bool) async {
@@ -421,6 +425,19 @@ final class ContentCommandsTests: XCTestCase {
         commands.perform("reload_config")
         XCTAssertEqual(appConfigReloads, 1)
         await waitUntil("reloaded") { !requests("server.reload_config").isEmpty }
+    }
+
+    func testCheckForUpdatesFollowsTheUpdaterWithoutHerdr() {
+        let item = WoolooCommandItem.named("check_for_updates")!
+        XCTAssertTrue(item.isAvailable(commands.availability), "No Herdr connection is needed")
+        commands.perform("check_for_updates")
+        XCTAssertEqual(updateChecks, 1)
+
+        // Debug builds, tests, and a check under way: the menu item is disabled, so the palette is too.
+        canCheckForUpdates = false
+        XCTAssertFalse(item.isAvailable(commands.availability))
+        commands.perform("check_for_updates")
+        XCTAssertEqual(updateChecks, 1)
     }
 
     func testPaneCommandsGoToTheSelectedPane() async {

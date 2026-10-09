@@ -1,0 +1,192 @@
+name: Release
+
+# Pushing a tag vX.Y.Z, matching MARKETING_VERSION, on a commit of main whose CI passed builds
+# wooloo and publishes the GitHub release with the archive and the signed Sparkle feed. Installed
+# copies read the feed from the latest release (SUFeedURL in wooloo/Info.plist), so every release
+# must carry appcast.xml.
+#
+# The build job runs Swift packages and build scripts with a read-only token and no signing key;
+# only the publish job, which builds nothing, can write releases and read SPARKLE_PRIVATE_KEY.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Sparkle compares CFBundleVersion, which follows MARKETING_VERSION and must stay numeric.
+      - name: Check the version
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Release tags look like v1.2.3, not $GITHUB_REF_NAME"
+            exit 1
+          fi
+          marketing=$(sed -n 's/.*MARKETING_VERSION = \(.*\);/\1/p' wooloo.xcodeproj/project.pbxproj | sort -u)
+          if [ "$marketing" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match MARKETING_VERSION ($marketing)"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # Installed copies update to this build within a day, so it must be what main tested.
+      - name: Check the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
+          if [ "$status" != ahead ] && [ "$status" != identical ]; then
+            echo "::error::$GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=Build%20and%20test" \
+            --jq '[.check_runs[] | select(.conclusion == "success")] | length')
+          if [ "$passed" = 0 ]; then
+            echo "::error::CI has not passed on $GITHUB_SHA; wait for it, then push the tag again"
+            exit 1
+          fi
+
+      - name: Select Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+
+      - name: Cache Swift packages
+        uses: actions/cache@v5
+        with:
+          path: build/DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('wooloo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Cache Herdr release assets
+        uses: actions/cache@v5
+        with:
+          path: build/herdr
+          key: herdr-${{ hashFiles('scripts/bundle-herdr.sh') }}
+
+      - name: Build
+        run: |
+          xcodebuild build \
+            -project wooloo.xcodeproj -scheme wooloo -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
+
+      # Sparkle reads the architectures from the archive and would hide the update from Intel Macs.
+      - name: Package
+        run: |
+          app=build/DerivedData/Build/Products/Release/wooloo.app
+          for binary in "$app/Contents/MacOS/wooloo" "$app/Contents/Helpers/herdr"; do
+            archs=$(lipo -archs "$binary")
+            case " $archs " in
+              *" arm64 "*" x86_64 "*|*" x86_64 "*" arm64 "*) ;;
+              *) echo "::error::$binary is not universal ($archs)"; exit 1 ;;
+            esac
+          done
+          # Tests run with Xcode's products on the framework path; an installed copy needs the rpath.
+          if ! otool -l "$app/Contents/MacOS/wooloo" | grep -q '@executable_path/../Frameworks'; then
+            echo "::error::wooloo cannot load Sparkle.framework from Contents/Frameworks"
+            exit 1
+          fi
+          codesign --verify --deep --strict "$app"
+          mkdir -p build/release
+          ditto -c -k --sequesterRsrc --keepParent "$app" "build/release/wooloo-$VERSION.zip"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wooloo-archive
+          path: build/release/wooloo-${{ env.VERSION }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Sign and publish
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set the version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: wooloo-archive
+          path: build/release
+
+      - name: Cache Sparkle's tools
+        uses: actions/cache@v5
+        with:
+          path: build/sparkle
+          key: sparkle-${{ hashFiles('scripts/release-appcast.sh') }}
+
+      # docs/releases/vX.Y.Z.md when written by hand, otherwise GitHub's notes since the last release.
+      - name: Release notes
+        run: |
+          if [ -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
+            cp "docs/releases/$GITHUB_REF_NAME.md" build/release/notes.md
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" \
+              --jq .body > build/release/notes.md
+          fi
+
+      - name: Sign the update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "::error::The SPARKLE_PRIVATE_KEY secret is not set"
+            exit 1
+          fi
+          scripts/release-appcast.sh "build/release/wooloo-$VERSION.zip" build/release/notes.md \
+            "$GITHUB_REF_NAME" build/release
+
+      - name: Publish
+        run: |
+          archive="wooloo-$VERSION.zip"
+          hash=$(shasum -a 256 "build/release/$archive" | awk '{print $1}')
+          herdr=$(sed -n 's|.*releases/download/v\([0-9.]*\)/.*|\1|p' scripts/bundle-herdr.sh | head -n 1)
+          {
+            cat build/release/notes.md
+            printf '\n## Install\n\n'
+            printf '1. Download `%s`, unzip it and move `wooloo.app` to `/Applications`.\n' "$archive"
+            printf '2. This build is **not notarized** (it is signed ad hoc), so Gatekeeper blocks the first launch. '
+            printf 'Open it once, then go to System Settings → Privacy & Security and click **Open Anyway**, or run:\n\n'
+            printf '   ```sh\n   xattr -dr com.apple.quarantine /Applications/wooloo.app\n   ```\n\n'
+            printf 'Copies already installed update themselves: **wooloo → Check for Updates…**.\n\n'
+            printf 'Requires macOS 14 or later. Universal build (Apple silicon and Intel). Herdr %s is included.\n\n' "$herdr"
+            printf 'SHA-256 (`shasum -a 256 %s`):\n\n```\n%s\n```\n' "$archive" "$hash"
+          } > build/release/body.md
+          # The feed is read from the latest release: a fix to an older line must not replace it.
+          latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          latest=${latest#v}
+          if [ -z "$latest" ] || [ "$(printf '%s\n%s\n' "$latest" "$VERSION" | sort -V | tail -n 1)" = "$VERSION" ]; then
+            make_latest=true
+          else
+            make_latest=false
+          fi
+          gh release create "$GITHUB_REF_NAME" "build/release/$archive" build/release/appcast.xml \
+            --verify-tag --title "wooloo $VERSION" --notes-file build/release/body.md --latest="$make_latest"

@@ -18,6 +18,8 @@ struct WoolooCommandAvailability: Equatable {
     /// The palette actions of the explorer commands that apply to its selection; empty unless
     /// the Files or Changes tree has focus.
     var explorerActions: Set<String> = []
+    /// Sparkle runs (Release builds) and no check or update is under way.
+    var canCheckForUpdates = false
 }
 
 /// Actions of the open file's editor that the command palette offers. The document view runs
@@ -182,6 +184,8 @@ struct WoolooCommandItem: Identifiable, Equatable {
         case explorer
         /// A Space with at least this many tabs.
         case tabs(Int)
+        /// The updater can start a check, as the menu item shows.
+        case updates
     }
 
     let action: String
@@ -216,6 +220,7 @@ struct WoolooCommandItem: Identifiable, Equatable {
         case .source: return availability.hasFileDocument && availability.showsSource
         case .explorer: return availability.explorerActions.contains(action)
         case .tabs(let count): return availability.isConnected && availability.hasSpace && availability.tabCount >= count
+        case .updates: return availability.canCheckForUpdates
         }
     }
 
@@ -246,6 +251,7 @@ struct WoolooCommandItem: Identifiable, Equatable {
     }
 
     private static let appCommands: [Self] = [
+        .init("check_for_updates", "wooloo", "Check for Updates…", requires: .updates),
         .init("settings", "Herdr", "Settings…", KeyboardShortcut(",", modifiers: .command)),
         .init("reload_config", "Herdr", "Reload Config", requires: .connected),
         .init("switch_session", "Herdr", "Switch Session…"),

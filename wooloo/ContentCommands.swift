@@ -99,6 +99,8 @@ struct ContentCommandEffects {
     var forgetRecentFileResults: () -> Void = { WorkspaceFiles.forgetRecentResults() }
     var copy: (String) -> Void = { AppActions.copy($0) }
     var reveal: (String) -> Void = { AppActions.reveal($0) }
+    var canCheckForUpdates: @MainActor () -> Bool = { AppUpdater.shared.canCheckForUpdates }
+    var checkForUpdates: @MainActor () -> Void = { AppUpdater.shared.checkForUpdates() }
 }
 
 /// What shortcuts, menu items and the window's dialogs do to Herdr, the open documents, project
@@ -128,7 +130,8 @@ struct ContentCommands {
                                          hasReadOnlyDocument: document?.isReadOnly ?? false,
                                          showsSource: showsSource,
                                          explorerActions: Set(ExplorerFileCommand.paletteCommands
-                                             .filter(window.explorer.isAvailable).map(\.paletteAction)))
+                                             .filter(window.explorer.isAvailable).map(\.paletteAction)),
+                                         canCheckForUpdates: effects.canCheckForUpdates())
     }
 
     func perform(_ action: String) {
@@ -157,6 +160,9 @@ struct ContentCommands {
             window.settingsShowShortcuts = false
             window.settingsShowRemoteAccess = true
             window.showsSettings = true
+        case .checkForUpdates:
+            guard effects.canCheckForUpdates() else { return }
+            effects.checkForUpdates()
         case .newWorkspace:
             documents.activeID = nil
             herdr.createWorkspace()

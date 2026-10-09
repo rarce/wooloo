@@ -11,7 +11,8 @@
 - [x] Rewrite history to replace the personal commit email with the GitHub noreply address, which this clone now commits with.
 - [x] Rename the project from xherdr to wooloo, so its name no longer derives from Herdr's. Existing installs are not migrated: settings, document backups, the Keychain tunnel token and the app-managed Herdr session start fresh.
 - [x] Register `wooloo.dev`, which the bundle identifier `dev.wooloo.app` implies, and rename the GitHub repository to `rarce/wooloo`.
-- [ ] Before shipping binaries, turn on the hardened runtime (`ENABLE_HARDENED_RUNTIME`), sign with a Developer ID and notarize. Check that the test bundle still loads, since library validation may reject an ad hoc signed bundle.
+- [ ] Before shipping binaries, turn on the hardened runtime (`ENABLE_HARDENED_RUNTIME`), sign with a Developer ID and notarize. Check that the test bundle still loads, since library validation may reject an ad hoc signed bundle. Keep the Sparkle EdDSA key: with it, installed ad hoc copies accept the first Developer ID update.
+- [ ] Keep Remote Access's Keychain item readable across updates. The named-tunnel token (`dev.wooloo.remote-access`) is in the login keychain, whose access list trusts the app by its designated requirement; an ad hoc signature's requirement is its cdhash, which changes with every build. Each Sparkle update therefore asks again for Keychain access when Remote Access starts at launch, and an unattended Mac keeps the tunnel down until someone answers. A Developer ID signature gives a stable requirement (team and bundle identifier); until then, mention it in the release notes.
 
 ## Terminal performance
 
