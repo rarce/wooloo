@@ -334,6 +334,29 @@ final class HostStatsTests: XCTestCase {
         XCTAssertEqual(Set(labels.value), ["dev.wooloo.host-stats"])
     }
 
+    /// A monitor released without `stop()`, as when its view goes away without disappearing,
+    /// ends its loop instead of sampling forever.
+    @MainActor
+    func testReleasedMonitorStopsSampling() async throws {
+        let samples = Locked(0)
+        let saved = HostProbe.localSample
+        HostProbe.localSample = { directory in
+            samples.withLock { $0 += 1 }
+            return saved(directory)
+        }
+        defer { HostProbe.localSample = saved }
+        var monitor: HostStatsMonitor? = HostStatsMonitor(interval: .milliseconds(10))
+        weak let released = monitor
+        monitor?.start(.init(machine: nil, directory: NSTemporaryDirectory()))
+        try await waitUntil("two samples are taken") { samples.value >= 2 }
+        monitor = nil
+        try await waitUntil("the monitor is released") { released == nil }
+        // At most the sample running when it was released.
+        let count = samples.value
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertLessThanOrEqual(samples.value, count + 1)
+    }
+
     @MainActor
     func testMonitorSamplesThisMacWithoutAMachine() async throws {
         let monitor = HostStatsMonitor(interval: .milliseconds(20))

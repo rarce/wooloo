@@ -99,6 +99,10 @@ enum BlockingWork {
 
 /// A thread for blocking work that repeats, such as a poll, so each round does not start a thread
 /// of its own. Its calls run one at a time, in order, and still take a slot of `BlockingWork`.
+/// A call takes its slot before it is queued, so one waiting behind another holds a slot too:
+/// give each loop a worker of its own and await each call before making the next, as the
+/// pane-text poll and `HostStatsMonitor` do. A call already queued runs even if its task is
+/// cancelled.
 ///
 /// It is a private serial queue: unlike the global queues, the system gives one a thread even when
 /// its limit on threads for queues is reached, and keeps reusing that thread while work comes in.

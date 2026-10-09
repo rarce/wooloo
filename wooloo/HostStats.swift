@@ -236,8 +236,9 @@ final class HostStatsMonitor: ObservableObject {
                 let result = await BlockingWork.run(on: worker) {
                     Result { try HostProbe.sample(machine: target.machine, directory: target.directory) }
                 }
-                guard !Task.isCancelled else { return }
-                self?.apply(result)
+                // A monitor released without `stop()` ends the loop rather than sampling forever.
+                guard !Task.isCancelled, let self else { return }
+                self.apply(result)
                 try? await Task.sleep(for: interval)
             }
         }

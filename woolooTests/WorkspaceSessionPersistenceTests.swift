@@ -48,13 +48,13 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         root.appendingPathComponent("Backups/\(WorkspaceSessionPersistence.key(for: space))/\(id.uuidString).json")
     }
 
-    /// A new persistence actor represents a fresh process; the working file is untouched.
     /// Disk access runs on the persistence's own queue rather than Swift's cooperative threads.
     func testDiskWorkRunsOnItsOwnQueue() async {
         let label = await disk.currentQueueLabel()
         XCTAssertEqual(label, "dev.wooloo.session-persistence")
     }
 
+    /// A new persistence actor represents a fresh process; the working file is untouched.
     func testRestartRestoresDirtyFilesDraftsOrderSelectionAndEditorPosition() async throws {
         let first = await store()
         await open("a.txt", in: first, preview: true)
