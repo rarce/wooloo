@@ -148,6 +148,46 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(trailing.ranges, [range(0, 1), range(3)], "the empty last line")
     }
 
+    func testColumnSelectionOverDisplayRowsCountsColumnsFromEachRowsStart() throws {
+        // "abcdef ghij" wraps after "abcdef " (row 0, 0–7) to "ghij" (row 1, 7–11); then "xy" (12)
+        // and "\tz" (15).
+        let text = "abcdef ghij\nxy\n\tz" as NSString
+        let rows = [
+            MultiCursor.DisplayRow(range: range(0, 7), endsLine: false),
+            MultiCursor.DisplayRow(range: range(7, 4), endsLine: true),
+            MultiCursor.DisplayRow(range: range(12, 2), endsLine: true),
+            MultiCursor.DisplayRow(range: range(15, 2), endsLine: true),
+        ]
+        let block = try XCTUnwrap(MultiCursor.columnSelection(in: text, rows: rows, anchorColumn: 1,
+                                                              headRow: 3, headColumn: 3))
+        XCTAssertEqual(block.ranges, [range(1, 2), range(8, 2), range(13, 1), range(15, 1)],
+                       "columns 1–3 of each row, counted from the row's start, to the end of \"xy\"")
+        XCTAssertEqual(block.newest, range(15, 1), "the head's row")
+
+        let up = try XCTUnwrap(MultiCursor.columnSelection(in: text, rows: rows, anchorColumn: 3,
+                                                           headRow: 0, headColumn: 1))
+        XCTAssertEqual(up.ranges, block.ranges)
+        XCTAssertEqual(up.newest, range(1, 2), "the head's row at the top")
+
+        // Column 4: a cursor inside "abcdef " and at the end of "ghij", exactly that long; "xy" is
+        // too short.
+        let end = try XCTUnwrap(MultiCursor.columnSelection(in: text, rows: Array(rows.prefix(3)),
+                                                            anchorColumn: 4, headRow: 2, headColumn: 4))
+        XCTAssertEqual(end.ranges, [range(4), range(11)])
+        let wrapEnd = MultiCursor.columnSelection(in: text, rows: [rows[0]], anchorColumn: 7, headRow: 0,
+                                                  headColumn: 7)
+        XCTAssertNil(wrapEnd, "no cursor at the end of a wrapped row, which would show on the next one")
+
+        // Whole lines as rows give the same block as the line-based selection.
+        let lines = try XCTUnwrap(MultiCursor.columnSelection(in: text, anchor: 0, anchorColumn: 1,
+                                                              head: 15, headColumn: 3))
+        let lineRows = [range(0, 11), range(12, 2), range(15, 2)].map {
+            MultiCursor.DisplayRow(range: $0, endsLine: true)
+        }
+        XCTAssertEqual(MultiCursor.columnSelection(in: text, rows: lineRows, anchorColumn: 1, headRow: 2,
+                                                   headColumn: 3), lines)
+    }
+
     func testDisplayColumnsMatchUTF16ColumnsForPlainASCII() {
         let text = "let x = 1\n    return x\n" as NSString
         for offset in 0...text.length {
@@ -550,6 +590,183 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(textView.string, "alpha beta\n1alpha\nbeta 2\n", "one cursor pastes the joined text")
     }
 
+    func testCommandURecordsSelectAllEmacsKeysAndSelectionsMadeElsewhere() throws {
+        let (coordinator, textView) = try makeEditor(text: "let foo = 1\nlet bar = 2\nend\n")
+        textView.selectionManager.setSelectedRange(range(4))
+        var event: NSEvent?
+        coordinator.currentEvent = { event }
+
+        event = key("a", .command)
+        textView.selectAll(nil)
+        XCTAssertEqual(selectedRanges(textView), [range(0, 28)])
+        event = key("n", .control)
+        textView.moveDown(nil)
+        event = key("e", .control)
+        textView.moveToEndOfParagraph(nil)
+        event = key("", [], code: kVK_LeftArrow)
+        textView.moveLeft(nil)
+        let afterKeys = selectedRanges(textView)
+        XCTAssertNotEqual(afterKeys, [range(0, 28)])
+        // A find match or a reveal, set while the editor does not have the keyboard, which it
+        // does not report; the next key in the editor records it.
+        event = key("g", .command)
+        window?.makeFirstResponder(nil)
+        textView.selectionManager.setSelectedRange(range(4, 3))
+        window?.makeFirstResponder(textView)
+        event = nil
+        coordinator.syncSelection()
+        // And one made in code while the editor has the keyboard.
+        textView.selectionManager.setSelectedRange(range(16, 3))
+
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(4, 3)])
+        XCTAssertTrue(coordinator.perform(.undoSelection), "the find match")
+        XCTAssertEqual(selectedRanges(textView), afterKeys)
+        XCTAssertTrue(coordinator.perform(.undoSelection), "⌃N, ⌃E and ← are one run of navigation keys")
+        XCTAssertEqual(selectedRanges(textView), [range(0, 28)])
+        XCTAssertTrue(coordinator.perform(.undoSelection), "⌘A")
+        XCTAssertEqual(selectedRanges(textView), [range(4)])
+        XCTAssertFalse(coordinator.perform(.undoSelection))
+    }
+
+    func testRedoSelectionGoesForwardUntilANewChange() throws {
+        let (coordinator, textView) = try makeEditor(text: "a b a b a\n")
+        textView.selectionManager.setSelectedRange(range(4))
+        var event: NSEvent?
+        coordinator.currentEvent = { event }
+
+        XCTAssertTrue(coordinator.handle(key("d", .command)))
+        XCTAssertTrue(coordinator.handle(key("d", .command)))
+        XCTAssertEqual(selectedRanges(textView), [range(4, 1), range(8, 1)])
+        XCTAssertFalse(coordinator.handle(key("u", [.command, .shift])), "nothing to redo yet")
+
+        XCTAssertTrue(coordinator.handle(key("u", .command)))
+        XCTAssertTrue(coordinator.handle(key("u", .command)))
+        XCTAssertEqual(selectedRanges(textView), [range(4)])
+        XCTAssertTrue(coordinator.handle(key("u", [.command, .shift])))
+        XCTAssertEqual(selectedRanges(textView), [range(4, 1)])
+        XCTAssertTrue(coordinator.perform(.redoSelection), "from the command palette too")
+        XCTAssertEqual(selectedRanges(textView), [range(4, 1), range(8, 1)])
+        XCTAssertFalse(coordinator.perform(.redoSelection))
+        XCTAssertTrue(coordinator.perform(.undoSelection), "redone steps can be undone again")
+        XCTAssertEqual(selectedRanges(textView), [range(4, 1)])
+
+        // Arrows after ⌘U start a step of their own rather than extending the one ⌘U returned to.
+        event = key("", [], code: kVK_RightArrow)
+        textView.moveRight(nil)
+        event = nil
+        XCTAssertFalse(coordinator.perform(.redoSelection), "a new change ends the redo history")
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(4, 1)])
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(4)])
+    }
+
+    func testEditsClearUndoAndRedoAndTheirOwnSelectionChangesAreNotSteps() throws {
+        let (coordinator, textView) = try makeEditor(text: "let foo = 1\n")
+        textView.selectionManager.setSelectedRange(range(0))
+        textView.selectionManager.setSelectedRange(range(4))
+        textView.selectionManager.setSelectedRange(range(8))
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(4)])
+
+        textView.insertText("x")
+        // Selections set in the same turn as an edit belong to it, as when the editor closes a
+        // bracket or composes marked text.
+        textView.selectionManager.setSelectedRange(range(2))
+        XCTAssertFalse(coordinator.perform(.undoSelection), "an edit clears ⌘U")
+        XCTAssertFalse(coordinator.perform(.redoSelection), "and ⇧⌘U")
+
+        textView.setMarkedText("e", selectedRange: range(1), replacementRange: range(NSNotFound))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        textView.setMarkedText("é", selectedRange: range(1), replacementRange: range(NSNotFound))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        textView.insertText("é", replacementRange: range(NSNotFound))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(textView.string, "leét xfoo = 1\n")
+        XCTAssertFalse(coordinator.perform(.undoSelection), "composing marked text records nothing")
+
+        // The next key the editor's window gets ends the edit's turn, whether or not it has run out.
+        textView.insertText("!")
+        XCTAssertFalse(coordinator.handle(key("", [], code: kVK_LeftArrow)), "the arrow is the editor's")
+        textView.moveLeft(nil)
+        XCTAssertTrue(coordinator.perform(.undoSelection), "changes after the edit are steps again")
+        XCTAssertEqual(selectedRanges(textView), [range(4)])
+    }
+
+    func testRedoHistoryKeepsTheLatestSteps() throws {
+        let (coordinator, textView) = try makeEditor(text: "abc\n")
+        textView.selectionManager.setSelectedRange(range(0))
+        for step in 1...(EditorMultiCursorCoordinator.historyLimit + 20) {
+            textView.selectionManager.setSelectedRange(range(step % 2 + 1))
+        }
+        var undone = 0
+        while coordinator.perform(.undoSelection) { undone += 1 }
+        XCTAssertEqual(undone, EditorMultiCursorCoordinator.historyLimit)
+        var redone = 0
+        while coordinator.perform(.redoSelection) { redone += 1 }
+        XCTAssertEqual(redone, EditorMultiCursorCoordinator.historyLimit)
+        XCTAssertEqual(selectedRanges(textView), [range((EditorMultiCursorCoordinator.historyLimit + 20) % 2 + 1)])
+    }
+
+    func testOptionDragOverWrappedLinesSelectsTheSameColumnsOfEachRowOnScreen() throws {
+        let long = Array(repeating: "word", count: 30).joined(separator: " ")
+        let (coordinator, textView) = try makeEditor(text: long + "\nab\n" + long + "\n", wrapLines: true, width: 320)
+        let rows = displayRows(textView)
+        let secondLine = try XCTUnwrap(rows.firstIndex { $0.location == long.utf16.count + 1 })
+        XCTAssertGreaterThan(secondLine, 2, "the first line wraps to three rows or more")
+
+        // From column 2 of the first row to column 5 of the first row after "ab".
+        textView.selectionManager.setSelectedRange(range(0))
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDown, at: 2, in: textView, timestamp: 1)))
+        let head = rows[secondLine + 1].location + 5
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDragged, at: head, in: textView, timestamp: 2)))
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseUp, at: head, in: textView, timestamp: 3)))
+
+        let expected = rows[...(secondLine + 1)].map { row in
+            let start = min(row.location + 2, NSMaxRange(row))
+            return range(start, min(row.location + 5, NSMaxRange(row)) - start)
+        }
+        XCTAssertEqual(selectedRanges(textView), expected, "columns 2–5 of every row, to the end of \"ab\"")
+        let lefts = try selectedRanges(textView).map {
+            try XCTUnwrap(textView.layoutManager.rectForOffset($0.location)).minX
+        }
+        XCTAssertEqual(Set(lefts).count, 1, "the block is rectangular on screen")
+
+        XCTAssertTrue(coordinator.perform(.undoSelection), "the drag is one step")
+        XCTAssertEqual(selectedRanges(textView), [range(0)])
+    }
+
+    func testOptionDragWithoutWrappingFollowsWholeLines() throws {
+        let long = Array(repeating: "word", count: 30).joined(separator: " ")
+        let (coordinator, textView) = try makeEditor(text: long + "\nabcdefgh\n", width: 320)
+        XCTAssertEqual(displayRows(textView).prefix(2), [range(0, long.utf16.count), range(long.utf16.count + 1, 8)])
+        textView.selectionManager.setSelectedRange(range(0))
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDown, at: 2, in: textView, timestamp: 1)))
+        let head = long.utf16.count + 1 + 5
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDragged, at: head, in: textView, timestamp: 2)))
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseUp, at: head, in: textView, timestamp: 3)))
+        XCTAssertEqual(selectedRanges(textView), [range(2, 3), range(long.utf16.count + 3, 3)])
+    }
+
+    /// The rows the editor shows, wrapped or not, without their line breaks, laying every line out.
+    private func displayRows(_ textView: TextView) -> [NSRange] {
+        let text = textView.string as NSString
+        var rows: [NSRange] = []
+        for index in 0..<textView.layoutManager.lineCount {
+            guard let line = textView.layoutManager.textLineForIndex(index) else { break }
+            _ = textView.layoutManager.rectForOffset(line.range.location)
+            let contentsEnd = MultiCursor.contentsEnd(of: line.range, in: text)
+            for fragment in line.data.lineFragments {
+                let start = line.range.location + fragment.range.location
+                // Skip a row of nothing but the line break.
+                guard start < contentsEnd || fragment.range.location == 0 else { continue }
+                rows.append(NSRange(location: start, length: min(start + fragment.range.length, contentsEnd) - start))
+            }
+        }
+        return rows
+    }
+
     // MARK: - Helpers
 
     private func selectedRanges(_ textView: TextView) -> [NSRange] {
@@ -558,7 +775,8 @@ final class EditorMultiCursorTests: XCTestCase {
 
     private func key(_ characters: String, _ flags: NSEvent.ModifierFlags, code: Int? = nil) -> NSEvent {
         let codes: [String: Int] = ["d": kVK_ANSI_D, "k": kVK_ANSI_K, "l": kVK_ANSI_L, "u": kVK_ANSI_U,
-                                    "n": kVK_ANSI_N, "p": kVK_ANSI_P]
+                                    "n": kVK_ANSI_N, "p": kVK_ANSI_P,
+                                    "a": kVK_ANSI_A, "e": kVK_ANSI_E, "g": kVK_ANSI_G]
         return NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
                                 windowNumber: window?.windowNumber ?? 0, context: nil, characters: characters,
                                 charactersIgnoringModifiers: characters, isARepeat: false,
@@ -575,7 +793,8 @@ final class EditorMultiCursorTests: XCTestCase {
                                   clickCount: 1, pressure: 1)!
     }
 
-    private func makeEditor(text: String) throws -> (EditorMultiCursorCoordinator, TextView) {
+    private func makeEditor(text: String, wrapLines: Bool = false,
+                            width: CGFloat = 500) throws -> (EditorMultiCursorCoordinator, TextView) {
         let coordinator = EditorMultiCursorCoordinator()
         coordinator.currentEvent = { nil }
         let spy = ControllerSpy()
@@ -587,12 +806,12 @@ final class EditorMultiCursorTests: XCTestCase {
             font: .monospacedSystemFont(ofSize: 13, weight: .regular),
             tabWidth: 4,
             lineHeight: 1.15,
-            wrapLines: false,
+            wrapLines: wrapLines,
             cursorPositions: .constant([]),
             highlightProviders: [],
             coordinators: [spy, coordinator]
         )
-        let size = NSSize(width: 500, height: 300)
+        let size = NSSize(width: width, height: 300)
         let host = NSHostingView(rootView: editor.frame(width: size.width, height: size.height))
         host.frame = NSRect(origin: .zero, size: size)
         let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)

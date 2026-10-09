@@ -330,7 +330,7 @@ struct WorkspaceDocumentView: View {
         case .findNext: find.isVisible ? find.move(1) : openFind(replace: false)
         case .findPrevious: find.isVisible ? find.move(-1) : openFind(replace: false)
         case .selectNextOccurrence, .selectPreviousOccurrence, .selectAllOccurrences, .addCursorAbove,
-             .addCursorBelow, .undoSelection:
+             .addCursorBelow, .undoSelection, .redoSelection:
             multiCursorCoordinator.perform(command)
         }
     }
@@ -513,7 +513,10 @@ struct WorkspaceDocumentView: View {
         case .source:
             guard current < find.sourceMatches.count else { return }
             cursorPositions = [CursorPosition(range: find.sourceMatches[current].range)]
-            DispatchQueue.main.async { revealCoordinator.scrollSelectionToVisible() }
+            DispatchQueue.main.async {
+                revealCoordinator.scrollSelectionToVisible()
+                multiCursorCoordinator.syncSelection()
+            }
         case .preview:
             guard current < find.previewMatches.count else { return }
             previewFocus = MarkdownFindFocus(block: find.previewMatches[current].block, match: current)
@@ -554,7 +557,10 @@ struct WorkspaceDocumentView: View {
         } ?? NSRange(location: line.location, length: 0)
         cursorPositions = [CursorPosition(range: selection)]
         document.reveal = nil
-        DispatchQueue.main.async { revealCoordinator.scrollSelectionToVisible() }
+        DispatchQueue.main.async {
+            revealCoordinator.scrollSelectionToVisible()
+            multiCursorCoordinator.syncSelection()
+        }
     }
 
     private func applyFocusRequest() {
