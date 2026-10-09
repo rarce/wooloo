@@ -239,10 +239,12 @@ enum HerdrSocketError: LocalizedError {
     case message(String)
     /// No server listens on the socket: it is missing, or left behind by a server that exited.
     case notRunning(path: String, reason: String)
+    /// The server answered with an error carrying a code, such as `linked_worktree_source`.
+    case refused(code: String, message: String)
 
     var errorDescription: String? {
         switch self {
-        case .message(let text): return text
+        case .message(let text), .refused(_, let text): return text
         case .notRunning(let path, let reason): return "Cannot connect to \(path): \(reason)"
         }
     }
@@ -329,7 +331,9 @@ enum HerdrSocket {
                 let line = Data(response[..<newline])
                 if let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
                    let error = object["error"] as? [String: Any] {
-                    throw HerdrSocketError.message(error["message"] as? String ?? "Herdr request failed")
+                    let message = error["message"] as? String ?? "Herdr request failed"
+                    if let code = error["code"] as? String { throw HerdrSocketError.refused(code: code, message: message) }
+                    throw HerdrSocketError.message(message)
                 }
                 return line
             }
@@ -628,6 +632,8 @@ final class HerdrStore: ObservableObject {
     private var eventStream: HerdrEventStream?
     private var surfaceStream: HerdrSurfaceStream?
     private var generation = 0
+    /// Worktree checkouts whose Space is being opened, so a repeated choice does not open two.
+    private var openingWorktrees: Set<String> = []
     private struct PendingInput {
         let paneID: String
         let event: HerdrInputEvent
@@ -974,54 +980,54 @@ final class HerdrStore: ObservableObject {
     func clearActionError() { actionError = nil }
 
     func createWorkspace(cwd: String? = nil, label: String? = nil) {
-        guard isConnected else { return }
-        let path = socketPath
         let source = cwd == nil ? selectedWorkspaceID : nil
-        let currentGeneration = generation
-        Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
-                Result { () throws -> (String, HerdrSnapshot) in
-                    let id = try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source,
-                                                             cwd: cwd, label: label)
-                    return (id, try HerdrSocket.snapshot(path: path))
-                }
-            }
-            guard generation == currentGeneration else { return }
-            switch result {
-            case .success(let (id, fresh)):
-                snapshot = fresh
-                select(workspaceID: id)
-                actionError = nil
-            case .failure(let error): actionError = error.localizedDescription
-            }
+        openSpace { path in
+            try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source, cwd: cwd, label: label)
         }
     }
+
+    /// The Herdr refusals after which a worktree opens in a plain Space: the source is not a main
+    /// checkout or not in Git (a bare repository), or the server predates `worktree.open`.
+    static let worktreeFallbackCodes: Set<String> = ["linked_worktree_source", "not_git_worktree", "invalid_request"]
 
     /// Focuses the Space of a Git worktree checkout, opening one there if none is, as Herdr's
     /// `worktree.open` does: each checkout has one Space, and the Spaces of other checkouts keep
     /// their terminals and agents running. `repository` is the main checkout; without one (a bare
-    /// repository), or when Herdr refuses the worktree, a plain Space opens in the checkout.
+    /// repository), or when Herdr cannot open worktrees there, a plain Space opens in the checkout.
     func openWorktree(_ checkout: String, repository: String?) {
         guard isConnected else { return }
-        if let open = snapshot?.workspaces.first(where: { $0.worktree?.checkoutPath == checkout })?.workspaceID
-            ?? snapshot?.panes.first(where: { $0.cwd == checkout })?.workspaceID {
-            select(workspaceID: open)
+        // Herdr also finds a Space opened in the checkout without `worktree.open`, so it is only
+        // skipped when the snapshot already names the checkout's Space.
+        if let open = snapshot?.workspaces.first(where: { $0.worktree?.checkoutPath == checkout }) {
+            select(workspaceID: open.workspaceID)
             return
         }
+        guard openingWorktrees.insert(checkout).inserted else { return }
+        let label = (checkout as NSString).lastPathComponent
+        openSpace(finished: { [weak self] in self?.openingWorktrees.remove(checkout) }) { path in
+            if let repository {
+                do {
+                    return try HerdrSocket.openWorktree(path: path, checkout: checkout, repository: repository)
+                } catch HerdrSocketError.refused(let code, _) where Self.worktreeFallbackCodes.contains(code) {}
+            }
+            return try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: nil, cwd: checkout, label: label)
+        }
+    }
+
+    /// Runs a request that opens a Space off the main thread, then selects that Space.
+    private func openSpace(finished: @escaping @MainActor () -> Void = {},
+                           _ open: @escaping @Sendable (String) throws -> String) {
+        guard isConnected else { return finished() }
         let path = socketPath
         let currentGeneration = generation
         Task {
             let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> (String, HerdrSnapshot) in
-                    var id: String?
-                    if let repository {
-                        id = try? HerdrSocket.openWorktree(path: path, checkout: checkout, repository: repository)
-                    }
-                    let opened = try id ?? HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: nil,
-                                                                       cwd: checkout)
-                    return (opened, try HerdrSocket.snapshot(path: path))
+                    let id = try open(path)
+                    return (id, try HerdrSocket.snapshot(path: path))
                 }
             }
+            finished()
             guard generation == currentGeneration else { return }
             switch result {
             case .success(let (id, fresh)):

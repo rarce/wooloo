@@ -180,8 +180,9 @@ final class WorkspaceGitBarModelTests: XCTestCase {
             HerdrWorkspace(workspaceID: "w1", label: label, agentStatus: status, activeTabID: nil,
                            worktree: HerdrWorktree(checkoutPath: path))
         }
-        XCTAssertNil(WorkspaceGitBarModel.space(of: tree, in: [space("/r", "r", nil)]))
-        let open = WorkspaceGitBarModel.space(of: tree, in: [space("/r", "r", nil), space("/r/feature", "feature", "working")])
+        XCTAssertNil(WorkspaceGitBarModel.spaces(of: [tree], in: [space("/r", "r", nil)]).first?.space)
+        let open = WorkspaceGitBarModel.spaces(of: [tree], in: [space("/r", "r", nil),
+                                                                space("/r/feature", "feature", "working")]).first?.space
         XCTAssertEqual(open?.label, "feature")
         XCTAssertEqual(WorkspaceGitBarModel.spaceTitle("feature", space: open), "feature · working")
         XCTAssertEqual(WorkspaceGitBarModel.spaceTitle("feature", space: space("/r/feature", "Fix", "blocked")),

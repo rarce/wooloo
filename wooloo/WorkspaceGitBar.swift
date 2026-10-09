@@ -124,8 +124,9 @@ struct WorkspaceGitBar: View {
         let others = model.otherWorktrees
         // Each worktree has its own Space, as in Herdr: opening one leaves this Space, its terminals
         // and agents as they are, so the menu says which worktrees already have a Space.
-        let open = others.filter { WorkspaceGitBarModel.space(of: $0, in: spaces) != nil }
-        let closed = others.filter { WorkspaceGitBarModel.space(of: $0, in: spaces) == nil }
+        let withSpaces = WorkspaceGitBarModel.spaces(of: others, in: spaces)
+        let open = withSpaces.filter { $0.space != nil }
+        let closed = withSpaces.filter { $0.space == nil }.map(\.tree)
         if !others.isEmpty {
             Menu {
                 if let currentWorktree = model.currentWorktree {
@@ -136,12 +137,11 @@ struct WorkspaceGitBar: View {
                 }
                 if !open.isEmpty {
                     Section("Go to Space") {
-                        ForEach(open) { tree in
+                        ForEach(open, id: \.tree.id) { entry in
                             Button {
-                                onOpenWorktree?(tree.path, model.repositoryCheckout)
+                                onOpenWorktree?(entry.tree.path, model.repositoryCheckout)
                             } label: {
-                                Label(WorkspaceGitBarModel.spaceTitle(worktreeName(tree),
-                                                                      space: WorkspaceGitBarModel.space(of: tree, in: spaces)),
+                                Label(WorkspaceGitBarModel.spaceTitle(worktreeName(entry.tree), space: entry.space),
                                       systemImage: "rectangle.stack")
                             }
                             .disabled(onOpenWorktree == nil)
@@ -411,9 +411,14 @@ final class WorkspaceGitBarModel: ObservableObject {
         repository?.worktrees.first.flatMap { $0.isBare ? nil : $0.path }
     }
 
-    /// The Herdr Space open on a worktree, if any.
-    static func space(of tree: WorkspaceWorktree, in spaces: [HerdrWorkspace]) -> HerdrWorkspace? {
-        spaces.first { $0.worktree?.checkoutPath == tree.path }
+    /// Each worktree with the Herdr Space open on it, if any.
+    static func spaces(of trees: [WorkspaceWorktree],
+                       in spaces: [HerdrWorkspace]) -> [(tree: WorkspaceWorktree, space: HerdrWorkspace?)] {
+        var byCheckout: [String: HerdrWorkspace] = [:]
+        for space in spaces {
+            if let path = space.worktree?.checkoutPath, byCheckout[path] == nil { byCheckout[path] = space }
+        }
+        return trees.map { ($0, byCheckout[$0.path]) }
     }
 
     /// A worktree's row among those with a Space: its name, the Space's label when it differs, and

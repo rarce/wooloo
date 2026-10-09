@@ -61,6 +61,9 @@ final class HerdrStoreTests: XCTestCase {
                 return ["result": ["workspace": ["workspace_id": "w2"]]]
             case "worktree.open":
                 // As Herdr 0.9.3 does: worktrees open from the repository's main checkout.
+                if params["path"] as? String == "/r/gone" {
+                    return ["error": ["code": "worktree_not_found", "message": "worktree path not found"]]
+                }
                 guard params["cwd"] as? String == "/r" else {
                     return ["error": ["code": "linked_worktree_source",
                                       "message": "New and open worktree actions start from the repo parent workspace."]]
@@ -206,8 +209,28 @@ final class HerdrStoreTests: XCTestCase {
         await waitUntil("new space selected") { store.selectedWorkspaceID == "w2" }
         let request = server.requests.first { $0.method == "workspace.create" }
         XCTAssertEqual(request?.params["cwd"] as? String, "/elsewhere/feature")
+        XCTAssertEqual(request?.params["label"] as? String, "feature")
         XCTAssertNil(request?.params["source_workspace_id"])
         XCTAssertNil(store.actionError)
+    }
+
+    /// Other failures are reported rather than opening a second Space for the checkout.
+    func testOpeningAWorktreeReportsOtherFailures() async {
+        await connect()
+        store.openWorktree("/r/gone", repository: "/r")
+        await waitUntil("error reported") { store.actionError != nil }
+        XCTAssertEqual(store.actionError, "worktree path not found")
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+        XCTAssertTrue(server.requests.filter { $0.method == "workspace.create" }.isEmpty)
+    }
+
+    /// A pane that changed into a checkout does not make its Space that checkout's Space: Herdr decides.
+    func testOpeningAWorktreeAsksHerdrWhenOnlyAPaneIsThere() async {
+        state.update { $0.panes[0]["cwd"] = "/r/feature" }
+        await connect()
+        store.openWorktree("/r/feature", repository: "/r")
+        await waitUntil("worktree space selected") { store.selectedWorkspaceID == "w3" }
+        XCTAssertEqual(server.requests.filter { $0.method == "worktree.open" }.count, 1)
     }
 
     func testSplitFollowsTheServersFocus() async {
