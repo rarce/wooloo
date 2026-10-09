@@ -95,6 +95,25 @@ final class RemoteAccessTests: XCTestCase {
         try await waitFor { model.state == .failed("failed to request quick Tunnel: 429 Too Many Requests") }
     }
 
+    func testAnExitedTunnelReportsALastErrorWithoutANewline() async throws {
+        let model = makeModel(script: """
+            printf '2026-10-07T14:09:27Z ERR failed to request quick Tunnel: 429 Too Many Requests' >&2
+            exit 1
+            """)
+        model.start()
+        try await waitFor { model.state == .failed("failed to request quick Tunnel: 429 Too Many Requests") }
+    }
+
+    func testAnExitedTunnelReportsItsErrorWhileAChildKeepsItsOutputOpen() async throws {
+        let model = makeModel(script: """
+            sleep 30 &
+            echo "2026-10-07T14:09:27Z ERR failed to request quick Tunnel: 429 Too Many Requests" >&2
+            exit 1
+            """)
+        model.start()
+        try await waitFor { model.state == .failed("failed to request quick Tunnel: 429 Too Many Requests") }
+    }
+
     func testNamedTunnelPassesItsTokenAndReportsItsHostname() async throws {
         let model = makeModel(script: """
             [ "$TUNNEL_TOKEN" = "token-123" ] || exit 3

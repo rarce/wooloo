@@ -226,6 +226,11 @@ final class RemoteAccessModel: ObservableObject {
     private var isRegistered = false
     private var isWaitingForDNS = false
     private var lastError: String?
+    /// The process's output and, once known, its exit: the exit is reported after the output has
+    /// ended, so its last error line, such as a quick tunnel refused with 429, comes first.
+    private var output: FileHandle?
+    private var exitStatus: Int32?
+    private var outputEnded = false
 
     init(defaults: UserDefaults = .standard, tokens: RemoteAccessTokenStore = .keychain,
          executable: @escaping () -> String? = RemoteAccessSystem.cloudflared,
@@ -306,23 +311,53 @@ final class RemoteAccessModel: ObservableObject {
         isRegistered = false
         isWaitingForDNS = false
         lastError = nil
+        exitStatus = nil
+        outputEnded = false
+        self.output?.readabilityHandler = nil
+        self.output = output.fileHandleForReading
         let lines = RemoteAccessLineBuffer()
+        // Lines, the end of the output and the exit go through the main queue, in order, rather
+        // than tasks, which may run out of order.
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            if data.isEmpty { handle.readabilityHandler = nil; return }
-            let complete = lines.append(data)
-            guard !complete.isEmpty else { return }
-            Task { @MainActor in
-                guard let self, self.generation == generation else { return }
-                complete.forEach(self.handle)
+            let complete: [String]
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                guard let rest = lines.finish() else { return }
+                complete = rest
+            } else {
+                complete = lines.append(data)
+                guard !complete.isEmpty else { return }
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == generation else { return }
+                    complete.forEach(self.handle)
+                    if data.isEmpty {
+                        self.outputEnded = true
+                        self.reportExit()
+                    }
+                }
             }
         }
         process.terminationHandler = { [weak self] process in
             let status = process.terminationStatus
-            Task { @MainActor in
-                guard let self, self.generation == generation else { return }
-                self.process = nil
-                self.state = .failed(self.lastError ?? "cloudflared exited with status \(status).")
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == generation else { return }
+                    self.exitStatus = status
+                    self.reportExit()
+                }
+            }
+            // A child that inherited the pipe can keep it open: give up on the rest a second
+            // after the exit.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                MainActor.assumeIsolated {
+                    guard let self, self.generation == generation, !self.outputEnded else { return }
+                    self.output?.readabilityHandler = nil
+                    self.outputEnded = true
+                    self.reportExit()
+                }
             }
         }
         do {
@@ -339,7 +374,17 @@ final class RemoteAccessModel: ObservableObject {
         generation += 1
         process?.terminate()
         process = nil
+        output?.readabilityHandler = nil
+        output = nil
         state = .stopped
+    }
+
+    /// Reports the exit once the output has ended too.
+    private func reportExit() {
+        guard let exitStatus, outputEnded, process != nil else { return }
+        process = nil
+        output = nil
+        state = .failed(lastError ?? "cloudflared exited with status \(exitStatus).")
     }
 
     private func handle(_ line: String) {
@@ -377,6 +422,7 @@ final class RemoteAccessModel: ObservableObject {
 private final class RemoteAccessLineBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = Data()
+    private var finished = false
 
     func append(_ data: Data) -> [String] {
         lock.lock()
@@ -386,5 +432,15 @@ private final class RemoteAccessLineBuffer: @unchecked Sendable {
         let complete = pending[..<last]
         pending = Data(pending[(last + 1)...])
         return String(decoding: complete, as: UTF8.self).components(separatedBy: "\n")
+    }
+
+    /// The last line, which may lack a newline, at the end of the output; nil after the first call.
+    func finish() -> [String]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return nil }
+        finished = true
+        defer { pending = Data() }
+        return pending.isEmpty ? [] : [String(decoding: pending, as: UTF8.self)]
     }
 }
