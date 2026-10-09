@@ -243,6 +243,7 @@ struct WoolooCommandItem: Identifiable, Equatable {
     }
 
     private static let appCommands: [Self] = [
+        .init("check_for_updates", "wooloo", "Check for Updates…"),
         .init("settings", "Herdr", "Settings…", KeyboardShortcut(",", modifiers: .command)),
         .init("reload_config", "Herdr", "Reload Config", requires: .connected),
         .init("switch_session", "Herdr", "Switch Session…"),

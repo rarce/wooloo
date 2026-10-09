@@ -32,6 +32,8 @@ enum HerdrCommand: Equatable {
     case help, settings, reloadConfig, switchSession
     /// The Remote Access settings, which publish this Mac's SSH through a Cloudflare Tunnel.
     case remoteAccess
+    /// Asks Sparkle for a newer wooloo release.
+    case checkForUpdates
     case newWorkspace, renameWorkspace, closeWorkspace
     case newTab, renameTab, closeTab
     /// A new empty editor tab, "Untitled-N", saved later wherever the user chooses.
@@ -62,6 +64,7 @@ enum HerdrCommand: Equatable {
         case "reload_config": self = .reloadConfig
         case "switch_session": self = .switchSession
         case "remote_access": self = .remoteAccess
+        case "check_for_updates": self = .checkForUpdates
         case "new_workspace": self = .newWorkspace
         case "rename_workspace": self = .renameWorkspace
         case "close_workspace": self = .closeWorkspace

@@ -99,6 +99,7 @@ struct ContentCommandEffects {
     var forgetRecentFileResults: () -> Void = { WorkspaceFiles.forgetRecentResults() }
     var copy: (String) -> Void = { AppActions.copy($0) }
     var reveal: (String) -> Void = { AppActions.reveal($0) }
+    var checkForUpdates: @MainActor () -> Void = { AppUpdater.shared.checkForUpdates() }
 }
 
 /// What shortcuts, menu items and the window's dialogs do to Herdr, the open documents, project
@@ -157,6 +158,7 @@ struct ContentCommands {
             window.settingsShowShortcuts = false
             window.settingsShowRemoteAccess = true
             window.showsSettings = true
+        case .checkForUpdates: effects.checkForUpdates()
         case .newWorkspace:
             documents.activeID = nil
             herdr.createWorkspace()

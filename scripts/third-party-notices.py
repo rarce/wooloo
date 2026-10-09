@@ -46,6 +46,7 @@ RESOLVED = [
     ("TextFormation", "https://github.com/ChimeHQ/TextFormation", ["TextFormation/LICENSE"]),
     ("TextStory", "https://github.com/ChimeHQ/TextStory", ["TextStory/LICENSE"]),
     ("Rearrange", "https://github.com/ChimeHQ/Rearrange", ["Rearrange/LICENSE"]),
+    ("Sparkle", "https://github.com/sparkle-project/Sparkle", ["Sparkle/LICENSE"]),
 ]
 
 # Written by scripts/herdr-notices.py: what the Herdr helper is built from.

@@ -49,6 +49,7 @@ private struct WoolooCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
+            CheckForUpdatesButton(updater: .shared)
             Button("Third-Party Notices") {
                 if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "txt") {
                     NSWorkspace.shared.open(url)
@@ -131,5 +132,17 @@ private struct WoolooCommands: Commands {
         return Button(title ?? command?.title ?? action) { context?.perform(action) }
             .keyboardShortcut(command?.shortcut)
             .disabled(context.map { command?.isAvailable($0.availability) != true } ?? true)
+    }
+}
+
+/// Works without a window, so it observes the updater rather than the focused window's context.
+private struct CheckForUpdatesButton: View {
+    @ObservedObject var updater: AppUpdater
+
+    var body: some View {
+        Button(WoolooCommandItem.named("check_for_updates")?.title ?? "Check for Updates…") {
+            updater.checkForUpdates()
+        }
+        .disabled(!updater.canCheckForUpdates)
     }
 }
