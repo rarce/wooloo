@@ -94,10 +94,11 @@ jobs:
           app=build/DerivedData/Build/Products/Release/wooloo.app
           for binary in "$app/Contents/MacOS/wooloo" "$app/Contents/Helpers/herdr"; do
             archs=$(lipo -archs "$binary")
-            case " $archs " in
-              *" arm64 "*" x86_64 "*|*" x86_64 "*" arm64 "*) ;;
-              *) echo "::error::$binary is not universal ($archs)"; exit 1 ;;
-            esac
+            # One check per architecture: lipo lists them in either order, one space apart.
+            if [[ " $archs " != *" arm64 "* || " $archs " != *" x86_64 "* ]]; then
+              echo "::error::$binary is not universal ($archs)"
+              exit 1
+            fi
           done
           # Tests run with Xcode's products on the framework path; an installed copy needs the rpath.
           if ! otool -l "$app/Contents/MacOS/wooloo" | grep -q '@executable_path/../Frameworks'; then
