@@ -1273,10 +1273,12 @@ final class EditorMultiCursorTests: XCTestCase {
         }
     }
 
+    // MARK: - Scroll position kept with the document
+
     /// What the session keeps of an editor and what was at its top.
     private struct SavedTop {
         var position: CGPoint
-        var anchor: Int?
+        var anchor: EditorScrollAnchor?
         var line: Int
         var text: String
     }
@@ -1286,60 +1288,92 @@ final class EditorMultiCursorTests: XCTestCase {
         textView.layoutManager.textOffsetAtPoint(CGPoint(x: 0, y: textView.visibleRect.minY + 1))
     }
 
-    /// Scrolls a new editor on `text` down 4 000 points in steps, then makes `edit`, and returns
-    /// what the session kept.
-    private func scrollAndSave(_ text: String, wrapLines: Bool, contentInsets: NSEdgeInsets? = nil,
+    private func topLine(_ textView: TextView) throws -> Int {
+        try XCTUnwrap(textView.layoutManager.textLineForPosition(textView.visibleRect.minY + 1)).index
+    }
+
+    /// Scrolls a new editor on `text` down to `y` in steps, then makes `edit`, and returns what
+    /// the session kept once the edit is reported.
+    private func scrollAndSave(_ text: String, wrapLines: Bool, to y: CGFloat = 4_000,
+                               contentInsets: NSEdgeInsets? = nil,
                                edit: (TextView) -> Void = { _ in }) throws -> SavedTop {
         let session = EditorSessionCoordinator()
         let (_, textView) = try makeEditor(text: text, wrapLines: wrapLines, contentInsets: contentInsets,
                                            coordinators: [session])
-        var saved: (CGPoint, Int?) = (.zero, nil)
+        var saved: (CGPoint, EditorScrollAnchor?) = (.zero, nil)
         session.restore(nil, anchor: nil) { saved = ($0, $1) }
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         let clip = try XCTUnwrap(textView.enclosingScrollView?.contentView)
-        for step in 1...20 { clip.scroll(to: NSPoint(x: 0, y: CGFloat(step) * 200)) }
+        for step in 1...20 { clip.scroll(to: NSPoint(x: 0, y: y * CGFloat(step) / 20)) }
         edit(textView)
-        let line = try XCTUnwrap(textView.layoutManager.textLineForPosition(textView.visibleRect.minY)).index
-        if wrapLines { XCTAssertEqual(saved.1, topOffset(textView)) }
-        let result = SavedTop(position: saved.0, anchor: saved.1, line: line, text: textView.string)
-        session.destroy()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(saved.0, clip.bounds.origin)
+        XCTAssertEqual(saved.1?.offset, topOffset(textView))
+        let result = SavedTop(position: saved.0, anchor: saved.1, line: try topLine(textView), text: textView.string)
         window?.close()
         return result
     }
 
-    /// Opens a new editor on the saved text and restores the saved position; returns the editor.
-    private func restore(_ saved: SavedTop, wrapLines: Bool, anchor: Bool = true,
+    /// Opens a new editor on the saved text and restores the saved position, as a tab switch or
+    /// relaunch does, and returns the editor.
+    private func restore(_ saved: SavedTop, wrapLines: Bool, anchor: Bool = true, width: CGFloat = 500,
                          contentInsets: NSEdgeInsets? = nil) throws -> TextView {
         let session = EditorSessionCoordinator()
-        let (_, textView) = try makeEditor(text: saved.text, wrapLines: wrapLines, contentInsets: contentInsets,
-                                           coordinators: [session])
+        let (_, textView) = try makeEditor(text: saved.text, wrapLines: wrapLines, width: width,
+                                           contentInsets: contentInsets, coordinators: [session])
         session.restore(saved.position, anchor: anchor ? saved.anchor : nil) { _, _ in }
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         return textView
     }
 
-    private func topLine(_ textView: TextView) throws -> Int {
-        try XCTUnwrap(textView.layoutManager.textLineForPosition(textView.visibleRect.minY)).index
-    }
-
-    /// A tab switch or relaunch makes a new editor, whose lines are not laid out yet.
     func testANewEditorGoesBackToTheRowThatWasAtTheTopInWrappedText() throws {
         let saved = try scrollAndSave(wrappedDocument, wrapLines: true)
         XCTAssertEqual(saved.position.y, 4_000)
-        let anchor = try XCTUnwrap(saved.anchor)
         let restored = try restore(saved, wrapLines: true)
+        XCTAssertEqual(topOffset(restored), saved.anchor?.offset)
         XCTAssertEqual(try topLine(restored), saved.line)
-        XCTAssertEqual(topOffset(restored), anchor)
+    }
+
+    func testANewEditorGoesBackToTheSameRowAtOtherWidths() throws {
+        for width in [300.0, 700.0] {
+            for line in [5, 30, 120, 300] {
+                let offset = lineStart(line, in: wrappedDocument)
+                let saved = SavedTop(position: .zero, anchor: EditorScrollAnchor(offset: offset, dy: 0), line: line,
+                                     text: wrappedDocument)
+                let restored = try restore(saved, wrapLines: true, width: width)
+                XCTAssertEqual(topOffset(restored), offset, "line \(line) at \(width)")
+                window?.close()
+            }
+        }
+    }
+
+    func testANewEditorGoesBackToTheExactScrollPositionWithoutWrapping() throws {
+        let saved = try scrollAndSave(wrappedDocument, wrapLines: false, to: 4_003.5)
+        let restored = try restore(saved, wrapLines: false)
+        XCTAssertEqual(restored.enclosingScrollView?.contentView.bounds.origin, saved.position)
+        let fromY = try restore(saved, wrapLines: false, anchor: false)
+        XCTAssertEqual(fromY.enclosingScrollView?.contentView.bounds.origin, saved.position,
+                       "sessions saved before the anchor")
+    }
+
+    /// Turning wrapping on or off between saving and restoring changes every line's height.
+    func testANewEditorGoesBackToTheSameRowAfterWrappingChanged() throws {
+        for wrapsWhenSaved in [true, false] {
+            let saved = try scrollAndSave(wrappedDocument, wrapLines: wrapsWhenSaved)
+            let restored = try restore(saved, wrapLines: !wrapsWhenSaved)
+            XCTAssertEqual(try topLine(restored), saved.line, "saved \(wrapsWhenSaved ? "wrapped" : "unwrapped")")
+            window?.close()
+        }
     }
 
     func testANewEditorGoesBackToTheRowAtTheTopBelowATopInset() throws {
         let insets = NSEdgeInsets(top: 30, left: 0, bottom: 0, right: 0)
-        // Near the start, where the first scroll already lands, from the top of the new editor.
         for line in [5, 120] {
-            let anchor = lineStart(line, in: wrappedDocument)
-            let saved = SavedTop(position: .zero, anchor: anchor, line: line, text: wrappedDocument)
+            let offset = lineStart(line, in: wrappedDocument)
+            let saved = SavedTop(position: .zero, anchor: EditorScrollAnchor(offset: offset, dy: 0), line: line,
+                                 text: wrappedDocument)
             let restored = try restore(saved, wrapLines: true, contentInsets: insets)
-            XCTAssertEqual(topOffset(restored), anchor, "line \(line)")
+            XCTAssertEqual(topOffset(restored), offset, "line \(line)")
             window?.close()
         }
     }
@@ -1351,14 +1385,39 @@ final class EditorMultiCursorTests: XCTestCase {
                                        with: String(repeating: "inserted\n", count: 30))
         }
         let restored = try restore(saved, wrapLines: true)
-        XCTAssertEqual(topOffset(restored), try XCTUnwrap(saved.anchor))
+        XCTAssertEqual(topOffset(restored), saved.anchor?.offset)
         XCTAssertEqual(try topLine(restored), saved.line)
     }
 
-    func testANewEditorGoesBackToTheSameScrollPositionWithoutWrapping() throws {
-        let saved = try scrollAndSave(wrappedDocument, wrapLines: false)
-        XCTAssertNil(saved.anchor, "not looked up without wrapping")
-        XCTAssertEqual(try topLine(try restore(saved, wrapLines: false)), saved.line)
+    func testAnEditAtManyCursorsIsReportedOnce() throws {
+        let session = EditorSessionCoordinator()
+        var reports = 0
+        session.restore(nil, anchor: nil) { _, _ in reports += 1 }
+        let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: true, coordinators: [session])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        reports = 0
+        let ranges = (0..<50).map { NSRange(location: lineStart($0, in: wrappedDocument), length: 0) }
+        textView.replaceCharacters(in: ranges, with: "x")
+        XCTAssertEqual(reports, 0, "after the edit, not during it")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(reports, 1)
+    }
+
+    /// Markdown's source and split modes each make an editor for the same session coordinator;
+    /// the old one goes away after the new one took over.
+    func testTheSessionFollowsTheNewestEditorWhenAnOlderOneGoesAway() throws {
+        let session = EditorSessionCoordinator()
+        var reported: [CGPoint] = []
+        session.restore(nil, anchor: nil) { position, _ in reported.append(position) }
+        _ = try makeEditor(text: wrappedDocument, coordinators: [session])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let (_, second) = try makeEditor(text: wrappedDocument, coordinators: [session])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        // What the first editor's controller does as it goes away.
+        session.destroy()
+        reported = []
+        second.enclosingScrollView?.contentView.scroll(to: NSPoint(x: 0, y: 300))
+        XCTAssertEqual(reported.last, NSPoint(x: 0, y: 300))
     }
 
     /// Scrolling up lays out lines above the view whose heights were estimated; the editor moves

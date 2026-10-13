@@ -189,6 +189,13 @@ final class WorkspaceDocumentStore: ObservableObject {
         documents.filter { $0.space == space }
     }
 
+    /// Where a document's editor is scrolled; changes the documents only when it moved.
+    func recordScroll(_ id: String, position: CGPoint, anchor: EditorScrollAnchor?) {
+        guard let index = documents.firstIndex(where: { $0.id == id }),
+              documents[index].scrollPosition != position || documents[index].scrollAnchor != anchor else { return }
+        documents[index].recordScroll(position, anchor: anchor)
+    }
+
     func document(_ id: String) -> WorkspaceDocument? {
         documents.first { $0.id == id }
     }

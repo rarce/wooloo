@@ -43,10 +43,16 @@ struct WorkspaceDocument: Identifiable {
     var backupID = UUID()
     var cursorPositions = [CursorPosition(line: 1, column: 1)]
     var scrollPosition = CGPoint.zero
-    /// The character at the top of the editor when it last scrolled. With line wrapping on, the
-    /// editor goes back to it rather than to `scrollPosition`, which counts the heights of lines
-    /// not laid out yet as one row each.
-    var scrollAnchor: Int?
+    /// Where the editor was scrolled, as text; a new editor goes back to it rather than to
+    /// `scrollPosition` when there is one.
+    var scrollAnchor: EditorScrollAnchor?
+
+    /// One change, so one update of the document store.
+    mutating func recordScroll(_ position: CGPoint, anchor: EditorScrollAnchor?) {
+        scrollPosition = position
+        scrollAnchor = anchor
+    }
+
     /// The Space whose tab row shows this document; see `WorkspaceDocumentStore.showSpace`.
     var space: String?
     let location: WorkspaceFileLocation
@@ -118,6 +124,9 @@ struct WorkspaceDocumentView: View {
     let onSave: () -> Void
     var onReload: () -> Void = {}
     var onOpenFile: (String) -> Void = { _ in }
+    /// Records where the editor is scrolled. The document store looks the document up by id:
+    /// `document`, a binding to its index, can outlive that index when a tab before it closes.
+    var onScroll: (CGPoint, EditorScrollAnchor?) -> Void = { _, _ in }
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
     /// Whether this document's panel has focus. With split panels several documents show at
@@ -384,14 +393,7 @@ struct WorkspaceDocumentView: View {
         )
         .onAppear {
             sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil,
-                                       anchor: document.scrollAnchor) { position, anchor in
-                guard document.scrollPosition != position || document.scrollAnchor != anchor else { return }
-                // One write, so one change of the document store per scroll.
-                var scrolled = document
-                scrolled.scrollPosition = position
-                scrolled.scrollAnchor = anchor
-                document = scrolled
-            }
+                                       anchor: document.scrollAnchor, onScroll: onScroll)
         }
         .onAppear { applyReveal() }
         .onChange(of: document.reveal) { _, _ in applyReveal() }
