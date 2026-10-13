@@ -524,6 +524,19 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(3), range(10), range(17)])
     }
 
+    func testChangingTheTabWidthEndsARunOfAddedCursors() throws {
+        let spy = ControllerSpy()
+        let (coordinator, textView) = try makeEditor(text: "\tab\n\tab\n\tab\n", spy: spy)
+        textView.selectionManager.setSelectedRange(range(1))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertEqual(selectedRanges(textView), [range(1), range(5)])
+        try XCTUnwrap(spy.controller).tabWidth = 2
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertEqual(selectedRanges(textView), [range(1), range(5), range(9)],
+                       "after the tab, where the narrower tab now ends, not where the old one did")
+    }
+
     func testControlCommandDAddsThePreviousOccurrence() throws {
         let (coordinator, textView) = try makeEditor(text: "a x a x a\n")
         textView.selectionManager.setSelectedRange(range(8))
@@ -796,6 +809,57 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(4)], "the change in code is a step of its own")
         XCTAssertTrue(coordinator.perform(.undoSelection))
         XCTAssertEqual(selectedRanges(textView), [range(0)])
+    }
+
+    func testAnEditorWithoutTheKeyboardReportsOnlySelectionsThatChange() throws {
+        final class Count { var posts = 0 }
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: "foo bar\n", spy: spy)
+        let controller = try XCTUnwrap(spy.controller)
+        textView.selectionManager.setSelectedRange(range(1))
+        window?.makeFirstResponder(nil)
+        let count = Count()
+        let observer = NotificationCenter.default.addObserver(
+            forName: TextSelectionManager.selectionChangedNotification, object: textView.selectionManager, queue: nil
+        ) { _ in count.posts += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        // As SwiftUI sets the same cursor positions again on almost every update of the view.
+        for _ in 0..<5 { controller.setCursorPositions(controller.cursorPositions) }
+        XCTAssertEqual(count.posts, 0, "nothing changed, so nothing redraws")
+        textView.selectionManager.setSelectedRange(range(4))
+        XCTAssertEqual(count.posts, 1)
+    }
+
+    func testADragSessionThatTakesTheMouseUpDoesNotJoinALaterChangeToTheClick() throws {
+        let (coordinator, textView) = try makeEditor(text: "let foo = foo + 1\n")
+        textView.selectionManager.setSelectedRange(range(0))
+        var event: NSEvent?
+        coordinator.currentEvent = { event }
+        event = mouse(.leftMouseDown, at: 4, in: textView, flags: [], timestamp: 1)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        textView.selectionManager.setSelectedRange(range(4))
+        // Text dragged out of the editor: the drag session takes the mouse-up, so the monitor
+        // never sees it, and the last drag stays the current event with the button up.
+        event = mouse(.leftMouseDragged, at: 6, in: textView, flags: [], timestamp: 2)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        coordinator.isMouseButtonDown = { false }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        textView.selectionManager.setSelectedRange(range(10, 3))
+        event = nil
+
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(4)], "the change in code is a step of its own")
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(0)])
+    }
+
+    func testAnEditorShowingOtherTextDoesNotTakeAReveal() throws {
+        let (coordinator, textView) = try makeEditor(text: "foo bar\n")
+        textView.selectionManager.setSelectedRange(range(0))
+        XCTAssertFalse(coordinator.reveal(range(4, 3), in: "something else\n"), "an editor left from before")
+        XCTAssertEqual(selectedRanges(textView), [range(0)])
+        XCTAssertTrue(coordinator.reveal(range(4, 3), in: "foo bar\n"))
+        XCTAssertEqual(selectedRanges(textView), [range(4, 3)])
     }
 
     func testSelectionsSetWhileTheEditorLacksTheKeyboardAreRecordedAndReportedAtOnce() throws {
@@ -1227,6 +1291,7 @@ final class EditorMultiCursorTests: XCTestCase {
                             spy: ControllerSpy = ControllerSpy()) throws -> (EditorMultiCursorCoordinator, TextView) {
         let coordinator = EditorMultiCursorCoordinator()
         coordinator.currentEvent = { nil }
+        coordinator.isMouseButtonDown = { true }
         let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
         let editor = CodeEditSourceEditor(
             NSTextStorage(string: text),

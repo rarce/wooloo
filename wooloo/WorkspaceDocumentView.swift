@@ -565,8 +565,11 @@ struct WorkspaceDocumentView: View {
             let start = min($0.location, line.length)
             return NSRange(location: line.location + start, length: min($0.length, line.length - start))
         } ?? NSRange(location: line.location, length: 0)
-        cursorPositions = [CursorPosition(range: selection)]
         document.reveal = nil
+        // One selection and one scroll in the editor shown, as for find matches; an editor not
+        // made yet takes the selection from the binding.
+        if multiCursorCoordinator.reveal(selection, in: document.text) { return }
+        cursorPositions = [CursorPosition(range: selection)]
         DispatchQueue.main.async {
             revealCoordinator.scrollSelectionToVisible()
             multiCursorCoordinator.syncSelection()

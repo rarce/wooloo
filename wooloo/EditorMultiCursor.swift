@@ -279,7 +279,22 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     /// The goal ⌥⌘↑/↓ keep while adding cursors, whether lines wrapped, and the selection they
     /// left. A press that follows any other change starts over from the selection it adds to.
     /// Readable for tests.
-    private(set) var addCursorGoal: (goal: CursorGoal, wraps: Bool, after: [NSRange])?
+    private(set) var addCursorGoal: (goal: CursorGoal, layout: GoalLayout, after: [NSRange])?
+
+    /// What x positions depend on besides the text: a run of ⌥⌘↑/↓ ends when any of it changes
+    /// between presses, as when the code font size or line wrapping does.
+    struct GoalLayout: Equatable {
+        var wraps: Bool
+        var font: NSFont?
+        var tabWidth: Int
+        var left: CGFloat
+    }
+
+    private var goalLayout: GoalLayout {
+        let layout = controller?.textView.layoutManager
+        return GoalLayout(wraps: layout?.wrapLines ?? false, font: controller?.font, tabWidth: tabWidth,
+                          left: layout?.edgeInsets.left ?? 0)
+    }
     /// Selections before each change, for ⌘U, with the ranges the change left.
     private var history: [(before: MultiCursorSelection, after: [NSRange], change: SelectionChange)] = []
     /// Steps ⌘U went back through, latest last, for ⇧⌘U: the ranges ⌘U left and the selections
@@ -330,6 +345,10 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     /// the current event belongs to the editor's own drag rather than one elsewhere, such as a
     /// file dragged in the explorer, whose drop may leave its last drag the current event.
     private var holdsMouseInTextView = false
+    /// Whether the left mouse button is down now. The monitor can miss the mouse-up, which a
+    /// drag session (text dragged out of the editor) takes, so the flag above is not enough on
+    /// its own. Internal for tests, which have no real mouse.
+    var isMouseButtonDown: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
 
     func prepareCoordinator(controller: TextViewController) {
         if self.controller !== controller {
@@ -398,9 +417,12 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     /// Selects a match the find bar stepped to and scrolls to it, as a ⌘U step of its own, and
     /// leaves the keyboard where it is; the editor reports the selection to the cursor binding.
     /// Returns false when there is no editor to select in.
+    /// With `text`, only an editor showing that text selects, not one a reveal on appear finds
+    /// still left from before.
     @discardableResult
-    func reveal(_ range: NSRange) -> Bool {
-        guard let textView = controller?.textView, NSMaxRange(range) <= textView.textStorage.length else { return false }
+    func reveal(_ range: NSRange, in text: String? = nil) -> Bool {
+        guard let textView = controller?.textView, NSMaxRange(range) <= textView.textStorage.length,
+              text.map({ $0 == textView.textStorage.string }) ?? true else { return false }
         set([range], newest: range)
         return true
     }
@@ -415,8 +437,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     }
 
     /// Records a selection the editor took without reporting it. The vendored editor reports every
-    /// change, with or without the keyboard, so this is a safeguard. Called before anything that
-    /// reads or changes the selections, and by the document view after a reveal.
+    /// change, with or without the keyboard, so this is only a safeguard, run where it costs
+    /// nothing that matters: before cursor commands and selections set from outside, and by the
+    /// document view after a reveal, but not on every key or click.
     func syncSelection() {
         guard let textView = controller?.textView else { return }
         let actual = textView.selectionManager.textSelections.map(\.range).sorted { $0.location < $1.location }
@@ -443,7 +466,6 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         DispatchQueue.main.async { [weak self] in
             if self?.dispatchingKey === event { self?.dispatchingKey = nil }
         }
-        syncSelection()
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
         let code = Int(event.keyCode)
@@ -510,7 +532,6 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             holdsMouseInTextView = isOverTextView(event, textView)
             endColumnDrag()
             isEditing = false
-            syncSelection()
             mouseDown = event.timestamp
             let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
             guard flags == .option, event.clickCount == 1, textView.isEditable, isOverTextView(event, textView),
@@ -749,11 +770,11 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
 
     /// Keeps the first press's goal and width while each press adds to what the last one left,
     /// so a part clamped to a short line does not narrow the lines after it. A run also ends when
-    /// line wrapping is turned on or off, which changes the kind of goal.
+    /// the layout the goal was measured in changes (`GoalLayout`).
     private func addCursor(_ selection: MultiCursorSelection, text: NSString, above: Bool) -> MultiCursorSelection? {
         guard let base = above ? selection.ranges.first : selection.ranges.last else { return nil }
-        let wraps = controller?.textView.layoutManager.wrapLines ?? false
-        let goal = addCursorGoal.flatMap { $0.after == selection.ranges && $0.wraps == wraps ? $0.goal : nil }
+        let layout = goalLayout
+        let goal = addCursorGoal.flatMap { $0.after == selection.ranges && $0.layout == layout ? $0.goal : nil }
             ?? cursorGoal(for: base, in: text)
         let result: MultiCursorSelection?
         switch goal {
@@ -770,7 +791,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             }
         }
         guard let result else { return nil }
-        addCursorGoal = (goal, wraps, result.ranges)
+        addCursorGoal = (goal, layout, result.ranges)
         return result
     }
 
@@ -930,7 +951,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             guard event === dispatchingKey else { return (.other, false) }
             return Self.isNavigationKey(event) ? (.keys, true) : (.other, false)
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
-            guard event === dispatchingMouse || event.type == .leftMouseDragged && holdsMouseInTextView
+            guard event === dispatchingMouse || event.type == .leftMouseDragged && holdsMouseInTextView && isMouseButtonDown()
             else { return (.other, false) }
             if event.type == .leftMouseDown { mouseDown = event.timestamp }
             // A drag continues its click's step only when that click was recorded: a click that

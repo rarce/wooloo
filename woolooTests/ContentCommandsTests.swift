@@ -421,7 +421,9 @@ final class ContentCommandsTests: XCTestCase {
     }
 
     func testWrapLinesTogglesTheSettingEveryDocumentEditorReads() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "ContentCommandsTests-\(UUID())"))
+        let suite = "ContentCommandsTests-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
         window = ContentWindowModel(defaults: defaults)
         XCTAssertFalse(window.wrapsLines, "off until turned on, as before")
         XCTAssertTrue(WoolooCommandItem.named("toggle_wrap_lines")?.isAvailable(commands.availability) == true,

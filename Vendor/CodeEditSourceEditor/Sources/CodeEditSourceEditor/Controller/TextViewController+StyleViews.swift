@@ -33,7 +33,6 @@ extension TextViewController {
         textView.selectionManager.highlightSelectedLine = isEditable
         textView.selectionManager.insertionPointColor = theme.insertionPoint
         textView.typingAttributes = attributesFor(nil)
-        applyParagraphStyle() // wooloo patch: also to text set before the style
     }
 
     /// Finds the preferred use theme background.

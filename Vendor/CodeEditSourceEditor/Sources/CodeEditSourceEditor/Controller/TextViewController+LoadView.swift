@@ -40,6 +40,7 @@ extension TextViewController {
         }
 
         styleTextView()
+        applyParagraphStyle() // wooloo patch: also to the text set before the view loads
         styleScrollView()
         styleGutterView()
         setUpHighlighter()
