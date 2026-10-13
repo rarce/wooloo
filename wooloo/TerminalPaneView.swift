@@ -779,7 +779,7 @@ enum TerminalLinks {
 
     /// The cell at `index`, counted row by row across the pane's content.
     private static func cell(_ index: Int, inside inner: HerdrRect, in surface: HerdrSurface) -> HerdrCell {
-        surface.cells[(inner.y + index / inner.width) * surface.width + inner.x + index % inner.width]
+        surface.cells[inner.x + index % inner.width, inner.y + index / inner.width]
     }
 
     private static func hyperlink(_ index: Int, inside inner: HerdrRect, in surface: HerdrSurface) -> UInt32? {

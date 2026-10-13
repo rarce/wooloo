@@ -131,8 +131,15 @@ final class SurfaceDecodingTests: XCTestCase {
             ([(right, -2)], (0..<6).map { (left: "left \($0)", right: $0 == 0 ? "right 0" : $0 < 3 ? "new \($0)" : "right \($0 - 2)") }),
             ([(left, 2), (right, 1)], (0..<6).map { (left: "left \($0 + 2)", right: $0 == 0 ? "right 0" : "right \($0 + 1)") }),
         ]
-        for (index, test) in cases.enumerated() {
-            let previous = filled(start)
+        // A region narrower than half the row swaps only its own cells.
+        let narrow = HerdrRect(x: 0, y: 0, width: 6, height: 6)
+        let narrowStart = (0..<6).map { (left: "n\($0)", right: "right \($0)") }
+        let narrowCases: [(scrolls: [(rect: HerdrRect, shift: Int)], rows: [(left: String, right: String)])] = [
+            ([(narrow, 1)], (0..<6).map { (left: "n\($0 + 1)", right: "right \($0)") }),
+            ([(narrow, -3)], (0..<6).map { (left: $0 < 3 ? "m\($0)" : "n\($0 - 3)", right: "right \($0)") }),
+        ]
+        for (index, (test, initial)) in (cases.map { ($0, start) } + narrowCases.map { ($0, narrowStart) }).enumerated() {
+            let previous = filled(initial)
             var next = filled(test.rows)
             next.revision = previous.revision + 1
             var decoder = HerdrSurfaceDecoder()
@@ -142,6 +149,26 @@ final class SurfaceDecodingTests: XCTestCase {
             let frame = next.scrollFrame(from: previous, scrolls: test.scrolls)
             XCTAssertEqual(try decoder.apply(frame: frame).map { Array($0.cells) }, next.cells, "case \(index)")
             XCTAssertEqual(try reference.apply(frame).map { Array($0.cells) }, next.cells, "reference, case \(index)")
+        }
+    }
+
+    /// Complete surfaces of other sizes through one decoder: cells are read in rows of the
+    /// previous width (or the hello's) and regrouped when the width changed.
+    func testCompleteSurfacesOfOtherWidthsThroughOneDecoder() throws {
+        for expected in [nil, 80, 33] {
+            var decoder = HerdrSurfaceDecoder(expectedWidth: expected)
+            for (width, height) in [(80, 24), (120, 16), (100, 30), (40, 48), (1, 3), (80, 24)] {
+                var model = SurfaceModel(width: width, height: height)
+                for y in 0..<height {
+                    var row = RowBuilder(width: width)
+                    row.put("\(y)·\(width)x\(height)")
+                    model.setRow(y, row.cells)
+                }
+                let surface = try XCTUnwrap(decoder.apply(frame: model.surfaceFrame()))
+                XCTAssertEqual(Array(surface.cells), model.cells, "\(width)x\(height) after expecting \(String(describing: expected))")
+                XCTAssertEqual(surface.cells.rows.count, height)
+                XCTAssertTrue(surface.cells.rows.allSatisfy { $0.count == width })
+            }
         }
     }
 

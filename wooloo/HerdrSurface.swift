@@ -33,6 +33,26 @@ struct HerdrCellRows: RandomAccessCollection, MutableCollection, Equatable {
         self.rows = rows
     }
 
+    /// The cells of `rows`, read in order and split again at `width`, copying each cell once.
+    init(regrouping rows: [[HerdrCell]], width: Int) {
+        let count = rows.reduce(0) { $0 + $1.count }
+        precondition(width > 0 && count % width == 0, "cells must fill whole rows")
+        self.width = width
+        var regrouped: [[HerdrCell]] = []
+        regrouped.reserveCapacity(count / width)
+        var row: [HerdrCell] = []
+        row.reserveCapacity(width)
+        for cell in rows.joined() {
+            row.append(cell)
+            if row.count == width {
+                regrouped.append(row)
+                row = []
+                row.reserveCapacity(width)
+            }
+        }
+        self.rows = regrouped
+    }
+
     var startIndex: Int { 0 }
     var endIndex: Int { width * rows.count }
 
@@ -54,18 +74,34 @@ struct HerdrCellRows: RandomAccessCollection, MutableCollection, Equatable {
     /// Row `y`, without copying it.
     func row(_ y: Int) -> ArraySlice<HerdrCell> { rows[y][...] }
 
-    /// Swaps the cells of `columns` between rows `a` and `b`. The rows themselves swap, and
-    /// cells outside `columns` swap back only where the two rows differ there: beside a pane,
-    /// rows usually share its borders, so a scroll moves rows without copying them.
+    /// Swaps the cells of `columns` between rows `a` and `b`. When `columns` cover at least
+    /// half the row, the rows themselves swap, and cells outside `columns` swap back only where
+    /// the two rows differ there: beside a pane, rows usually share its borders, so a scroll
+    /// moves rows without copying them. A narrower region swaps just its own cells, since the
+    /// rest of the row, such as another pane's text, would mostly have to swap back.
     mutating func swapCells(_ columns: Range<Int>, ofRow a: Int, withRow b: Int) {
         guard a != b else { return }
-        rows.swapAt(a, b)
-        for outside in [0..<columns.lowerBound, columns.upperBound..<width] {
-            for x in outside where rows[a][x] != rows[b][x] {
-                let cell = rows[a][x]
-                rows[a][x] = rows[b][x]
-                rows[b][x] = cell
+        guard columns.count * 2 >= width else {
+            // In place: each row is copied at most once, when another surface still shares it.
+            rows.withUnsafeMutableBufferPointer { rows in
+                rows[a].withUnsafeMutableBufferPointer { first in
+                    rows[b].withUnsafeMutableBufferPointer { second in
+                        for x in columns { swap(&first[x], &second[x]) }
+                    }
+                }
             }
+            return
+        }
+        rows.swapAt(a, b)
+        swapBackDiffering(0..<columns.lowerBound, ofRow: a, withRow: b)
+        swapBackDiffering(columns.upperBound..<width, ofRow: a, withRow: b)
+    }
+
+    private mutating func swapBackDiffering(_ columns: Range<Int>, ofRow a: Int, withRow b: Int) {
+        for x in columns where rows[a][x] != rows[b][x] {
+            let cell = rows[a][x]
+            rows[a][x] = rows[b][x]
+            rows[b][x] = cell
         }
     }
 
@@ -196,7 +232,9 @@ struct HerdrSurface: Equatable {
     var revision: UInt64
     let width: Int
     let height: Int
-    var cells: HerdrCellRows
+    var cells: HerdrCellRows {
+        didSet { assert(cells.width == width && cells.count == width * height, "cells must match the surface's size") }
+    }
     var cursor: HerdrCursor?
     let paneIDs: [String]
     var paneRects: [String: HerdrRect]
@@ -533,7 +571,7 @@ private struct SurfaceReader {
         let width = try Int(number())
         let height = try Int(number())
         guard width > 0, height > 0, width * height == cellCount else { throw SurfaceProtocolError.invalidFrame }
-        let cells = width == rowWidth ? HerdrCellRows(rows: rows, width: width) : HerdrCellRows(Array(rows.joined()), width: width)
+        let cells = width == rowWidth ? HerdrCellRows(rows: rows, width: width) : HerdrCellRows(regrouping: rows, width: width)
         let cursor = try optional { reader in try reader.cursor() }
         var hyperlinks: [String] = []
         for _ in 0..<(try count()) { hyperlinks.append(try string()) }
@@ -657,6 +695,13 @@ struct HerdrSurfaceDecoder {
 
     private(set) var surface: HerdrSurface?
     private var graphicsCache: [Data: Data] = [:]
+    /// The width the first complete surface is read in rows of, until a surface sets it:
+    /// the width the hello asked for.
+    private var initialWidth: Int?
+
+    init(expectedWidth: Int? = nil) {
+        initialWidth = expectedWidth
+    }
 
     /// Applies one surface (tag 13), patch (tag 19) or scrolled patch (a tag 20 control frame
     /// of `scrollKind`); other frames return nil.
@@ -699,7 +744,7 @@ struct HerdrSurfaceDecoder {
 
     fileprivate mutating func apply(tag: UInt64, from reader: inout SurfaceReader) throws -> HerdrSurface {
         if tag == 13 {
-            let decoded = try reader.surface(graphicsCache: &graphicsCache, expectedWidth: surface?.width)
+            let decoded = try reader.surface(graphicsCache: &graphicsCache, expectedWidth: surface?.width ?? initialWidth)
             surface = decoded
             return decoded
         }
@@ -971,7 +1016,7 @@ final class HerdrSurfaceStream {
         guard send(SurfaceWriter.control(kind: "endpoint.hello.v1", data: helloString)) else {
             throw SurfaceProtocolError.unexpectedEnd
         }
-        var decoder = HerdrSurfaceDecoder()
+        var decoder = HerdrSurfaceDecoder(expectedWidth: cols)
         var agents = HerdrAgentProjectionDecoder()
         var welcomed = false
         var supportsAgentView = false
