@@ -41,9 +41,7 @@ extension HerdrStore {
     }
 
     /// The panes of the selected tab.
-    var selectedPanes: [HerdrPane] {
-        snapshot?.panes.filter { $0.tabID == selectedTabID } ?? []
-    }
+    var selectedPanes: [HerdrPane] { panes(inTab: selectedTabID) }
 }
 
 /// The main window's own state: sidebars, sheets, the Search tab and the rename or close

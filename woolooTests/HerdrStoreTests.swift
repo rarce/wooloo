@@ -510,21 +510,98 @@ final class HerdrStoreTests: XCTestCase {
         defer { subscription.cancel() }
         store.select(tabID: "w1:t2")
         XCTAssertTrue(store.showsLiveSurface, "the previous tab's surface stays until the new one arrives")
-        let switched = published
+        XCTAssertEqual(store.selectedTabID, "w1:t2", "the store selects the tab at once")
+        XCTAssertEqual(published, 0, "the window learns of the switch once the new tab's surface is drawn")
         var other = SurfaceModel(width: 4, height: 2)
         other.paneID = "w1:p3"
         other.revision = 2
         endpoint.send(other.surfaceFrame())
         await waitUntil("new tab shown") { store.surfaceLayout?.paneIDs == ["w1:p3"] }
         XCTAssertTrue(store.showsLiveSurface)
-        XCTAssertEqual(published, switched, "the new tab's surface changes nothing the window shows")
+        await waitUntil("selection published") { published == 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(published, 1, "one publish for the whole switch: the selection, after its surface")
 
-        HerdrStore.surfaceSwitchGrace = .milliseconds(100)
+        // Without a surface, the selection is published after its wait and the fallback after
+        // the grace period, far apart so the order holds on a loaded machine.
+        let wait = HerdrStore.selectionPublishWait
+        defer { HerdrStore.selectionPublishWait = wait }
+        HerdrStore.selectionPublishWait = .milliseconds(10)
+        HerdrStore.surfaceSwitchGrace = .milliseconds(400)
         store.select(tabID: "w1:t1")
         XCTAssertTrue(store.showsLiveSurface)
         let selected = published
+        await waitUntil("selection published without a surface") { published == selected + 1 }
+        XCTAssertTrue(store.showsLiveSurface, "the previous surface stays through the grace period")
         await waitUntil("fell back to the pane text") { !store.showsLiveSurface }
-        XCTAssertGreaterThan(published, selected, "the fallback is published")
+        XCTAssertEqual(published, selected + 2, "the fallback is published")
+    }
+
+    /// Keys typed while the window still shows the previous tab go to the tab switched to.
+    func testInputDuringATabSwitchGoesToTheNewPane() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        store.select(paneID: "w1:p1")
+        store.select(tabID: "w1:t2")
+        store.sendText("x", to: "w1:p1")
+        // A mouse event belongs to the pane under the pointer, whose surface is still shown.
+        let release = HerdrMouseEvent(kind: .up(0), column: 1, row: 1, modifiers: 0, lines: 1)
+        store.sendMouse(release, to: "w1:p1")
+        await waitUntil("input sent") { endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .mouse(release))!) }
+        XCTAssertTrue(endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p3", event: .text("x"))!))
+        XCTAssertFalse(endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .text("x"))!))
+        XCTAssertFalse(endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p3", event: .mouse(release))!))
+    }
+
+    /// Another change to the selection while a tab switch waits, such as a click on a pane's
+    /// header, is published at once, together with the switch.
+    func testOtherSelectionChangesDuringATabSwitchPublishAtOnce() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        var published = 0
+        let subscription = store.objectWillChange.sink { published += 1 }
+        defer { subscription.cancel() }
+        store.select(tabID: "w1:t2")
+        XCTAssertEqual(published, 0)
+        store.selectedPaneID = "w1:p3"
+        XCTAssertEqual(published, 1)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(published, 1, "the switch's own publish is not sent again")
+        store.select(paneID: "w1:p3")
+        XCTAssertEqual(published, 1, "selecting the same pane again publishes nothing")
+    }
+
+    /// Mouse events are input too, but a surface after a wheel event is not their answer:
+    /// with mouse reporting and streaming output, every surface would be drawn at once.
+    func testMouseInputDoesNotMarkTheNextSurfaceAsAnAnswer() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        var urgent: [Bool] = []
+        let owner = NSObject()
+        store.surfaceFeed.observe(owner) { _, answers in urgent.append(answers) }
+        let wheel = HerdrMouseEvent(kind: .scrollDown, column: 1, row: 1, modifiers: 0, lines: 1)
+        store.sendMouse(wheel, to: "w1:p1")
+        await waitUntil("wheel sent") { endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .mouse(wheel))!) }
+        var next = SurfaceModel(width: 4, height: 2)
+        next.revision = 2
+        endpoint.send(next.patchFrame(baseRevision: 1, rows: [0]))
+        await waitUntil("surface") { !urgent.isEmpty }
+        XCTAssertEqual(urgent, [false])
+        store.sendText("a", to: "w1:p1")
+        await waitUntil("text sent") { endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .text("a"))!) }
+        next.revision = 3
+        endpoint.send(next.patchFrame(baseRevision: 2, rows: [0]))
+        await waitUntil("echo") { urgent.count == 2 }
+        XCTAssertEqual(urgent, [false, true])
     }
 
     /// A split drag changes only the snapshot's layouts, which the window reads only for panes

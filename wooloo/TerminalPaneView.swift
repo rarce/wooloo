@@ -334,7 +334,16 @@ struct TerminalPaneView: NSViewRepresentable {
             // Frames reach the view straight from the feed; SwiftUI only connects them once.
             if view.surfaceFeed !== surfaceFeed {
                 view.surfaceFeed = surfaceFeed
-                surfaceFeed.observe(view) { [weak view] surface in view?.show(surface) }
+                surfaceFeed.observe(view) { [weak view] surface, answersUser in
+                    view?.show(surface)
+                    // A key's echo or a new tab's first surface is drawn now rather than at the
+                    // next display pass, which may wait for other work on the main thread.
+                    if answersUser { view?.displayIfNeeded() }
+                }
+                view.show(surfaceFeed.surface)
+                // The feed had no view to answer the user with while this one was missing.
+                if surfaceFeed.takeAnswer() { view.displayIfNeeded() }
+                return
             }
             view.show(surfaceFeed.surface)
             return
