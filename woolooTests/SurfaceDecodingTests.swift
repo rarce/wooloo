@@ -111,6 +111,40 @@ final class SurfaceDecodingTests: XCTestCase {
         }
     }
 
+    /// Scrolls of panes beside each other move only their columns: the rows swap whole, and the
+    /// cells of the other pane, which differ from row to row, must stay where they were.
+    func testScrollsOfPanesSideBySideKeepTheOtherPane() throws {
+        func filled(_ rows: [(left: String, right: String)]) -> SurfaceModel {
+            var model = SurfaceModel(width: 20, height: rows.count)
+            for (y, text) in rows.enumerated() {
+                var row = RowBuilder(width: 20)
+                row.put(text.left.padding(toLength: 10, withPad: " ", startingAt: 0))
+                row.put(text.right)
+                model.setRow(y, row.cells)
+            }
+            return model
+        }
+        let left = HerdrRect(x: 0, y: 0, width: 10, height: 6), right = HerdrRect(x: 10, y: 1, width: 10, height: 5)
+        let start = (0..<6).map { (left: "left \($0)", right: "right \($0)") }
+        let cases: [(scrolls: [(rect: HerdrRect, shift: Int)], rows: [(left: String, right: String)])] = [
+            ([(left, 1)], (0..<6).map { (left: "left \($0 + 1)", right: "right \($0)") }),
+            ([(right, -2)], (0..<6).map { (left: "left \($0)", right: $0 == 0 ? "right 0" : $0 < 3 ? "new \($0)" : "right \($0 - 2)") }),
+            ([(left, 2), (right, 1)], (0..<6).map { (left: "left \($0 + 2)", right: $0 == 0 ? "right 0" : "right \($0 + 1)") }),
+        ]
+        for (index, test) in cases.enumerated() {
+            let previous = filled(start)
+            var next = filled(test.rows)
+            next.revision = previous.revision + 1
+            var decoder = HerdrSurfaceDecoder()
+            var reference = ReferenceSurfaceDecoder()
+            _ = try decoder.apply(frame: previous.surfaceFrame())
+            _ = try reference.apply(previous.surfaceFrame())
+            let frame = next.scrollFrame(from: previous, scrolls: test.scrolls)
+            XCTAssertEqual(try decoder.apply(frame: frame).map { Array($0.cells) }, next.cells, "case \(index)")
+            XCTAssertEqual(try reference.apply(frame).map { Array($0.cells) }, next.cells, "reference, case \(index)")
+        }
+    }
+
     func testDigestNoticesSingleCellChanges() {
         var model = SurfaceModel(width: 10, height: 2)
         let original = model.surface.contentDigest

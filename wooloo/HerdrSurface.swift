@@ -54,16 +54,19 @@ struct HerdrCellRows: RandomAccessCollection, MutableCollection, Equatable {
     /// Row `y`, without copying it.
     func row(_ y: Int) -> ArraySlice<HerdrCell> { rows[y][...] }
 
-    /// Swaps the cells of `columns` between rows `a` and `b`, moving whole rows when that is all of them.
+    /// Swaps the cells of `columns` between rows `a` and `b`. The rows themselves swap, and
+    /// cells outside `columns` swap back only where the two rows differ there: beside a pane,
+    /// rows usually share its borders, so a scroll moves rows without copying them.
     mutating func swapCells(_ columns: Range<Int>, ofRow a: Int, withRow b: Int) {
         guard a != b else { return }
-        if columns.count == width {
-            rows.swapAt(a, b)
-            return
+        rows.swapAt(a, b)
+        for outside in [0..<columns.lowerBound, columns.upperBound..<width] {
+            for x in outside where rows[a][x] != rows[b][x] {
+                let cell = rows[a][x]
+                rows[a][x] = rows[b][x]
+                rows[b][x] = cell
+            }
         }
-        let moved = rows[a][columns]
-        rows[a].replaceSubrange(columns, with: rows[b][columns])
-        rows[b].replaceSubrange(columns, with: moved)
     }
 
     /// Row after row, without dividing each index.
