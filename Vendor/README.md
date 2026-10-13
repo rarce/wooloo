@@ -16,7 +16,6 @@ Their source files are unchanged except for these changes in CodeEditSourceEdito
 And in CodeEditTextView, for multiple cursors (`wooloo/EditorMultiCursor.swift` adds the commands):
 
 - Option-click adds a cursor, or removes the selection under it when there are several (`TextView+Mouse.swift`).
-- `TextSelectionManager` posts `selectionChangedNotification` when selections are set while the text view lacks the keyboard too, if the ranges changed (it still updates the selection views only with the keyboard), so the controller's cursor positions and coordinators follow a find match or reveal set from outside.
 - `TextSelectionManager.didReplaceCharacters` shifts later selections by the change in length and keeps untouched selections. Upstream shifted by the replacement length and collapsed every selection, which misplaced cursors when typing over several selections.
 - An edit at several cursors is one undo step (`TextView+ReplaceCharacters.swift`).
 - Copy writes the selections joined by newlines plus a `dev.wooloo.editor.selections` list; paste with as many cursors puts one piece at each (`TextView+CopyPaste.swift`).

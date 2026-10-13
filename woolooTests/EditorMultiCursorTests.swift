@@ -811,25 +811,6 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(0)])
     }
 
-    func testAnEditorWithoutTheKeyboardReportsOnlySelectionsThatChange() throws {
-        final class Count { var posts = 0 }
-        let spy = ControllerSpy()
-        let (_, textView) = try makeEditor(text: "foo bar\n", spy: spy)
-        let controller = try XCTUnwrap(spy.controller)
-        textView.selectionManager.setSelectedRange(range(1))
-        window?.makeFirstResponder(nil)
-        let count = Count()
-        let observer = NotificationCenter.default.addObserver(
-            forName: TextSelectionManager.selectionChangedNotification, object: textView.selectionManager, queue: nil
-        ) { _ in count.posts += 1 }
-        defer { NotificationCenter.default.removeObserver(observer) }
-        // As SwiftUI sets the same cursor positions again on almost every update of the view.
-        for _ in 0..<5 { controller.setCursorPositions(controller.cursorPositions) }
-        XCTAssertEqual(count.posts, 0, "nothing changed, so nothing redraws")
-        textView.selectionManager.setSelectedRange(range(4))
-        XCTAssertEqual(count.posts, 1)
-    }
-
     func testADragSessionThatTakesTheMouseUpDoesNotJoinALaterChangeToTheClick() throws {
         let (coordinator, textView) = try makeEditor(text: "let foo = foo + 1\n")
         textView.selectionManager.setSelectedRange(range(0))
@@ -853,38 +834,13 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(0)])
     }
 
-    func testAnEditorShowingOtherTextDoesNotTakeAReveal() throws {
-        let (coordinator, textView) = try makeEditor(text: "foo bar\n")
-        textView.selectionManager.setSelectedRange(range(0))
-        XCTAssertFalse(coordinator.reveal(range(4, 3), in: "something else\n"), "an editor left from before")
-        XCTAssertEqual(selectedRanges(textView), [range(0)])
-        XCTAssertTrue(coordinator.reveal(range(4, 3), in: "foo bar\n"))
-        XCTAssertEqual(selectedRanges(textView), [range(4, 3)])
-    }
-
-    func testSelectionsSetWhileTheEditorLacksTheKeyboardAreRecordedAndReportedAtOnce() throws {
-        let spy = ControllerSpy()
-        let (coordinator, textView) = try makeEditor(text: "foo bar foo bar foo\n", spy: spy)
-        textView.selectionManager.setSelectedRange(range(1))
-        // As the cursor binding does after a reveal from Go to File or project search.
-        window?.makeFirstResponder(nil)
-        textView.selectionManager.setSelectedRange(range(4, 3))
-        XCTAssertEqual(spy.controller?.cursorPositions.map(\.range), [range(4, 3)], "reported to the binding")
-        textView.selectionManager.setSelectedRange(range(12, 3))
-        XCTAssertTrue(coordinator.perform(.undoSelection))
-        XCTAssertEqual(selectedRanges(textView), [range(4, 3)], "each a step, without waiting for a key")
-        XCTAssertTrue(coordinator.perform(.undoSelection))
-        XCTAssertEqual(selectedRanges(textView), [range(1)])
-    }
-
-    func testAFindMatchFarDownIsSelectedScrolledToAndReportedInOneReveal() throws {
-        let spy = ControllerSpy()
+    func testAFindMatchFarDownIsSelectedAndScrolledToInOneReveal() throws {
         let text = Array(repeating: "filler line", count: 200).joined(separator: "\n") + "\nneedle\n"
-        let (coordinator, textView) = try makeEditor(text: text, spy: spy)
+        let (coordinator, textView) = try makeEditor(text: text)
         let needle = (text as NSString).range(of: "needle")
         window?.makeFirstResponder(nil)
         XCTAssertTrue(coordinator.reveal(needle))
-        XCTAssertEqual(spy.controller?.cursorPositions.map(\.range), [needle], "the binding follows")
+        XCTAssertEqual(selectedRanges(textView), [needle])
         let visible = try XCTUnwrap(textView.visibleTextRange)
         XCTAssertTrue(NSLocationInRange(needle.location, visible), "scrolled to the match")
     }
@@ -952,7 +908,8 @@ final class EditorMultiCursorTests: XCTestCase {
         textView.moveLeft(nil)
         let afterKeys = selectedRanges(textView)
         XCTAssertNotEqual(afterKeys, [range(0, 28)])
-        // A find match or a reveal, set while the editor does not have the keyboard.
+        // A find match or a reveal, set while the editor does not have the keyboard, which it
+        // does not report; the next key in the editor records it.
         event = key("g", .command)
         window?.makeFirstResponder(nil)
         textView.selectionManager.setSelectedRange(range(4, 3))
@@ -1119,45 +1076,6 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(2, 3), range(long.utf16.count + 3, 3)])
     }
 
-    func testTurningLineWrappingOnInAShownEditorWrapsItsRowsForOptionDrag() throws {
-        let long = Array(repeating: "word", count: 30).joined(separator: " ")
-        let text = long + "\nab\n"
-        let model = WrappingEditorModel()
-        let coordinator = EditorMultiCursorCoordinator()
-        coordinator.currentEvent = { nil }
-        let spy = ControllerSpy()
-        let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
-        let host = NSHostingView(rootView: WrappingEditor(model: model, text: text, theme: theme.editorTheme,
-                                                          coordinators: [spy, coordinator])
-            .frame(width: 320, height: 300))
-        host.frame = NSRect(x: 0, y: 0, width: 320, height: 300)
-        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        self.window = window
-        host.layoutSubtreeIfNeeded()
-        try waitUntil { spy.controller?.textView.visibleTextRange != nil }
-        let textView = try XCTUnwrap(spy.controller?.textView)
-        window.makeFirstResponder(textView)
-        XCTAssertEqual(displayRows(textView).first, range(0, long.utf16.count), "one row per line")
-
-        model.wraps = true
-        try waitUntil {
-            host.layoutSubtreeIfNeeded()
-            return textView.layoutManager.wrapLines && self.displayRows(textView).count > 3
-        }
-        let rows = displayRows(textView)
-        textView.selectionManager.setSelectedRange(range(0))
-        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDown, at: 2, in: textView, timestamp: 1)))
-        let head = rows[1].location + 5
-        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDragged, at: head, in: textView, timestamp: 2)))
-        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseUp, at: head, in: textView, timestamp: 3)))
-        XCTAssertEqual(selectedRanges(textView), [range(2, 3), range(rows[1].location + 2, 3)],
-                       "columns 2–5 of the first two rows on screen")
-        XCTAssertEqual(coordinator.cursorGoal(for: range(2), in: text as NSString), .columns(start: 2, width: 0),
-                       "with wrapping, ⌥⌘↑/↓ keep display columns, as x positions depend on the row")
-    }
-
     func testAReplacedEditorStartsAFreshHistoryAndKeepsTheCoordinator() throws {
         // As when a document is reloaded or its Markdown mode changes: the view keeps its
         // coordinator while SwiftUI replaces the editor.
@@ -1217,25 +1135,6 @@ final class EditorMultiCursorTests: XCTestCase {
     }
 
     // MARK: - Helpers
-
-    private final class WrappingEditorModel: ObservableObject {
-        @Published var wraps = false
-    }
-
-    /// An editor whose line wrapping changes while it is shown, as with View > Wrap Lines.
-    private struct WrappingEditor: View {
-        @ObservedObject var model: WrappingEditorModel
-        let text: String
-        let theme: EditorTheme
-        let coordinators: [TextViewCoordinator]
-
-        var body: some View {
-            CodeEditSourceEditor(.constant(text), language: .default, theme: theme,
-                                 font: .monospacedSystemFont(ofSize: 13, weight: .regular), tabWidth: 4,
-                                 lineHeight: 1.15, wrapLines: model.wraps, cursorPositions: .constant([]),
-                                 highlightProviders: [], coordinators: coordinators)
-        }
-    }
 
     private final class SwappedEditorModel: ObservableObject {
         @Published var split = false

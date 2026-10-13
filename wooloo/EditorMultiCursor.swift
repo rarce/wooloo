@@ -415,14 +415,12 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     }
 
     /// Selects a match the find bar stepped to and scrolls to it, as a ⌘U step of its own, and
-    /// leaves the keyboard where it is; the editor reports the selection to the cursor binding.
-    /// Returns false when there is no editor to select in.
-    /// With `text`, only an editor showing that text selects, not one a reveal on appear finds
-    /// still left from before.
+    /// leaves the keyboard where it is. The editor does not report a selection set while it
+    /// lacks the keyboard, as with Return or ⌘G in the find bar, so `syncSelection` would only
+    /// see where a run of them ended. Returns false when there is no editor to select in.
     @discardableResult
-    func reveal(_ range: NSRange, in text: String? = nil) -> Bool {
-        guard let textView = controller?.textView, NSMaxRange(range) <= textView.textStorage.length,
-              text.map({ $0 == textView.textStorage.string }) ?? true else { return false }
+    func reveal(_ range: NSRange) -> Bool {
+        guard let textView = controller?.textView, NSMaxRange(range) <= textView.textStorage.length else { return false }
         set([range], newest: range)
         return true
     }
@@ -436,10 +434,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         apply(selection)
     }
 
-    /// Records a selection the editor took without reporting it. The vendored editor reports every
-    /// change, with or without the keyboard, so this is only a safeguard, run where it costs
-    /// nothing that matters: before cursor commands and selections set from outside, and by the
-    /// document view after a reveal, but not on every key or click.
+    /// Records a selection the editor took without reporting it, which it does while it does not
+    /// have the keyboard: a reveal, or a selection set from outside the editor. Called before
+    /// anything that reads or changes the selections, and by the document view after a reveal.
     func syncSelection() {
         guard let textView = controller?.textView else { return }
         let actual = textView.selectionManager.textSelections.map(\.range).sorted { $0.location < $1.location }
@@ -466,6 +463,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         DispatchQueue.main.async { [weak self] in
             if self?.dispatchingKey === event { self?.dispatchingKey = nil }
         }
+        syncSelection()
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
         let code = Int(event.keyCode)
@@ -532,6 +530,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             holdsMouseInTextView = isOverTextView(event, textView)
             endColumnDrag()
             isEditing = false
+            syncSelection()
             mouseDown = event.timestamp
             let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
             guard flags == .option, event.clickCount == 1, textView.isEditable, isOverTextView(event, textView),
@@ -840,17 +839,12 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         let left = controller.textView.layoutManager.edgeInsets.left
         let tabWidth = tabWidth
         return { line, text in
-            var columns = 0
             for index in line.location..<NSMaxRange(line) {
                 let unit = text.character(at: index)
-                if unit == 0x09 {
-                    columns += tabWidth - columns % tabWidth
-                } else if unit >= 0x20 && unit < 0x7F {
-                    columns += 1
-                } else {
-                    return nil
-                }
+                guard unit == 0x09 || (unit >= 0x20 && unit < 0x7F) else { return nil }
             }
+            let columns = DisplayColumns.column(ofUTF16Offset: line.length, in: text.substring(with: line),
+                                                tabWidth: tabWidth)
             return left + CGFloat(columns) * space
         }
     }

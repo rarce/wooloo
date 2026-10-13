@@ -83,18 +83,8 @@ final class ContentWindowModel: ObservableObject {
     /// The panel clicked last; its document takes the editor commands. See `ContentCommands.focusedPanel`.
     @Published var focusedPanel: PanelContent = .main
 
-    private let defaults: UserDefaults
-
-    /// Whether document editors wrap lines. The defaults hold it, the app's own outside tests:
-    /// the views that show it read the same key with `@AppStorage`, which redraws them.
-    var wrapsLines: Bool {
-        get { defaults.bool(forKey: EditorLineWrapping.storageKey) }
-        set { defaults.set(newValue, forKey: EditorLineWrapping.storageKey) }
-    }
-
     /// Tests keep the pickers' recent commands and options out of the app's defaults.
     init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
         quickOpen = QuickOpenModel(defaults: defaults)
         commandPalette = CommandPaletteModel(defaults: defaults)
     }
@@ -194,7 +184,6 @@ struct ContentCommands {
             effects.reloadAppConfig()
             herdr.reloadConfig()
         case .toggleFilesSidebar: window.showsFilesSidebar.toggle()
-        case .toggleWrapLines: window.wrapsLines.toggle()
         case .refreshFiles:
             effects.forgetRecentFileResults()
             window.fileRefreshVersion += 1

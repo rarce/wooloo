@@ -30,7 +30,6 @@ struct ContentView: View {
     @AppStorage("SidebarWidth") private var sidebarWidth = 206.0
     @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
     @AppStorage("AgentsInSelectedSpaceOnly") private var agentsInSelectedSpaceOnly = false
-    @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
     @State private var followsHerdrAgentView = true
     @State private var popupDocument: (session: String, space: String?, tab: String?, document: String)?
 
@@ -109,7 +108,6 @@ struct ContentView: View {
             availability: commands.availability,
             showsSidebar: window.showsSidebar,
             showsFilesSidebar: window.showsFilesSidebar,
-            wrapsLines: wrapsLines,
             perform: handleShortcut
         ))
         .onDisappear {

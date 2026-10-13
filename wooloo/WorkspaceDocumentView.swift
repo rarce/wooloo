@@ -18,11 +18,6 @@ enum WorkspaceDocumentKind: String, Codable {
     }
 }
 
-/// Whether document editors wrap lines to their width (View > Wrap Lines), for the whole app.
-enum EditorLineWrapping {
-    static let storageKey = "EditorWrapLines"
-}
-
 /// Where to put the cursor when a document opens, e.g. at a search match.
 struct WorkspaceDocumentReveal: Equatable {
     let line: Int
@@ -133,7 +128,6 @@ struct WorkspaceDocumentView: View {
     @State private var revealsAfterEdit = false
     @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
-    @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
 
     private var language: CodeLanguage {
         if NotebookDocument.supports(document.path) { return .json }
@@ -367,7 +361,7 @@ struct WorkspaceDocumentView: View {
             font: typography.codeFont,
             tabWidth: 4,
             lineHeight: 1.15,
-            wrapLines: wrapsLines,
+            wrapLines: false,
             cursorPositions: $document.cursorPositions,
             coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator]
         )
@@ -524,9 +518,11 @@ struct WorkspaceDocumentView: View {
         case .source:
             guard current < find.sourceMatches.count else { return }
             let range = find.sourceMatches[current].range
-            // One selection and one scroll, each match a ⌘U step of its own; the editor reports
-            // the selection back to `cursorPositions`.
-            if !multiCursorCoordinator.reveal(range) { cursorPositions = [CursorPosition(range: range)] }
+            // Selected through the coordinator, which records each match stepped to from the find
+            // bar as a ⌘U step and scrolls to it; the editor, without the keyboard, does not
+            // report it to the binding.
+            multiCursorCoordinator.reveal(range)
+            cursorPositions = [CursorPosition(range: range)]
         case .preview:
             guard current < find.previewMatches.count else { return }
             previewFocus = MarkdownFindFocus(block: find.previewMatches[current].block, match: current)
@@ -565,11 +561,8 @@ struct WorkspaceDocumentView: View {
             let start = min($0.location, line.length)
             return NSRange(location: line.location + start, length: min($0.length, line.length - start))
         } ?? NSRange(location: line.location, length: 0)
-        document.reveal = nil
-        // One selection and one scroll in the editor shown, as for find matches; an editor not
-        // made yet takes the selection from the binding.
-        if multiCursorCoordinator.reveal(selection, in: document.text) { return }
         cursorPositions = [CursorPosition(range: selection)]
+        document.reveal = nil
         DispatchQueue.main.async {
             revealCoordinator.scrollSelectionToVisible()
             multiCursorCoordinator.syncSelection()

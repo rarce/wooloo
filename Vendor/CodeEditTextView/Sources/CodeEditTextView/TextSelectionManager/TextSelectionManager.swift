@@ -67,18 +67,19 @@ public class TextSelectionManager: NSObject {
     /// Set the selected ranges to a single range. Overrides any existing selections.
     /// - Parameter range: The range to set.
     public func setSelectedRange(_ range: NSRange) {
-        let old = Set(textSelections.map(\.range))
         textSelections.forEach { $0.view?.removeFromSuperview() }
         let selection = TextSelection(range: range)
         selection.suggestedXPos = layoutManager?.rectForOffset(range.location)?.minX
         textSelections = [selection]
-        didSetSelections(from: old)
+        if textView?.isFirstResponder ?? false {
+            updateSelectionViews()
+            NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
+        }
     }
 
     /// Set the selected ranges to new ranges. Overrides any existing selections.
     /// - Parameter range: The selected ranges to set.
     public func setSelectedRanges(_ ranges: [NSRange]) {
-        let old = Set(textSelections.map(\.range))
         textSelections.forEach { $0.view?.removeFromSuperview() }
         // Remove duplicates, invalid ranges, update suggested X position.
         textSelections = Set(ranges)
@@ -91,13 +92,15 @@ public class TextSelectionManager: NSObject {
                 selection.suggestedXPos = layoutManager?.rectForOffset($0.location)?.minX
                 return selection
             }
-        didSetSelections(from: old)
+        if textView?.isFirstResponder ?? false {
+            updateSelectionViews()
+            NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
+        }
     }
 
     /// Append a new selected range to the existing ones.
     /// - Parameter range: The new range to add.
     public func addSelectedRange(_ range: NSRange) {
-        let old = Set(textSelections.map(\.range))
         let newTextSelection = TextSelection(range: range)
         var didHandle = false
         for textSelection in textSelections {
@@ -116,19 +119,10 @@ public class TextSelectionManager: NSObject {
             textSelections.append(newTextSelection)
         }
 
-        didSetSelections(from: old)
-    }
-
-    /// wooloo patch: with the keyboard, updates the selection views and reports the change, as
-    /// upstream does. Without it, reports the change too, but only when the ranges differ: the
-    /// editor's SwiftUI wrapper sets the same cursor positions again on almost every update.
-    private func didSetSelections(from old: Set<NSRange>) {
         if textView?.isFirstResponder ?? false {
             updateSelectionViews()
-        } else if Set(textSelections.map(\.range)) == old {
-            return
+            NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
         }
-        NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
     }
 
     // MARK: - Selection Views

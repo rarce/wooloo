@@ -420,21 +420,6 @@ final class ContentCommandsTests: XCTestCase {
         XCTAssertEqual(window.fileRefreshVersion, 1)
     }
 
-    func testWrapLinesTogglesTheSettingEveryDocumentEditorReads() throws {
-        let suite = "ContentCommandsTests-\(UUID())"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        window = ContentWindowModel(defaults: defaults)
-        XCTAssertFalse(window.wrapsLines, "off until turned on, as before")
-        XCTAssertTrue(WoolooCommandItem.named("toggle_wrap_lines")?.isAvailable(commands.availability) == true,
-                      "in the View menu and the palette, with or without a document")
-        commands.perform("toggle_wrap_lines")
-        XCTAssertTrue(defaults.bool(forKey: EditorLineWrapping.storageKey))
-        XCTAssertTrue(ContentWindowModel(defaults: defaults).wrapsLines, "kept for every window and the next launch")
-        commands.perform("toggle_wrap_lines")
-        XCTAssertFalse(defaults.bool(forKey: EditorLineWrapping.storageKey))
-    }
-
     func testReloadConfigReloadsTheAppAndHerdr() async {
         await connect()
         commands.perform("reload_config")

@@ -28,7 +28,6 @@ struct WoolooCommandContext {
     let availability: WoolooCommandAvailability
     let showsSidebar: Bool
     let showsFilesSidebar: Bool
-    var wrapsLines = false
     let perform: (String) -> Void
 }
 
@@ -97,8 +96,6 @@ private struct WoolooCommands: Commands {
                  title: context?.showsFilesSidebar == false ? "Show Files and Changes" : "Hide Files and Changes")
             item("refresh_files")
             Divider()
-            toggle("toggle_wrap_lines", title: "Wrap Lines", isOn: context?.wrapsLines == true)
-            Divider()
         }
 
         CommandMenu("Space") {
@@ -128,15 +125,6 @@ private struct WoolooCommands: Commands {
             item("help")
             Divider()
         }
-    }
-
-    /// A command that turns a setting on or off, shown with a checkmark under its menu title;
-    /// the palette lists it under the command's own title.
-    private func toggle(_ action: String, title: String, isOn: Bool) -> some View {
-        let command = WoolooCommandItem.named(action)
-        return Toggle(title, isOn: Binding(get: { isOn }, set: { _ in context?.perform(action) }))
-            .keyboardShortcut(command?.shortcut)
-            .disabled(context.map { command?.isAvailable($0.availability) != true } ?? true)
     }
 
     private func item(_ action: String, title: String? = nil) -> some View {
