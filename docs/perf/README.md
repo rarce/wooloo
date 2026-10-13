@@ -164,6 +164,20 @@ The window showed the terminal view only while the live surface's panes were the
 
 In the last run, Herdr answered in 2.7–4.2 ms and the surface was drawn 8–10 ms after it arrived. Delivering it waits for the SwiftUI update that the selection's two publishes cause (until about 6.5 ms after the click), and the draw then waits for the next display pass. In another run, three switches waited 114–134 ms for Herdr's answer.
 
+### Drawing what answers the user at once (2026-10-13)
+
+`HerdrSurfaceFeed` marks the surface that answers input just sent, and the first surface of a tab switched to; the terminal view draws those as soon as it has laid them out (`displayIfNeeded()`), instead of in the next display pass. A tab switch also no longer tells SwiftUI about the new selection right away: the store selects the tab at once, so commands act on it, but the window learns of it after the new tab's first surface is drawn, in the next turn of the run loop, or after `HerdrStore.selectionPublishWait` (50 ms) without one. Until then the terminal view still names the previous pane, so input for it goes to the new tab's pane (`HerdrStoreTests.testInputDuringATabSwitchGoesToTheNewPane`).
+
+Live, 132×48, p50, `main` against two runs of the change:
+
+| | before | after |
+|---|---|---|
+| tab switch: surface received → drawn | 8.6 ms | 2.9 ms |
+| tab switch: click → drawn | 12.1–13.9 ms | 8.8–9.0 ms |
+| tab switch: click → screen | 23.9 ms | 17.0–19.2 ms |
+| tab switch: publishes per switch | 2 | 1 |
+| keys: echo received → drawn | 1.04 ms | 0.90–0.94 ms |
+
 ### The stream thread under load (2026-10-06)
 
 The surface stream, a blocking read loop, ran in a `.utility` task. On a loaded machine, the system ran other work first, and the thread stood still for up to 0.4 s while the main thread was idle. A frame read after such a pause was usually replaced in the mailbox by the next one before it was drawn, so arrival-to-draw latency did not show it. The pauses between draws and the keystroke echo did. The stream now runs on its own thread at `.userInteractive` priority (`BlockingWork.run(qualityOfService: .userInteractive, limited: false)`), which also stops it from holding a thread of Swift's cooperative pool. Decoding still takes about 0.1–0.3 ms a frame.

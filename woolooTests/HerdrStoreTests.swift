@@ -510,21 +510,39 @@ final class HerdrStoreTests: XCTestCase {
         defer { subscription.cancel() }
         store.select(tabID: "w1:t2")
         XCTAssertTrue(store.showsLiveSurface, "the previous tab's surface stays until the new one arrives")
-        let switched = published
+        XCTAssertEqual(store.selectedTabID, "w1:t2", "the store selects the tab at once")
+        XCTAssertEqual(published, 0, "the window learns of the switch once the new tab's surface is drawn")
         var other = SurfaceModel(width: 4, height: 2)
         other.paneID = "w1:p3"
         other.revision = 2
         endpoint.send(other.surfaceFrame())
         await waitUntil("new tab shown") { store.surfaceLayout?.paneIDs == ["w1:p3"] }
         XCTAssertTrue(store.showsLiveSurface)
-        XCTAssertEqual(published, switched, "the new tab's surface changes nothing the window shows")
+        await waitUntil("selection published") { published == 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(published, 1, "one publish for the whole switch: the selection, after its surface")
 
         HerdrStore.surfaceSwitchGrace = .milliseconds(100)
         store.select(tabID: "w1:t1")
         XCTAssertTrue(store.showsLiveSurface)
         let selected = published
+        await waitUntil("selection published without a surface") { published > selected }
         await waitUntil("fell back to the pane text") { !store.showsLiveSurface }
-        XCTAssertGreaterThan(published, selected, "the fallback is published")
+        XCTAssertGreaterThan(published, selected + 1, "the fallback is published")
+    }
+
+    /// Keys typed while the window still shows the previous tab go to the tab switched to.
+    func testInputDuringATabSwitchGoesToTheNewPane() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        store.select(paneID: "w1:p1")
+        store.select(tabID: "w1:t2")
+        store.sendText("x", to: "w1:p1")
+        await waitUntil("input sent") { endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p3", event: .text("x"))!) }
+        XCTAssertFalse(endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .text("x"))!))
     }
 
     /// A split drag changes only the snapshot's layouts, which the window reads only for panes

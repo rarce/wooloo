@@ -272,7 +272,7 @@ final class SurfaceDeliveryTests: XCTestCase {
         let feed = HerdrSurfaceFeed()
         var received: [UInt64] = []
         var owner: NSObject? = NSObject()
-        feed.observe(owner!) { received.append($0?.revision ?? 0) }
+        feed.observe(owner!) { surface, _ in received.append(surface?.revision ?? 0) }
         feed.publish(surface(1))
         owner = nil
         feed.publish(surface(2))
