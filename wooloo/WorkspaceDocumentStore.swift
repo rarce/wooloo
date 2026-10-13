@@ -320,6 +320,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             saved.backupID = document.backupID
             saved.cursorPositions = documents[currentIndex].cursorPositions
             saved.scrollPosition = documents[currentIndex].scrollPosition
+            saved.scrollAnchor = documents[currentIndex].scrollAnchor
             // Edits made while saving stay unsaved.
             saved.text = documents[currentIndex].text
             saved.savedText = text

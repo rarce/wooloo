@@ -1255,6 +1255,67 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertGreaterThan(textView.frame.width, 500, "as wide as the longest line again")
     }
 
+    /// A 200 KB line wraps to thousands of rows; views for all of them took minutes to add.
+    func testALongWrappedLineHasViewsOnlyForTheRowsAroundTheViewAndDrawsEveryRowOnScreen() throws {
+        let (_, textView) = try makeEditor(text: String(repeating: "word ", count: 40_000), wrapLines: true)
+        XCTAssertGreaterThan(textView.layoutManager.textLineForIndex(0)?.data.lineFragments.count ?? 0, 1000)
+        func rowViews() -> [NSView] { textView.subviews.filter { "\(type(of: $0))" == "LineFragmentView" } }
+        let clip = try XCTUnwrap(textView.enclosingScrollView?.contentView)
+        for y in stride(from: 0, through: 20_000, by: 230) {
+            clip.scroll(to: NSPoint(x: 0, y: y))
+            let views = rowViews()
+            XCTAssertLessThan(views.count, 100, "at \(y)")
+            let visible = textView.visibleRect
+            let undrawn = stride(from: visible.minY + 1, to: visible.maxY - 1, by: 8).filter { rowY in
+                !views.contains { $0.frame.minY <= rowY && rowY < $0.frame.maxY }
+            }
+            XCTAssertEqual(undrawn, [], "rows without a view at \(y)")
+        }
+    }
+
+    /// Scrolls a new editor on `text` down 4 000 points in steps and returns where it ended,
+    /// as the session keeps it, with the line at the top.
+    private func scrollAndSave(_ text: String, wrapLines: Bool) throws -> (CGPoint, Int?, top: Int) {
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: text, wrapLines: wrapLines, spy: spy)
+        let session = EditorSessionCoordinator()
+        var saved: (CGPoint, Int?) = (.zero, nil)
+        session.prepareCoordinator(controller: try XCTUnwrap(spy.controller))
+        session.restore(nil, anchor: nil) { saved = ($0, $1) }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let clip = try XCTUnwrap(textView.enclosingScrollView?.contentView)
+        for step in 1...20 { clip.scroll(to: NSPoint(x: 0, y: CGFloat(step) * 200)) }
+        let top = try XCTUnwrap(textView.layoutManager.textLineForPosition(textView.visibleRect.minY)).index
+        session.destroy()
+        window?.close()
+        return (saved.0, saved.1, top)
+    }
+
+    private func restoredTopLine(_ text: String, wrapLines: Bool, position: CGPoint, anchor: Int?) throws -> Int {
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: text, wrapLines: wrapLines, spy: spy)
+        let session = EditorSessionCoordinator()
+        session.prepareCoordinator(controller: try XCTUnwrap(spy.controller))
+        session.restore(position, anchor: anchor) { _, _ in }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        return try XCTUnwrap(textView.layoutManager.textLineForPosition(textView.visibleRect.minY)).index
+    }
+
+    /// A tab switch or relaunch makes a new editor, whose lines are not laid out yet.
+    func testANewEditorGoesBackToTheLineThatWasAtTheTopInWrappedText() throws {
+        let (position, anchor, top) = try scrollAndSave(wrappedDocument, wrapLines: true)
+        XCTAssertEqual(position.y, 4_000)
+        XCTAssertNotNil(anchor)
+        XCTAssertEqual(try restoredTopLine(wrappedDocument, wrapLines: true, position: position, anchor: anchor), top)
+    }
+
+    func testANewEditorGoesBackToTheSameScrollPositionWithoutWrapping() throws {
+        let (position, anchor, top) = try scrollAndSave(wrappedDocument, wrapLines: false)
+        XCTAssertEqual(try restoredTopLine(wrappedDocument, wrapLines: false, position: position, anchor: anchor), top)
+        XCTAssertEqual(try restoredTopLine(wrappedDocument, wrapLines: false, position: position, anchor: nil), top,
+                       "sessions saved before the anchor")
+    }
+
     /// Scrolling up lays out lines above the view whose heights were estimated; the editor moves
     /// the scroll position by how much they grew, which lays out again from inside the same line.
     func testScrollingUpThroughWrappedTextKeepsTheTopLineInPlace() throws {

@@ -1,5 +1,6 @@
 import SwiftUI
 import CodeEditSourceEditor
+import CodeEditTextView
 import CodeEditLanguages
 import MarkdownView
 
@@ -42,6 +43,10 @@ struct WorkspaceDocument: Identifiable {
     var backupID = UUID()
     var cursorPositions = [CursorPosition(line: 1, column: 1)]
     var scrollPosition = CGPoint.zero
+    /// The character at the top of the editor when it last scrolled. With line wrapping on, the
+    /// editor goes back to it rather than to `scrollPosition`, which counts the heights of lines
+    /// not laid out yet as one row each.
+    var scrollAnchor: Int?
     /// The Space whose tab row shows this document; see `WorkspaceDocumentStore.showSpace`.
     var space: String?
     let location: WorkspaceFileLocation
@@ -378,8 +383,10 @@ struct WorkspaceDocumentView: View {
             coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator]
         )
         .onAppear {
-            sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil) { position in
+            sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil,
+                                       anchor: document.scrollAnchor) { position, anchor in
                 if document.scrollPosition != position { document.scrollPosition = position }
+                if document.scrollAnchor != anchor { document.scrollAnchor = anchor }
             }
         }
         .onAppear { applyReveal() }
@@ -598,6 +605,8 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     private var currentFindColor = NSColor.systemOrange
     private var findLayers: [CALayer] = []
     private var scrollObserver: NSObjectProtocol?
+    private var frameObserver: NSObjectProtocol?
+    private var redrawsAfterLayout = false
     private var focusesWhenReady = false
 
     func prepareCoordinator(controller: TextViewController) {
@@ -627,7 +636,9 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     func destroy() {
         removeFindLayers()
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
+        if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
         scrollObserver = nil
+        frameObserver = nil
         controller = nil
     }
 
@@ -668,6 +679,14 @@ final class EditorRevealCoordinator: TextViewCoordinator {
                 forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main
             ) { [weak self] _ in self?.drawFindMatches() }
         }
+        if frameObserver == nil {
+            // The text resizes when it rewraps, as when line wrapping turns on or off or the editor
+            // resizes with wrapping on; draw again once the lines are laid out where they now go.
+            textView.postsFrameChangedNotifications = true
+            frameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: textView, queue: .main
+            ) { [weak self] _ in self?.drawFindMatchesAfterLayout() }
+        }
         guard !findRanges.isEmpty, let visible = textView.visibleTextRange else { return }
         let text = textView.textStorage.string as NSString
         let first = findRanges.partitioningIndex { NSMaxRange($0) >= visible.location }
@@ -680,18 +699,41 @@ final class EditorRevealCoordinator: TextViewCoordinator {
             while start < NSMaxRange(range) {
                 let newline = text.range(of: "\n", range: NSRange(location: start, length: NSMaxRange(range) - start))
                 let end = newline.location == NSNotFound ? NSMaxRange(range) : newline.location
-                if end > start, let lower = textView.layoutManager.rectForOffset(start),
-                   let upper = textView.layoutManager.rectForOffset(end) {
-                    let width = upper.minY == lower.minY ? upper.minX - lower.minX : lower.width
-                    let layer = CALayer()
-                    layer.frame = CGRect(x: lower.minX, y: lower.minY, width: max(width, 2), height: lower.height)
-                    layer.cornerRadius = 2
-                    layer.backgroundColor = color.cgColor
-                    textView.layer?.insertSublayer(layer, at: 1)
-                    findLayers.append(layer)
-                }
+                if end > start { drawFindRows(from: start, to: end, color: color, in: textView) }
                 start = end + 1
             }
+        }
+    }
+
+    private func drawFindMatchesAfterLayout() {
+        guard !redrawsAfterLayout else { return }
+        redrawsAfterLayout = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            redrawsAfterLayout = false
+            controller?.textView.layoutSubtreeIfNeeded()
+            drawFindMatches()
+        }
+    }
+
+    /// One rectangle per row of `start..<end`, which lies in one line: with line wrapping on, a
+    /// match can cross into the next row.
+    private func drawFindRows(from start: Int, to end: Int, color: NSColor, in textView: TextView) {
+        let layout = textView.layoutManager
+        var location = start
+        while location < end, let lower = layout?.rectForOffset(location),
+              let line = layout?.textLineForOffset(location),
+              let row = line.data.lineFragments.getLine(atOffset: location - line.range.location) {
+            let rowEnd = min(end, line.range.location + row.range.max)
+            guard rowEnd > location, let last = layout?.rectForOffset(rowEnd - 1) else { return }
+            let layer = CALayer()
+            layer.frame = CGRect(x: lower.minX, y: lower.minY, width: max(last.maxX - lower.minX, 2),
+                                 height: lower.height)
+            layer.cornerRadius = 2
+            layer.backgroundColor = color.cgColor
+            textView.layer?.insertSublayer(layer, at: 1)
+            findLayers.append(layer)
+            location = rowEnd
         }
     }
 }

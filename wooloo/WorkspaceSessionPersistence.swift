@@ -21,6 +21,8 @@ struct WorkspaceDocumentSnapshot: Codable {
     var diffScope: String
     var cursorPositions: [CursorPosition]
     var scrollPosition: CGPoint
+    /// Missing in sessions saved before line wrapping.
+    var scrollAnchor: Int?
     var hasBackup: Bool
     var text: String?
     var savedText: String?
@@ -41,6 +43,7 @@ struct WorkspaceDocumentSnapshot: Codable {
         diffScope = document.diffScope.rawValue
         cursorPositions = document.cursorPositions
         scrollPosition = document.scrollPosition
+        scrollAnchor = document.scrollAnchor
         hasBackup = document.isDirty || document.isUntitled
         text = hasBackup ? document.text : nil
         savedText = hasBackup ? document.savedText : nil
@@ -92,6 +95,7 @@ struct WorkspaceDocumentSnapshot: Codable {
         if scrollPosition.x.isFinite && scrollPosition.y.isFinite {
             result.scrollPosition = CGPoint(x: max(0, scrollPosition.x), y: max(0, scrollPosition.y))
         }
+        result.scrollAnchor = scrollAnchor.map { max(0, $0) }
         return result
     }
 }
@@ -438,15 +442,18 @@ final class EditorSessionCoordinator: TextViewCoordinator {
     private weak var controller: TextViewController?
     private var observer: NSObjectProtocol?
     private var restoration: CGPoint?
-    var onScroll: ((CGPoint) -> Void)?
+    private var restorationAnchor: Int?
+    /// Reports the scroll position and the character at the top of the view.
+    var onScroll: ((CGPoint, Int?) -> Void)?
 
     func prepareCoordinator(controller: TextViewController) {
         self.controller = controller
         DispatchQueue.main.async { [weak self] in self?.attach() }
     }
 
-    func restore(_ position: CGPoint?, onScroll: @escaping (CGPoint) -> Void) {
+    func restore(_ position: CGPoint?, anchor: Int?, onScroll: @escaping (CGPoint, Int?) -> Void) {
         restoration = position
+        restorationAnchor = anchor
         self.onScroll = onScroll
         DispatchQueue.main.async { [weak self] in self?.attach() }
     }
@@ -454,17 +461,40 @@ final class EditorSessionCoordinator: TextViewCoordinator {
     private func attach() {
         guard let scrollView = controller?.textView.enclosingScrollView else { return }
         let clip = scrollView.contentView
-        if let position = restoration {
+        if let position = restoration, let textView = controller?.textView {
             restoration = nil
-            clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: position, size: clip.bounds.size)).origin)
+            if textView.wrapLines, let anchor = restorationAnchor {
+                // With wrapping on, lines not laid out count one row each, so the saved y lands
+                // elsewhere in a new editor; the character that was at the top does not. Lines that
+                // come into view grow and move it, so scroll again until it stays.
+                let offset = min(anchor, textView.textStorage.length)
+                var target: CGFloat?
+                for _ in 0..<20 {
+                    guard let rect = textView.layoutManager.rectForOffset(offset), rect.minY != target else { break }
+                    target = rect.minY
+                    let origin = CGPoint(x: position.x, y: rect.minY - (textView.visibleRect.minY - clip.bounds.minY))
+                    clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: origin, size: clip.bounds.size)).origin)
+                }
+            } else {
+                clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: position, size: clip.bounds.size)).origin)
+            }
             scrollView.reflectScrolledClipView(clip)
         }
         guard observer == nil else { return }
         clip.postsBoundsChangedNotifications = true
         observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
             object: clip, queue: .main) { [weak self, weak clip] _ in
-                if let position = clip?.bounds.origin { self?.onScroll?(position) }
+                guard let self, let position = clip?.bounds.origin else { return }
+                onScroll?(position, topOffset())
             }
+    }
+
+    /// The first character of the row at the top of the view.
+    private func topOffset() -> Int? {
+        guard let textView = controller?.textView else { return nil }
+        let top = textView.visibleRect.minY
+        return textView.layoutManager.textOffsetAtPoint(CGPoint(x: 0, y: top))
+            ?? textView.layoutManager.textLineForPosition(top)?.range.location
     }
 
     func destroy() {

@@ -28,8 +28,6 @@ struct WoolooCommandContext {
     let availability: WoolooCommandAvailability
     let showsSidebar: Bool
     let showsFilesSidebar: Bool
-    /// Whether document editors wrap lines, for the checkmark on View > Wrap Lines.
-    let wrapsLines: Bool
     let perform: (String) -> Void
 }
 
@@ -48,6 +46,8 @@ extension FocusedValues {
 /// shortcuts and when they apply come from `WoolooCommandItem`, shared with the command palette.
 private struct WoolooCommands: Commands {
     @FocusedValue(\.woolooCommands) private var context
+    /// App-wide, so the checkmark does not depend on the focused window.
+    @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
@@ -98,7 +98,7 @@ private struct WoolooCommands: Commands {
                  title: context?.showsFilesSidebar == false ? "Show Files and Changes" : "Hide Files and Changes")
             item("refresh_files")
             Divider()
-            toggle("toggle_wrap_lines", isOn: context?.wrapsLines == true)
+            toggle("toggle_wrap_lines", title: "Wrap Lines", isOn: wrapsLines)
             Divider()
         }
 
@@ -131,10 +131,11 @@ private struct WoolooCommands: Commands {
         }
     }
 
-    /// A setting shown with a checkmark when on; choosing it runs the action, which turns it over.
-    private func toggle(_ action: String, isOn: Bool) -> some View {
+    /// A setting shown with a checkmark when on, under a menu title like the sidebars' ("Toggle …"
+    /// in the palette); choosing it runs the action, which turns it over.
+    private func toggle(_ action: String, title: String, isOn: Bool) -> some View {
         let command = WoolooCommandItem.named(action)
-        return Toggle(command?.title ?? action, isOn: Binding(get: { isOn }, set: { _ in context?.perform(action) }))
+        return Toggle(title, isOn: Binding(get: { isOn }, set: { _ in context?.perform(action) }))
             .keyboardShortcut(command?.shortcut)
             .disabled(context.map { command?.isAvailable($0.availability) != true } ?? true)
     }
