@@ -279,6 +279,41 @@ final class SurfaceDeliveryTests: XCTestCase {
         XCTAssertEqual(received, [1])
         XCTAssertEqual(feed.surface?.revision, 2)
     }
+
+    /// Only the first surface after typed input, and only soon after it, answers the user; a
+    /// surface without a view keeps the answer for the view that attaches, and a lost
+    /// connection drops it.
+    func testFeedMarksOnlyTheAnswerToTypedInput() {
+        let feed = HerdrSurfaceFeed()
+        var urgent: [Bool] = []
+        let owner = NSObject()
+        feed.observe(owner) { _, answers in urgent.append(answers) }
+        feed.expectAnswer()
+        feed.publish(surface(1))
+        feed.publish(surface(2))
+        feed.publish(surface(3), answersUser: true)
+        XCTAssertEqual(urgent, [true, false, true])
+
+        feed.expectAnswer()
+        feed.publish(nil)
+        feed.publish(surface(4))
+        XCTAssertEqual(urgent.suffix(2), [false, false], "a lost connection answers nothing")
+
+        let window = HerdrSurfaceFeed.answerWindow
+        defer { HerdrSurfaceFeed.answerWindow = window }
+        HerdrSurfaceFeed.answerWindow = .zero
+        feed.expectAnswer()
+        Thread.sleep(forTimeInterval: 0.002)
+        feed.publish(surface(5))
+        XCTAssertEqual(urgent.last, false, "a surface long after the input does not answer it")
+
+        let unobserved = HerdrSurfaceFeed()
+        HerdrSurfaceFeed.answerWindow = window
+        unobserved.expectAnswer()
+        unobserved.publish(surface(6))
+        XCTAssertTrue(unobserved.takeAnswer(), "kept for the view that attaches")
+        XCTAssertFalse(unobserved.takeAnswer())
+    }
 }
 
 /// OSC 8 hyperlinks survive decoding and patches, and links are found for Command-click.

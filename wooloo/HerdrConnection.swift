@@ -543,8 +543,11 @@ final class HerdrSurfaceFeed {
     private(set) var surface: HerdrSurface?
     private weak var observer: AnyObject?
     private var handler: ((HerdrSurface?, Bool) -> Void)?
-    /// The next surface answers something the user just did: a key, or a switch to another tab.
-    private var answersUser = false
+    /// When typed input was last sent, until a surface answers it.
+    private var answerExpectedAt: ContinuousClock.Instant?
+    /// How long after typed input a surface still counts as its answer; a key that changes
+    /// nothing on screen must not make a later, unrelated surface draw at once.
+    static var answerWindow: Duration = .milliseconds(100)
 
     /// Makes `owner` the only observer, for as long as it lives. The handler also learns
     /// whether the surface answers the user, so the view can draw it at once.
@@ -553,15 +556,26 @@ final class HerdrSurfaceFeed {
         self.handler = handler
     }
 
-    /// Marks the next surface as the answer to input just sent.
-    func expectAnswer() { answersUser = true }
+    /// Marks the next surface as the answer to typed input just sent.
+    func expectAnswer() { answerExpectedAt = .now }
 
+    /// Whether the current surface answers typed input sent within `answerWindow`; asking
+    /// consumes the answer. The view asks when it attaches, since no handler saw the surface.
+    func takeAnswer() -> Bool {
+        defer { answerExpectedAt = nil }
+        guard let answerExpectedAt else { return false }
+        return ContinuousClock.now - answerExpectedAt <= Self.answerWindow
+    }
+
+    /// `answersUser` marks a surface that answers the user however it came, such as a tab
+    /// switched to. Without an observer the answer to typed input is kept for the next one.
     func publish(_ surface: HerdrSurface?, answersUser answers: Bool = false) {
         self.surface = surface
-        let urgent = surface != nil && (answers || answersUser)
-        if surface != nil { answersUser = false }
+        // A lost connection answers nothing.
+        if surface == nil { answerExpectedAt = nil }
         if observer == nil { handler = nil }
-        handler?(surface, urgent)
+        guard let handler else { return }
+        handler(surface, surface != nil && (takeAnswer() || answers))
     }
 }
 
@@ -636,13 +650,19 @@ final class HerdrStore: ObservableObject {
     /// the new tab's first surface is drawn, so that update no longer delays the draw. Input
     /// for `stalePaneID`, the pane the window still shows as selected, goes to the new pane.
     private var unpublishedSelection: (stalePaneID: String?, timeout: Task<Void, Never>)?
+    /// True only while `select(tabID:)` itself changes the selection.
     private var holdsSelectionPublish = false
     /// How long a tab switch waits for Herdr's surface before the window shows the selection anyway.
     static var selectionPublishWait: Duration = .milliseconds(50)
 
+    /// Any other change to the selection is published at once, with a switch's if one waits.
     private func selectionWillChange() {
-        if holdsSelectionPublish || unpublishedSelection != nil { return }
-        objectWillChange.send()
+        if holdsSelectionPublish { return }
+        if unpublishedSelection != nil {
+            publishSelection()
+        } else {
+            objectWillChange.send()
+        }
     }
 
     /// Tells SwiftUI about a selection a tab switch has not published yet.
@@ -905,12 +925,14 @@ final class HerdrStore: ObservableObject {
         return Set(surfaceLayout.paneIDs) == panes || (surfaceSwitchTabID != nil && surfaceSwitchTabID == selectedTabID)
     }
 
-    /// Keeps the terminal view while the live surface switches to the selected tab.
-    private func beginSurfaceSwitch() {
+    /// Keeps the terminal view while the live surface switches to the selected tab; true when
+    /// it began such a switch.
+    @discardableResult
+    private func beginSurfaceSwitch() -> Bool {
         guard surfaceStream != nil, let surfaceLayout, let selectedTabID,
               Set(surfaceLayout.paneIDs) != Set(selectedPanes.map(\.paneID)) else {
             endSurfaceSwitch()
-            return
+            return false
         }
         surfaceSwitchTabID = selectedTabID
         surfaceSwitchTimeout?.cancel()
@@ -921,6 +943,7 @@ final class HerdrStore: ObservableObject {
             objectWillChange.send()
             endSurfaceSwitch()
         }
+        return true
     }
 
     private func endSurfaceSwitch() {
@@ -1305,25 +1328,28 @@ final class HerdrStore: ObservableObject {
     }
 
     func select(tabID: String) {
-        // With the live surface on another tab, the window keeps showing it until the new tab's
-        // surface comes, so publishing now would only make SwiftUI update the window in between
-        // and delay drawing that surface.
-        let stalePaneID = selectedPaneID
-        let waitsForSurface = surfaceStream?.isReady == true && unpublishedSelection == nil && tabID != selectedTabID
-            && surfaceLayout.map { Set($0.paneIDs) != Set(panes(inTab: tabID)) } == true && !panes(inTab: tabID).isEmpty
-        holdsSelectionPublish = waitsForSurface
+        // The pane the window shows as selected, which a switch already waiting keeps.
+        let stalePaneID = unpublishedSelection.map(\.stalePaneID) ?? selectedPaneID
+        holdsSelectionPublish = true
         selectedTabID = tabID
         selectedPaneID = preferredPane(in: tabID)
         holdsSelectionPublish = false
-        if waitsForSurface {
+        // While the live surface switches to the tab, the window keeps showing the previous
+        // one until the new tab's surface comes, so publishing now would only make SwiftUI
+        // update the window in between and delay drawing that surface.
+        if beginSurfaceSwitch() {
             deferSelectionPublish(stalePaneID: stalePaneID)
+        } else if unpublishedSelection != nil {
+            publishSelection()
+        } else {
+            objectWillChange.send()
         }
-        beginSurfaceSwitch()
         surfaceStream?.focus(tabID: tabID)
         if let selectedPaneID { surfaceStream?.focus(paneID: selectedPaneID) }
     }
 
     private func deferSelectionPublish(stalePaneID: String?) {
+        unpublishedSelection?.timeout.cancel()
         unpublishedSelection = (stalePaneID, Task { [weak self] in
             try? await Task.sleep(for: Self.selectionPublishWait)
             guard !Task.isCancelled else { return }
@@ -1331,13 +1357,14 @@ final class HerdrStore: ObservableObject {
         })
     }
 
-    private func panes(inTab tabID: String) -> [String] {
-        snapshot?.panes.filter { $0.tabID == tabID }.map(\.paneID) ?? []
+    /// The panes of a tab, in Herdr's order.
+    func panes(inTab tabID: String?) -> [HerdrPane] {
+        snapshot?.panes.filter { $0.tabID == tabID } ?? []
     }
 
     private func preferredPane(in tabID: String?) -> String? {
         guard let tabID else { return nil }
-        let panes = snapshot?.panes.filter { $0.tabID == tabID } ?? []
+        let panes = panes(inTab: tabID)
         if let remembered = lastPaneByTab[tabID], panes.contains(where: { $0.paneID == remembered }) {
             return remembered
         }
@@ -1406,8 +1433,10 @@ final class HerdrStore: ObservableObject {
 
     private func enqueueInput(paneID: String, event: HerdrInputEvent) {
         guard !popupBlocksPaneInput else { return }
-        // Until the window shows a tab switch, its terminal view still names the previous pane.
-        let target = unpublishedSelection.map { paneID == $0.stalePaneID } == true ? selectedPaneID ?? paneID : paneID
+        // Until the window shows a tab switch, its terminal view still names the previous pane
+        // for typed input; mouse events keep the pane under the pointer.
+        let redirects = event.isTyped && unpublishedSelection.map { paneID == $0.stalePaneID } == true
+        let target = redirects ? selectedPaneID ?? paneID : paneID
         enqueueInput(PendingInput(paneID: target, event: event))
     }
 
@@ -1429,7 +1458,7 @@ final class HerdrStore: ObservableObject {
                 guard !popupBlocksPaneInput else { continue }
                 if let stream = surfaceStream, stream.isReady {
                     if stream.sendInput(item.event, to: item.paneID) {
-                        surfaceFeed.expectAnswer()
+                        if item.event.isTyped { surfaceFeed.expectAnswer() }
                         // Publishing, even an unchanged nil, would update the whole window on every key.
                         setIfChanged(\.inputError, nil)
                     } else {

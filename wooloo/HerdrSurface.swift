@@ -862,6 +862,12 @@ enum HerdrInputEvent {
     case paste(String)
     case key(String)
     case mouse(HerdrMouseEvent)
+
+    /// Text, a key or a paste, which go to the selected pane and usually show on screen at once.
+    var isTyped: Bool {
+        if case .mouse = self { return false }
+        return true
+    }
 }
 
 struct HerdrMouseEvent {

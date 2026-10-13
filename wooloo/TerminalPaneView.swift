@@ -340,6 +340,10 @@ struct TerminalPaneView: NSViewRepresentable {
                     // next display pass, which may wait for other work on the main thread.
                     if answersUser { view?.displayIfNeeded() }
                 }
+                view.show(surfaceFeed.surface)
+                // The feed had no view to answer the user with while this one was missing.
+                if surfaceFeed.takeAnswer() { view.displayIfNeeded() }
+                return
             }
             view.show(surfaceFeed.surface)
             return
