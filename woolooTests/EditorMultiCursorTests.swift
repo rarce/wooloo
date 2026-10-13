@@ -1349,11 +1349,15 @@ final class EditorMultiCursorTests: XCTestCase {
 
     func testANewEditorGoesBackToTheExactScrollPositionWithoutWrapping() throws {
         let saved = try scrollAndSave(wrappedDocument, wrapLines: false, to: 4_003.5)
-        let restored = try restore(saved, wrapLines: false)
-        XCTAssertEqual(restored.enclosingScrollView?.contentView.bounds.origin, saved.position)
-        let fromY = try restore(saved, wrapLines: false, anchor: false)
-        XCTAssertEqual(fromY.enclosingScrollView?.contentView.bounds.origin, saved.position,
-                       "sessions saved before the anchor")
+        for (restored, path) in [(try restore(saved, wrapLines: false), "anchor"),
+                                 (try restore(saved, wrapLines: false, anchor: false), "sessions saved before it")] {
+            let origin = try XCTUnwrap(restored.enclosingScrollView?.contentView.bounds.origin)
+            // Within a device pixel: on a 1x display (as on CI) the clip view lands a point away
+            // from the half point the test scrolled to.
+            let pixel = 1 / (restored.window?.backingScaleFactor ?? 1)
+            XCTAssertEqual(origin.y, saved.position.y, accuracy: pixel, path)
+            XCTAssertEqual(origin.x, saved.position.x, path)
+        }
     }
 
     /// Turning wrapping on or off between saving and restoring changes every line's height.
