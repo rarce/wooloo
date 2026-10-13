@@ -63,8 +63,8 @@ enum EditorCommand: String, CaseIterable {
         case .findNext: return KeyboardShortcut("g", modifiers: .command)
         case .findPrevious: return KeyboardShortcut("g", modifiers: [.command, .shift])
         case .selectNextOccurrence: return KeyboardShortcut("d", modifiers: .command)
-        // The key reaches the editor only while macOS's Look Up shortcut, also ⌃⌘D, is off.
-        case .selectPreviousOccurrence: return KeyboardShortcut("d", modifiers: [.command, .control])
+        // ⌃⌘D works too, but reaches the editor only while macOS's Look Up shortcut, also ⌃⌘D, is off.
+        case .selectPreviousOccurrence: return KeyboardShortcut("g", modifiers: [.command, .control])
         case .selectAllOccurrences: return KeyboardShortcut("l", modifiers: [.command, .shift])
         case .addCursorAbove: return KeyboardShortcut(.upArrow, modifiers: [.command, .option])
         case .addCursorBelow: return KeyboardShortcut(.downArrow, modifiers: [.command, .option])
@@ -272,6 +272,8 @@ struct WoolooCommandItem: Identifiable, Equatable {
         .init("toggle_files_sidebar", "View", "Toggle Files and Changes",
               KeyboardShortcut("e", modifiers: [.command, .control])),
         .init("refresh_files", "View", "Refresh Files and Repository", KeyboardShortcut("r", modifiers: .command)),
+        // No key: ⌥Z, VS Code's, types Ω in the editor and the terminal.
+        .init("toggle_wrap_lines", "View", "Toggle Line Wrapping"),
         .init("rename_workspace", "Space", "Rename Space…", requires: .space),
         .init("close_workspace", "Space", "Close Space…", requires: .space),
         .init("previous_tab", "Space", "Previous Tab", KeyboardShortcut("[", modifiers: [.command, .shift]),

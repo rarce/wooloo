@@ -18,6 +18,11 @@ enum WorkspaceDocumentKind: String, Codable {
     }
 }
 
+/// Whether document editors wrap lines to their width (View > Wrap Lines), for the whole app.
+enum EditorLineWrapping {
+    static let storageKey = "EditorWrapLines"
+}
+
 /// Where to put the cursor when a document opens, e.g. at a search match.
 struct WorkspaceDocumentReveal: Equatable {
     let line: Int
@@ -128,6 +133,7 @@ struct WorkspaceDocumentView: View {
     @State private var revealsAfterEdit = false
     @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
+    @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
 
     private var language: CodeLanguage {
         if NotebookDocument.supports(document.path) { return .json }
@@ -361,7 +367,7 @@ struct WorkspaceDocumentView: View {
             font: typography.codeFont,
             tabWidth: 4,
             lineHeight: 1.15,
-            wrapLines: false,
+            wrapLines: wrapsLines,
             cursorPositions: $document.cursorPositions,
             coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator]
         )
@@ -517,7 +523,11 @@ struct WorkspaceDocumentView: View {
         switch find.target {
         case .source:
             guard current < find.sourceMatches.count else { return }
-            cursorPositions = [CursorPosition(range: find.sourceMatches[current].range)]
+            let range = find.sourceMatches[current].range
+            // Selected through the coordinator, so that each match stepped to from the find bar,
+            // which keeps the keyboard, is a ⌘U step of its own.
+            multiCursorCoordinator.reveal(range)
+            cursorPositions = [CursorPosition(range: range)]
             DispatchQueue.main.async {
                 revealCoordinator.scrollSelectionToVisible()
                 multiCursorCoordinator.syncSelection()

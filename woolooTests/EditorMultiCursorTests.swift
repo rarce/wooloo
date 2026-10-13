@@ -391,11 +391,16 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(textView.string, "- one\n- two\n- three\n")
     }
 
-    func testAddCursorBelowUsesTheEditorsTabWidth() throws {
+    func testAddCursorBelowLinesUpWithATabWhereTheEditorDrawsItsEnd() throws {
         let (coordinator, textView) = try makeEditor(text: "\tx\n    ab\n")
         textView.selectionManager.setSelectedRange(range(1))
         XCTAssertTrue(coordinator.perform(.addCursorBelow))
-        XCTAssertEqual(selectedRanges(textView), [range(1), range(7)], "a tab of 4 columns, not one")
+        let added = try XCTUnwrap(selectedRanges(textView).last)
+        XCTAssertGreaterThan(added.location, 4, "a tab is wider than one space")
+        let layout: TextLayoutManager = textView.layoutManager
+        let cell = try XCTUnwrap(layout.rectForOffset(3)).width
+        XCTAssertLessThanOrEqual(abs(try XCTUnwrap(layout.rectForOffset(added.location)).minX
+                                     - XCTUnwrap(layout.rectForOffset(1)).minX), cell / 2)
     }
 
     func testRepeatedAddCursorBelowKeepsTheDisplayGoalAcrossAShortLine() throws {
@@ -421,6 +426,37 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(14, 2), range(20, 2)])
     }
 
+    func testAddCursorBelowLinesUpWithWideCharactersAndTabsAsTheEditorDrawsThem() throws {
+        // A fallback font draws 日 about 1.6 cells wide, not the two display columns it counts,
+        // and the tab after them stops at a multiple of four cells in points.
+        let wide = "日本語日本語"
+        let ascii = String(repeating: "abcdefghij", count: 3)
+        let (coordinator, textView) = try makeEditor(text: wide + "\tx\n" + ascii + "\n" + ascii + "\n")
+        let layout: TextLayoutManager = textView.layoutManager
+        let cell = try XCTUnwrap(layout.rectForOffset(wide.utf16.count + 3)).width
+        let x = { (offset: Int) in try XCTUnwrap(layout.rectForOffset(offset)).minX }
+        let second = wide.utf16.count + 3
+        for base in [wide.utf16.count, wide.utf16.count + 1] {
+            textView.selectionManager.setSelectedRange(range(base))
+            XCTAssertTrue(coordinator.perform(.addCursorBelow))
+            let added = try XCTUnwrap(selectedRanges(textView).last)
+            XCTAssertGreaterThanOrEqual(added.location, second)
+            XCTAssertLessThanOrEqual(abs(try x(added.location) - x(base)), cell / 2,
+                                     "under the cursor on screen, from offset \(base)")
+        }
+
+        // A selection covers the same points, and a run keeps them on every line it adds.
+        textView.selectionManager.setSelectedRange(range(1, 2))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        let added = selectedRanges(textView).dropFirst()
+        XCTAssertEqual(added.count, 2)
+        for range in added {
+            XCTAssertLessThanOrEqual(abs(try x(range.location) - x(1)), cell / 2)
+            XCTAssertLessThanOrEqual(abs(try x(NSMaxRange(range)) - x(3)), cell / 2)
+        }
+    }
+
     func testControlCommandDAddsThePreviousOccurrence() throws {
         let (coordinator, textView) = try makeEditor(text: "a x a x a\n")
         textView.selectionManager.setSelectedRange(range(8))
@@ -432,6 +468,19 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(0, 1), range(8, 1)])
         XCTAssertTrue(coordinator.perform(.selectPreviousOccurrence), "from the command palette too")
         XCTAssertEqual(selectedRanges(textView), [range(0, 1), range(4, 1), range(8, 1)])
+    }
+
+    func testControlCommandGAddsThePreviousOccurrenceWhereMacOSTakesControlCommandD() throws {
+        let (coordinator, textView) = try makeEditor(text: "a x a x a\n")
+        textView.selectionManager.setSelectedRange(range(8))
+        XCTAssertTrue(coordinator.handle(key("g", [.command, .control])))
+        XCTAssertTrue(coordinator.handle(key("g", [.command, .control])))
+        XCTAssertEqual(selectedRanges(textView), [range(4, 1), range(8, 1)])
+        XCTAssertTrue(coordinator.handle(key("k", .command)))
+        XCTAssertTrue(coordinator.handle(key("g", [.command, .control])), "⌘K ⌃⌘G skips to the one before")
+        XCTAssertEqual(selectedRanges(textView), [range(0, 1), range(8, 1)])
+        XCTAssertEqual(WoolooCommandItem.named(EditorCommand.selectPreviousOccurrence.rawValue)?.shortcutLabel,
+                       "⌃⌘G", "the palette shows the key that works with Look Up on")
     }
 
     func testOptionDragSelectsAColumnBlockThatCommandUUndoesInOneStep() throws {
@@ -612,6 +661,63 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(3)], "the change in code is not part of the arrows' run")
         XCTAssertTrue(coordinator.perform(.undoSelection))
         XCTAssertEqual(selectedRanges(textView), [range(0)])
+        XCTAssertFalse(coordinator.perform(.undoSelection))
+    }
+
+    func testASelectionMadeInCodeAfterAClickIsAStepOfItsOwnUnlikeTheDragTimer() throws {
+        let (coordinator, textView) = try makeEditor(text: "let foo = foo + 1\n")
+        textView.selectionManager.setSelectedRange(range(0))
+        var event: NSEvent?
+        coordinator.currentEvent = { event }
+
+        // A click: the mouse monitor sees each event, then lets the editor handle it.
+        event = mouse(.leftMouseDown, at: 4, in: textView, flags: [], timestamp: 1)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        textView.selectionManager.setSelectedRange(range(4))
+        event = mouse(.leftMouseUp, at: 4, in: textView, flags: [], timestamp: 2)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        // A later turn of the run loop, with the mouse-up still AppKit's current event.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        textView.selectionManager.setSelectedRange(range(10, 3))
+
+        // A drag, which the editor's autoscroll timer goes on extending between drag events.
+        event = mouse(.leftMouseDown, at: 0, in: textView, flags: [], timestamp: 3)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        textView.selectionManager.setSelectedRange(range(0))
+        event = mouse(.leftMouseDragged, at: 2, in: textView, flags: [], timestamp: 4)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        textView.selectionManager.setSelectedRange(range(0, 2))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        textView.selectionManager.setSelectedRange(range(0, 5))
+        event = mouse(.leftMouseUp, at: 5, in: textView, flags: [], timestamp: 5)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        event = nil
+
+        XCTAssertTrue(coordinator.perform(.undoSelection), "the click, the drag and the timer are one step")
+        XCTAssertEqual(selectedRanges(textView), [range(10, 3)])
+        XCTAssertTrue(coordinator.perform(.undoSelection), "the change in code is not part of the click")
+        XCTAssertEqual(selectedRanges(textView), [range(4)])
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(0)])
+        XCTAssertFalse(coordinator.perform(.undoSelection))
+    }
+
+    func testEachMatchTheFindBarStepsToIsAStepOfItsOwn() throws {
+        let (coordinator, textView) = try makeEditor(text: "foo bar foo bar foo\n")
+        textView.selectionManager.setSelectedRange(range(1))
+        // Return or ⌘G in the find bar, which keeps the keyboard: the editor reports none of these.
+        window?.makeFirstResponder(nil)
+        for match in [range(0, 3), range(8, 3), range(16, 3)] { XCTAssertTrue(coordinator.reveal(match)) }
+        XCTAssertEqual(selectedRanges(textView), [range(16, 3)])
+        XCTAssertFalse(window?.firstResponder === textView, "the keyboard stays where it was")
+        XCTAssertFalse(coordinator.reveal(range(18, 5)), "past the end of the text")
+
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(8, 3)])
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(0, 3)])
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(1)])
         XCTAssertFalse(coordinator.perform(.undoSelection))
     }
 
@@ -827,6 +933,45 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(2, 3), range(long.utf16.count + 3, 3)])
     }
 
+    func testTurningLineWrappingOnInAShownEditorWrapsItsRowsForOptionDrag() throws {
+        let long = Array(repeating: "word", count: 30).joined(separator: " ")
+        let text = long + "\nab\n"
+        let model = WrappingEditorModel()
+        let coordinator = EditorMultiCursorCoordinator()
+        coordinator.currentEvent = { nil }
+        let spy = ControllerSpy()
+        let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
+        let host = NSHostingView(rootView: WrappingEditor(model: model, text: text, theme: theme.editorTheme,
+                                                          coordinators: [spy, coordinator])
+            .frame(width: 320, height: 300))
+        host.frame = NSRect(x: 0, y: 0, width: 320, height: 300)
+        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        self.window = window
+        host.layoutSubtreeIfNeeded()
+        try waitUntil { spy.controller?.textView.visibleTextRange != nil }
+        let textView = try XCTUnwrap(spy.controller?.textView)
+        window.makeFirstResponder(textView)
+        XCTAssertEqual(displayRows(textView).first, range(0, long.utf16.count), "one row per line")
+
+        model.wraps = true
+        try waitUntil {
+            host.layoutSubtreeIfNeeded()
+            return textView.layoutManager.wrapLines && self.displayRows(textView).count > 3
+        }
+        let rows = displayRows(textView)
+        textView.selectionManager.setSelectedRange(range(0))
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDown, at: 2, in: textView, timestamp: 1)))
+        let head = rows[1].location + 5
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseDragged, at: head, in: textView, timestamp: 2)))
+        XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseUp, at: head, in: textView, timestamp: 3)))
+        XCTAssertEqual(selectedRanges(textView), [range(2, 3), range(rows[1].location + 2, 3)],
+                       "columns 2–5 of the first two rows on screen")
+        XCTAssertEqual(coordinator.cursorGoal(for: range(2), in: text as NSString), .columns(start: 2, width: 0),
+                       "with wrapping, ⌥⌘↑/↓ keep display columns, as x positions depend on the row")
+    }
+
     func testAReplacedEditorStartsAFreshHistoryAndKeepsTheCoordinator() throws {
         // As when a document is reloaded or its Markdown mode changes: the view keeps its
         // coordinator while SwiftUI replaces the editor.
@@ -886,6 +1031,25 @@ final class EditorMultiCursorTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private final class WrappingEditorModel: ObservableObject {
+        @Published var wraps = false
+    }
+
+    /// An editor whose line wrapping changes while it is shown, as with View > Wrap Lines.
+    private struct WrappingEditor: View {
+        @ObservedObject var model: WrappingEditorModel
+        let text: String
+        let theme: EditorTheme
+        let coordinators: [TextViewCoordinator]
+
+        var body: some View {
+            CodeEditSourceEditor(.constant(text), language: .default, theme: theme,
+                                 font: .monospacedSystemFont(ofSize: 13, weight: .regular), tabWidth: 4,
+                                 lineHeight: 1.15, wrapLines: model.wraps, cursorPositions: .constant([]),
+                                 highlightProviders: [], coordinators: coordinators)
+        }
+    }
 
     private final class SwappedEditorModel: ObservableObject {
         @Published var split = false

@@ -28,6 +28,7 @@ struct WoolooCommandContext {
     let availability: WoolooCommandAvailability
     let showsSidebar: Bool
     let showsFilesSidebar: Bool
+    var wrapsLines = false
     let perform: (String) -> Void
 }
 
@@ -95,6 +96,10 @@ private struct WoolooCommands: Commands {
             item("toggle_files_sidebar",
                  title: context?.showsFilesSidebar == false ? "Show Files and Changes" : "Hide Files and Changes")
             item("refresh_files")
+            Divider()
+            Toggle("Wrap Lines", isOn: Binding(get: { context?.wrapsLines == true },
+                                               set: { _ in context?.perform("toggle_wrap_lines") }))
+                .disabled(context == nil)
             Divider()
         }
 
