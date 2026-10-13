@@ -12,6 +12,64 @@ struct HerdrCell: Hashable {
     var hyperlink: UInt32? = nil
 }
 
+/// A surface's cells, row by row, indexed like the flat array Herdr sends (`y * width + x`).
+/// Each row is an array of its own, so a patch applied while the main thread still holds the
+/// previous surface copies only the rows it touches, and a scroll across the whole width moves
+/// rows instead of cells.
+struct HerdrCellRows: RandomAccessCollection, MutableCollection, Equatable {
+    let width: Int
+    private(set) var rows: [[HerdrCell]]
+
+    init(_ cells: [HerdrCell], width: Int) {
+        precondition(width > 0 ? cells.count % width == 0 : cells.isEmpty, "cells must fill whole rows")
+        self.width = width
+        rows = width > 0 ? stride(from: 0, to: cells.count, by: width).map { Array(cells[$0..<($0 + width)]) } : []
+    }
+
+    /// Rows already split at `width`.
+    init(rows: [[HerdrCell]], width: Int) {
+        precondition(rows.allSatisfy { $0.count == width }, "rows must be \(width) cells wide")
+        self.width = width
+        self.rows = rows
+    }
+
+    var startIndex: Int { 0 }
+    var endIndex: Int { width * rows.count }
+
+    subscript(index: Int) -> HerdrCell {
+        get { rows[index / width][index % width] }
+        set { rows[index / width][index % width] = newValue }
+    }
+
+    subscript(x: Int, y: Int) -> HerdrCell {
+        get { rows[y][x] }
+        set { rows[y][x] = newValue }
+    }
+
+    /// Changes row `y` in place, copying it first only if another surface shares it.
+    mutating func modifyRow<T>(_ y: Int, _ body: (inout [HerdrCell]) throws -> T) rethrows -> T {
+        try body(&rows[y])
+    }
+
+    /// Row `y`, without copying it.
+    func row(_ y: Int) -> ArraySlice<HerdrCell> { rows[y][...] }
+
+    /// Swaps the cells of `columns` between rows `a` and `b`, moving whole rows when that is all of them.
+    mutating func swapCells(_ columns: Range<Int>, ofRow a: Int, withRow b: Int) {
+        guard a != b else { return }
+        if columns.count == width {
+            rows.swapAt(a, b)
+            return
+        }
+        let moved = rows[a][columns]
+        rows[a].replaceSubrange(columns, with: rows[b][columns])
+        rows[b].replaceSubrange(columns, with: moved)
+    }
+
+    /// Row after row, without dividing each index.
+    func makeIterator() -> FlattenSequence<[[HerdrCell]]>.Iterator { rows.joined().makeIterator() }
+}
+
 struct HerdrCursor: Equatable {
     let x: Int
     let y: Int
@@ -135,7 +193,7 @@ struct HerdrSurface: Equatable {
     var revision: UInt64
     let width: Int
     let height: Int
-    var cells: [HerdrCell]
+    var cells: HerdrCellRows
     var cursor: HerdrCursor?
     let paneIDs: [String]
     var paneRects: [String: HerdrRect]
@@ -165,7 +223,7 @@ struct HerdrSurface: Equatable {
                 let left = x == outer.x, right = x == outer.x + outer.width - 1
                 let symbol = top ? (left ? "╭" : right ? "╮" : "─")
                     : bottom ? (left ? "╰" : right ? "╯" : "─") : (left || right ? "│" : " ")
-                result.cells[y * width + x] = cell(symbol)
+                result.cells[x, y] = cell(symbol)
             }
         }
         // The title as Herdr's client draws it (a ratatui `Block` with all borders and no padding):
@@ -176,11 +234,11 @@ struct HerdrSurface: Equatable {
         let titleCells = HerdrTitle.cells(of: popup.title, room: outer.width - 3)
         for (offset, title) in titleCells.enumerated() {
             guard let title else { continue }
-            result.cells[outer.y * width + outer.x + 1 + offset] = title.covered
+            result.cells[outer.x + 1 + offset, outer.y] = title.covered
                 ? HerdrCell(symbol: title.symbol, foreground: accent, background: panel, modifier: 0, skip: true)
                 : cell(title.symbol)
         }
-        result.cells[outer.y * width + outer.x + outer.width - 2] = cell(" ")
+        result.cells[outer.x + outer.width - 2, outer.y] = cell(" ")
         let linkOffset = result.hyperlinks.count
         result.hyperlinks += popup.hyperlinks
         for y in 0..<min(inner.height, popup.rows) {
@@ -189,7 +247,7 @@ struct HerdrSurface: Equatable {
                 if let link = value.hyperlink {
                     value.hyperlink = Int(link) < popup.hyperlinks.count ? UInt32(linkOffset + Int(link)) : nil
                 }
-                result.cells[(inner.y + y) * width + inner.x + x] = value
+                result.cells[inner.x + x, inner.y + y] = value
             }
         }
         result.cursor = popup.cursor.flatMap { cursor in
@@ -197,6 +255,19 @@ struct HerdrSurface: Equatable {
             return HerdrCursor(x: inner.x + cursor.x, y: inner.y + cursor.y, visible: cursor.visible, shape: cursor.shape)
         }
         return result
+    }
+}
+
+extension HerdrSurface {
+    /// A surface from cells in Herdr's order, row after row.
+    init(bootID: String, projectionRevision: UInt64, revision: UInt64, width: Int, height: Int,
+         cells: [HerdrCell], cursor: HerdrCursor?, paneIDs: [String], paneRects: [String: HerdrRect],
+         paneInnerRects: [String: HerdrRect], mouseReportingPaneIDs: Set<String>, splits: [HerdrSplit],
+         graphics: [HerdrGraphic], hyperlinks: [String] = [], popup: HerdrPopup? = nil) {
+        self.init(bootID: bootID, projectionRevision: projectionRevision, revision: revision, width: width,
+                  height: height, cells: HerdrCellRows(cells, width: width), cursor: cursor, paneIDs: paneIDs,
+                  paneRects: paneRects, paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs,
+                  splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup)
     }
 }
 
@@ -439,18 +510,27 @@ private struct SurfaceReader {
                                      xOffset: Int(xOffset), yOffset: Int(yOffset), z: z)
     }
 
-    mutating func surface(graphicsCache: inout [Data: Data]) throws -> HerdrSurface {
+    /// Reads a complete surface. Its width follows its cells, so they are read in rows of
+    /// `expectedWidth`, the previous surface's, and regrouped only if the width changed.
+    mutating func surface(graphicsCache: inout [Data: Data], expectedWidth: Int? = nil) throws -> HerdrSurface {
         let bootID = try string()
         let projectionRevision = try number()
         let revision = try number()
         let cellCount = try count()
         guard cellCount <= 200_000 else { throw SurfaceProtocolError.invalidFrame }
-        var cells: [HerdrCell] = []
-        cells.reserveCapacity(cellCount)
-        for _ in 0..<cellCount { cells.append(try cell()) }
+        let rowWidth = expectedWidth.flatMap { $0 > 0 && cellCount % $0 == 0 ? $0 : nil } ?? max(1, cellCount)
+        var rows: [[HerdrCell]] = []
+        rows.reserveCapacity(cellCount / rowWidth)
+        for _ in 0..<(cellCount / rowWidth) {
+            var row: [HerdrCell] = []
+            row.reserveCapacity(rowWidth)
+            for _ in 0..<rowWidth { row.append(try cell()) }
+            rows.append(row)
+        }
         let width = try Int(number())
         let height = try Int(number())
         guard width > 0, height > 0, width * height == cellCount else { throw SurfaceProtocolError.invalidFrame }
+        let cells = width == rowWidth ? HerdrCellRows(rows: rows, width: width) : HerdrCellRows(Array(rows.joined()), width: width)
         let cursor = try optional { reader in try reader.cursor() }
         var hyperlinks: [String] = []
         for _ in 0..<(try count()) { hyperlinks.append(try string()) }
@@ -504,7 +584,7 @@ private struct SurfaceReader {
               baseRevision == surface.revision else { throw SurfaceProtocolError.invalidFrame }
         guard scrolls.allSatisfy({ $0.fits(width: surface.width, height: surface.height) }),
               HerdrSurfaceScroll.disjoint(scrolls) else { throw SurfaceProtocolError.invalidFrame }
-        for scroll in scrolls { scroll.apply(to: &surface.cells, width: surface.width) }
+        for scroll in scrolls { scroll.apply(to: &surface.cells) }
         for _ in 0..<(try count()) {
             let x = try Int(number())
             let y = try Int(number())
@@ -512,8 +592,8 @@ private struct SurfaceReader {
             guard x >= 0, y >= 0, y < surface.height, x + length <= surface.width else {
                 throw SurfaceProtocolError.invalidFrame
             }
-            for offset in 0..<length {
-                surface.cells[y * surface.width + x + offset] = try cell()
+            try surface.cells.modifyRow(y) { row in
+                for offset in 0..<length { row[x + offset] = try cell() }
             }
         }
         for _ in 0..<(try count()) {
@@ -555,17 +635,14 @@ struct HerdrSurfaceScroll: Equatable {
     }
 
     /// Swaps rows exactly as Herdr's `for_each_swap` does, so both ends agree on the order.
-    func apply(to cells: inout [HerdrCell], width: Int) {
+    /// A region as wide as the surface moves whole rows, without touching their cells.
+    func apply(to cells: inout HerdrCellRows) {
         let distance = abs(shift)
         let pairs = shift > 0
             ? (0..<(rect.height - distance)).map { ($0, $0 + distance) }
             : (distance..<rect.height).reversed().map { ($0, $0 - distance) }
-        cells.withUnsafeMutableBufferPointer { cells in
-            for (a, b) in pairs {
-                let first = (rect.y + a) * width + rect.x, second = (rect.y + b) * width + rect.x
-                for x in 0..<rect.width { cells.swapAt(first + x, second + x) }
-            }
-        }
+        let columns = rect.x..<(rect.x + rect.width)
+        for (a, b) in pairs { cells.swapCells(columns, ofRow: rect.y + a, withRow: rect.y + b) }
     }
 }
 
@@ -619,7 +696,7 @@ struct HerdrSurfaceDecoder {
 
     fileprivate mutating func apply(tag: UInt64, from reader: inout SurfaceReader) throws -> HerdrSurface {
         if tag == 13 {
-            let decoded = try reader.surface(graphicsCache: &graphicsCache)
+            let decoded = try reader.surface(graphicsCache: &graphicsCache, expectedWidth: surface?.width)
             surface = decoded
             return decoded
         }

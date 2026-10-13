@@ -273,7 +273,7 @@ final class TerminalRenderingTests: XCTestCase {
                 if let previous {
                     let redrawn = Set(grid.changedRows(since: previous.grid).flatMap { $0 })
                     for row in 0..<surface.height {
-                        let cells = { (s: HerdrSurface) in s.cells[(row * s.width)..<((row + 1) * s.width)] }
+                        let cells = { (s: HerdrSurface) in s.cells.row(row) }
                         let cursorRow = { (s: HerdrSurface) in s.cursor?.visible == true && s.cursor?.y == row ? s.cursor?.x : nil }
                         let differs = cells(previous.surface) != cells(surface) || cursorRow(previous.surface) != cursorRow(surface)
                         if differs && !redrawn.contains(row) {

@@ -83,7 +83,7 @@ final class SurfaceLayersTests: XCTestCase {
         let surface = try decode(frame(popup: true,
                                        assets: [(pane, Data(count: 16)), (popup, Data(count: 16))],
                                        placements: [Placement(key: pane), Placement(key: popup)]))
-        XCTAssertEqual(surface.cells, model.cells)
+        XCTAssertEqual(Array(surface.cells), model.cells)
         XCTAssertEqual(surface.graphics.map(\.key.isPopup), [false, true])
         XCTAssertEqual(surface.popup?.terminalID, "popup-terminal")
         XCTAssertEqual(surface.popup?.cols, 1)
@@ -276,7 +276,7 @@ final class HerdrPopupTests: XCTestCase {
             let expected = try XCTUnwrap(reference.apply(wire))
             XCTAssertEqual(surface.popup, value)
             XCTAssertEqual(surface.contentDigest, expected.contentDigest)
-            XCTAssertEqual(surface.cells, SurfaceModel(width: 30, height: 12).cells)
+            XCTAssertEqual(Array(surface.cells), SurfaceModel(width: 30, height: 12).cells)
         }
         let wire = frame(popup())
         for count in [1, wire.count / 2, wire.count - 1] {

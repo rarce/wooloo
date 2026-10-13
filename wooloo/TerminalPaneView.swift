@@ -389,7 +389,7 @@ struct TerminalPaneView: NSViewRepresentable {
         for y in 0..<surface.height {
             let cursor = surface.cursor
             let key = TerminalGrid.RowKey(
-                cells: surface.cells[(y * surface.width)..<((y + 1) * surface.width)],
+                cells: surface.cells.row(y),
                 cursorColumn: cursor?.visible == true && cursor?.y == y ? cursor?.x : nil,
                 imageColumns: behindImages.filter { y >= $0.y && y < $0.y + $0.rows }.map { $0.x..<($0.x + $0.cols) })
             if let reusable, let match = reusable.row(matching: key, near: y + shift) {

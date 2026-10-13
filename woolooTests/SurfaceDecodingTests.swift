@@ -28,7 +28,7 @@ final class SurfaceDecodingTests: XCTestCase {
                                "reference decoder disagrees with the fixture: \(workload.name) frame \(index)")
                 XCTAssertEqual(surface.contentDigest, workload.digests[index], "\(workload.name) frame \(index)")
             }
-            XCTAssertEqual(decoder.surface?.cells, workload.final.cells, workload.name)
+            XCTAssertEqual(decoder.surface.map { Array($0.cells) }, workload.final.cells, workload.name)
             XCTAssertEqual(decoder.surface?.cursor, workload.final.cursor, workload.name)
         }
     }
@@ -61,7 +61,7 @@ final class SurfaceDecodingTests: XCTestCase {
             XCTAssertEqual(expected.contentDigest, workload.digests[index], "reference decoder, frame \(index)")
             XCTAssertEqual(surface.contentDigest, workload.digests[index], "frame \(index)")
         }
-        XCTAssertEqual(decoder.surface?.cells, workload.final.cells)
+        XCTAssertEqual(decoder.surface.map { Array($0.cells) }, workload.final.cells)
         let plain = TerminalWorkload.asciiScroll(width: 80, height: 24, frames: 60)
         XCTAssertLessThan(workload.totalBytes * 3, plain.totalBytes, "scrolled patches should be much smaller")
     }
@@ -106,8 +106,8 @@ final class SurfaceDecodingTests: XCTestCase {
             _ = try reference.apply(previous.surfaceFrame())
             XCTAssertThrowsError(try decoder.apply(frame: bad), "frame \(index)")
             XCTAssertThrowsError(try reference.apply(bad), "reference, frame \(index)")
-            XCTAssertEqual(decoder.surface?.cells, previous.cells, "frame \(index) changed the surface")
-            XCTAssertEqual(try decoder.apply(frame: valid)?.cells, model.cells, "frame \(index)")
+            XCTAssertEqual(decoder.surface.map { Array($0.cells) }, previous.cells, "frame \(index) changed the surface")
+            XCTAssertEqual(try decoder.apply(frame: valid).map { Array($0.cells) }, model.cells, "frame \(index)")
         }
     }
 
