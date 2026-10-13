@@ -18,6 +18,17 @@ enum WorkspaceDocumentKind: String, Codable {
     }
 }
 
+/// Whether document editors wrap lines to their width (View > Wrap Lines), for the whole app. The
+/// app's defaults are the only place it is kept: views read it with `@AppStorage`, which redraws
+/// them when it changes, so open editors rewrap at once.
+enum EditorLineWrapping {
+    static let storageKey = "EditorWrapLines"
+
+    static func toggle(in defaults: UserDefaults = .standard) {
+        defaults.set(!defaults.bool(forKey: storageKey), forKey: storageKey)
+    }
+}
+
 /// Where to put the cursor when a document opens, e.g. at a search match.
 struct WorkspaceDocumentReveal: Equatable {
     let line: Int
@@ -128,6 +139,7 @@ struct WorkspaceDocumentView: View {
     @State private var revealsAfterEdit = false
     @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
+    @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
 
     private var language: CodeLanguage {
         if NotebookDocument.supports(document.path) { return .json }
@@ -361,7 +373,7 @@ struct WorkspaceDocumentView: View {
             font: typography.codeFont,
             tabWidth: 4,
             lineHeight: 1.15,
-            wrapLines: false,
+            wrapLines: wrapsLines,
             cursorPositions: $document.cursorPositions,
             coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator]
         )

@@ -45,6 +45,7 @@ final class ContentCommandsTests: XCTestCase {
     private var updateChecks = 0
     private var canCheckForUpdates = true
     private var fileResultsForgotten = 0
+    private var lineWrappingToggles = 0
 
     override func setUp() async throws {
         // Short, so socket paths stay under the 104-byte limit.
@@ -85,6 +86,7 @@ final class ContentCommandsTests: XCTestCase {
                         effects: ContentCommandEffects(
                             reloadAppConfig: { self.appConfigReloads += 1 },
                             forgetRecentFileResults: { self.fileResultsForgotten += 1 },
+                            toggleLineWrapping: { self.lineWrappingToggles += 1 },
                             copy: { self.copied.append($0) },
                             reveal: { self.revealed.append($0) },
                             canCheckForUpdates: { self.canCheckForUpdates },
@@ -418,6 +420,21 @@ final class ContentCommandsTests: XCTestCase {
         commands.perform("refresh_files")
         XCTAssertEqual(fileResultsForgotten, 1)
         XCTAssertEqual(window.fileRefreshVersion, 1)
+    }
+
+    func testWrapLinesTurnsTheAppWideSettingOverWithOrWithoutADocument() throws {
+        XCTAssertTrue(WoolooCommandItem.named("toggle_wrap_lines")?.isAvailable(commands.availability) == true)
+        commands.perform("toggle_wrap_lines")
+        XCTAssertEqual(lineWrappingToggles, 1)
+
+        let suite = "ContentCommandsTests-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertFalse(defaults.bool(forKey: EditorLineWrapping.storageKey), "off until turned on")
+        EditorLineWrapping.toggle(in: defaults)
+        XCTAssertTrue(defaults.bool(forKey: EditorLineWrapping.storageKey))
+        EditorLineWrapping.toggle(in: defaults)
+        XCTAssertFalse(defaults.bool(forKey: EditorLineWrapping.storageKey))
     }
 
     func testReloadConfigReloadsTheAppAndHerdr() async {

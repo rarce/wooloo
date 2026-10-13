@@ -322,13 +322,13 @@ public class TextLayoutManager: NSObject {
 
         var height: CGFloat = 0
         var width: CGFloat = 0
-        let relativeMinY = max(layoutData.minY - position.yPos, 0)
-        let relativeMaxY = max(layoutData.maxY - position.yPos, relativeMinY)
 
-        for lineFragmentPosition in line.lineFragments.linesStartingAt(
-            relativeMinY,
-            until: relativeMaxY
-        ) {
+        // wooloo patch: place every fragment of the line, as upstream does since 0.10.0, so the height returned is the
+        // whole line's. Placing only the fragments inside the layout rect stored part of a wrapped line's height as
+        // its height when the line started above the rect. The pass then moved the scroll position by the
+        // difference, the scroll laid out again from a point inside the same line, which got another partial
+        // height, and so on until the stack overflowed (`layoutManagerYAdjustment` → scroll → `updatedViewport`).
+        for lineFragmentPosition in line.lineFragments {
             let lineFragment = lineFragmentPosition.data
 
             layoutFragmentView(for: lineFragmentPosition, at: position.yPos + lineFragmentPosition.yPos)

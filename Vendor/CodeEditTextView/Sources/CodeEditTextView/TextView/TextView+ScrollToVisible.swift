@@ -30,9 +30,13 @@ extension TextView {
             layoutManager.layoutLines()
             selectionManager.updateSelectionViews()
             selectionManager.drawSelections(in: visibleRect)
-        }
-        if lastFrame != .zero {
-            scrollView.contentView.scrollToVisible(lastFrame)
+            // wooloo patch: scroll inside the loop, as upstream does since 0.11.3. Scrolling lays out the lines that come
+            // into view, which with wrapping grow taller than estimated and move the rect; scrolling once after the
+            // loop left a far selection off screen.
+            if lastFrame != .zero {
+                scrollView.contentView.scrollToVisible(lastFrame)
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
         }
     }
 

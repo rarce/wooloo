@@ -28,6 +28,8 @@ struct WoolooCommandContext {
     let availability: WoolooCommandAvailability
     let showsSidebar: Bool
     let showsFilesSidebar: Bool
+    /// Whether document editors wrap lines, for the checkmark on View > Wrap Lines.
+    let wrapsLines: Bool
     let perform: (String) -> Void
 }
 
@@ -96,6 +98,8 @@ private struct WoolooCommands: Commands {
                  title: context?.showsFilesSidebar == false ? "Show Files and Changes" : "Hide Files and Changes")
             item("refresh_files")
             Divider()
+            toggle("toggle_wrap_lines", isOn: context?.wrapsLines == true)
+            Divider()
         }
 
         CommandMenu("Space") {
@@ -125,6 +129,14 @@ private struct WoolooCommands: Commands {
             item("help")
             Divider()
         }
+    }
+
+    /// A setting shown with a checkmark when on; choosing it runs the action, which turns it over.
+    private func toggle(_ action: String, isOn: Bool) -> some View {
+        let command = WoolooCommandItem.named(action)
+        return Toggle(command?.title ?? action, isOn: Binding(get: { isOn }, set: { _ in context?.perform(action) }))
+            .keyboardShortcut(command?.shortcut)
+            .disabled(context.map { command?.isAvailable($0.availability) != true } ?? true)
     }
 
     private func item(_ action: String, title: String? = nil) -> some View {

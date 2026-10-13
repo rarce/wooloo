@@ -95,6 +95,7 @@ struct ContentCommandEffects {
     /// Reads wooloo's shortcut map and themes again from Herdr's config.
     var reloadAppConfig: () -> Void = {}
     var forgetRecentFileResults: () -> Void = { WorkspaceFiles.forgetRecentResults() }
+    var toggleLineWrapping: () -> Void = { EditorLineWrapping.toggle() }
     var copy: (String) -> Void = { AppActions.copy($0) }
     var reveal: (String) -> Void = { AppActions.reveal($0) }
     var canCheckForUpdates: @MainActor () -> Bool = { AppUpdater.shared.canCheckForUpdates }
@@ -184,6 +185,7 @@ struct ContentCommands {
             effects.reloadAppConfig()
             herdr.reloadConfig()
         case .toggleFilesSidebar: window.showsFilesSidebar.toggle()
+        case .toggleWrapLines: effects.toggleLineWrapping()
         case .refreshFiles:
             effects.forgetRecentFileResults()
             window.fileRefreshVersion += 1

@@ -1134,6 +1134,144 @@ final class EditorMultiCursorTests: XCTestCase {
         return rows
     }
 
+    // MARK: - Scrolling wrapped text
+
+    /// 400 lines that each wrap to several rows at the editor's width: their heights are only
+    /// estimated, as one row, until they are laid out.
+    private let wrappedDocument = (0..<400).map { "line \($0) " + String(repeating: "word ", count: 200) }
+        .joined(separator: "\n")
+
+    private func lineStart(_ line: Int, in text: String) -> Int {
+        (text as NSString).range(of: "line \(line) ").location
+    }
+
+    private func assertOnScreen(_ offset: Int, in textView: TextView, file: StaticString = #filePath, line: UInt = #line) {
+        guard let rect = textView.layoutManager.rectForOffset(offset) else {
+            return XCTFail("No layout for \(offset)", file: file, line: line)
+        }
+        // The visible rect is pixel aligned.
+        XCTAssertTrue(textView.visibleRect.insetBy(dx: 0, dy: -1).contains(rect),
+                      "\(rect) is outside \(textView.visibleRect)", file: file, line: line)
+    }
+
+    /// Go to File and project search reveal through `EditorRevealCoordinator`, which uses the
+    /// editor's own `scrollSelectionToVisible`. It overflowed the stack in wrapped text, and
+    /// left a far line off screen.
+    func testRevealingALineScrollsItOnScreenInWrappedText() throws {
+        let text = wrappedDocument
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: text, wrapLines: true, spy: spy)
+        XCTAssertGreaterThan(textView.layoutManager.textLineForIndex(0)?.data.lineFragments.count ?? 0, 2)
+        let reveal = EditorRevealCoordinator()
+        reveal.prepareCoordinator(controller: try XCTUnwrap(spy.controller))
+        // Lets AppKit show the vertical scroller, which narrows the text and rewraps it.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        for line in [50, 390, 120, 3, 399] {
+            let offset = lineStart(line, in: text)
+            textView.selectionManager.setSelectedRange(NSRange(location: offset, length: 0))
+            // A full layout is pending, as after turning wrapping on or changing the font.
+            textView.layoutManager.setNeedsLayout()
+            reveal.scrollSelectionToVisible()
+            assertOnScreen(offset, in: textView)
+            // Layout and drawing that follow in the app leave it there.
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            assertOnScreen(offset, in: textView)
+        }
+    }
+
+    func testRevealingALineScrollsItOnScreenWithoutWrapping() throws {
+        let text = wrappedDocument
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: text, spy: spy)
+        let reveal = EditorRevealCoordinator()
+        reveal.prepareCoordinator(controller: try XCTUnwrap(spy.controller))
+
+        for line in [50, 390, 120, 3, 399] {
+            let offset = lineStart(line, in: text)
+            textView.selectionManager.setSelectedRange(NSRange(location: offset, length: 0))
+            reveal.scrollSelectionToVisible()
+            assertOnScreen(offset, in: textView)
+        }
+    }
+
+    func testAFindMatchTheFindBarStepsToIsOnScreenInWrappedText() throws {
+        let text = wrappedDocument
+        let (coordinator, textView) = try makeEditor(text: text, wrapLines: true)
+        window?.makeFirstResponder(nil)
+        for line in [50, 390, 120, 3, 399] {
+            let match = NSRange(location: lineStart(line, in: text), length: 4)
+            XCTAssertTrue(coordinator.reveal(match))
+            assertOnScreen(match.location, in: textView)
+        }
+    }
+
+    /// An editor that reads View > Wrap Lines from `defaults`, as document editors read it from the app's.
+    private struct WrappingEditor: View {
+        let text: NSTextStorage
+        let spy: ControllerSpy
+        @AppStorage private var wrapsLines: Bool
+
+        init(text: NSTextStorage, spy: ControllerSpy, defaults: UserDefaults) {
+            self.text = text
+            self.spy = spy
+            _wrapsLines = AppStorage(wrappedValue: false, EditorLineWrapping.storageKey, store: defaults)
+        }
+
+        var body: some View {
+            CodeEditSourceEditor(text, language: .default,
+                                 theme: WoolooTheme.named(WoolooTheme.fallbackID)!.editorTheme,
+                                 font: .monospacedSystemFont(ofSize: 13, weight: .regular), tabWidth: 4,
+                                 lineHeight: 1.15, wrapLines: wrapsLines, cursorPositions: .constant([]),
+                                 highlightProviders: [], coordinators: [spy])
+        }
+    }
+
+    func testTogglingWrapLinesRewrapsAnOpenEditorAtOnce() throws {
+        let suite = "EditorMultiCursorTests-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let spy = ControllerSpy()
+        let host = NSHostingView(rootView: WrappingEditor(text: NSTextStorage(string: wrappedDocument), spy: spy,
+                                                          defaults: defaults).frame(width: 500, height: 300))
+        host.frame = NSRect(x: 0, y: 0, width: 500, height: 300)
+        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        self.window = window
+        host.layoutSubtreeIfNeeded()
+        try waitUntil { spy.controller?.textView.visibleTextRange != nil }
+        let textView = try XCTUnwrap(spy.controller?.textView)
+        func rows() -> Int { textView.layoutManager.textLineForIndex(0)?.data.lineFragments.count ?? 0 }
+        XCTAssertEqual(rows(), 1)
+
+        EditorLineWrapping.toggle(in: defaults)
+        XCTAssertTrue(defaults.bool(forKey: EditorLineWrapping.storageKey))
+        try waitUntil { rows() > 1 }
+        XCTAssertLessThanOrEqual(textView.frame.width, 500, "no wider than the editor")
+
+        EditorLineWrapping.toggle(in: defaults)
+        try waitUntil { rows() == 1 }
+        XCTAssertGreaterThan(textView.frame.width, 500, "as wide as the longest line again")
+    }
+
+    /// Scrolling up lays out lines above the view whose heights were estimated; the editor moves
+    /// the scroll position by how much they grew, which lays out again from inside the same line.
+    func testScrollingUpThroughWrappedTextKeepsTheTopLineInPlace() throws {
+        let text = wrappedDocument
+        let (_, textView) = try makeEditor(text: text, wrapLines: true)
+        let clipView = try XCTUnwrap(textView.enclosingScrollView?.contentView)
+        clipView.scroll(to: NSPoint(x: 0, y: textView.frame.height))
+        var y = clipView.bounds.minY
+        while y > 0 {
+            y = max(y - 250, 0)
+            clipView.scroll(to: NSPoint(x: 0, y: y))
+            let top = try XCTUnwrap(textView.layoutManager.textLineForPosition(textView.visibleRect.minY))
+            XCTAssertEqual(top.height, top.data.lineFragments.height, accuracy: 0.01,
+                           "the line at the top has its whole height")
+        }
+    }
+
     // MARK: - Helpers
 
     private final class SwappedEditorModel: ObservableObject {

@@ -984,7 +984,13 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         textView.selectionManager.setSelectedRanges(selection.ranges)
         isApplying = false
         textView.needsDisplay = true
-        if let rect = textView.layoutManager.rectForOffset(selection.newest.location) {
+        // Scrolling lays out the lines that come into view. With line wrapping on they grow
+        // taller than estimated and push the selection down, so scroll again until it stays.
+        var target: CGRect?
+        for _ in 0..<20 {
+            guard let rect = textView.layoutManager.rectForOffset(selection.newest.location), rect != target
+            else { break }
+            target = rect
             textView.scrollToVisible(rect.insetBy(dx: -20, dy: -rect.height))
         }
     }
