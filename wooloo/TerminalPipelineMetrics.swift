@@ -306,21 +306,25 @@ extension HerdrSurface {
         func mix(_ value: UInt64) {
             for shift in stride(from: 0, to: 64, by: 8) { mixByte(UInt8((value >> UInt64(shift)) & 0xff)) }
         }
-        mix(UInt64(width))
-        mix(UInt64(height))
-        for cell in cells {
-            for byte in cell.symbol.utf8 { mixByte(byte) }
-            mixByte(0xff)
-            mix(UInt64(cell.foreground) << 32 | UInt64(cell.background))
-            mix(UInt64(cell.modifier) << 1 | (cell.skip ? 1 : 0))
+        /// Size, cells and cursor; a popup's are hashed alike, without building a surface for them.
+        func mixScreen(width: Int, height: Int, cells: some Sequence<HerdrCell>, cursor: HerdrCursor?) {
+            mix(UInt64(width))
+            mix(UInt64(height))
+            for cell in cells {
+                for byte in cell.symbol.utf8 { mixByte(byte) }
+                mixByte(0xff)
+                mix(UInt64(cell.foreground) << 32 | UInt64(cell.background))
+                mix(UInt64(cell.modifier) << 1 | (cell.skip ? 1 : 0))
+            }
+            if let cursor {
+                mix(UInt64(cursor.x))
+                mix(UInt64(cursor.y))
+                mix(UInt64(cursor.shape) << 1 | (cursor.visible ? 1 : 0))
+            } else {
+                mix(UInt64.max)
+            }
         }
-        if let cursor {
-            mix(UInt64(cursor.x))
-            mix(UInt64(cursor.y))
-            mix(UInt64(cursor.shape) << 1 | (cursor.visible ? 1 : 0))
-        } else {
-            mix(UInt64.max)
-        }
+        mixScreen(width: width, height: height, cells: cells, cursor: cursor)
         for graphic in graphics {
             for byte in graphic.key.identity { mixByte(byte) }
             mix(UInt64(graphic.x) << 32 | UInt64(graphic.y))
@@ -337,10 +341,13 @@ extension HerdrSurface {
                 case nil: mix(UInt64.max)
                 }
             }
-            let frame = HerdrSurface(bootID: bootID, projectionRevision: projectionRevision, revision: revision,
-                                     width: popup.cols, height: popup.rows, cells: popup.cells, cursor: popup.cursor,
-                                     paneIDs: [], paneRects: [:], paneInnerRects: [:], mouseReportingPaneIDs: [], splits: [], graphics: [])
-            mix(frame.contentDigest)
+            // The popup's screen as its own digest, folded in, as the digest of a surface showing it.
+            let outer = hash
+            hash = 0xcbf29ce484222325
+            mixScreen(width: popup.cols, height: popup.rows, cells: popup.cells, cursor: popup.cursor)
+            let popupDigest = hash
+            hash = outer
+            mix(popupDigest)
             for link in popup.hyperlinks { for byte in link.utf8 { mixByte(byte) }; mixByte(0xff) }
             mix(popup.mouseReporting ? 1 : 0)
         }

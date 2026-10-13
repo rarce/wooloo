@@ -243,6 +243,24 @@ Live, 113×48 grid. Live numbers vary up to threefold between runs on a loaded m
 
 With scrolled patches as well, two later runs decoded ascii frames in 120–240 µs at p50 instead of about 330 µs, and drew them 0.8–2.3 ms after arrival. Keystroke to screen took 0.7–1.1 ms at p50 in those runs. `e2e-baseline.json` holds the slower of the two.
 
+### Cells by row (2026-10-13)
+
+A patch is applied on the stream thread to the decoder's copy of the surface while the main thread still holds the surface it showed, so the first change copied the whole cell array (about 1 MB at 311×80). `HerdrSurface.cells` is now a `HerdrCellRows`, an array of rows indexed like the flat array, so a patch copies only the rows it writes. A scroll at least half as wide as the surface swaps whole rows; cells outside the scrolled region, such as the pane's borders, swap back only where the two rows differ there, which they rarely do, so such a scroll copies no row it does not rewrite. A narrower region swaps its own cells in place, copying each of its rows at most once: a 60-column pane scrolling beside a 251-column pane full of text at 311×80, the worst case, decodes in 110 µs at p50 against 100 µs on `main`, which copied the whole array once. A complete surface is read straight into rows of the previous surface's width, or of the width the hello asked for, and regrouped with one copy when the width changed (a new 311×80 surface: 311 µs, against 334 µs on `main`). `SurfaceDecodingTests.testScrollsOfPanesSideBySideKeepTheOtherPane` scrolls panes beside each other against the reference decoder.
+
+Stage benchmarks, 200×60, decode p50: `scroll-shift` 63 → 6.4 µs, `typing` 42 → 1.8 µs; `ascii-scroll` (plain patches that rewrite every row) and `full-frames` are unchanged within noise. Live at 132×48, patches during `ascii`, `color` and `unicode` decoded in 53 µs at p50 (107 µs p95) against 80 (180) µs on `main` in a run just before.
+
+### Layers per row: measured and not taken (2026-10-13)
+
+Scrolling output moves every row, so the view redrew all of them: 1.1–2.3 ms per frame at 200×60 in the stage benchmarks. A branch drew each row on a layer of its own (with the parts of overhanging glyphs from the rows beside it) and moved the layer of a row that only moved. The benchmarks drew a scrolling frame in 0.11–0.22 ms instead, but live it cost more:
+
+| workload, 132×48 | whole view, draw p50 | layer per row, draw p50 (about 7 rows) | main busy, whole view → layers |
+|---|---|---|---|
+| ascii | 0.17–0.18 ms | 0.42–0.46 ms | 4.3% → 5.6–6.5% |
+| unicode | 0.47 ms | 0.60 ms | 7.4% → 8.3% |
+| color | 0.81–0.97 ms | 0.66 ms | 7.3% → 7.2% |
+
+Time to screen did not change (15.3–16.0 ms p50 either way). In a window, AppKit records a view's drawing and rasterizes it away from the main thread, so drawing every row costs the main thread little, while every layer drawn costs Core Animation a backing store of its own: about 0.3 ms a row when displayed synchronously, 0.1 ms drawn into an image, 60 µs drawn asynchronously. The stage benchmarks draw into a bitmap on the CPU, which is why they overstate a whole redraw; read their `draw` column as relative, not as main-thread time.
+
 # Workspace measurements
 
 The file explorer, Git bar, repository panel, diffs and documents get their data from `WorkspaceFiles`. Every git, SSH or shell command goes through `WorkspaceFiles.run`, which reports it to `WorkspaceProcessLog`. With `WOOLOO_METRICS_FILE` set, each command becomes a `proc` event, labeled with its command (for example `git status`) and whether it ran over SSH. User-visible operations become `span` events, from the moment they start until their result is on screen:

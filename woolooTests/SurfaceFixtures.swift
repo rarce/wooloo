@@ -389,7 +389,7 @@ struct TerminalWorkload {
         var decoder = HerdrSurfaceDecoder()
         for frame in colors.frames {
             guard let surface = try? decoder.apply(frame: frame) else { continue }
-            model.cells = surface.cells
+            model.cells = Array(surface.cells)
             model.cursor = surface.cursor
             model.revision = surface.revision
             workload.emit(model.surfaceFrame(), model)

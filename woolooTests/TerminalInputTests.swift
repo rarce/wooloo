@@ -23,7 +23,7 @@ private func twoPaneSurface(mouseReporting: Set<String> = []) -> HerdrSurface {
 private func splitTextSurface(mouseReporting: Set<String> = []) -> HerdrSurface {
     var surface = twoPaneSurface(mouseReporting: mouseReporting)
     let blank = SurfaceModel.blank
-    surface.cells = Array(repeating: blank, count: 20 * 4)
+    surface.cells = HerdrCellRows(Array(repeating: blank, count: 20 * 4), width: 20)
     func put(_ text: String, column: Int, row: Int) {
         for (offset, character) in text.enumerated() {
             surface.cells[row * 20 + column + offset] = HerdrCell(symbol: String(character), foreground: 0, background: 0,

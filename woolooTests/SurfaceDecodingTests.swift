@@ -28,7 +28,7 @@ final class SurfaceDecodingTests: XCTestCase {
                                "reference decoder disagrees with the fixture: \(workload.name) frame \(index)")
                 XCTAssertEqual(surface.contentDigest, workload.digests[index], "\(workload.name) frame \(index)")
             }
-            XCTAssertEqual(decoder.surface?.cells, workload.final.cells, workload.name)
+            XCTAssertEqual(decoder.surface.map { Array($0.cells) }, workload.final.cells, workload.name)
             XCTAssertEqual(decoder.surface?.cursor, workload.final.cursor, workload.name)
         }
     }
@@ -61,7 +61,7 @@ final class SurfaceDecodingTests: XCTestCase {
             XCTAssertEqual(expected.contentDigest, workload.digests[index], "reference decoder, frame \(index)")
             XCTAssertEqual(surface.contentDigest, workload.digests[index], "frame \(index)")
         }
-        XCTAssertEqual(decoder.surface?.cells, workload.final.cells)
+        XCTAssertEqual(decoder.surface.map { Array($0.cells) }, workload.final.cells)
         let plain = TerminalWorkload.asciiScroll(width: 80, height: 24, frames: 60)
         XCTAssertLessThan(workload.totalBytes * 3, plain.totalBytes, "scrolled patches should be much smaller")
     }
@@ -106,8 +106,69 @@ final class SurfaceDecodingTests: XCTestCase {
             _ = try reference.apply(previous.surfaceFrame())
             XCTAssertThrowsError(try decoder.apply(frame: bad), "frame \(index)")
             XCTAssertThrowsError(try reference.apply(bad), "reference, frame \(index)")
-            XCTAssertEqual(decoder.surface?.cells, previous.cells, "frame \(index) changed the surface")
-            XCTAssertEqual(try decoder.apply(frame: valid)?.cells, model.cells, "frame \(index)")
+            XCTAssertEqual(decoder.surface.map { Array($0.cells) }, previous.cells, "frame \(index) changed the surface")
+            XCTAssertEqual(try decoder.apply(frame: valid).map { Array($0.cells) }, model.cells, "frame \(index)")
+        }
+    }
+
+    /// Scrolls of panes beside each other move only their columns: the rows swap whole, and the
+    /// cells of the other pane, which differ from row to row, must stay where they were.
+    func testScrollsOfPanesSideBySideKeepTheOtherPane() throws {
+        func filled(_ rows: [(left: String, right: String)]) -> SurfaceModel {
+            var model = SurfaceModel(width: 20, height: rows.count)
+            for (y, text) in rows.enumerated() {
+                var row = RowBuilder(width: 20)
+                row.put(text.left.padding(toLength: 10, withPad: " ", startingAt: 0))
+                row.put(text.right)
+                model.setRow(y, row.cells)
+            }
+            return model
+        }
+        let left = HerdrRect(x: 0, y: 0, width: 10, height: 6), right = HerdrRect(x: 10, y: 1, width: 10, height: 5)
+        let start = (0..<6).map { (left: "left \($0)", right: "right \($0)") }
+        let cases: [(scrolls: [(rect: HerdrRect, shift: Int)], rows: [(left: String, right: String)])] = [
+            ([(left, 1)], (0..<6).map { (left: "left \($0 + 1)", right: "right \($0)") }),
+            ([(right, -2)], (0..<6).map { (left: "left \($0)", right: $0 == 0 ? "right 0" : $0 < 3 ? "new \($0)" : "right \($0 - 2)") }),
+            ([(left, 2), (right, 1)], (0..<6).map { (left: "left \($0 + 2)", right: $0 == 0 ? "right 0" : "right \($0 + 1)") }),
+        ]
+        // A region narrower than half the row swaps only its own cells.
+        let narrow = HerdrRect(x: 0, y: 0, width: 6, height: 6)
+        let narrowStart = (0..<6).map { (left: "n\($0)", right: "right \($0)") }
+        let narrowCases: [(scrolls: [(rect: HerdrRect, shift: Int)], rows: [(left: String, right: String)])] = [
+            ([(narrow, 1)], (0..<6).map { (left: "n\($0 + 1)", right: "right \($0)") }),
+            ([(narrow, -3)], (0..<6).map { (left: $0 < 3 ? "m\($0)" : "n\($0 - 3)", right: "right \($0)") }),
+        ]
+        for (index, (test, initial)) in (cases.map { ($0, start) } + narrowCases.map { ($0, narrowStart) }).enumerated() {
+            let previous = filled(initial)
+            var next = filled(test.rows)
+            next.revision = previous.revision + 1
+            var decoder = HerdrSurfaceDecoder()
+            var reference = ReferenceSurfaceDecoder()
+            _ = try decoder.apply(frame: previous.surfaceFrame())
+            _ = try reference.apply(previous.surfaceFrame())
+            let frame = next.scrollFrame(from: previous, scrolls: test.scrolls)
+            XCTAssertEqual(try decoder.apply(frame: frame).map { Array($0.cells) }, next.cells, "case \(index)")
+            XCTAssertEqual(try reference.apply(frame).map { Array($0.cells) }, next.cells, "reference, case \(index)")
+        }
+    }
+
+    /// Complete surfaces of other sizes through one decoder: cells are read in rows of the
+    /// previous width (or the hello's) and regrouped when the width changed.
+    func testCompleteSurfacesOfOtherWidthsThroughOneDecoder() throws {
+        for expected in [nil, 80, 33] {
+            var decoder = HerdrSurfaceDecoder(expectedWidth: expected)
+            for (width, height) in [(80, 24), (120, 16), (100, 30), (40, 48), (1, 3), (80, 24)] {
+                var model = SurfaceModel(width: width, height: height)
+                for y in 0..<height {
+                    var row = RowBuilder(width: width)
+                    row.put("\(y)·\(width)x\(height)")
+                    model.setRow(y, row.cells)
+                }
+                let surface = try XCTUnwrap(decoder.apply(frame: model.surfaceFrame()))
+                XCTAssertEqual(Array(surface.cells), model.cells, "\(width)x\(height) after expecting \(String(describing: expected))")
+                XCTAssertEqual(surface.cells.rows.count, height)
+                XCTAssertTrue(surface.cells.rows.allSatisfy { $0.count == width })
+            }
         }
     }
 
