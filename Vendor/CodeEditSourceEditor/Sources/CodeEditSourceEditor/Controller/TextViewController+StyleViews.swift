@@ -16,13 +16,22 @@ extension TextViewController {
         return paragraph
     }
 
+    /// wooloo patch: rebuilds the paragraph style for the current font and tab width and applies it
+    /// to the text and to typed text, so tabs stop every `tabWidth` spaces.
+    package func applyParagraphStyle() {
+        paragraphStyle = generateParagraphStyle()
+        textView.typingAttributes[.paragraphStyle] = paragraphStyle
+        textView.textStorage.addAttribute(.paragraphStyle, value: paragraphStyle,
+                                          range: NSRange(location: 0, length: textView.textStorage.length))
+        textView.layoutManager.setNeedsLayout()
+    }
+
     /// Style the text view.
     package func styleTextView() {
         textView.selectionManager.selectionBackgroundColor = theme.selection
         textView.selectionManager.selectedLineBackgroundColor = getThemeBackground()
         textView.selectionManager.highlightSelectedLine = isEditable
         textView.selectionManager.insertionPointColor = theme.insertionPoint
-        paragraphStyle = generateParagraphStyle()
         textView.typingAttributes = attributesFor(nil)
     }
 

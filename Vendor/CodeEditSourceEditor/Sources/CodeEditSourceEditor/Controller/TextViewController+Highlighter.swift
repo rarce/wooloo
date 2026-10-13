@@ -31,7 +31,9 @@ extension TextViewController: ThemeAttributesProviding {
         [
             .font: font,
             .foregroundColor: theme.colorFor(capture),
-            .kern: textView.kern
+            .kern: textView.kern,
+            // wooloo patch: tab stops every `tabWidth` spaces, which upstream builds but never applies.
+            .paragraphStyle: paragraphStyle
         ]
     }
 }

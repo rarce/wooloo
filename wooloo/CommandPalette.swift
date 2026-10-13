@@ -63,8 +63,8 @@ enum EditorCommand: String, CaseIterable {
         case .findNext: return KeyboardShortcut("g", modifiers: .command)
         case .findPrevious: return KeyboardShortcut("g", modifiers: [.command, .shift])
         case .selectNextOccurrence: return KeyboardShortcut("d", modifiers: .command)
-        // The key reaches the editor only while macOS's Look Up shortcut, also ⌃⌘D, is off.
-        case .selectPreviousOccurrence: return KeyboardShortcut("d", modifiers: [.command, .control])
+        // ⌃⌘D works too, but reaches the editor only while macOS's Look Up shortcut, also ⌃⌘D, is off.
+        case .selectPreviousOccurrence: return KeyboardShortcut("g", modifiers: [.command, .control])
         case .selectAllOccurrences: return KeyboardShortcut("l", modifiers: [.command, .shift])
         case .addCursorAbove: return KeyboardShortcut(.upArrow, modifiers: [.command, .option])
         case .addCursorBelow: return KeyboardShortcut(.downArrow, modifiers: [.command, .option])
