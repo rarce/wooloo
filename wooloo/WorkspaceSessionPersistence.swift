@@ -465,14 +465,11 @@ final class EditorSessionCoordinator: TextViewCoordinator {
             restoration = nil
             if textView.wrapLines, let anchor = restorationAnchor {
                 // With wrapping on, lines not laid out count one row each, so the saved y lands
-                // elsewhere in a new editor; the character that was at the top does not. Lines that
-                // come into view grow and move it, so scroll again until it stays.
+                // elsewhere in a new editor; the character that was at the top does not.
                 let offset = min(anchor, textView.textStorage.length)
-                var target: CGFloat?
-                for _ in 0..<20 {
-                    guard let rect = textView.layoutManager.rectForOffset(offset), rect.minY != target else { break }
-                    target = rect.minY
-                    let origin = CGPoint(x: position.x, y: rect.minY - (textView.visibleRect.minY - clip.bounds.minY))
+                EditorScrolling.settle(on: { textView.layoutManager.rectForOffset(offset) }) { rect in
+                    // The text view's top is below the top inset.
+                    let origin = CGPoint(x: position.x, y: rect.minY - scrollView.contentInsets.top)
                     clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: origin, size: clip.bounds.size)).origin)
                 }
             } else {
@@ -484,15 +481,25 @@ final class EditorSessionCoordinator: TextViewCoordinator {
         clip.postsBoundsChangedNotifications = true
         observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
             object: clip, queue: .main) { [weak self, weak clip] _ in
-                guard let self, let position = clip?.bounds.origin else { return }
-                onScroll?(position, topOffset())
+                self?.report()
             }
     }
 
-    /// The first character of the row at the top of the view.
+    /// An edit above the top moves the text under it without scrolling.
+    func textViewDidChangeText(controller: TextViewController) {
+        report()
+    }
+
+    private func report() {
+        guard let position = controller?.textView.enclosingScrollView?.contentView.bounds.origin else { return }
+        onScroll?(position, topOffset())
+    }
+
+    /// With line wrapping on, the first character of the row at the top of the view.
     private func topOffset() -> Int? {
-        guard let textView = controller?.textView else { return nil }
-        let top = textView.visibleRect.minY
+        guard let textView = controller?.textView, textView.wrapLines else { return nil }
+        // Just inside it: the visible rect is pixel aligned, and the row above can end at its top.
+        let top = textView.visibleRect.minY + 1
         return textView.layoutManager.textOffsetAtPoint(CGPoint(x: 0, y: top))
             ?? textView.layoutManager.textLineForPosition(top)?.range.location
     }

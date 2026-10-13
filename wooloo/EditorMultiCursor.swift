@@ -984,13 +984,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         textView.selectionManager.setSelectedRanges(selection.ranges)
         isApplying = false
         textView.needsDisplay = true
-        // Scrolling lays out the lines that come into view. With line wrapping on they grow
-        // taller than estimated and push the selection down, so scroll again until it stays.
-        var target: CGRect?
-        for _ in 0..<20 {
-            guard let rect = textView.layoutManager.rectForOffset(selection.newest.location), rect != target
-            else { break }
-            target = rect
+        EditorScrolling.settle(on: { textView.layoutManager.rectForOffset(selection.newest.location) }) { rect in
             textView.scrollToVisible(rect.insetBy(dx: -20, dy: -rect.height))
         }
     }
@@ -1018,6 +1012,20 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             newest = added
         } else {
             newest = sorted.last
+        }
+    }
+}
+
+/// Scrolling an editor lays out the lines that come into view. With line wrapping on they grow
+/// taller than estimated and move what was scrolled to.
+enum EditorScrolling {
+    /// Scrolls with `scroll` to the rect `rect` gives, again while that moves, at most 20 times.
+    static func settle(on rect: () -> CGRect?, scroll: (CGRect) -> Void) {
+        var target: CGRect?
+        for _ in 0..<20 {
+            guard let next = rect(), next != target else { return }
+            target = next
+            scroll(next)
         }
     }
 }

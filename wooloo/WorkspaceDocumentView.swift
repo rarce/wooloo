@@ -385,8 +385,12 @@ struct WorkspaceDocumentView: View {
         .onAppear {
             sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil,
                                        anchor: document.scrollAnchor) { position, anchor in
-                if document.scrollPosition != position { document.scrollPosition = position }
-                if document.scrollAnchor != anchor { document.scrollAnchor = anchor }
+                guard document.scrollPosition != position || document.scrollAnchor != anchor else { return }
+                // One write, so one change of the document store per scroll.
+                var scrolled = document
+                scrolled.scrollPosition = position
+                scrolled.scrollAnchor = anchor
+                document = scrolled
             }
         }
         .onAppear { applyReveal() }
@@ -706,7 +710,7 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     }
 
     private func drawFindMatchesAfterLayout() {
-        guard !redrawsAfterLayout else { return }
+        guard !findRanges.isEmpty, !redrawsAfterLayout else { return }
         redrawsAfterLayout = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
