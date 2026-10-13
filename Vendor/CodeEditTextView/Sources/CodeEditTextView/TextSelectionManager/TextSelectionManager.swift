@@ -73,8 +73,9 @@ public class TextSelectionManager: NSObject {
         textSelections = [selection]
         if textView?.isFirstResponder ?? false {
             updateSelectionViews()
-            NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
         }
+        // wooloo patch: report the change even while the text view lacks the keyboard.
+        NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
     }
 
     /// Set the selected ranges to new ranges. Overrides any existing selections.
@@ -94,8 +95,9 @@ public class TextSelectionManager: NSObject {
             }
         if textView?.isFirstResponder ?? false {
             updateSelectionViews()
-            NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
         }
+        // wooloo patch: report the change even while the text view lacks the keyboard.
+        NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
     }
 
     /// Append a new selected range to the existing ones.
@@ -121,8 +123,9 @@ public class TextSelectionManager: NSObject {
 
         if textView?.isFirstResponder ?? false {
             updateSelectionViews()
-            NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
         }
+        // wooloo patch: report the change even while the text view lacks the keyboard.
+        NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
     }
 
     // MARK: - Selection Views

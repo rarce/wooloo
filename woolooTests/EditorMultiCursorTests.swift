@@ -391,16 +391,29 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(textView.string, "- one\n- two\n- three\n")
     }
 
-    func testAddCursorBelowLinesUpWithATabWhereTheEditorDrawsItsEnd() throws {
+    func testAddCursorBelowUsesTheEditorsTabWidth() throws {
         let (coordinator, textView) = try makeEditor(text: "\tx\n    ab\n")
         textView.selectionManager.setSelectedRange(range(1))
         XCTAssertTrue(coordinator.perform(.addCursorBelow))
-        let added = try XCTUnwrap(selectedRanges(textView).last)
-        XCTAssertGreaterThan(added.location, 4, "a tab is wider than one space")
+        XCTAssertEqual(selectedRanges(textView), [range(1), range(7)], "a tab of 4 columns, not one")
+    }
+
+    func testTheEditorDrawsTabsEveryTabWidthSpacesForEveryFontSize() throws {
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: "\tx\nabcd\n", spy: spy)
         let layout: TextLayoutManager = textView.layoutManager
-        let cell = try XCTUnwrap(layout.rectForOffset(3)).width
-        XCTAssertLessThanOrEqual(abs(try XCTUnwrap(layout.rectForOffset(added.location)).minX
-                                     - XCTUnwrap(layout.rectForOffset(1)).minX), cell / 2)
+        let x = { (offset: Int) in try XCTUnwrap(layout.rectForOffset(offset)).minX }
+        XCTAssertEqual(try x(1), try x(7), accuracy: 0.01, "a tab ends where four spaces do, not at 28 pt")
+        // Text keeps its font until highlighting restyles it, so measure the new stops directly.
+        let controller = try XCTUnwrap(spy.controller)
+        let font = NSFont.monospacedSystemFont(ofSize: 20, weight: .regular)
+        let space = (" " as NSString).size(withAttributes: [.font: font]).width
+        controller.font = font
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(try x(1) - x(0), 4 * space, accuracy: 0.01, "after the font changes")
+        controller.tabWidth = 2
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(try x(1) - x(0), 2 * space, accuracy: 0.01, "and the tab width")
     }
 
     func testRepeatedAddCursorBelowKeepsTheDisplayGoalAcrossAShortLine() throws {
@@ -455,6 +468,60 @@ final class EditorMultiCursorTests: XCTestCase {
             XCTAssertLessThanOrEqual(abs(try x(range.location) - x(1)), cell / 2)
             XCTAssertLessThanOrEqual(abs(try x(NSMaxRange(range)) - x(3)), cell / 2)
         }
+    }
+
+    func testASelectionOverOneWideCharacterAddsThatCharacterBelow() throws {
+        // "c" covers cells 2–3; 日 below covers about 1–2.6, so both ends of the goal are nearest
+        // to the boundary after 日. The character under the goal's middle is selected.
+        let (coordinator, textView) = try makeEditor(text: "abcd\na日b\n")
+        textView.selectionManager.setSelectedRange(range(2, 1))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        let added = try XCTUnwrap(selectedRanges(textView).last)
+        XCTAssertNotEqual(added, range(2, 1), "the line is not skipped")
+        let layout: TextLayoutManager = textView.layoutManager
+        let middle = try (XCTUnwrap(layout.rectForOffset(2)).minX + XCTUnwrap(layout.rectForOffset(3)).minX) / 2
+        XCTAssertGreaterThan(added.length, 0)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(layout.rectForOffset(added.location)).minX, middle)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(layout.rectForOffset(NSMaxRange(added))).minX, middle)
+        let selected = MultiCursorSelection(ranges: [range(2, 1)], newest: range(2, 1))
+        XCTAssertNil(MultiCursor.addCursor(selected, in: "abcd\na日b" as NSString, above: false, goalColumn: 2),
+                     "display columns skip the line: column 2 to 3 is inside 日")
+    }
+
+    func testAddCursorBelowReachesAnEmptyLastLineThatIsNotLaidOut() throws {
+        let text = Array(repeating: "abcdef", count: 200).joined(separator: "\n") + "\n"
+        let length = (text as NSString).length
+        let (coordinator, textView) = try makeEditor(text: text)
+        textView.selectionManager.setSelectedRange(range(length - 4))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertEqual(selectedRanges(textView), [range(length - 4), range(length)])
+    }
+
+    func testASelectionAddedPastManyShortLinesDoesNotLayThemOut() throws {
+        let lines = 100_000
+        let text = String(repeating: "x", count: 120) + "\n" + Array(repeating: "ab", count: lines).joined(separator: "\n")
+            + "\n" + String(repeating: "y", count: 120)
+        let (coordinator, textView) = try makeEditor(text: text)
+        textView.selectionManager.setSelectedRange(range(100, 10))
+        let start = Date()
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        print("Adding a selection past \(lines) short lines took \(Date().timeIntervalSince(start)) s")
+        let last = (text as NSString).length - 120
+        XCTAssertEqual(selectedRanges(textView), [range(100, 10), range(last + 100, 10)])
+        XCTAssertEqual(textView.layoutManager.textLineForIndex(lines / 2)?.data.lineFragments.isEmpty, true,
+                       "plain ASCII lines too short for the goal are measured without laying them out")
+    }
+
+    func testTurningLineWrappingOnEndsARunOfAddedCursors() throws {
+        let (coordinator, textView) = try makeEditor(text: "abcdef\nabcdef\nabcdef\n")
+        textView.selectionManager.setSelectedRange(range(3))
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        guard case .x = coordinator.addCursorGoal?.goal else { return XCTFail("x positions without wrapping") }
+        textView.layoutManager.wrapLines = true
+        XCTAssertTrue(coordinator.perform(.addCursorBelow))
+        XCTAssertEqual(coordinator.addCursorGoal?.goal, .columns(start: 3, width: 0),
+                       "with wrapping on, the next press starts over with display columns")
+        XCTAssertEqual(selectedRanges(textView), [range(3), range(10), range(17)])
     }
 
     func testControlCommandDAddsThePreviousOccurrence() throws {
@@ -702,6 +769,62 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertFalse(coordinator.perform(.undoSelection))
     }
 
+    func testADragLeftOverFromElsewhereDoesNotJoinALaterChangeToAClick() throws {
+        let (coordinator, textView) = try makeEditor(text: "let foo = foo + 1\n")
+        textView.selectionManager.setSelectedRange(range(0))
+        var event: NSEvent?
+        coordinator.currentEvent = { event }
+        event = mouse(.leftMouseDown, at: 4, in: textView, flags: [], timestamp: 1)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        textView.selectionManager.setSelectedRange(range(4))
+        event = mouse(.leftMouseUp, at: 4, in: textView, flags: [], timestamp: 2)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        // A drag in another window, such as a file dragged from the explorer, whose drop leaves
+        // its last drag AppKit's current event.
+        let elsewhere = { (type: NSEvent.EventType, timestamp: TimeInterval) in
+            NSEvent.mouseEvent(with: type, location: .zero, modifierFlags: [], timestamp: timestamp, windowNumber: 0,
+                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        XCTAssertFalse(coordinator.handleMouse(elsewhere(.leftMouseDown, 3)))
+        event = elsewhere(.leftMouseDragged, 4)
+        XCTAssertFalse(coordinator.handleMouse(event!))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        textView.selectionManager.setSelectedRange(range(10, 3))
+        event = nil
+
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(4)], "the change in code is a step of its own")
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(0)])
+    }
+
+    func testSelectionsSetWhileTheEditorLacksTheKeyboardAreRecordedAndReportedAtOnce() throws {
+        let spy = ControllerSpy()
+        let (coordinator, textView) = try makeEditor(text: "foo bar foo bar foo\n", spy: spy)
+        textView.selectionManager.setSelectedRange(range(1))
+        // As the cursor binding does after a reveal from Go to File or project search.
+        window?.makeFirstResponder(nil)
+        textView.selectionManager.setSelectedRange(range(4, 3))
+        XCTAssertEqual(spy.controller?.cursorPositions.map(\.range), [range(4, 3)], "reported to the binding")
+        textView.selectionManager.setSelectedRange(range(12, 3))
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(4, 3)], "each a step, without waiting for a key")
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(textView), [range(1)])
+    }
+
+    func testAFindMatchFarDownIsSelectedScrolledToAndReportedInOneReveal() throws {
+        let spy = ControllerSpy()
+        let text = Array(repeating: "filler line", count: 200).joined(separator: "\n") + "\nneedle\n"
+        let (coordinator, textView) = try makeEditor(text: text, spy: spy)
+        let needle = (text as NSString).range(of: "needle")
+        window?.makeFirstResponder(nil)
+        XCTAssertTrue(coordinator.reveal(needle))
+        XCTAssertEqual(spy.controller?.cursorPositions.map(\.range), [needle], "the binding follows")
+        let visible = try XCTUnwrap(textView.visibleTextRange)
+        XCTAssertTrue(NSLocationInRange(needle.location, visible), "scrolled to the match")
+    }
+
     func testEachMatchTheFindBarStepsToIsAStepOfItsOwn() throws {
         let (coordinator, textView) = try makeEditor(text: "foo bar foo bar foo\n")
         textView.selectionManager.setSelectedRange(range(1))
@@ -765,8 +888,7 @@ final class EditorMultiCursorTests: XCTestCase {
         textView.moveLeft(nil)
         let afterKeys = selectedRanges(textView)
         XCTAssertNotEqual(afterKeys, [range(0, 28)])
-        // A find match or a reveal, set while the editor does not have the keyboard, which it
-        // does not report; the next key in the editor records it.
+        // A find match or a reveal, set while the editor does not have the keyboard.
         event = key("g", .command)
         window?.makeFirstResponder(nil)
         textView.selectionManager.setSelectedRange(range(4, 3))
@@ -1101,11 +1223,10 @@ final class EditorMultiCursorTests: XCTestCase {
                                   clickCount: 1, pressure: 1)!
     }
 
-    private func makeEditor(text: String, wrapLines: Bool = false,
-                            width: CGFloat = 500) throws -> (EditorMultiCursorCoordinator, TextView) {
+    private func makeEditor(text: String, wrapLines: Bool = false, width: CGFloat = 500,
+                            spy: ControllerSpy = ControllerSpy()) throws -> (EditorMultiCursorCoordinator, TextView) {
         let coordinator = EditorMultiCursorCoordinator()
         coordinator.currentEvent = { nil }
-        let spy = ControllerSpy()
         let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
         let editor = CodeEditSourceEditor(
             NSTextStorage(string: text),

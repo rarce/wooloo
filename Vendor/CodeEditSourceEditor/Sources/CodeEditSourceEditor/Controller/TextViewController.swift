@@ -49,6 +49,7 @@ public class TextViewController: NSViewController {
     public var font: NSFont {
         didSet {
             textView.font = font
+            applyParagraphStyle() // wooloo patch
             highlighter?.invalidate()
         }
     }
@@ -69,8 +70,7 @@ public class TextViewController: NSViewController {
     /// The visual width of tab characters in the text view measured in number of spaces.
     public var tabWidth: Int {
         didSet {
-            paragraphStyle = generateParagraphStyle()
-            textView.layoutManager.setNeedsLayout()
+            applyParagraphStyle() // wooloo patch
             highlighter?.invalidate()
         }
     }

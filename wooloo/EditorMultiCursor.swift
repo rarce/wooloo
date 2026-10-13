@@ -276,9 +276,10 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         case columns(start: Int, width: Int)
     }
 
-    /// The goal ⌥⌘↑/↓ keep while adding cursors, and the selection they left. A press that
-    /// follows any other change starts over from the selection it adds to.
-    private var addCursorGoal: (goal: CursorGoal, after: [NSRange])?
+    /// The goal ⌥⌘↑/↓ keep while adding cursors, whether lines wrapped, and the selection they
+    /// left. A press that follows any other change starts over from the selection it adds to.
+    /// Readable for tests.
+    private(set) var addCursorGoal: (goal: CursorGoal, wraps: Bool, after: [NSRange])?
     /// Selections before each change, for ⌘U, with the ranges the change left.
     private var history: [(before: MultiCursorSelection, after: [NSRange], change: SelectionChange)] = []
     /// Steps ⌘U went back through, latest last, for ⇧⌘U: the ranges ⌘U left and the selections
@@ -325,6 +326,10 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     /// the current event, which still counts as the drag; a change made in code after a click,
     /// with its mouse-up still the current event, does not count as the click.
     private var dispatchingMouse: NSEvent?
+    /// The mouse went down on the text view and has not come up since, so a drag that is still
+    /// the current event belongs to the editor's own drag rather than one elsewhere, such as a
+    /// file dragged in the explorer, whose drop may leave its last drag the current event.
+    private var holdsMouseInTextView = false
 
     func prepareCoordinator(controller: TextViewController) {
         if self.controller !== controller {
@@ -390,10 +395,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         set(ranges, newest: newest)
     }
 
-    /// Selects a match the find bar stepped to, as a ⌘U step of its own, and leaves the keyboard
-    /// where it is. The editor does not report a selection set while it lacks the keyboard, as
-    /// with Return or ⌘G in the find bar, so `syncSelection` would only see where a run of them
-    /// ended. Returns false when there is no editor to select in.
+    /// Selects a match the find bar stepped to and scrolls to it, as a ⌘U step of its own, and
+    /// leaves the keyboard where it is; the editor reports the selection to the cursor binding.
+    /// Returns false when there is no editor to select in.
     @discardableResult
     func reveal(_ range: NSRange) -> Bool {
         guard let textView = controller?.textView, NSMaxRange(range) <= textView.textStorage.length else { return false }
@@ -410,9 +414,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         apply(selection)
     }
 
-    /// Records a selection the editor took without reporting it, which it does while it does not
-    /// have the keyboard: a find match selected from the find bar, or a reveal. Called before
-    /// anything that reads or changes the selections, and by the document view after a reveal.
+    /// Records a selection the editor took without reporting it. The vendored editor reports every
+    /// change, with or without the keyboard, so this is a safeguard. Called before anything that
+    /// reads or changes the selections, and by the document view after a reveal.
     func syncSelection() {
         guard let textView = controller?.textView else { return }
         let actual = textView.selectionManager.textSelections.map(\.range).sorted { $0.location < $1.location }
@@ -489,6 +493,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     /// the whole gesture from the editor, whose own drag handling would replace the block with
     /// one range. Internal for tests.
     func handleMouse(_ event: NSEvent) -> Bool {
+        if event.type == .leftMouseDown || event.type == .leftMouseUp { holdsMouseInTextView = false }
         guard let textView = controller?.textView, let window = textView.window,
               event.window === window || event.windowNumber == window.windowNumber else {
             endColumnDrag()
@@ -502,6 +507,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         let text = textView.textStorage.string as NSString
         switch event.type {
         case .leftMouseDown:
+            holdsMouseInTextView = isOverTextView(event, textView)
             endColumnDrag()
             isEditing = false
             syncSelection()
@@ -742,10 +748,12 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     }
 
     /// Keeps the first press's goal and width while each press adds to what the last one left,
-    /// so a part clamped to a short line does not narrow the lines after it.
+    /// so a part clamped to a short line does not narrow the lines after it. A run also ends when
+    /// line wrapping is turned on or off, which changes the kind of goal.
     private func addCursor(_ selection: MultiCursorSelection, text: NSString, above: Bool) -> MultiCursorSelection? {
         guard let base = above ? selection.ranges.first : selection.ranges.last else { return nil }
-        let goal = addCursorGoal.flatMap { $0.after == selection.ranges ? $0.goal : nil }
+        let wraps = controller?.textView.layoutManager.wrapLines ?? false
+        let goal = addCursorGoal.flatMap { $0.after == selection.ranges && $0.wraps == wraps ? $0.goal : nil }
             ?? cursorGoal(for: base, in: text)
         let result: MultiCursorSelection?
         switch goal {
@@ -753,15 +761,16 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             result = MultiCursor.addCursor(selection, in: text, above: above, goalColumn: column, width: width,
                                            tabWidth: tabWidth)
         case .x(let start, let end):
+            let lineEnd = asciiLineEnd()
             result = MultiCursor.addCursor(selection, in: text, above: above) { line in
-                guard let first = self.offset(atX: start, on: line) else { return nil }
-                guard let end else { return (first, first) }
-                guard let last = self.offset(atX: end, on: line), last > first else { return nil }
-                return (first, last)
+                // A selection skips lines that end before it; plain ASCII lines are measured
+                // without laying them out, so a run past many short lines stays cheap.
+                if end != nil, let x = lineEnd(line, text), x <= start + 0.5 { return nil }
+                return self.span(from: start, to: end, on: line, in: text)
             }
         }
         guard let result else { return nil }
-        addCursorGoal = (goal, result.ranges)
+        addCursorGoal = (goal, wraps, result.ranges)
         return result
     }
 
@@ -777,13 +786,52 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         return .columns(start: DisplayColumns.column(of: base.location, in: text, tabWidth: tabWidth), width: width)
     }
 
-    /// The character boundary nearest to `x` on the line whose contents are `line`, clamped to
-    /// them, laying the line out first if it is not yet.
-    private func offset(atX x: CGFloat, on line: NSRange) -> Int? {
+    /// The offsets a line's contents (`line`, without its break) take between x positions
+    /// `start` and `end` (a cursor at `start` when `end` is nil), laying the line out first if it
+    /// is not yet: the character boundaries nearest to them, clamped to the line. When both are
+    /// nearest to one boundary inside the line, a single character spans the goal, and the one
+    /// under its middle is selected. Nil when a selection finds the line too short.
+    private func span(from start: CGFloat, to end: CGFloat?, on line: NSRange,
+                      in text: NSString) -> (start: Int, end: Int)? {
+        // The empty last line has no layout of its own to measure.
+        guard line.length > 0 else { return end == nil ? (line.location, line.location) : nil }
         guard let layout = controller?.textView.layoutManager,
-              let row = layout.rectForOffset(line.location),
-              let found = layout.textOffsetAtPoint(NSPoint(x: x, y: row.minY + 1)) else { return nil }
-        return min(max(found, line.location), NSMaxRange(line))
+              let row = layout.rectForOffset(line.location) else { return nil }
+        func offset(atX x: CGFloat) -> Int? {
+            layout.textOffsetAtPoint(NSPoint(x: x, y: row.minY + 1)).map { min(max($0, line.location), NSMaxRange(line)) }
+        }
+        guard let first = offset(atX: start) else { return nil }
+        guard let end else { return (first, first) }
+        guard let last = offset(atX: end) else { return nil }
+        if last > first { return (first, last) }
+        guard first < NSMaxRange(line), let boundary = layout.rectForOffset(first)?.minX else { return nil }
+        let under = boundary > (start + end) / 2 && first > line.location ? first - 1 : first
+        let character = text.rangeOfComposedCharacterSequence(at: under)
+        return (character.location, NSMaxRange(character))
+    }
+
+    /// Where a line made only of printable ASCII and tabs ends in the editor's layout, without
+    /// laying it out: with a fixed-pitch font, no letter spacing and tab stops every `tabWidth`
+    /// spaces, its width is its display columns times a space's. Nil for any other line or font.
+    private func asciiLineEnd() -> (NSRange, NSString) -> CGFloat? {
+        guard let controller, controller.font.isFixedPitch, controller.textView.kern == 0 else { return { _, _ in nil } }
+        let space = (" " as NSString).size(withAttributes: [.font: controller.font]).width
+        let left = controller.textView.layoutManager.edgeInsets.left
+        let tabWidth = tabWidth
+        return { line, text in
+            var columns = 0
+            for index in line.location..<NSMaxRange(line) {
+                let unit = text.character(at: index)
+                if unit == 0x09 {
+                    columns += tabWidth - columns % tabWidth
+                } else if unit >= 0x20 && unit < 0x7F {
+                    columns += 1
+                } else {
+                    return nil
+                }
+            }
+            return left + CGFloat(columns) * space
+        }
     }
 
     private var tabWidth: Int { max(controller?.tabWidth ?? 4, 1) }
@@ -882,7 +930,8 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             guard event === dispatchingKey else { return (.other, false) }
             return Self.isNavigationKey(event) ? (.keys, true) : (.other, false)
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
-            guard event === dispatchingMouse || event.type == .leftMouseDragged else { return (.other, false) }
+            guard event === dispatchingMouse || event.type == .leftMouseDragged && holdsMouseInTextView
+            else { return (.other, false) }
             if event.type == .leftMouseDown { mouseDown = event.timestamp }
             // A drag continues its click's step only when that click was recorded: a click that
             // left the selections alone must not join its drag to an earlier click.

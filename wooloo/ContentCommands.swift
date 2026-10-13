@@ -85,14 +85,11 @@ final class ContentWindowModel: ObservableObject {
 
     private let defaults: UserDefaults
 
-    /// Whether document editors wrap lines, kept in the defaults for every window, where
-    /// `WorkspaceDocumentView` reads it.
+    /// Whether document editors wrap lines. The defaults hold it, the app's own outside tests:
+    /// the views that show it read the same key with `@AppStorage`, which redraws them.
     var wrapsLines: Bool {
         get { defaults.bool(forKey: EditorLineWrapping.storageKey) }
-        set {
-            objectWillChange.send()
-            defaults.set(newValue, forKey: EditorLineWrapping.storageKey)
-        }
+        set { defaults.set(newValue, forKey: EditorLineWrapping.storageKey) }
     }
 
     /// Tests keep the pickers' recent commands and options out of the app's defaults.

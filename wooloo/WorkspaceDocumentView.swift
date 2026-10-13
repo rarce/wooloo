@@ -524,14 +524,9 @@ struct WorkspaceDocumentView: View {
         case .source:
             guard current < find.sourceMatches.count else { return }
             let range = find.sourceMatches[current].range
-            // Selected through the coordinator, so that each match stepped to from the find bar,
-            // which keeps the keyboard, is a ⌘U step of its own.
-            multiCursorCoordinator.reveal(range)
-            cursorPositions = [CursorPosition(range: range)]
-            DispatchQueue.main.async {
-                revealCoordinator.scrollSelectionToVisible()
-                multiCursorCoordinator.syncSelection()
-            }
+            // One selection and one scroll, each match a ⌘U step of its own; the editor reports
+            // the selection back to `cursorPositions`.
+            if !multiCursorCoordinator.reveal(range) { cursorPositions = [CursorPosition(range: range)] }
         case .preview:
             guard current < find.previewMatches.count else { return }
             previewFocus = MarkdownFindFocus(block: find.previewMatches[current].block, match: current)
