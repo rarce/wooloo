@@ -786,6 +786,8 @@ struct ContentView: View {
             documentStore.load(id)
         }, onOpenFile: { [location = documentStore.documents[index].location] path in
             openDocument(.file, path: path, at: location)
+        }, onScroll: { position, anchor in
+            documentStore.recordScroll(id, position: position, anchor: anchor)
         }, commandTarget: window.editor, isFocused: focused)
         .id(id)
     }

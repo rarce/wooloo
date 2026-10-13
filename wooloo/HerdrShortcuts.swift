@@ -46,6 +46,8 @@ enum HerdrCommand: Equatable {
     case closeCurrentTab
     case focusPane(String), splitPane(String), zoom, closePane
     case toggleSidebar, toggleFilesSidebar, refreshFiles
+    /// Wraps lines in document editors, or stops wrapping them; see `EditorLineWrapping`.
+    case toggleWrapLines
     case projectSearch(replace: Bool)
     /// Go to File; while it is open, selects the next file.
     case quickOpen
@@ -86,6 +88,7 @@ enum HerdrCommand: Equatable {
         case "toggle_sidebar": self = .toggleSidebar
         case "toggle_files_sidebar": self = .toggleFilesSidebar
         case "refresh_files": self = .refreshFiles
+        case "toggle_wrap_lines": self = .toggleWrapLines
         case "project_search": self = .projectSearch(replace: false)
         case "project_replace": self = .projectSearch(replace: true)
         case "quick_open": self = .quickOpen

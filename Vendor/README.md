@@ -20,6 +20,11 @@ And in CodeEditTextView, for multiple cursors (`wooloo/EditorMultiCursor.swift` 
 - An edit at several cursors is one undo step (`TextView+ReplaceCharacters.swift`).
 - Copy writes the selections joined by newlines plus a `dev.wooloo.editor.selections` list; paste with as many cursors puts one piece at each (`TextView+CopyPaste.swift`).
 
+And in CodeEditTextView, for line wrapping:
+
+- `TextLayoutManager.layoutLine` returns the whole line's height, as upstream does since 0.10.0, while still placing views only for the rows inside the layout rect; a line that stays visible gets views for its rows as they scroll in (`placeFragmentViews`). It returned the height of the rows it placed, so a wrapped line starting above the rect got part of its height; the pass then moved the scroll position by the difference, which laid out again from inside the same line, until the stack overflowed. Upstream places every row instead, which for a 2 MB minified line means tens of thousands of views.
+- `scrollSelectionToVisible()` scrolls on each pass of its loop rather than once after it, as upstream does since 0.11.3, so a far selection lands on screen although the wrapped lines scrolled past grow taller than estimated. It stops after 20 passes; upstream has no limit.
+
 The local `Package.swift` files keep the runtime dependencies and omit test targets and SwiftLint build plugins. Those plugins download a separate binary and are unnecessary when building wooloo. Update the versions together after checking the editor API and running an wooloo build.
 
 # Markdown preview packages

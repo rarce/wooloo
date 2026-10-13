@@ -61,6 +61,7 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         first.documents[0].text = "pending 😀\n"
         first.documents[0].cursorPositions = [.init(range: NSRange(location: 3, length: 2))]
         first.documents[0].scrollPosition = CGPoint(x: 12, y: 240)
+        first.documents[0].scrollAnchor = EditorScrollAnchor(offset: 5, dy: 3)
         let draftID = first.newUntitled(at: location)
         first.documents[1].text = "draft\n"
         first.documents[1].markdownMode = .split
@@ -77,6 +78,7 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(restarted.documents[1].savedText, "original\n")
         XCTAssertEqual(restarted.documents[1].cursorPositions[0].range, NSRange(location: 3, length: 2))
         XCTAssertEqual(restarted.documents[1].scrollPosition, CGPoint(x: 12, y: 240))
+        XCTAssertEqual(restarted.documents[1].scrollAnchor, EditorScrollAnchor(offset: 5, dy: 3))
         XCTAssertFalse(restarted.documents[1].isPreview, "A dirty preview becomes a regular tab")
         XCTAssertEqual(restarted.documents[0].markdownMode, .split)
         XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "original\n")

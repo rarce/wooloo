@@ -1,5 +1,6 @@
 import SwiftUI
 import CodeEditSourceEditor
+import CodeEditTextView
 import CodeEditLanguages
 import MarkdownView
 
@@ -18,6 +19,17 @@ enum WorkspaceDocumentKind: String, Codable {
     }
 }
 
+/// Whether document editors wrap lines to their width (View > Wrap Lines), for the whole app. The
+/// app's defaults are the only place it is kept: views read it with `@AppStorage`, which redraws
+/// them when it changes, so open editors rewrap at once.
+enum EditorLineWrapping {
+    static let storageKey = "EditorWrapLines"
+
+    static func toggle(in defaults: UserDefaults = .standard) {
+        defaults.set(!defaults.bool(forKey: storageKey), forKey: storageKey)
+    }
+}
+
 /// Where to put the cursor when a document opens, e.g. at a search match.
 struct WorkspaceDocumentReveal: Equatable {
     let line: Int
@@ -31,6 +43,16 @@ struct WorkspaceDocument: Identifiable {
     var backupID = UUID()
     var cursorPositions = [CursorPosition(line: 1, column: 1)]
     var scrollPosition = CGPoint.zero
+    /// Where the editor was scrolled, as text; a new editor goes back to it rather than to
+    /// `scrollPosition` when there is one.
+    var scrollAnchor: EditorScrollAnchor?
+
+    /// One change, so one update of the document store.
+    mutating func recordScroll(_ position: CGPoint, anchor: EditorScrollAnchor?) {
+        scrollPosition = position
+        scrollAnchor = anchor
+    }
+
     /// The Space whose tab row shows this document; see `WorkspaceDocumentStore.showSpace`.
     var space: String?
     let location: WorkspaceFileLocation
@@ -102,6 +124,9 @@ struct WorkspaceDocumentView: View {
     let onSave: () -> Void
     var onReload: () -> Void = {}
     var onOpenFile: (String) -> Void = { _ in }
+    /// Records where the editor is scrolled. The document store looks the document up by id:
+    /// `document`, a binding to its index, can outlive that index when a tab before it closes.
+    var onScroll: (CGPoint, EditorScrollAnchor?) -> Void = { _, _ in }
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
     /// Whether this document's panel has focus. With split panels several documents show at
@@ -128,6 +153,7 @@ struct WorkspaceDocumentView: View {
     @State private var revealsAfterEdit = false
     @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
+    @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
 
     private var language: CodeLanguage {
         if NotebookDocument.supports(document.path) { return .json }
@@ -361,14 +387,13 @@ struct WorkspaceDocumentView: View {
             font: typography.codeFont,
             tabWidth: 4,
             lineHeight: 1.15,
-            wrapLines: false,
+            wrapLines: wrapsLines,
             cursorPositions: $document.cursorPositions,
             coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator]
         )
         .onAppear {
-            sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil) { position in
-                if document.scrollPosition != position { document.scrollPosition = position }
-            }
+            sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil,
+                                       anchor: document.scrollAnchor, onScroll: onScroll)
         }
         .onAppear { applyReveal() }
         .onChange(of: document.reveal) { _, _ in applyReveal() }
@@ -586,6 +611,8 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     private var currentFindColor = NSColor.systemOrange
     private var findLayers: [CALayer] = []
     private var scrollObserver: NSObjectProtocol?
+    private var frameObserver: NSObjectProtocol?
+    private var redrawsAfterLayout = false
     private var focusesWhenReady = false
 
     func prepareCoordinator(controller: TextViewController) {
@@ -615,7 +642,9 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     func destroy() {
         removeFindLayers()
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
+        if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
         scrollObserver = nil
+        frameObserver = nil
         controller = nil
     }
 
@@ -656,6 +685,14 @@ final class EditorRevealCoordinator: TextViewCoordinator {
                 forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main
             ) { [weak self] _ in self?.drawFindMatches() }
         }
+        if frameObserver == nil {
+            // The text resizes when it rewraps, as when line wrapping turns on or off or the editor
+            // resizes with wrapping on; draw again once the lines are laid out where they now go.
+            textView.postsFrameChangedNotifications = true
+            frameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: textView, queue: .main
+            ) { [weak self] _ in self?.drawFindMatchesAfterLayout() }
+        }
         guard !findRanges.isEmpty, let visible = textView.visibleTextRange else { return }
         let text = textView.textStorage.string as NSString
         let first = findRanges.partitioningIndex { NSMaxRange($0) >= visible.location }
@@ -668,18 +705,41 @@ final class EditorRevealCoordinator: TextViewCoordinator {
             while start < NSMaxRange(range) {
                 let newline = text.range(of: "\n", range: NSRange(location: start, length: NSMaxRange(range) - start))
                 let end = newline.location == NSNotFound ? NSMaxRange(range) : newline.location
-                if end > start, let lower = textView.layoutManager.rectForOffset(start),
-                   let upper = textView.layoutManager.rectForOffset(end) {
-                    let width = upper.minY == lower.minY ? upper.minX - lower.minX : lower.width
-                    let layer = CALayer()
-                    layer.frame = CGRect(x: lower.minX, y: lower.minY, width: max(width, 2), height: lower.height)
-                    layer.cornerRadius = 2
-                    layer.backgroundColor = color.cgColor
-                    textView.layer?.insertSublayer(layer, at: 1)
-                    findLayers.append(layer)
-                }
+                if end > start { drawFindRows(from: start, to: end, color: color, in: textView) }
                 start = end + 1
             }
+        }
+    }
+
+    private func drawFindMatchesAfterLayout() {
+        guard !findRanges.isEmpty, !redrawsAfterLayout else { return }
+        redrawsAfterLayout = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            redrawsAfterLayout = false
+            controller?.textView.layoutSubtreeIfNeeded()
+            drawFindMatches()
+        }
+    }
+
+    /// One rectangle per row of `start..<end`, which lies in one line: with line wrapping on, a
+    /// match can cross into the next row.
+    private func drawFindRows(from start: Int, to end: Int, color: NSColor, in textView: TextView) {
+        let layout = textView.layoutManager
+        var location = start
+        while location < end, let lower = layout?.rectForOffset(location),
+              let line = layout?.textLineForOffset(location),
+              let row = line.data.lineFragments.getLine(atOffset: location - line.range.location) {
+            let rowEnd = min(end, line.range.location + row.range.max)
+            guard rowEnd > location, let last = layout?.rectForOffset(rowEnd - 1) else { return }
+            let layer = CALayer()
+            layer.frame = CGRect(x: lower.minX, y: lower.minY, width: max(last.maxX - lower.minX, 2),
+                                 height: lower.height)
+            layer.cornerRadius = 2
+            layer.backgroundColor = color.cgColor
+            textView.layer?.insertSublayer(layer, at: 1)
+            findLayers.append(layer)
+            location = rowEnd
         }
     }
 }

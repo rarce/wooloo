@@ -1,5 +1,6 @@
 import AppKit
 import CodeEditSourceEditor
+import CodeEditTextView
 import CryptoKit
 import Foundation
 import SwiftUI
@@ -21,6 +22,8 @@ struct WorkspaceDocumentSnapshot: Codable {
     var diffScope: String
     var cursorPositions: [CursorPosition]
     var scrollPosition: CGPoint
+    /// Missing in sessions saved before line wrapping.
+    var scrollAnchor: EditorScrollAnchor?
     var hasBackup: Bool
     var text: String?
     var savedText: String?
@@ -41,6 +44,7 @@ struct WorkspaceDocumentSnapshot: Codable {
         diffScope = document.diffScope.rawValue
         cursorPositions = document.cursorPositions
         scrollPosition = document.scrollPosition
+        scrollAnchor = document.scrollAnchor
         hasBackup = document.isDirty || document.isUntitled
         text = hasBackup ? document.text : nil
         savedText = hasBackup ? document.savedText : nil
@@ -92,6 +96,7 @@ struct WorkspaceDocumentSnapshot: Codable {
         if scrollPosition.x.isFinite && scrollPosition.y.isFinite {
             result.scrollPosition = CGPoint(x: max(0, scrollPosition.x), y: max(0, scrollPosition.y))
         }
+        result.scrollAnchor = scrollAnchor
         return result
     }
 }
@@ -433,44 +438,102 @@ final class WorkspaceSessionWindowDelegate: NSObject, NSWindowDelegate {
     }
 }
 
+/// Where an editor is scrolled, as text: the first character of the row at the top and how far
+/// into that row the view starts. A y alone lands elsewhere when lines have other heights, as in a
+/// new editor with line wrapping on, whose lines count one row each until laid out, or after
+/// wrapping was turned on or off.
+struct EditorScrollAnchor: Codable, Equatable {
+    var offset: Int
+    var dy: Double
+}
+
 /// Keeps the viewport with the document, independently of the editor view's lifetime.
 final class EditorSessionCoordinator: TextViewCoordinator {
     private weak var controller: TextViewController?
     private var observer: NSObjectProtocol?
-    private var restoration: CGPoint?
-    var onScroll: ((CGPoint) -> Void)?
+    private var restoration: (position: CGPoint, anchor: EditorScrollAnchor?)?
+    private var reportsAfterEdit = false
+    /// Reports where the editor is scrolled.
+    var onScroll: ((CGPoint, EditorScrollAnchor?) -> Void)?
 
     func prepareCoordinator(controller: TextViewController) {
+        // Several editors can show the document in turn (Markdown source and split): follow the newest.
+        removeObserver()
         self.controller = controller
         DispatchQueue.main.async { [weak self] in self?.attach() }
     }
 
-    func restore(_ position: CGPoint?, onScroll: @escaping (CGPoint) -> Void) {
-        restoration = position
+    func restore(_ position: CGPoint?, anchor: EditorScrollAnchor?,
+                 onScroll: @escaping (CGPoint, EditorScrollAnchor?) -> Void) {
+        restoration = position.map { ($0, anchor) }
         self.onScroll = onScroll
         DispatchQueue.main.async { [weak self] in self?.attach() }
     }
 
     private func attach() {
-        guard let scrollView = controller?.textView.enclosingScrollView else { return }
+        guard let textView = controller?.textView, let scrollView = textView.enclosingScrollView else { return }
         let clip = scrollView.contentView
-        if let position = restoration {
+        if let (position, anchor) = restoration {
             restoration = nil
-            clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: position, size: clip.bounds.size)).origin)
+            if let anchor {
+                let offset = min(max(anchor.offset, 0), textView.textStorage.length)
+                // Lines laid out as they come into view can grow and move the row: scroll again
+                // until it stays.
+                EditorScrolling.settle(on: { textView.layoutManager.rectForOffset(offset) }) { rect in
+                    // The text view's top is below the top inset.
+                    let origin = CGPoint(x: position.x, y: rect.minY + anchor.dy - scrollView.contentInsets.top)
+                    clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: origin, size: clip.bounds.size)).origin)
+                }
+            } else {
+                clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: position, size: clip.bounds.size)).origin)
+            }
             scrollView.reflectScrolledClipView(clip)
         }
         guard observer == nil else { return }
         clip.postsBoundsChangedNotifications = true
         observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
-            object: clip, queue: .main) { [weak self, weak clip] _ in
-                if let position = clip?.bounds.origin { self?.onScroll?(position) }
-            }
+            object: clip, queue: .main) { [weak self] _ in self?.report() }
+    }
+
+    /// An edit above the top moves the text under it without scrolling. Reported once the edit,
+    /// which can replace many ranges, is done and laid out.
+    func textViewDidChangeText(controller: TextViewController) {
+        guard !reportsAfterEdit else { return }
+        reportsAfterEdit = true
+        DispatchQueue.main.async { [weak self] in
+            self?.reportsAfterEdit = false
+            self?.report()
+        }
+    }
+
+    private func report() {
+        guard let textView = controller?.textView,
+              let position = textView.enclosingScrollView?.contentView.bounds.origin else { return }
+        onScroll?(position, anchor(in: textView))
+    }
+
+    private func anchor(in textView: TextView) -> EditorScrollAnchor? {
+        guard let scrollView = textView.enclosingScrollView else { return nil }
+        let layout = textView.layoutManager
+        // The text view's top, below the top inset; not pixel aligned like its visible rect.
+        let top = scrollView.documentVisibleRect.minY + scrollView.contentInsets.top
+        // Just inside the top: the row above can end there.
+        guard let offset = layout?.textOffsetAtPoint(CGPoint(x: 0, y: top + 1))
+                ?? layout?.textLineForPosition(top + 1)?.range.location,
+              let row = layout?.rectForOffset(offset) else { return nil }
+        return EditorScrollAnchor(offset: offset, dy: top - row.minY)
+    }
+
+    private func removeObserver() {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
     }
 
     func destroy() {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
-        observer = nil
-        controller = nil
+        // Called as an editor goes away, possibly after a newer one took over; this one's
+        // reference is already gone then.
+        guard controller == nil else { return }
+        removeObserver()
         onScroll = nil
     }
 }

@@ -21,6 +21,7 @@ final class EditorFindHighlightTests: XCTestCase {
     private let matchColor = NSColor(srgbRed: 0.9, green: 0.1, blue: 0.5, alpha: 1)
     private let currentColor = NSColor(srgbRed: 0.1, green: 0.8, blue: 0.3, alpha: 1)
     private var window: NSWindow?
+    private var controller: TextViewController?
 
     override func tearDown() {
         window?.close()
@@ -142,6 +143,68 @@ final class EditorFindHighlightTests: XCTestCase {
         XCTAssertEqual(bottom.last?.frame, expectedFrame(from: ranges[last].location, to: NSMaxRange(ranges[last]), in: textView))
     }
 
+    // MARK: - Wrapped lines
+
+    /// A line of 60-odd characters per row at the editor's width.
+    private let wrappedLine = String(repeating: "word ", count: 60)
+
+    /// The rows the text from `start` to `end` takes on screen, one rectangle each.
+    private func rowFrames(from start: Int, to end: Int, in textView: TextView) -> [CGRect] {
+        let layout: TextLayoutManager = textView.layoutManager
+        var frames: [CGRect] = []
+        var row: CGRect?
+        for offset in start..<end {
+            guard let rect = layout.rectForOffset(offset) else { continue }
+            if let current = row, current.minY == rect.minY {
+                row = current.union(rect)
+            } else {
+                if let row { frames.append(row) }
+                row = rect
+            }
+        }
+        if let row { frames.append(row) }
+        return frames
+    }
+
+    func testAMatchAcrossASoftWrapGetsOneRectanglePerRow() throws {
+        let (coordinator, textView) = try makeEditor(text: wrappedLine + "\n", wrapLines: true)
+        let firstRow = try XCTUnwrap(textView.layoutManager.textLineForIndex(0)?.data.lineFragments.first)
+        let rowEnd = firstRow.range.max
+        let across = NSRange(location: rowEnd - 4, length: 9)
+        let toRowEnd = NSRange(location: rowEnd - 9, length: 9)
+
+        for range in [across, toRowEnd] {
+            coordinator.setFindMatches([range], current: 0, color: matchColor, currentColor: currentColor)
+            let drawn = highlights(in: textView).map(\.frame)
+            let rows = rowFrames(from: range.location, to: NSMaxRange(range), in: textView)
+            XCTAssertEqual(drawn.count, rows.count, "\(range)")
+            for (frame, row) in zip(drawn, rows) {
+                XCTAssertEqual(frame.minX, row.minX, accuracy: 0.5)
+                XCTAssertEqual(frame.maxX, row.maxX, accuracy: 0.5, "\(range) covers the whole row")
+                XCTAssertEqual(frame.minY, row.minY)
+            }
+        }
+        XCTAssertEqual(highlights(in: textView).count, 1, "a match ending at the row's end stays on its row")
+    }
+
+    func testHighlightsFollowTheTextWhenWrappingChanges() throws {
+        let text = wrappedLine + "\nbeta\n"
+        let (coordinator, textView) = try makeEditor(text: text)
+        let beta = (text as NSString).range(of: "beta")
+        coordinator.setFindMatches([beta], current: 0, color: matchColor, currentColor: currentColor)
+        let unwrapped = try XCTUnwrap(highlights(in: textView).first?.frame)
+
+        try XCTUnwrap(controller).wrapLines = true
+        try waitUntil { (self.highlights(in: textView).first?.frame.minY ?? 0) > unwrapped.minY }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(highlights(in: textView).map(\.frame), [expectedFrame(from: beta.location, to: NSMaxRange(beta),
+                                                                            in: textView)])
+
+        try XCTUnwrap(controller).wrapLines = false
+        try waitUntil { self.highlights(in: textView).first?.frame.minY == unwrapped.minY }
+        XCTAssertEqual(highlights(in: textView).map(\.frame), [unwrapped])
+    }
+
     // MARK: - Editing
 
     func testReplaceSubstitutesEveryRangeAsOneUndoableEdit() throws {
@@ -198,7 +261,7 @@ final class EditorFindHighlightTests: XCTestCase {
     // MARK: - Helpers
 
     /// Hosts a CodeEditSourceEditor with a fresh `EditorRevealCoordinator` in an offscreen window.
-    private func makeEditor(text: String, isEditable: Bool = true,
+    private func makeEditor(text: String, isEditable: Bool = true, wrapLines: Bool = false,
                             height: CGFloat = 300) throws -> (EditorRevealCoordinator, TextView) {
         let coordinator = EditorRevealCoordinator()
         let spy = ControllerSpy()
@@ -210,7 +273,7 @@ final class EditorFindHighlightTests: XCTestCase {
             font: .monospacedSystemFont(ofSize: 13, weight: .regular),
             tabWidth: 4,
             lineHeight: 1.15,
-            wrapLines: false,
+            wrapLines: wrapLines,
             cursorPositions: .constant([]),
             highlightProviders: [],
             isEditable: isEditable,
@@ -230,6 +293,7 @@ final class EditorFindHighlightTests: XCTestCase {
             return textView.enclosingScrollView != nil && textView.visibleTextRange != nil
         }
         let textView = try XCTUnwrap(spy.controller?.textView)
+        controller = spy.controller
         XCTAssertEqual(textView.string, text)
         return (coordinator, textView)
     }

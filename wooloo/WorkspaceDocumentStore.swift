@@ -189,6 +189,13 @@ final class WorkspaceDocumentStore: ObservableObject {
         documents.filter { $0.space == space }
     }
 
+    /// Where a document's editor is scrolled; changes the documents only when it moved.
+    func recordScroll(_ id: String, position: CGPoint, anchor: EditorScrollAnchor?) {
+        guard let index = documents.firstIndex(where: { $0.id == id }),
+              documents[index].scrollPosition != position || documents[index].scrollAnchor != anchor else { return }
+        documents[index].recordScroll(position, anchor: anchor)
+    }
+
     func document(_ id: String) -> WorkspaceDocument? {
         documents.first { $0.id == id }
     }
@@ -320,6 +327,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             saved.backupID = document.backupID
             saved.cursorPositions = documents[currentIndex].cursorPositions
             saved.scrollPosition = documents[currentIndex].scrollPosition
+            saved.scrollAnchor = documents[currentIndex].scrollAnchor
             // Edits made while saving stay unsaved.
             saved.text = documents[currentIndex].text
             saved.savedText = text

@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import wooloo
 
 /// Open document tabs against a disposable repository: preview tabs, loading, saving and closing.
@@ -37,6 +38,30 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
             return XCTFail("\(path) is not open")
         }
         store.documents[index].text = text
+    }
+
+    /// An editor's scroll reports name its document: closing a tab before it moves its index.
+    func testScrollPositionsAreRecordedByDocumentNotByIndex() async throws {
+        let openedA = await open("a.txt")
+        let a = try XCTUnwrap(openedA)
+        let openedB = await open("b.txt")
+        let b = try XCTUnwrap(openedB)
+        let openedC = await open("c.txt")
+        let c = try XCTUnwrap(openedC)
+        XCTAssertTrue(store.close(a.id))
+        var changes = 0
+        let watch = store.objectWillChange.sink { changes += 1 }
+        let anchor = EditorScrollAnchor(offset: 2, dy: 1.5)
+        store.recordScroll(c.id, position: CGPoint(x: 0, y: 40), anchor: anchor)
+        XCTAssertEqual(changes, 1, "one change for both")
+        store.recordScroll(c.id, position: CGPoint(x: 0, y: 40), anchor: anchor)
+        XCTAssertEqual(changes, 1, "none when it did not move")
+        store.recordScroll(a.id, position: CGPoint(x: 0, y: 80), anchor: nil)
+        watch.cancel()
+        XCTAssertEqual(store.document(c.id)?.scrollPosition, CGPoint(x: 0, y: 40))
+        XCTAssertEqual(store.document(c.id)?.scrollAnchor, anchor)
+        XCTAssertEqual(store.document(b.id)?.scrollPosition, .zero)
+        XCTAssertNil(store.document(b.id)?.scrollAnchor)
     }
 
     func testOpeningLoadsTheFileAndActivatesIt() async throws {

@@ -254,8 +254,12 @@ public class TextLayoutManager: NSObject {
                     maxFoundLineWidth = lineSize.width
                 }
             } else {
-                // Make sure the used fragment views aren't dequeued.
-                usedFragmentIDs.formUnion(linePosition.data.lineFragments.map(\.data.id))
+                // wooloo patch: a line taller than the layout rect has views only for its rows inside the rect.
+                // Place the rows that scrolled in and keep the views of those still inside; the rest are dequeued.
+                if !linePosition.range.isEmpty {
+                    placeFragmentViews(of: linePosition, minY: minY, maxY: maxY, missingOnly: true,
+                                       placedFragmentIDs: &usedFragmentIDs)
+                }
             }
             newVisibleLines.insert(linePosition.data.id)
         }
@@ -320,25 +324,39 @@ public class TextLayoutManager: NSObject {
             return CGSize(width: 0, height: estimateLineHeight())
         }
 
-        var height: CGFloat = 0
+        // wooloo patch: return the whole line's height, as upstream does since 0.10.0, while placing views only for
+        // the rows inside the layout rect. Returning the height of the rows placed stored part of a wrapped line's
+        // height as its height when the line started above the rect. The pass then moved the scroll position by the
+        // difference, the scroll laid out again from a point inside the same line, which got another partial
+        // height, and so on until the stack overflowed (`layoutManagerYAdjustment` → scroll → `updatedViewport`).
+        // Upstream places every row instead, which for a long wrapped line means tens of thousands of views.
+        let width = placeFragmentViews(of: position, minY: layoutData.minY, maxY: layoutData.maxY, missingOnly: false,
+                                       placedFragmentIDs: &laidOutFragmentIDs)
+        return CGSize(width: width, height: line.lineFragments.height)
+    }
+
+    /// wooloo patch: places views for the rows of a laid out line inside `minY..<maxY`, or with `missingOnly` only
+    /// for those without one, and returns the widest row's width.
+    @discardableResult
+    private func placeFragmentViews(
+        of position: TextLineStorage<TextLine>.TextLinePosition,
+        minY: CGFloat,
+        maxY: CGFloat,
+        missingOnly: Bool,
+        placedFragmentIDs: inout Set<UUID>
+    ) -> CGFloat {
         var width: CGFloat = 0
-        let relativeMinY = max(layoutData.minY - position.yPos, 0)
-        let relativeMaxY = max(layoutData.maxY - position.yPos, relativeMinY)
-
-        for lineFragmentPosition in line.lineFragments.linesStartingAt(
-            relativeMinY,
-            until: relativeMaxY
-        ) {
+        let relativeMinY = max(minY - position.yPos, 0)
+        let relativeMaxY = max(maxY - position.yPos, relativeMinY)
+        for lineFragmentPosition in position.data.lineFragments.linesStartingAt(relativeMinY, until: relativeMaxY) {
             let lineFragment = lineFragmentPosition.data
-
-            layoutFragmentView(for: lineFragmentPosition, at: position.yPos + lineFragmentPosition.yPos)
-
+            if !missingOnly || viewReuseQueue.usedViews[lineFragment.id] == nil {
+                layoutFragmentView(for: lineFragmentPosition, at: position.yPos + lineFragmentPosition.yPos)
+            }
             width = max(width, lineFragment.width)
-            height += lineFragment.scaledHeight
-            laidOutFragmentIDs.insert(lineFragment.id)
+            placedFragmentIDs.insert(lineFragment.id)
         }
-
-        return CGSize(width: width, height: height)
+        return width
     }
 
     /// Lays out a line fragment view for the given line fragment at the specified y value.
