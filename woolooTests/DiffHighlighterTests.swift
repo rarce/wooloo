@@ -118,9 +118,7 @@ final class DiffHighlighterTests: XCTestCase {
         process.currentDirectoryURL = directory
         let pipe = Pipe()
         process.standardOutput = pipe
-        try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        let data = try process.runAndWait()
         return String(decoding: data, as: UTF8.self)
     }
 

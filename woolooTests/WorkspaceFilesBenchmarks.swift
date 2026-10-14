@@ -207,14 +207,7 @@ final class WorkspaceFilesBenchmarks: XCTestCase {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = output
-        // Not `waitUntilExit()`, which on the test's main thread notices the exit 60–140 ms late.
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        try process.run()
-        input.fileHandleForWriting.write(Data(script.utf8))
-        try input.fileHandleForWriting.close()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        exited.wait()
+        let data = try process.runAndWait(writing: Data(script.utf8))
         let text = String(decoding: data, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             throw NSError(domain: "WorkspaceFilesBenchmarks", code: Int(process.terminationStatus),

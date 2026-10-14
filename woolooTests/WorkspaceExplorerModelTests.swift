@@ -130,8 +130,7 @@ final class WorkspaceExplorerModelTests: XCTestCase {
             process.arguments = ["-C", location.root] + arguments
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            try process.run()
-            process.waitUntilExit()
+            try process.runAndWait()
             guard process.terminationStatus == 0 else { throw WorkspaceFileError.message("External git failed") }
         }.value
     }

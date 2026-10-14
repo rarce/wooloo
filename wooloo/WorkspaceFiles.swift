@@ -471,14 +471,22 @@ enum WorkspaceFiles {
                                 changes: changes, ignored: ignored)
     }
 
-    /// Records the SSH walk prints at most: `maximumFiles` names, with room for the markers
-    /// between them, about two per 256 folders read; names beyond `maximumFiles` are cut by
-    /// `finished`. Skipped folders count as records too, so a walk with more than 1,000 of them
-    /// and markers together can be cut, and truncated, a little before `maximumFiles` files.
-    static var folderWalkMaximumRecords: Int { maximumFiles + 1_001 }
-    /// Links the SSH walk describes at most, the first it finds: each costs a `readlink`, about
-    /// 0.6 ms on one CPU, so 5,000 take about 3 s.
+    /// File records the SSH walk prints at most: one name more than `maximumFiles`, so a walk cut
+    /// there is truncated, and the empty record, `wooloo-partial` and `wooloo-end` that can
+    /// follow; names beyond `maximumFiles` are cut by `finished`.
+    static var folderWalkMaximumFileRecords: Int { maximumFiles + 3 }
+    /// Records the SSH walk prints at most before its link metadata: its files, then its linked
+    /// and skipped folders, which have room for 1,000 records when the files take theirs. As when
+    /// they shared one budget with the files, the output of `maximumFiles` long names stays under
+    /// `maximumListingBytes`; skipped folders past it are left out.
+    static var folderWalkMaximumRecords: Int { folderWalkMaximumFileRecords + 1_000 }
+    /// Links the SSH walk describes in full at most, the first it finds: each costs a `readlink`,
+    /// about 0.6 ms on one CPU, so 5,000 take about 3 s.
     static let folderWalkMaximumLinks = 5_000
+    /// Links after the first `folderWalkMaximumLinks` that the SSH walk looks at with the shell's
+    /// own tests, about 7 µs each on one CPU, to list the linked folders among them, without
+    /// their targets; a linked folder found after these shows as a file.
+    static let folderWalkMaximumFolderLinks = 50_000
     /// How many folders down the walk of a folder outside a repository reads.
     static let folderWalkMaximumDepth = 12
     /// Seconds the walk of a folder outside a repository spends after reading the root; tests replace it.
@@ -521,6 +529,17 @@ enum WorkspaceFiles {
     /// A walk from the output of `folderWalkScript` without links.
     static func folderWalk(scriptOutput data: Data, readingSkipped: Bool) -> WorkspaceFolderWalk {
         finished(folderWalk(records: folderWalkRecords(data)), readingSkipped: readingSkipped)
+    }
+
+    /// A walk from the output of `folderWalkScript` with links: those it lists, described in
+    /// full, and the linked folders past them, without their targets.
+    static func folderWalk(linkedScriptOutput data: Data) -> WorkspaceFolderWalk {
+        let sections = folderWalkSections(data)
+        var walk = finished(folderWalk(records: sections.records), readingSkipped: false)
+        let listed = Set(walk.files)
+        walk.symbolicLinks = walk.symbolicLinks.merging(parseSymbolicLinks(sections.linkMetadata)) { _, full in full }
+            .filter { listed.contains($0.key) }
+        return walk
     }
 
     /// Seconds on a clock that only moves forward, for the walk's time limit; tests replace it.
@@ -653,9 +672,10 @@ enum WorkspaceFiles {
     }
 
     /// The records of `folderWalkScript`'s output, in order. A walk stopped by its time limit can
-    /// leave the last record before its `wooloo-partial` cut short; that marker is always printed
-    /// after a NUL, so a record directly before it, with no empty record between, was cut and is
-    /// dropped. Names from `find` start with "./", so none is taken for a marker.
+    /// leave the last record before its `wooloo-partial`, or the last skipped folder before
+    /// `wooloo-files`, cut short; those markers are always printed after a NUL, so a record
+    /// directly before one, with no empty record between, was cut and is dropped. Names from
+    /// `find` start with "./", so none is taken for a marker.
     static func folderWalkRecords(_ data: Data) -> [String] {
         var records: [String] = []
         var previousIsRecord = false
@@ -665,45 +685,72 @@ enum WorkspaceFiles {
                 previousIsRecord = false
                 continue
             }
-            if record == "wooloo-partial", previousIsRecord { records.removeLast() }
-            previousIsRecord = !record.isEmpty && record != "wooloo-partial"
+            let afterNUL = record == "wooloo-partial" || record == "wooloo-files"
+            if afterNUL, previousIsRecord { records.removeLast() }
+            previousIsRecord = !record.isEmpty && !afterNUL
             if !record.isEmpty { records.append(record) }
         }
         return records
     }
 
-    /// A walk from the records `folderWalkScript` prints: files, skipped folders between
-    /// `wooloo-skipped` and `wooloo-files`, and `wooloo-partial` when folders were left unread.
-    /// Without its final `wooloo-end`, the walk was cut at `folderWalkMaximumRecords` and is
-    /// truncated; its last name is dropped, since it may be one the time limit cut short.
+    private enum FolderWalkSection { case files, linkedFolders, skippedFolders, done }
+
+    /// A walk from the records `folderWalkScript` prints: files, `wooloo-partial` when folders
+    /// were left unread, and `wooloo-end`; then linked folders after `wooloo-linked-folders`,
+    /// and skipped folders between `wooloo-skipped` and `wooloo-files`. Without its
+    /// `wooloo-end`, the walk was cut at `folderWalkMaximumFileRecords` and is truncated; its
+    /// last name is dropped, since it may be one the time limit cut short. Skipped folders cut
+    /// at `folderWalkMaximumRecords`, without their `wooloo-files`, are left out.
     private static func folderWalk(records: some Sequence<String>) -> WorkspaceFolderWalk {
         var walk = WorkspaceFolderWalk()
-        var skipped = false
-        var ended = false
-        var lastName: Bool?
+        var section = FolderWalkSection.files
+        var lastIsFile = false
+        // The files end at `wooloo-end`, or, cut, where the next section or the records begin.
+        var filesEnded = false
+        func endFiles(complete: Bool) {
+            guard !filesEnded else { return }
+            filesEnded = true
+            if !complete {
+                walk.truncated = true
+                if lastIsFile { walk.files.removeLast() }
+            }
+        }
         for record in records {
-            lastName = nil
+            var isFile = false
             switch record {
             case "wooloo-end":
-                ended = true
+                endFiles(complete: true)
             case "wooloo-partial":
-                walk.partial = true
-                skipped = false
+                // Locally, a walk past `maximumFiles` files stops there, without reading further.
+                if walk.files.count <= maximumFiles { walk.partial = true }
+            case "wooloo-linked-folders":
+                endFiles(complete: false)
+                section = .linkedFolders
             case "wooloo-skipped":
-                skipped = true
+                endFiles(complete: false)
+                section = .skippedFolders
             case "wooloo-files":
-                skipped = false
+                section = .done
             default:
                 let path = record.hasPrefix("./") ? String(record.dropFirst(2)) : record
                 guard !path.isEmpty else { continue }
-                if skipped { walk.skippedFolders.append(path) } else { walk.files.append(path) }
-                lastName = skipped
+                switch section {
+                case .files:
+                    if !filesEnded {
+                        walk.files.append(path)
+                        isFile = true
+                    }
+                case .linkedFolders: walk.symbolicLinks[path] = WorkspaceSymbolicLink(target: "", isDirectory: true)
+                case .skippedFolders: walk.skippedFolders.append(path)
+                case .done: break
+                }
             }
+            lastIsFile = isFile
         }
-        if !ended {
-            walk.truncated = true
-            if lastName == true { walk.skippedFolders.removeLast() } else if lastName == false { walk.files.removeLast() }
-        }
+        endFiles(complete: false)
+        // Skipped folders cut at `folderWalkMaximumRecords`: the last may be one the time limit cut
+        // short. The files were all read, so the walk is not partial for that.
+        if section == .skippedFolders, !walk.skippedFolders.isEmpty { walk.skippedFolders.removeLast() }
         return walk
     }
 
@@ -743,18 +790,22 @@ enum WorkspaceFiles {
     ///   seconds have passed since it started, also inside a folder, and is then partial. Files
     ///   found until then are kept.
     /// - Anywhere, the root included, the walk stops once it found more than `maximumFiles` files
-    ///   and is then truncated; over SSH, after `folderWalkMaximumRecords` records.
+    ///   and is then truncated; over SSH, after `folderWalkMaximumFileRecords` records. Over SSH
+    ///   only, skipped folders past `folderWalkMaximumRecords` records in all are left out.
     ///
     /// Each level is read by `find` on the folders the previous one found, 256 folders per batch.
     /// A watchdog marks the time as up and stops the `find` running then, so neither a slow level
     /// nor one huge folder reaches the SSH timeout. The records it prints are those of
-    /// `folderWalkRecords`, ending with `wooloo-end`; with `links`, link metadata follows a
-    /// `wooloo-symbolic-links` record. The records pass through `head`, with NUL and newline
-    /// swapped around it, so the walk stops after `folderWalkMaximumRecords` of them, also inside
+    /// `folderWalkRecords`: the files, ending with `wooloo-end`, then the skipped folders and,
+    /// with `links`, the linked folders past the first `maximumLinks` links; then link metadata
+    /// follows a `wooloo-symbolic-links` record. The files pass through `head`, with NUL and
+    /// newline swapped around it, so the walk stops after `folderWalkMaximumFileRecords` of them, also inside
     /// the root, and its output stays under the SSH output limit; the walk is then truncated, as
     /// on this Mac. Once `head` is done it marks "$t/cut", and the next `find` ends the walk there:
-    /// a write into the pipe may not fail for a while, since `tr` buffers what it passes on. Only
-    /// the first `maximumLinks` links found are described, cut or not.
+    /// a write into the pipe may not fail for a while, since `tr` buffers what it passes on. All
+    /// these records pass through a second `head`, which stops at `folderWalkMaximumRecords`. The
+    /// first `maximumLinks` links found are described in full, cut or not, and the next
+    /// `folderWalkMaximumFolderLinks` only when they are linked folders, without their targets.
     static func folderWalkScript(readingSkipped: Bool, links: Bool, maximumLinks: Int = folderWalkMaximumLinks) -> String {
         let skipped = readingSkipped ? [] : folderWalkSkippedFolders
         let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
@@ -769,20 +820,21 @@ enum WorkspaceFiles {
         var batch = #"run_find() { [ ! -e "$t/cut" ] || exit 255; if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
             + #"[ -e "$t/late" ] && kill "$p" 2>/dev/null; wait "$p"; : > "$t/pid"; [ ! -e "$t/late" ] || exit 255; }; "#
             + #"if [ "$d" -gt 1 ] && [ -e "$t/late" ]; then exit 255; fi; "#
-        // Links are collected first, so a walk cut in a huge folder still has those it lists there,
-        // and only until `maximumLinks` are kept.
+        // Links are collected first, so a walk cut in a huge folder still has those it lists there;
+        // no folder adds more than the walk looks at. Skipped folders are collected too, and
+        // printed after the files, so that they do not count against `folderWalkMaximumFileRecords`.
         let swap = #"tr '\000\n' '\n\000'"#
+        let examinedLinks = maximumLinks + folderWalkMaximumFolderLinks
         if links {
-            batch += #"k=$(tr -cd '\000' < "$t/links" | wc -c); [ $k -ge "# + String(maximumLinks) + " ] || { run_find " + entries
-                + " -type l -print0 2>/dev/null | " + swap + " | head -n $((" + String(maximumLinks) + #" - k)) | "# + swap
-                + #" >> "$t/links"; }; "#
+            batch += "run_find " + entries + " -type l -print0 2>/dev/null | " + swap + " | head -n " + String(examinedLinks)
+                + " | " + swap + #" >> "$t/links"; "#
         }
         batch += "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
             + "run_find " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
         if !skipped.isEmpty {
-            batch += #"printf 'wooloo-skipped\0'; run_find "# + entries + #" -type d \( "#
+            batch += "run_find " + entries + #" -type d \( "#
                 + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
-                + #" \) -print0 2>/dev/null; printf 'wooloo-files\0'; "#
+                + #" \) -print0 2>/dev/null >> "$t/skipped"; "#
         }
         batch += "exit 0"
         let check = entries + unskipped + " -print 2>/dev/null | head -n 1; exit 0"
@@ -794,18 +846,35 @@ enum WorkspaceFiles {
             ? #": > "$t/late"; "#
             : #"( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "# + String(seconds) + #" & s=$!; wait "$s"; "#
                 + #": > "$t/late"; read p < "$t/pid" && kill "$p" ) > /dev/null 2>&1 & w=$!; "#
-        var script = #"cd "$1" || exit 1; t=$(mktemp -d) || exit 1; w=; trap '[ -n "$w" ] && kill "$w" 2>/dev/null && wait "$w"; rm -rf "$t"' EXIT; "#
+        // In the C locale, `tr` passes bytes that are not UTF-8 through unchanged.
+        var script = #"LC_ALL=C; export LC_ALL; cd "$1" || exit 1; t=$(mktemp -d) || exit 1; w=; trap '[ -n "$w" ] && kill "$w" 2>/dev/null && wait "$w"; rm -rf "$t"' EXIT; "#
             + "b=" + quote(batch) + "; c=" + quote(check) + "; d=1; export t d; "
             + #": > "$t/pid"; "# + watchdog
-            + #"printf '.\0' > "$t/level"; : > "$t/links"; { while [ -s "$t/level" ]; do "#
+            + #"printf '.\0' > "$t/level"; : > "$t/links"; : > "$t/skipped"; "#
+        var records = #"{ while [ -s "$t/level" ]; do "#
             + #"if [ "$d" -gt "# + String(folderWalkMaximumDepth) + " ]; then "
             + #"[ -n "$(xargs -0 sh -c "$c" sh < "$t/level" | head -n 1)" ] && printf '\0wooloo-partial\0'; break; fi; "#
             + #": > "$t/next"; if ! xargs -0 -n 256 sh -c "$b" sh < "$t/level"; then printf '\0wooloo-partial\0'; break; fi; "#
             + #"mv "$t/next" "$t/level"; d=$((d + 1)); done; printf 'wooloo-end\0'; } 2>/dev/null "#
-            + #"| tr '\000\n' '\n\000' | { head -n "# + String(folderWalkMaximumRecords) + #"; : > "$t/cut"; } | tr '\000\n' '\n\000'; "#
+            + "| " + swap + " | { head -n " + String(folderWalkMaximumFileRecords) + #"; : > "$t/cut"; }; "#
+        // Records stay swapped, a line each, until the second `head`. Linked folders go before
+        // skipped folders, which the explorer lists anyway. The last skipped folder may be one the
+        // time limit cut short: the newline before `wooloo-files` ends it, and `folderWalkRecords`
+        // drops it.
         if links {
-            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && xargs -0 sh -c "#
-                + quote(symbolicLinkMetadataScript) + " sh < \"$t/links\"; "
+            // Within the walk's time limit: `[ -d ]` follows each link, which can be slow.
+            let folderLinks = #"for p do [ ! -e "$t/late" ] || break; p=./${p#./}; [ -L "$p" ] && [ -d "$p" ] && printf '%s\0' "$p"; done; exit 0"#
+            records += #"printf 'wooloo-linked-folders\n'; [ -s "$t/links" ] && "# + swap + #" < "$t/links" | tail -n +"#
+                + String(maximumLinks + 1) + " | head -n " + String(folderWalkMaximumFolderLinks) + " | " + swap
+                + " | xargs -0 sh -c " + quote(folderLinks) + " sh | " + swap + "; "
+        }
+        if !skipped.isEmpty {
+            records += #"printf 'wooloo-skipped\n'; "# + swap + #" < "$t/skipped"; printf '\nwooloo-files\n'; "#
+        }
+        script += "{ " + records + "} | head -n " + String(folderWalkMaximumRecords) + " | " + swap + "; "
+        if links {
+            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && "# + swap + #" < "$t/links" | head -n "#
+                + String(maximumLinks) + " | " + swap + " | xargs -0 sh -c " + quote(symbolicLinkMetadataScript) + " sh; "
         }
         return script + "exit 0"
     }
@@ -1193,11 +1262,7 @@ enum WorkspaceFiles {
         let listing = Result { () throws -> WorkspaceFileListing in
             if rootError != nil {
                 let data = try (batch.otherwise ?? .failure(WorkspaceFileError.message("Remote command output is incomplete"))).get()
-                let sections = folderWalkSections(data)
-                var walk = finished(folderWalk(records: sections.records), readingSkipped: false)
-                let listed = Set(walk.files)
-                walk.symbolicLinks = parseSymbolicLinks(sections.linkMetadata).filter { listed.contains($0.key) }
-                return nonGitListing(walk)
+                return nonGitListing(folderWalk(linkedScriptOutput: data))
             }
             return try makeListing(listingResults) { WorkspaceFolderWalk() }
         }

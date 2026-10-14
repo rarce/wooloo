@@ -608,7 +608,7 @@ struct WorkspaceBrowserView: View {
         .onDrag { model.startDrag(node.path, in: location) }
         .onDrop(of: ExplorerDropDelegate.types,
                 delegate: ExplorerDropDelegate(row: node.path, folder: dropFolder, location: location, model: model))
-        .help((node.symbolicLink.map { node.path + " → " + $0.target } ?? node.path)
+        .help((node.symbolicLink.flatMap { $0.target.isEmpty ? nil : node.path + " → " + $0.target } ?? node.path)
               + (isIgnored ? " (ignored by Git)" : ""))
         .accessibilityValue(node.isDirectory ? (isExpanded ? "Expanded" : "Collapsed") : "File")
         .contextMenu {

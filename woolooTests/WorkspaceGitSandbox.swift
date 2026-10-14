@@ -43,12 +43,7 @@ final class WorkspaceGitSandbox {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
-        // Not `waitUntilExit()`, which on the test's main thread notices the exit 60–140 ms late.
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        exited.wait()
+        let data = try process.runAndWait()
         let text = String(decoding: data, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             throw WorkspaceFileError.message("Script failed (\(process.terminationStatus)): \(text)")
@@ -82,5 +77,24 @@ final class WorkspaceGitSandbox {
 
     func read(_ file: String, in name: String) throws -> String {
         try String(contentsOfFile: path(name) + "/" + file, encoding: .utf8)
+    }
+}
+
+extension Process {
+    /// Runs the process, writes `input` to its standard input pipe, and returns what its standard
+    /// output pipe received once it exits. It waits through the termination handler, not
+    /// `waitUntilExit()`, which on the test's main thread notices the exit 60–140 ms late.
+    @discardableResult
+    func runAndWait(writing input: Data? = nil) throws -> Data {
+        let exited = DispatchSemaphore(value: 0)
+        terminationHandler = { _ in exited.signal() }
+        try run()
+        if let input, let pipe = standardInput as? Pipe {
+            pipe.fileHandleForWriting.write(input)
+            try pipe.fileHandleForWriting.close()
+        }
+        let data = (standardOutput as? Pipe)?.fileHandleForReading.readDataToEndOfFile() ?? Data()
+        exited.wait()
+        return data
     }
 }

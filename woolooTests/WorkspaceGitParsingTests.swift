@@ -175,9 +175,7 @@ final class WorkspaceGitParsingTests: XCTestCase {
             process.arguments = ["-c", "printf %s " + WorkspaceFiles.quote(value)]
             let output = Pipe()
             process.standardOutput = output
-            try process.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            let data = try process.runAndWait()
             XCTAssertEqual(String(decoding: data, as: UTF8.self), value)
         }
     }
