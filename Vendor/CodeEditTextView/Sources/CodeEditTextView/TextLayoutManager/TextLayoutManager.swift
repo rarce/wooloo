@@ -111,6 +111,8 @@ public class TextLayoutManager: NSObject {
     /// wooloo patch: the last top kept, used again while it is still at the top, so that going to another width and
     /// back keeps the same character rather than the start of the row it was in.
     var keptTop: TopAnchor?
+    /// wooloo patch: the line that keeps the rows a new font dropped, until the next layout pass.
+    weak var lineKeepingRows: TextLine?
     private var lastLayoutWidth: CGFloat?
     /// wooloo patch: where an adjustment of the scroll position meant the view's top to be, while the layout passes
     /// it causes run.
@@ -278,13 +280,12 @@ public class TextLayoutManager: NSObject {
                 || linePosition.data.needsLayout(maxWidth: layoutWidth) // wooloo patch: once a pass
                 || !visibleLineIds.contains(linePosition.data.id) {
                 // wooloo patch: how far below the line's start the view's top is, and for the line it is in, the row
-                // there as laid out before (its first character in the line, and how far into the row the top is, as a
-                // share of the row's height, which can change).
+                // there as laid out before, also when a new font dropped it (its first character in the line, and how
+                // far into the row the top is, as a share of the row's height, which can change).
                 let depth = top - (linePosition.yPos - grown)
                 let straddlesTop = depth > 0 && depth < linePosition.height
-                let topRow = straddlesTop ? linePosition.data.lineFragments.getLine(atPosition: depth).map {
-                    (offset: $0.range.location, share: $0.height > 0 ? (depth - $0.yPos) / $0.height : 0)
-                } : nil
+                let topRow = straddlesTop ? linePosition.data.lastRow(atPosition: depth, height: linePosition.height)
+                    : nil
                 let lineSize = layoutLine(
                     linePosition,
                     textStorage: textStorage,
@@ -309,8 +310,8 @@ public class TextLayoutManager: NSObject {
                         // wooloo patch: the row that was at the top stays there.
                         yContentAdjustment += row.yPos + topRow.share * row.height - depth
                     } else if straddlesTop {
-                        // wooloo patch: without its rows from before (an estimated height, or a layout dropped, as
-                        // by a new font), the same share of the line stays above the top.
+                        // wooloo patch: without its rows from before (an estimated height), the same share of the
+                        // line stays above the top.
                         yContentAdjustment += deltaHeight * depth / linePosition.height
                     }
                 }
@@ -327,6 +328,10 @@ public class TextLayoutManager: NSObject {
             }
             newVisibleLines.insert(linePosition.data.id)
         }
+
+        // wooloo patch: rows kept for the line at the top serve this pass only.
+        lineKeepingRows?.dropKeptRows()
+        lineKeepingRows = nil
 
         // Enqueue any lines not used in this layout pass.
         viewReuseQueue.enqueueViews(notInSet: usedFragmentIDs)
@@ -371,7 +376,7 @@ public class TextLayoutManager: NSObject {
     // MARK: - wooloo patch: keep the row at the top
 
     /// The view's top in the text view, below the scroll view's top inset; unlike `visibleRect`, not rounded.
-    private var viewTop: CGFloat? {
+    var viewTop: CGFloat? {
         if let scrollView = layoutView?.enclosingScrollView {
             return scrollView.documentVisibleRect.minY + scrollView.contentInsets.top
         }

@@ -196,7 +196,11 @@ final class EditorFindHighlightTests: XCTestCase {
 
         try XCTUnwrap(controller).wrapLines = true
         try waitUntil { (self.highlights(in: textView).first?.frame.minY ?? 0) > unwrapped.minY }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        // Redrawn once the lines are laid out where they now go, which can take more than one turn.
+        try waitUntil {
+            self.highlights(in: textView).map(\.frame)
+                == [self.expectedFrame(from: beta.location, to: NSMaxRange(beta), in: textView)]
+        }
         XCTAssertEqual(highlights(in: textView).map(\.frame), [expectedFrame(from: beta.location, to: NSMaxRange(beta),
                                                                             in: textView)])
 
@@ -254,7 +258,7 @@ final class EditorFindHighlightTests: XCTestCase {
         // Scrolling no longer redraws.
         let clipView = try XCTUnwrap(textView.enclosingScrollView?.contentView)
         clipView.scroll(to: NSPoint(x: 0, y: 1000))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        try settle(0.1)
         XCTAssertTrue(highlights(in: textView).isEmpty)
     }
 
@@ -322,6 +326,15 @@ final class EditorFindHighlightTests: XCTestCase {
     private func visibleMatchCount(_ ranges: [NSRange], in textView: TextView) -> Int {
         guard let visible = textView.visibleTextRange else { return 0 }
         return ranges.filter { NSMaxRange($0) >= visible.location && $0.location <= NSMaxRange(visible) }.count
+    }
+
+    /// Runs the run loop for `time`, then until the work queued on the main queue by then has run, such as a
+    /// redraw after the text rewrapped: a run for a fixed time can end before it gets there.
+    private func settle(_ time: TimeInterval = 0.05) throws {
+        RunLoop.main.run(until: Date().addingTimeInterval(time))
+        var done = false
+        DispatchQueue.main.async { done = true }
+        try waitUntil { done }
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) throws {
