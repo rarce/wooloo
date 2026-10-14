@@ -130,11 +130,7 @@ final class WorkspaceExplorerModelTests: XCTestCase {
             process.arguments = ["-C", location.root] + arguments
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            // Not `waitUntilExit()`, which can notice the exit 60–140 ms late.
-            let exited = DispatchSemaphore(value: 0)
-            process.terminationHandler = { _ in exited.signal() }
-            try process.run()
-            exited.wait()
+            try process.runAndWait()
             guard process.terminationStatus == 0 else { throw WorkspaceFileError.message("External git failed") }
         }.value
     }
