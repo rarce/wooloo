@@ -445,6 +445,27 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 8)
     }
 
+    /// A command's result comes back as soon as it exits, also on a thread whose run loop has a
+    /// source, as the main thread's does. `Process.waitUntilExit()` runs that run loop and
+    /// notices the exit only when a turn of it ends, which here came about 65 ms after the exit.
+    func testResultComesBackWhenTheCommandExits() throws {
+        var millis: [Double] = []
+        let finished = DispatchSemaphore(value: 0)
+        Thread {
+            let timer = Timer(timeInterval: 3_600, repeats: false) { _ in }
+            RunLoop.current.add(timer, forMode: .default)
+            for _ in 0..<15 {
+                let started = DispatchTime.now().uptimeNanoseconds
+                let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "echo out"], limit: 1_000)
+                millis.append(output == Data("out\n".utf8) ? Double(DispatchTime.now().uptimeNanoseconds - started) / 1e6 : .infinity)
+            }
+            timer.invalidate()
+            finished.signal()
+        }.start()
+        XCTAssertEqual(finished.wait(timeout: .now() + 20), .success)
+        XCTAssertLessThan(millis.sorted()[millis.count / 2], 30, "Median of \(millis.map { Int($0) }) ms")
+    }
+
     // MARK: Branches and worktrees
 
     func testSwitchBranch() throws {
