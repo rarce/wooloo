@@ -1379,8 +1379,10 @@ final class HerdrStore: ObservableObject {
         // Every click in a pane selects it; publishing the same pane again would update the whole window.
         if selectedPaneID != paneID { selectedPaneID = paneID }
         // Herdr answers every pane.focus with a complete surface, even for the pane it already
-        // focuses, so a click there would cost a full frame (45 KB at 126x48).
-        if snapshot?.focusedPaneID != paneID { surfaceStream?.focus(paneID: paneID) }
+        // focuses, so a click there would cost a full frame (45 KB at 126x48). The live surface
+        // says which pane that is; the snapshot does not, since a pane.focus emits no event that
+        // refreshes it, so after one click it still named the pane left behind.
+        if surface?.focusedPaneID != paneID { surfaceStream?.focus(paneID: paneID) }
     }
 
     func resizeSurface(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) {

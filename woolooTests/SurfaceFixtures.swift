@@ -83,7 +83,7 @@ struct SurfaceWireWriter {
         rect(model.paneRect)
         byte(0) // scroll region: None
         byte(0) // scrollbar: None
-        byte(1) // focused
+        byte(model.focused ? 1 : 0)
         byte(model.mouseReporting ? 1 : 0)
         byte(0) // sgr pixel mouse
         byte(0) // alternate screen
@@ -104,6 +104,7 @@ struct SurfaceModel {
     var cursor: HerdrCursor? = HerdrCursor(x: 0, y: 0, visible: true, shape: 0)
     var paneID = "w1:p1"
     var mouseReporting = false
+    var focused = true
     var hyperlinks: [String] = []
 
     init(width: Int, height: Int) {
@@ -118,7 +119,8 @@ struct SurfaceModel {
         HerdrSurface(bootID: bootID, projectionRevision: projectionRevision, revision: revision,
                      width: width, height: height, cells: cells, cursor: cursor, paneIDs: [paneID],
                      paneRects: [paneID: paneRect], paneInnerRects: [paneID: paneRect],
-                     mouseReportingPaneIDs: mouseReporting ? [paneID] : [], splits: [], graphics: [], hyperlinks: hyperlinks)
+                     mouseReportingPaneIDs: mouseReporting ? [paneID] : [], splits: [], graphics: [], hyperlinks: hyperlinks,
+                     focusedPaneID: focused ? paneID : nil)
     }
 
     func row(_ y: Int) -> ArraySlice<HerdrCell> { cells[(y * width)..<((y + 1) * width)] }

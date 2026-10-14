@@ -491,6 +491,32 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(store.selectedPaneID, "w1:p2")
     }
 
+    /// A pane.focus emits no event that refreshes the snapshot, so its focus still names the
+    /// first pane after a click in the second; a click back in the first must still focus it.
+    func testClickingBackInThePreviousPaneFocusesItAgain() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surface?.focusedPaneID == "w1:p1" }
+        let focuses = { Self.requests(in: endpoint).filter { $0.method == "pane.focus" }.compactMap { $0.params["pane_id"] as? String } }
+        let before = focuses().count
+        store.select(paneID: "w1:p2")
+        await waitUntil("second pane focused") { focuses().count == before + 1 }
+        // Herdr answers with a surface that focuses the second pane; the snapshot is unchanged.
+        var focusedSecond = SurfaceModel(width: 4, height: 2)
+        focusedSecond.paneID = "w1:p2"
+        focusedSecond.revision = 2
+        endpoint.send(focusedSecond.surfaceFrame())
+        await waitUntil("surface focuses the second pane") { store.surface?.focusedPaneID == "w1:p2" }
+        XCTAssertEqual(store.snapshot?.focusedPaneID, "w1:p1")
+
+        store.select(paneID: "w1:p1")
+        await waitUntil("first pane focused again") { focuses().count == before + 2 }
+        XCTAssertEqual(Array(focuses().dropFirst(before)), ["w1:p2", "w1:p1"])
+        XCTAssertEqual(store.selectedPaneID, "w1:p1")
+    }
+
     /// A tab switch keeps the terminal view on the previous tab's surface until Herdr sends the
     /// new tab's, instead of falling back to the pane text and building a new view for it; if
     /// none comes, the window falls back after a grace period.
