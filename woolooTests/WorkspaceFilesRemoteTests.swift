@@ -273,6 +273,38 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertTrue(listing.partial)
     }
 
+    /// Over SSH the walk stops after `folderWalkMaximumRecords`, also inside the root, so a huge
+    /// remote folder cannot reach the output limit. It is then truncated, as on this Mac, and
+    /// the explorer's listing says so.
+    func testRemoteWalkStopsAtTheMaximumFilesAsLocally() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        defer { WorkspaceFiles.maximumFiles = maximum }
+        WorkspaceFiles.maximumFiles = 5
+        try sandbox.write(Dictionary(uniqueKeysWithValues: (0..<1_200).map { ("f\($0).txt", "x\n") }), in: "many")
+        try sandbox.write(["a.txt": "x\n", "sub/b.txt": "x\n"], in: "few")
+
+        let words = ["sh", "-c", WorkspaceFiles.folderWalkScript(readingSkipped: false, links: true), "sh", sandbox.path("many")]
+        let output = try WorkspaceFiles.remoteOutput(machine, script: words.map(WorkspaceFiles.quote).joined(separator: " "),
+                                                     label: "walk", limit: 1_000_000)
+        XCTAssertEqual(WorkspaceFiles.folderWalkSections(output).records.count, WorkspaceFiles.folderWalkMaximumRecords,
+                       "The remote stops printing")
+
+        for location in [remote("many"), sandbox.location("many")] {
+            let files = try WorkspaceFiles.quickOpenFiles(at: location)
+            XCTAssertTrue(files.truncated, location.root)
+            XCTAssertLessThanOrEqual(files.files.count, 5)
+            XCTAssertTrue(files.files.allSatisfy { $0.hasPrefix("f") }, "\(files.files)")
+            WorkspaceFiles.forgetRecentResults()
+            let listing = try WorkspaceFiles.listing(at: location)
+            XCTAssertTrue(listing.truncated && listing.partial, location.root)
+            XCTAssertLessThanOrEqual(listing.files.count, 5)
+        }
+        let few = try WorkspaceFiles.listing(at: remote("few"))
+        XCTAssertEqual(few.files, ["a.txt", "sub/b.txt"])
+        XCTAssertFalse(few.truncated || few.partial)
+        XCTAssertFalse(try WorkspaceFiles.quickOpenFiles(at: remote("few")).truncated)
+    }
+
     func testWalkRecordsDropOnlyANameCutShortByTheTimeLimit() {
         func records(_ text: String) -> [String] { WorkspaceFiles.folderWalkRecords(Data(text.utf8)) }
         XCTAssertEqual(records("./a\0./b\0\0wooloo-partial\0"), ["./a", "./b", "wooloo-partial"])
@@ -285,11 +317,21 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                        "A name cut inside a character is not UTF-8 and left out")
 
         let walk = WorkspaceFiles.folderWalk(scriptOutput: Data(
-            "./a\0wooloo-skipped\0./node_modules\0./b/.venv\0wooloo-files\0./c\0wooloo-skipped\0./d/__pyc\0wooloo-partial\0".utf8
+            "./a\0wooloo-skipped\0./node_modules\0./b/.venv\0wooloo-files\0./c\0wooloo-skipped\0./d/__pyc\0wooloo-partial\0wooloo-end\0".utf8
         ), readingSkipped: false)
         XCTAssertEqual(walk.files, ["a", "c"])
         XCTAssertEqual(walk.skippedFolders, ["b/.venv", "node_modules"])
         XCTAssertTrue(walk.partial)
+        XCTAssertFalse(walk.truncated)
+
+        // Cut at the maximum before `wooloo-end`: truncated, and the last name, which the time
+        // limit may have cut short, is dropped.
+        let cut = WorkspaceFiles.folderWalk(scriptOutput: Data("./a\0./b\0wooloo-skipped\0./node_mod\0".utf8),
+                                            readingSkipped: false)
+        XCTAssertEqual(cut.files, ["a", "b"])
+        XCTAssertEqual(cut.skippedFolders, [])
+        XCTAssertTrue(cut.truncated)
+        XCTAssertEqual(WorkspaceFiles.folderWalk(scriptOutput: Data("./a\0./b\0".utf8), readingSkipped: false).files, ["a"])
     }
 
     /// Link metadata follows the walk's records as printed: a link or target named like a marker,
@@ -735,6 +777,24 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let results = try WorkspaceFiles.gitBatch(remote("repo"), [sections[0], .root, sections[1], sections[2]])
         XCTAssertEqual(results.map { (try? String(decoding: $0.get(), as: UTF8.self)) ?? "failed" },
                        ["one\n", sandbox.path("repo") + "\n", "two\n", "three\n"])
+    }
+
+    /// On a remote with one processor, where more at once only adds memory, a batch runs two
+    /// commands at a time: each counts the commands running while it sleeps.
+    func testRemoteBatchRunsTwiceItsProcessorCountAtOnce() throws {
+        try sandbox.repository("repo")
+        try sandbox.write(["shims/nproc": "#!/bin/sh\necho 1\n"], in: ".")
+        try sandbox.sh("chmod 755 shims/nproc && mkdir running")
+        let running = WorkspaceFiles.quote(sandbox.path("running"))
+        let sections = (1...5).map { index in
+            WorkspaceFiles.GitSection([], limit: 100, script: "touch \(running)/\(index); sleep 0.3; "
+                + "ls \(running) | wc -l; rm \(running)/\(index)")
+        }
+        let counts = try WorkspaceFiles.gitBatch(remote("repo"), sections).map {
+            Int(String(decoding: try $0.get(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        XCTAssertEqual(counts.compactMap { $0 }.count, 5)
+        XCTAssertEqual(counts.compactMap { $0 }.max(), 2, "\(counts)")
     }
 
     /// The script removes its temporary folder when the connection closes before it printed

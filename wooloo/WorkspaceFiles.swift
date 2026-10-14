@@ -100,6 +100,8 @@ struct WorkspaceFileListing {
     var symbolicLinks: [String: WorkspaceSymbolicLink] = [:]
     /// True when a folder outside a repository was read only near its root (`WorkspaceFolderWalk`).
     var partial = false
+    /// True when the walk of a folder outside a repository stopped at `maximumFiles` files.
+    var truncated = false
 }
 
 /// The files of a folder outside a Git repository, as `WorkspaceFiles.folderWalk` reads them.
@@ -341,7 +343,8 @@ enum WorkspaceFiles {
     }
     static let maximumDiffBytes = 2_000_000
     /// Files the explorer lists; it builds their tree once per listing, so this bounds memory and load time only.
-    static let maximumFiles = 200_000
+    /// Tests replace it.
+    static var maximumFiles = 200_000
     /// Entries read from one expanded ignored folder.
     static let maximumFolderEntries = 5_000
     /// Output read for a file listing: `maximumFiles` paths of about 150 bytes.
@@ -468,6 +471,11 @@ enum WorkspaceFiles {
                                 changes: changes, ignored: ignored)
     }
 
+    /// Records the SSH walk prints at most: `maximumFiles` names, with room for the markers
+    /// between them, two per 256 folders read; names beyond `maximumFiles` are cut by `finished`.
+    /// A walk with more than 1,000 markers, from over 100,000 folders, can be cut a little before
+    /// `maximumFiles` files.
+    static var folderWalkMaximumRecords: Int { maximumFiles + 1_001 }
     /// How many folders down the walk of a folder outside a repository reads.
     static let folderWalkMaximumDepth = 12
     /// Seconds the walk of a folder outside a repository spends after reading the root; tests replace it.
@@ -489,7 +497,8 @@ enum WorkspaceFiles {
     private static func nonGitListing(_ walk: WorkspaceFolderWalk) -> WorkspaceFileListing {
         WorkspaceFileListing(files: walk.files, changes: [], hasGit: false, totalFiles: walk.files.count,
                              ignored: WorkspaceIgnoredEntries(gitEntries: walk.skippedFolders.map { $0 + "/" }),
-                             symbolicLinks: walk.symbolicLinks, partial: walk.partial || walk.truncated)
+                             symbolicLinks: walk.symbolicLinks, partial: walk.partial || walk.truncated,
+                             truncated: walk.truncated)
     }
 
     /// The files of a folder outside a repository, which may be as large as /private/tmp, for the
@@ -662,11 +671,18 @@ enum WorkspaceFiles {
 
     /// A walk from the records `folderWalkScript` prints: files, skipped folders between
     /// `wooloo-skipped` and `wooloo-files`, and `wooloo-partial` when folders were left unread.
+    /// Without its final `wooloo-end`, the walk was cut at `folderWalkMaximumRecords` and is
+    /// truncated; its last name is dropped, since it may be one the time limit cut short.
     private static func folderWalk(records: some Sequence<String>) -> WorkspaceFolderWalk {
         var walk = WorkspaceFolderWalk()
         var skipped = false
+        var ended = false
+        var lastName: Bool?
         for record in records {
+            lastName = nil
             switch record {
+            case "wooloo-end":
+                ended = true
             case "wooloo-partial":
                 walk.partial = true
                 skipped = false
@@ -678,7 +694,12 @@ enum WorkspaceFiles {
                 let path = record.hasPrefix("./") ? String(record.dropFirst(2)) : record
                 guard !path.isEmpty else { continue }
                 if skipped { walk.skippedFolders.append(path) } else { walk.files.append(path) }
+                lastName = skipped
             }
+        }
+        if !ended {
+            walk.truncated = true
+            if lastName == true { walk.skippedFolders.removeLast() } else if lastName == false { walk.files.removeLast() }
         }
         return walk
     }
@@ -718,11 +739,17 @@ enum WorkspaceFiles {
     /// - After the root, which is always read in full, the walk stops once `folderWalkBudget`
     ///   seconds have passed since it started, also inside a folder, and is then partial. Files
     ///   found until then are kept.
+    /// - Anywhere, the root included, the walk stops once it found more than `maximumFiles` files
+    ///   and is then truncated; over SSH, after `folderWalkMaximumRecords` records.
     ///
     /// Each level is read by `find` on the folders the previous one found, 256 folders per batch.
     /// A watchdog marks the time as up and stops the `find` running then, so neither a slow level
     /// nor one huge folder reaches the SSH timeout. The records it prints are those of
-    /// `folderWalkRecords`; with `links`, link metadata follows a `wooloo-symbolic-links` record.
+    /// `folderWalkRecords`, ending with `wooloo-end`; with `links`, link metadata follows a
+    /// `wooloo-symbolic-links` record. The records pass through `head`, with NUL and newline
+    /// swapped around it, so the walk stops after `folderWalkMaximumRecords` of them, also inside
+    /// the root, and its output stays under the SSH output limit; the walk is then truncated, as
+    /// on this Mac.
     static func folderWalkScript(readingSkipped: Bool, links: Bool) -> String {
         let skipped = readingSkipped ? [] : folderWalkSkippedFolders
         let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
@@ -757,11 +784,12 @@ enum WorkspaceFiles {
         var script = #"cd "$1" || exit 1; t=$(mktemp -d) || exit 1; w=; trap '[ -n "$w" ] && kill "$w" 2>/dev/null && wait "$w"; rm -rf "$t"' EXIT; "#
             + "b=" + quote(batch) + "; c=" + quote(check) + "; d=1; export t d; "
             + #": > "$t/pid"; "# + watchdog
-            + #"printf '.\0' > "$t/level"; : > "$t/links"; while [ -s "$t/level" ]; do "#
+            + #"printf '.\0' > "$t/level"; : > "$t/links"; { while [ -s "$t/level" ]; do "#
             + #"if [ "$d" -gt "# + String(folderWalkMaximumDepth) + " ]; then "
             + #"[ -n "$(xargs -0 sh -c "$c" sh < "$t/level" | head -n 1)" ] && printf '\0wooloo-partial\0'; break; fi; "#
             + #": > "$t/next"; if ! xargs -0 -n 256 sh -c "$b" sh < "$t/level"; then printf '\0wooloo-partial\0'; break; fi; "#
-            + #"mv "$t/next" "$t/level"; d=$((d + 1)); done; "#
+            + #"mv "$t/next" "$t/level"; d=$((d + 1)); done; printf 'wooloo-end\0'; } 2>/dev/null "#
+            + #"| tr '\000\n' '\n\000' | head -n "# + String(folderWalkMaximumRecords) + #" | tr '\000\n' '\n\000'; "#
         if links {
             script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && xargs -0 sh -c "#
                 + quote(symbolicLinkMetadataScript) + " sh < \"$t/links\"; "
@@ -1592,7 +1620,10 @@ enum WorkspaceFiles {
     /// After a failed gate, the script runs `otherwise` when given, then stops.
     ///
     /// The commands run at once, as background jobs, and the sections are printed in order once
-    /// all have finished, so a batch costs its slowest command rather than their sum. A gate runs
+    /// all have finished, so a batch costs its slowest command rather than their sum. On a remote
+    /// with few processors they start in groups of twice its processor count, each once the
+    /// previous group finished: there, more at once only adds memory, as each `git status` or
+    /// `git ls-files` reads the whole index (docs/perf/README.md). A gate runs
     /// once the commands before it have started, and the commands after it only once it passed.
     /// This is safe because a batch only reads: its git commands run with `GIT_OPTIONAL_LOCKS=0`,
     /// so `git status` never takes `index.lock` to refresh the index. The script exits 0 once it
@@ -1612,7 +1643,9 @@ enum WorkspaceFiles {
             #"trap 'kill $p 2>/dev/null; exit 1' HUP INT PIPE TERM"#,
             #"export GIT_OPTIONAL_LOCKS=0"#,
             #"run() { i=$1; shift; "$@" >"$d/o$i" 2>"$d/e$i"; r=$?; echo "$r" >"$d/r$i"; return $r; }"#,
-            #"start() { run "$@" & p="$p $!"; }"#,
+            #"c=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null); n=0"#,
+            #"start() { if [ "${c:-0}" -gt 0 ] 2>/dev/null && [ "$n" -ge $((c * 2)) ]; then wait; n=0; fi; "#
+                + #"run "$@" & p="$p $!"; n=$((n + 1)); }"#,
             #"emit() { for i do r=$(cat "$d/r$i" 2>/dev/null); "#
                 + #"printf 'wooloo-section %s %s %s\n' "${r:-1}" $(wc -c <"$d/o$i") $(wc -c <"$d/e$i"); "#
                 + #"cat "$d/o$i" "$d/e$i"; done; }"#,
