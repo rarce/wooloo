@@ -159,6 +159,7 @@ struct ReferenceSurfaceDecoder {
             let id: String
             let rect: HerdrRect
             let inner: HerdrRect
+            let focused: Bool
             let mouseReporting: Bool
         }
 
@@ -168,11 +169,11 @@ struct ReferenceSurfaceDecoder {
             let outer = try rect(), inner = try rect()
             if try flag() { _ = try rect() }
             if try flag() { for _ in 0..<3 { _ = try number() } }
-            _ = try byte() // focused
+            let focused = try byte() != 0
             let mouseReporting = try byte() != 0
             _ = try byte(); _ = try byte()
             _ = try number(); _ = try number()
-            return Pane(id: id, rect: outer, inner: inner, mouseReporting: mouseReporting)
+            return Pane(id: id, rect: outer, inner: inner, focused: focused, mouseReporting: mouseReporting)
         }
 
         mutating func graphicKey() throws -> (identity: Data, isPopup: Bool) {
@@ -232,11 +233,13 @@ struct ReferenceSurfaceDecoder {
         var paneIDs: [String] = []
         var rects: [String: HerdrRect] = [:], inner: [String: HerdrRect] = [:]
         var mouse: Set<String> = []
+        var focused: String?
         for _ in 0..<(try input.int()) {
             let pane = try input.pane()
             paneIDs.append(pane.id)
             rects[pane.id] = pane.rect
             inner[pane.id] = pane.inner
+            if pane.focused { focused = pane.id }
             if pane.mouseReporting { mouse.insert(pane.id) }
         }
         var splits: [HerdrSplit] = []
@@ -277,7 +280,8 @@ struct ReferenceSurfaceDecoder {
         return HerdrSurface(bootID: bootID, projectionRevision: projectionRevision, revision: revision,
                             width: width, height: height, cells: cells, cursor: cursor, paneIDs: paneIDs,
                             paneRects: rects, paneInnerRects: inner, mouseReportingPaneIDs: mouse,
-                            splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup)
+                            splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup,
+                            focusedPaneID: focused)
     }
 
     private func readPatch(_ input: inout Input, into surface: inout HerdrSurface) throws {
@@ -296,6 +300,11 @@ struct ReferenceSurfaceDecoder {
             let pane = try input.pane()
             surface.paneRects[pane.id] = pane.rect
             surface.paneInnerRects[pane.id] = pane.inner
+            if pane.focused {
+                surface.focusedPaneID = pane.id
+            } else if surface.focusedPaneID == pane.id {
+                surface.focusedPaneID = nil
+            }
             if pane.mouseReporting {
                 surface.mouseReportingPaneIDs.insert(pane.id)
             } else {

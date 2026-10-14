@@ -274,6 +274,78 @@ final class TerminalMouseTests: XCTestCase {
         XCTAssertNil(view.selectedCellText())
     }
 
+    /// Dividers show a resize cursor along their axis, also in a nested split, and keep it
+    /// through a drag that leaves them; NSTextView would show its I-beam there.
+    func testDividersShowAResizeCursor() {
+        let outer = twoPaneSurface()
+        let top = HerdrRect(x: 11, y: 0, width: 9, height: 1), bottom = HerdrRect(x: 11, y: 2, width: 9, height: 2)
+        let nested = HerdrSplit(direction: .vertical, pos: 1, area: HerdrRect(x: 11, y: 0, width: 9, height: 4),
+                                hitRect: HerdrRect(x: 11, y: 1, width: 9, height: 1), path: [false])
+        let left = outer.paneRects["w1:p1"]!
+        show(HerdrSurface(bootID: "boot", projectionRevision: 1, revision: 1, width: 20, height: 4,
+                          cells: Array(outer.cells), cursor: nil, paneIDs: ["w1:p1", "w1:p2", "w1:p3"],
+                          paneRects: ["w1:p1": left, "w1:p2": top, "w1:p3": bottom],
+                          paneInnerRects: ["w1:p1": left, "w1:p2": top, "w1:p3": bottom],
+                          mouseReportingPaneIDs: [], splits: outer.splits + [nested], graphics: []))
+        let column = HerdrTerminalTextView.resizeCursor(for: outer.splits[0])
+        let row = HerdrTerminalTextView.resizeCursor(for: nested)
+        XCTAssertNotEqual(column, row)
+        func cursor(after send: () -> Void) -> NSCursor {
+            NSCursor.arrow.set()
+            send()
+            return NSCursor.current
+        }
+        XCTAssertEqual(cursor { view.mouseMoved(with: event(.mouseMoved, 10, 2)) }, column)
+        XCTAssertEqual(cursor { view.mouseMoved(with: event(.mouseMoved, 15, 1)) }, row)
+        XCTAssertEqual(cursor { view.cursorUpdate(with: event(.mouseMoved, 10, 0)) }, column)
+        XCTAssertNotEqual(cursor { view.mouseMoved(with: event(.mouseMoved, 3, 1)) }, column, "Panes keep their cursor")
+
+        XCTAssertEqual(cursor { view.mouseDown(with: event(.leftMouseDown, 10, 1)) }, column)
+        XCTAssertEqual(cursor { view.mouseDragged(with: event(.leftMouseDragged, 15, 1)) }, column, "The drag left the divider")
+        XCTAssertEqual(cursor { view.mouseUp(with: event(.leftMouseUp, 15, 1)) }, row, "The drag ended on the nested divider")
+        XCTAssertEqual(ratios, [0.75])
+    }
+
+    /// When a divider drag ends, or its split goes away, the cursor is the one under the pointer:
+    /// a link's hand with Command, the arrow off the view; views drawn over the divider keep theirs.
+    func testCursorAfterDividerDragsAndUnderOtherViews() {
+        var surface = twoPaneSurface()
+        for (offset, character) in "http://a.b".enumerated() {
+            surface.cells[offset] = HerdrCell(symbol: String(character), foreground: 0, background: 0, modifier: 0, skip: false)
+        }
+        show(surface)
+        let column = HerdrTerminalTextView.resizeCursor(for: surface.splits[0])
+        func cursor(after send: () -> Void) -> NSCursor {
+            NSCursor.iBeam.set()
+            send()
+            return NSCursor.current
+        }
+        view.mouseDown(with: event(.leftMouseDown, 10, 1))
+        XCTAssertEqual(cursor { view.mouseUp(with: event(.leftMouseUp, 2, 0, flags: .command)) }, .pointingHand)
+        view.mouseDown(with: event(.leftMouseDown, 10, 1))
+        XCTAssertEqual(cursor { view.mouseUp(with: event(.leftMouseUp, 30, 9)) }, .arrow, "Released off the view")
+
+        view.mouseDown(with: event(.leftMouseDown, 10, 1))
+        var moved = surface
+        moved.revision = 2
+        TerminalRenderHarness.show(HerdrSurface(bootID: "other-boot", projectionRevision: 1, revision: 1,
+                                                width: 20, height: 4, cells: Array(moved.cells), cursor: nil,
+                                                paneIDs: moved.paneIDs, paneRects: moved.paneRects,
+                                                paneInnerRects: moved.paneInnerRects, mouseReportingPaneIDs: [],
+                                                splits: moved.splits, graphics: []), in: view)
+        XCTAssertNotEqual(cursor { view.mouseDragged(with: event(.leftMouseDragged, 4, 1)) }, column, "The drag ended")
+        view.mouseUp(with: event(.leftMouseUp, 4, 1))
+
+        // A view over the divider, as a sidebar's resize handle may be, keeps the pointer.
+        let container = NSView(frame: view.frame)
+        window.contentView = container
+        container.addSubview(view)
+        let cover = NSView(frame: NSRect(x: 0, y: 0, width: view.frame.width, height: view.frame.height))
+        container.addSubview(cover, positioned: .above, relativeTo: view)
+        XCTAssertEqual(cursor { view.cursorUpdate(with: event(.mouseMoved, 10, 1)) }, .iBeam)
+        XCTAssertEqual(cursor { view.mouseMoved(with: event(.mouseMoved, 10, 1)) }, .iBeam)
+    }
+
     /// A drag whose split disappeared, e.g. after the layout changed, stops quietly.
     func testDividerDragStopsWhenTheSplitIsGone() {
         show(twoPaneSurface())

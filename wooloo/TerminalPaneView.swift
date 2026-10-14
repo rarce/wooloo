@@ -1478,17 +1478,57 @@ final class HerdrTerminalTextView: NSTextView {
     override func mouseMoved(with event: NSEvent) {
         // The tracking area also fires under views drawn over this one, such as a sidebar's resize
         // handle; leave the cursor to them.
-        if let contentView = window?.contentView,
-           let hit = contentView.hitTest(contentView.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow),
-           hit !== self, !hit.isDescendant(of: self) {
-            return
-        }
+        guard ownsPointer(at: event.locationInWindow) else { return }
         updateHoveredLink(at: event.locationInWindow, modifiers: event.modifierFlags)
-        if hoveredLink != nil {
-            NSCursor.pointingHand.set()
+        // NSTextView's own handling would set the I-beam, also over a divider.
+        if let cursor = cursor(at: event.locationInWindow) {
+            cursor.set()
         } else {
             super.mouseMoved(with: event)
         }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        guard ownsPointer(at: event.locationInWindow) else { return }
+        if let cursor = cursor(at: event.locationInWindow) {
+            cursor.set()
+        } else {
+            super.cursorUpdate(with: event)
+        }
+    }
+
+    /// False where a view drawn over this one, such as a sidebar's resize handle, takes the pointer.
+    private func ownsPointer(at windowPoint: NSPoint) -> Bool {
+        guard let contentView = window?.contentView,
+              let hit = contentView.hitTest(contentView.superview?.convert(windowPoint, from: nil) ?? windowPoint)
+        else { return true }
+        return hit === self || hit.isDescendant(of: self)
+    }
+
+    /// The cursor this view shows itself: a divider's resize cursor while it is dragged or under
+    /// the pointer, or the hand over a link; nil leaves NSTextView's I-beam.
+    private func cursor(at windowPoint: NSPoint) -> NSCursor? {
+        if let splitDrag { return Self.resizeCursor(for: splitDrag.split) }
+        if let surface, let split = splitHit(at: windowPoint, in: surface) { return Self.resizeCursor(for: split) }
+        return hoveredLink == nil ? nil : .pointingHand
+    }
+
+    /// Sets the cursor outside mouse moves, as a divider drag starts or ends: the arrow once the
+    /// pointer is off this view, for the view there to replace.
+    private func showCursor(for event: NSEvent) {
+        let point = event.locationInWindow
+        guard splitDrag != nil || ownsPointer(at: point) && visibleRect.contains(convert(point, from: nil)) else {
+            return NSCursor.arrow.set()
+        }
+        updateHoveredLink(at: point, modifiers: event.modifierFlags)
+        (cursor(at: point) ?? .iBeam).set()
+    }
+
+    static func resizeCursor(for split: HerdrSplit) -> NSCursor {
+        if #available(macOS 15.0, *) {
+            return split.direction == .horizontal ? .columnResize : .rowResize
+        }
+        return split.direction == .horizontal ? .resizeLeftRight : .resizeUpDown
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -1542,7 +1582,7 @@ final class HerdrTerminalTextView: NSTextView {
                                  y: textContainerInset.height + CGFloat(rect.y) * TerminalPaneView.cellHeight,
                                  width: CGFloat(rect.width) * TerminalPaneView.cellWidth,
                                  height: CGFloat(rect.height) * TerminalPaneView.cellHeight),
-                          cursor: split.direction == .horizontal ? .resizeLeftRight : .resizeUpDown)
+                          cursor: Self.resizeCursor(for: split))
         }
     }
 
@@ -1569,10 +1609,11 @@ final class HerdrTerminalTextView: NSTextView {
             return
         }
         if let surface {
-            if let split = splitHit(event, in: surface) {
+            if let split = splitHit(at: event.locationInWindow, in: surface) {
                 let (x, y) = surfacePoint(event)
                 let pointer = split.direction == .horizontal ? x : y
                 splitDrag = (split, split.pos - pointer, surface.bootID, 0, nil)
+                showCursor(for: event)
                 window?.makeFirstResponder(self)
                 return
             }
@@ -1596,6 +1637,8 @@ final class HerdrTerminalTextView: NSTextView {
         if splitDrag != nil {
             updateSplitDrag(with: event, finished: true)
             splitDrag = nil
+            // The pointer may have left the divider, or this view, during the drag.
+            showCursor(for: event)
             return
         }
         if releaseMouse(button: 0, event: event) { return }
@@ -1611,6 +1654,9 @@ final class HerdrTerminalTextView: NSTextView {
     override func mouseDragged(with event: NSEvent) {
         if splitDrag != nil {
             updateSplitDrag(with: event, finished: false)
+            // Off the divider the view would show its I-beam, though the drag goes on; a drag
+            // whose split is gone shows the cursor under the pointer.
+            showCursor(for: event)
             return
         }
         if dragMouse(button: 0, event: event) { return }
@@ -1634,8 +1680,10 @@ final class HerdrTerminalTextView: NSTextView {
                 Int(floor((point.y - textContainerInset.height) / TerminalPaneView.cellHeight)))
     }
 
-    private func splitHit(_ event: NSEvent, in surface: HerdrSurface) -> HerdrSplit? {
-        let (x, y) = surfacePoint(event)
+    /// The divider a press at a window location drags; none while a popup is shown.
+    private func splitHit(at windowPoint: NSPoint, in surface: HerdrSurface) -> HerdrSplit? {
+        guard surface.popup == nil else { return nil }
+        let (x, y) = surfacePoint(at: windowPoint)
         return TerminalPointer.split(atColumn: x, row: y, in: surface)
     }
 

@@ -246,6 +246,8 @@ struct HerdrSurface: Equatable {
     /// patch whenever changed cells touch a hyperlink, so patches keep these indices valid.
     var hyperlinks: [String] = []
     var popup: HerdrPopup? = nil
+    /// The pane Herdr focuses in this tab, as the panes' `focused` flags say.
+    var focusedPaneID: String? = nil
 
     /// The raw surface stays intact for patches and trace verification. Only the view
     /// composes popup chrome and cells into the grid it draws.
@@ -304,11 +306,11 @@ extension HerdrSurface {
     init(bootID: String, projectionRevision: UInt64, revision: UInt64, width: Int, height: Int,
          cells: [HerdrCell], cursor: HerdrCursor?, paneIDs: [String], paneRects: [String: HerdrRect],
          paneInnerRects: [String: HerdrRect], mouseReportingPaneIDs: Set<String>, splits: [HerdrSplit],
-         graphics: [HerdrGraphic], hyperlinks: [String] = [], popup: HerdrPopup? = nil) {
+         graphics: [HerdrGraphic], hyperlinks: [String] = [], popup: HerdrPopup? = nil, focusedPaneID: String? = nil) {
         self.init(bootID: bootID, projectionRevision: projectionRevision, revision: revision, width: width,
                   height: height, cells: HerdrCellRows(cells, width: width), cursor: cursor, paneIDs: paneIDs,
                   paneRects: paneRects, paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs,
-                  splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup)
+                  splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup, focusedPaneID: focusedPaneID)
     }
 }
 
@@ -418,7 +420,7 @@ private struct SurfaceReader {
         return HerdrCursor(x: x, y: y, visible: visible, shape: shape)
     }
 
-    mutating func pane() throws -> (String, HerdrRect, HerdrRect, Bool) {
+    mutating func pane() throws -> (id: String, rect: HerdrRect, inner: HerdrRect, focused: Bool, mouseReporting: Bool) {
         let paneID = try string()
         _ = try number() // content revision
         let paneRect = try rect()
@@ -427,13 +429,13 @@ private struct SurfaceReader {
         _ = try optional { reader in
             for _ in 0..<3 { _ = try reader.number() }
         }
-        _ = try byte() // focused
+        let focused = try byte() != 0
         let mouseReporting = try byte() != 0
         _ = try byte() // sgr pixel mouse
         _ = try byte() // alternate screen
         _ = try number()
         _ = try number()
-        return (paneID, paneRect, innerRect, mouseReporting)
+        return (paneID, paneRect, innerRect, focused, mouseReporting)
     }
 
     mutating func split() throws -> HerdrSplit {
@@ -580,11 +582,13 @@ private struct SurfaceReader {
         var paneRects: [String: HerdrRect] = [:]
         var paneInnerRects: [String: HerdrRect] = [:]
         var mouseReportingPaneIDs: Set<String> = []
+        var focusedPaneID: String?
         for _ in 0..<(try count()) {
-            let (id, rect, innerRect, mouseReporting) = try pane()
+            let (id, rect, innerRect, focused, mouseReporting) = try pane()
             paneIDs.append(id)
             paneRects[id] = rect
             paneInnerRects[id] = innerRect
+            if focused { focusedPaneID = id }
             if mouseReporting { mouseReportingPaneIDs.insert(id) }
         }
         var splits: [HerdrSplit] = []
@@ -612,7 +616,8 @@ private struct SurfaceReader {
                             revision: revision, width: width, height: height,
                             cells: cells, cursor: cursor, paneIDs: paneIDs, paneRects: paneRects,
                             paneInnerRects: paneInnerRects, mouseReportingPaneIDs: mouseReportingPaneIDs,
-                            splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup)
+                            splits: splits, graphics: graphics, hyperlinks: hyperlinks, popup: popup,
+                            focusedPaneID: focusedPaneID)
     }
 
     /// Applies a patch; `scrolls` move rows of pane regions first, as a scrolled patch does.
@@ -638,10 +643,15 @@ private struct SurfaceReader {
             }
         }
         for _ in 0..<(try count()) {
-            let (id, rect, innerRect, mouseReporting) = try pane()
+            let (id, rect, innerRect, focused, mouseReporting) = try pane()
             guard surface.paneRects[id] != nil else { throw SurfaceProtocolError.invalidFrame }
             surface.paneRects[id] = rect
             surface.paneInnerRects[id] = innerRect
+            if focused {
+                surface.focusedPaneID = id
+            } else if surface.focusedPaneID == id {
+                surface.focusedPaneID = nil
+            }
             if mouseReporting {
                 surface.mouseReportingPaneIDs.insert(id)
             } else {
@@ -916,7 +926,8 @@ final class HerdrSurfaceStream {
         request(method: "tab.focus", params: ["tab_id": tabID])
     }
 
-    func focus(paneID: String) {
+    @discardableResult
+    func focus(paneID: String) -> Bool {
         request(method: "pane.focus", params: ["pane_id": paneID])
     }
 

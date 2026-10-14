@@ -42,6 +42,21 @@ final class SurfaceDecodingTests: XCTestCase {
         XCTAssertThrowsError(try decoder.apply(frame: workload.frames[2]))
     }
 
+    /// The pane Herdr focuses comes from the panes' `focused` flags, in surfaces and patches.
+    func testFocusedPaneDecodesAndFollowsPatches() throws {
+        var model = SurfaceModel(width: 4, height: 2)
+        var decoder = HerdrSurfaceDecoder()
+        var reference = ReferenceSurfaceDecoder()
+        let full = model.surfaceFrame()
+        XCTAssertEqual(try decoder.apply(frame: full)?.focusedPaneID, "w1:p1")
+        XCTAssertEqual(try reference.apply(full)?.focusedPaneID, "w1:p1")
+        model.focused = false
+        model.revision = 2
+        let patch = model.patchFrame(baseRevision: 1, rows: [])
+        XCTAssertNil(try decoder.apply(frame: patch)?.focusedPaneID)
+        XCTAssertNil(try reference.apply(patch)?.focusedPaneID)
+    }
+
     func testPatchWithoutSurfaceIsRejected() {
         let workload = TerminalWorkload.typing(width: 40, height: 10, frames: 2)
         var decoder = HerdrSurfaceDecoder()
