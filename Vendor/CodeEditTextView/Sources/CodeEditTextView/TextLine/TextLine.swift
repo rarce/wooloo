@@ -20,10 +20,37 @@ public final class TextLine: Identifiable, Equatable {
         typesetter.lineFragments
     }
 
+    /// wooloo patch: the rows as laid out last, kept by ``setNeedsLayoutKeepingRows()`` until the line is laid out
+    /// again or the next layout pass ends. The typesetter is kept, since its rows are removed when it goes away.
+    private var dropped: Typesetter?
+
     /// Marks this line as needing layout and clears all typesetting data.
     public func setNeedsLayout() {
         needsLayout = true
         typesetter = Typesetter()
+        dropped = nil // wooloo patch
+    }
+
+    /// wooloo patch: as ``setNeedsLayout()``, but keeps the rows for ``lastRow(atPosition:height:)``, for the line at the
+    /// view's top when the highlighter applies a new font.
+    func setNeedsLayoutKeepingRows() {
+        let rows = typesetter.lineFragments.isEmpty ? dropped : typesetter
+        setNeedsLayout()
+        dropped = rows
+    }
+
+    /// wooloo patch: lets go of the rows ``setNeedsLayoutKeepingRows()`` kept.
+    func dropKeptRows() {
+        dropped = nil
+    }
+
+    /// wooloo patch: the row at `y` as laid out last, also after ``setNeedsLayoutKeepingRows()`` while those rows are
+    /// still `height` tall: its first character in the line, and how far into the row `y` is, as a share of its height.
+    func lastRow(atPosition y: CGFloat, height: CGFloat) -> (offset: Int, share: CGFloat)? {
+        var rows = typesetter.lineFragments
+        if rows.isEmpty, let dropped, abs(dropped.lineFragments.height - height) < 0.01 { rows = dropped.lineFragments }
+        guard let row = rows.getLine(atPosition: y) else { return nil }
+        return (row.range.location, row.height > 0 ? (y - row.yPos) / row.height : 0)
     }
 
     /// Determines if the line needs to be laid out again.
@@ -57,6 +84,7 @@ public final class TextLine: Identifiable, Equatable {
             markedRanges: markedRanges
         )
         needsLayout = false
+        dropped = nil // wooloo patch
     }
 
     public static func == (lhs: TextLine, rhs: TextLine) -> Bool {

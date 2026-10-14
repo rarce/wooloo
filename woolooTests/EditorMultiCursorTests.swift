@@ -409,10 +409,10 @@ final class EditorMultiCursorTests: XCTestCase {
         let font = NSFont.monospacedSystemFont(ofSize: 20, weight: .regular)
         let space = (" " as NSString).size(withAttributes: [.font: font]).width
         controller.font = font
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertEqual(try x(1) - x(0), 4 * space, accuracy: 0.01, "after the font changes")
         controller.tabWidth = 2
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertEqual(try x(1) - x(0), 2 * space, accuracy: 0.01, "and the tab width")
     }
 
@@ -531,7 +531,7 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertTrue(coordinator.perform(.addCursorBelow))
         XCTAssertEqual(selectedRanges(textView), [range(1), range(5)])
         try XCTUnwrap(spy.controller).tabWidth = 2
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertTrue(coordinator.perform(.addCursorBelow))
         XCTAssertEqual(selectedRanges(textView), [range(1), range(5), range(9)],
                        "after the tab, where the narrower tab now ends, not where the old one did")
@@ -613,7 +613,7 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertTrue(coordinator.handleMouse(mouse(.leftMouseUp, at: 15 * 7 + 4, in: textView, timestamp: 3)))
         clip.scroll(to: NSPoint(x: 0, y: clip.bounds.minY + 10 * lineHeight))
         textView.enclosingScrollView?.reflectScrolledClipView(clip)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        try settle(0.1)
         XCTAssertEqual(selectedRanges(textView).count, 16, "the mouse-up ends the drag")
     }
 
@@ -734,7 +734,7 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertFalse(coordinator.handle(arrow), "the key monitor lets it through to the editor")
         for _ in 0..<3 { textView.moveRight(nil) }
         // A later turn of the run loop, once the arrow has been handled.
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         textView.selectionManager.setSelectedRange(range(10, 3))
 
         XCTAssertTrue(coordinator.perform(.undoSelection))
@@ -757,7 +757,7 @@ final class EditorMultiCursorTests: XCTestCase {
         event = mouse(.leftMouseUp, at: 4, in: textView, flags: [], timestamp: 2)
         XCTAssertFalse(coordinator.handleMouse(event!))
         // A later turn of the run loop, with the mouse-up still AppKit's current event.
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         textView.selectionManager.setSelectedRange(range(10, 3))
 
         // A drag, which the editor's autoscroll timer goes on extending between drag events.
@@ -767,7 +767,7 @@ final class EditorMultiCursorTests: XCTestCase {
         event = mouse(.leftMouseDragged, at: 2, in: textView, flags: [], timestamp: 4)
         XCTAssertFalse(coordinator.handleMouse(event!))
         textView.selectionManager.setSelectedRange(range(0, 2))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         textView.selectionManager.setSelectedRange(range(0, 5))
         event = mouse(.leftMouseUp, at: 5, in: textView, flags: [], timestamp: 5)
         XCTAssertFalse(coordinator.handleMouse(event!))
@@ -801,7 +801,7 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertFalse(coordinator.handleMouse(elsewhere(.leftMouseDown, 3)))
         event = elsewhere(.leftMouseDragged, 4)
         XCTAssertFalse(coordinator.handleMouse(event!))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         textView.selectionManager.setSelectedRange(range(10, 3))
         event = nil
 
@@ -824,7 +824,7 @@ final class EditorMultiCursorTests: XCTestCase {
         event = mouse(.leftMouseDragged, at: 6, in: textView, flags: [], timestamp: 2)
         XCTAssertFalse(coordinator.handleMouse(event!))
         coordinator.isMouseButtonDown = { false }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         textView.selectionManager.setSelectedRange(range(10, 3))
         event = nil
 
@@ -980,11 +980,11 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertFalse(coordinator.perform(.redoSelection), "and ⇧⌘U")
 
         textView.setMarkedText("e", selectedRange: range(1), replacementRange: range(NSNotFound))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         textView.setMarkedText("é", selectedRange: range(1), replacementRange: range(NSNotFound))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         textView.insertText("é", replacementRange: range(NSNotFound))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertEqual(textView.string, "leét xfoo = 1\n")
         XCTAssertFalse(coordinator.perform(.undoSelection), "composing marked text records nothing")
 
@@ -1165,7 +1165,7 @@ final class EditorMultiCursorTests: XCTestCase {
         let reveal = EditorRevealCoordinator()
         reveal.prepareCoordinator(controller: try XCTUnwrap(spy.controller))
         // Lets AppKit show the vertical scroller, which narrows the text and rewraps it.
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
 
         for line in [50, 390, 120, 3, 399] {
             let offset = lineStart(line, in: text)
@@ -1175,7 +1175,7 @@ final class EditorMultiCursorTests: XCTestCase {
             reveal.scrollSelectionToVisible()
             assertOnScreen(offset, in: textView)
             // Layout and drawing that follow in the app leave it there.
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            try settle()
             assertOnScreen(offset, in: textView)
         }
     }
@@ -1309,7 +1309,7 @@ final class EditorMultiCursorTests: XCTestCase {
         // An edit far above moves the text under the top; the row kept next is the one there now.
         let top = try viewTop(textView)
         textView.replaceCharacters(in: NSRange(location: 0, length: 0), with: String(repeating: "more ", count: 400))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertEqual(try viewTop(textView), top, "not scrolled")
         let shifted = try XCTUnwrap(topOffset(textView))
         let shiftedDY = try depth(of: shifted, in: textView)
@@ -1330,7 +1330,7 @@ final class EditorMultiCursorTests: XCTestCase {
         let kept = clip.bounds.origin
         for step in 1...10 { clip.scroll(to: NSPoint(x: 0, y: kept.y - CGFloat(step) * 300)) }
         clip.scroll(to: kept)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         let offset = try XCTUnwrap(topOffset(textView))
         let dy = try depth(of: offset, in: textView)
         try resize(to: 450)
@@ -1348,7 +1348,7 @@ final class EditorMultiCursorTests: XCTestCase {
         let dy = try depth(of: offset, in: textView)
         controller.wrapLines = false
         controller.wrapLines = true
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         let pixel = 1 / (window?.backingScaleFactor ?? 1)
         XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel)
     }
@@ -1368,13 +1368,13 @@ final class EditorMultiCursorTests: XCTestCase {
         let pixel = 1 / (window?.backingScaleFactor ?? 1)
 
         controller.wrapLines = false
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertEqual(layout.estimatedHeight(), CGFloat(layout.lineCount) * layout.estimateLineHeight(),
                        accuracy: 1, "one row a line")
         XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel, "unwrapped")
 
         controller.wrapLines = true
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel, "wrapped again")
         let last = try XCTUnwrap(layout.textLineForIndex(layout.lineCount - 2))
         XCTAssertEqual(last.height, layout.estimateLineHeight(), "a line not laid out since is estimated")
@@ -1458,11 +1458,11 @@ final class EditorMultiCursorTests: XCTestCase {
                                            coordinators: [session])
         var saved: (CGPoint, EditorScrollAnchor?) = (.zero, nil)
         session.restore(nil, anchor: nil) { saved = ($0, $1) }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         let clip = try XCTUnwrap(textView.enclosingScrollView?.contentView)
         for step in 1...20 { clip.scroll(to: NSPoint(x: 0, y: y * CGFloat(step) / 20)) }
         edit(textView)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertEqual(saved.0, clip.bounds.origin)
         XCTAssertEqual(saved.1?.offset, topOffset(textView))
         let result = SavedTop(position: saved.0, anchor: saved.1, line: try topLine(textView), text: textView.string)
@@ -1478,7 +1478,7 @@ final class EditorMultiCursorTests: XCTestCase {
         let (_, textView) = try makeEditor(text: saved.text, wrapLines: wrapLines, width: width,
                                            contentInsets: contentInsets, coordinators: [session])
         session.restore(saved.position, anchor: anchor ? saved.anchor : nil) { _, _ in }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        try settle(0.1)
         return textView
     }
 
@@ -1554,12 +1554,12 @@ final class EditorMultiCursorTests: XCTestCase {
         var reports = 0
         session.restore(nil, anchor: nil) { _, _ in reports += 1 }
         let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: true, coordinators: [session])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         reports = 0
         let ranges = (0..<50).map { NSRange(location: lineStart($0, in: wrappedDocument), length: 0) }
         textView.replaceCharacters(in: ranges, with: "x")
         XCTAssertEqual(reports, 0, "after the edit, not during it")
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertEqual(reports, 1)
     }
 
@@ -1570,9 +1570,9 @@ final class EditorMultiCursorTests: XCTestCase {
         var reported: [CGPoint] = []
         session.restore(nil, anchor: nil) { position, _ in reported.append(position) }
         _ = try makeEditor(text: wrappedDocument, coordinators: [session])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         let (_, second) = try makeEditor(text: wrappedDocument, coordinators: [session])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         // What the first editor's controller does as it goes away.
         session.destroy()
         reported = []
@@ -1602,7 +1602,9 @@ final class EditorMultiCursorTests: XCTestCase {
     /// Lines laid out at a new font or line height have other heights. The vendored layout manager
     /// made up only for the line starting above its layout rect, 350 points above the view, so the
     /// lines between there and the top moved the row at the top, and the line at the top rewrapped
-    /// around it: by ten rows at 16 pt.
+    /// around it: by ten rows at 16 pt. The highlighter drops the layout of the line at the top as
+    /// it applies the font; without its old rows, the view kept the same share of the whole line
+    /// above the top, a row off or partway into a row.
     func testChangingTheFontKeepsTheRowAtTheTop() throws {
         for wrapLines in [false, true] {
             for size in [CGFloat(16), 10] {
@@ -1613,13 +1615,15 @@ final class EditorMultiCursorTests: XCTestCase {
                 try scrollDown(textView, to: 4_000)
                 let offset = try XCTUnwrap(topOffset(textView))
                 let line = try topLine(textView)
+                let share = try depth(of: offset, in: textView)
+                    / XCTUnwrap(textView.layoutManager.rectForOffset(offset)).height
                 controller.font = .monospacedSystemFont(ofSize: size, weight: .regular)
                 // The highlighter sets the font on the text in view, after the change.
                 try waitUntil {
                     let font = textView.textStorage.attribute(.font, at: offset, effectiveRange: nil) as? NSFont
                     return font?.pointSize == size
                 }
-                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                try settle()
                 let label = "\(size) pt, \(wrapLines ? "wrapped" : "unwrapped")"
                 XCTAssertEqual(try topLine(textView), line, label)
                 // The character that was at the top is in the row at the top.
@@ -1627,6 +1631,8 @@ final class EditorMultiCursorTests: XCTestCase {
                 let pixel = 1 / (window?.backingScaleFactor ?? 1)
                 XCTAssertGreaterThan(try depth(of: offset, in: textView), -pixel, label)
                 XCTAssertLessThan(try depth(of: offset, in: textView), row.height, label)
+                // As far into the row that character is in now.
+                XCTAssertEqual(try depth(of: offset, in: textView), share * row.height, accuracy: pixel, label)
                 window?.close()
             }
         }
@@ -1644,7 +1650,7 @@ final class EditorMultiCursorTests: XCTestCase {
             controller.lineHeightMultiple = 1.6
             textView.needsLayout = true
             textView.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            try settle()
             let label = wrapLines ? "wrapped" : "unwrapped"
             XCTAssertEqual(try XCTUnwrap(textView.layoutManager.rectForOffset(offset)).height, rowHeight * 1.6 / 1.15,
                            accuracy: 0.01, label)
@@ -1692,7 +1698,7 @@ final class EditorMultiCursorTests: XCTestCase {
             controller.lineHeightMultiple = 1.15
             textView.needsLayout = true
             textView.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            try settle()
             let label = wrapLines ? "wrapped" : "unwrapped"
             let shorter = try XCTUnwrap(textView.layoutManager.rectForOffset(offset)).height
             XCTAssertLessThan(shorter, row.height, label)
@@ -1717,7 +1723,7 @@ final class EditorMultiCursorTests: XCTestCase {
         controller.lineHeightMultiple = 1.6
         textView.needsLayout = true
         textView.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         let row = try XCTUnwrap(textView.layoutManager.rectForOffset(offset))
         let pixel = 1 / (window?.backingScaleFactor ?? 1)
         XCTAssertEqual(try depth(of: offset, in: textView), share * row.height, accuracy: pixel)
@@ -1737,7 +1743,7 @@ final class EditorMultiCursorTests: XCTestCase {
         textView.replaceCharacters(in: NSRange(location: min(offset + 10, line.range.max - 1), length: 0),
                                    with: String(repeating: "typed ", count: 20))
         textView.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
         XCTAssertGreaterThan(try XCTUnwrap(textView.layoutManager.textLineForOffset(offset)).data.lineFragments.count,
                              rows)
         let pixel = 1 / (window?.backingScaleFactor ?? 1)
@@ -1861,7 +1867,17 @@ final class EditorMultiCursorTests: XCTestCase {
         let window = try XCTUnwrap(window)
         window.setContentSize(NSSize(width: width, height: window.frame.height))
         window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try settle()
+    }
+
+    /// Runs the run loop for `time`, then until the work queued on the main queue by then has run. The editor
+    /// finishes some changes there (the end of an event's or an edit's turn, the session's reports), and a run for a
+    /// fixed time can end before it gets to them: about one in a hundred 5 ms runs did while the editor laid out.
+    private func settle(_ time: TimeInterval = 0.05) throws {
+        RunLoop.main.run(until: Date().addingTimeInterval(time))
+        var done = false
+        DispatchQueue.main.async { done = true }
+        try waitUntil { done }
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) throws {
