@@ -12,6 +12,8 @@ final class Typesetter {
     var typesetter: CTTypesetter?
     var string: NSAttributedString!
     var lineFragments = TextLineStorage<LineFragment>()
+    /// wooloo patch: the string's characters, read one UTF-16 unit at a time while looking for breaks.
+    private var characters: NSString = ""
 
     // MARK: - Init & Prepare
 
@@ -33,9 +35,13 @@ final class Typesetter {
         } else {
             self.string = string
         }
+        characters = self.string.string as NSString
         self.typesetter = CTTypesetterCreateWithAttributedString(self.string)
         generateLines(
-            maxWidth: displayData.maxWidth,
+            // wooloo patch: with no room to wrap in, as before the editor has its width, keep the line in one row.
+            // Upstream broke it after every character, two million rows for a 2 MB line, laid out again once the
+            // width was known. Upstream 0.12 sets such a line as one empty row instead.
+            maxWidth: displayData.maxWidth > 0 ? displayData.maxWidth : .greatestFiniteMagnitude,
             lineHeightMultiplier: displayData.lineHeightMultiplier,
             estimatedLineHeight: displayData.estimatedLineHeight,
             breakStrategy: breakStrategy
@@ -163,8 +169,8 @@ final class Typesetter {
         guard breakIndex < string.length else {
             return breakIndex
         }
-        let substring = string.attributedSubstring(from: NSRange(location: breakIndex - 1, length: 2)).string
-        if substring == LineEnding.carriageReturnLineFeed.rawValue {
+        // wooloo patch: compare UTF-16 units rather than a substring made for each row.
+        if isCRLF(at: breakIndex - 1) {
             // Breaking in the middle of the clrf line ending
             return breakIndex + 1
         }
@@ -215,10 +221,20 @@ final class Typesetter {
     /// - Parameter index: The index to check at.
     /// - Returns: True, if the character is a whitespace or punctuation character.
     private func ensureCharacterCanBreakLine(at index: Int) -> Bool {
-        let set = CharacterSet(
-            charactersIn: string.attributedSubstring(from: NSRange(location: index, length: 1)).string
-        )
-        return set.isSubset(of: .whitespacesAndNewlines) || set.isSubset(of: .punctuationCharacters)
+        // wooloo patch: look the UTF-16 unit up in one set made once. Upstream made a substring and a
+        // `CharacterSet` from it for each candidate and compared sets, most of the time spent wrapping long lines.
+        // A lone surrogate is in neither set, as upstream's set of U+FFFD was not.
+        guard let scalar = Unicode.Scalar(characters.character(at: index)) else { return false }
+        return Self.breakingCharacters.contains(scalar)
+    }
+
+    /// wooloo patch: whitespace, newlines and punctuation, where a word wrap can break.
+    private static let breakingCharacters = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+
+    /// wooloo patch: whether a `\r\n` starts at `index`.
+    private func isCRLF(at index: Int) -> Bool {
+        index >= 0 && index + 1 < characters.length
+            && characters.character(at: index) == 0x0D && characters.character(at: index + 1) == 0x0A
     }
 
     /// Check if the break index is on a CRLF (`\r\n`) character, indicating a valid break position.
@@ -228,10 +244,7 @@ final class Typesetter {
         guard breakIndex - 1 > 0 && breakIndex + 1 <= string.length else {
             return false
         }
-        let substringRange = NSRange(location: breakIndex - 1, length: 2)
-        let substring = string.attributedSubstring(from: substringRange).string
-
-        return substring == LineEnding.carriageReturnLineFeed.rawValue
+        return isCRLF(at: breakIndex - 1) // wooloo patch
     }
 
     deinit {

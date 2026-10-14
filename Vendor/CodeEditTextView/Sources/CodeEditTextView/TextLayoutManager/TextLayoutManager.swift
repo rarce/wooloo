@@ -30,6 +30,15 @@ public class TextLayoutManager: NSObject {
     }
     public var wrapLines: Bool {
         didSet {
+            // wooloo patch: every line gets the estimated height again, as in a newly opened document, rather than
+            // keeping the height it was laid out at until it comes into view, and the row at the top stays there.
+            if wrapLines != oldValue {
+                pendingTop = topAnchor()
+                lineStorage.resetHeights(to: estimateLineHeight()) { line in
+                    if !line.lineFragments.isEmpty { line.setNeedsLayout() }
+                }
+                layoutView?.needsLayout = true
+            }
             setNeedsLayout()
         }
     }
@@ -88,6 +97,22 @@ public class TextLayoutManager: NSObject {
     #endif
 
     weak var layoutView: NSView?
+
+    /// wooloo patch: where the view's top was before the lines rewrap to another width, to go back to after the pass.
+    struct TopAnchor {
+        /// The first character of the row at the top, or a character in it.
+        let offset: Int
+        /// How far into that row the view starts.
+        let dy: CGFloat
+        /// The view's top once it was kept.
+        var top: CGFloat = 0
+    }
+    var pendingTop: TopAnchor?
+    /// wooloo patch: the last top kept, used again while the view stays there, so that going to another width and
+    /// back keeps the same character rather than the start of the row it was in.
+    var keptTop: TopAnchor?
+    private var isKeepingTop = false
+    private var lastLayoutWidth: CGFloat?
 
     /// The calculated maximum width of all laid out lines.
     /// - Note: This does not indicate *the* maximum width of the text view if all lines have not been laid out.
@@ -215,6 +240,13 @@ public class TextLayoutManager: NSObject {
         #if DEBUG
         isInLayout = true
         #endif
+        // wooloo patch: lines rewrapped to another width have other heights; keep the row at the top in place.
+        let layoutWidth = maxLineLayoutWidth
+        if let lastLayoutWidth, lastLayoutWidth != layoutWidth, pendingTop == nil {
+            pendingTop = topAnchor()
+        }
+        lastLayoutWidth = layoutWidth
+        let keepsTop = pendingTop != nil
         let minY = max(visibleRect.minY - verticalLayoutPadding, 0)
         let maxY = max(visibleRect.maxY + verticalLayoutPadding, 0)
         let originalHeight = lineStorage.height
@@ -281,7 +313,7 @@ public class TextLayoutManager: NSObject {
             maxLineWidth = maxFoundLineWidth
         }
 
-        if yContentAdjustment != 0 {
+        if yContentAdjustment != 0 && !keepsTop { // wooloo patch: keeping the top moves the view instead
             delegate?.layoutManagerYAdjustment(yContentAdjustment)
         }
 
@@ -290,6 +322,60 @@ public class TextLayoutManager: NSObject {
         }
 
         needsLayout = false
+
+        if keepsTop {
+            keepTop()
+        }
+    }
+
+    // MARK: - wooloo patch: keep the row at the top
+
+    /// The view's top in the text view, below the scroll view's top inset; unlike `visibleRect`, not rounded.
+    private var viewTop: CGFloat? {
+        if let scrollView = layoutView?.enclosingScrollView {
+            return scrollView.documentVisibleRect.minY + scrollView.contentInsets.top
+        }
+        return delegate?.visibleRect.minY
+    }
+
+    /// The character at the start of the row at the top of the view, as laid out now, and how far into the row the
+    /// view starts; or the last top kept while the view is still there.
+    func topAnchor() -> TopAnchor? {
+        guard let top = viewTop else { return nil }
+        // Within a point: the scroll view can round the position to the display's pixels afterwards.
+        if let keptTop, abs(keptTop.top - top) < 1, keptTop.offset <= (textStorage?.length ?? 0) {
+            return keptTop
+        }
+        // Just inside the top: the row above can end there.
+        guard let offset = textOffsetAtPoint(CGPoint(x: 0, y: top + 1)), let row = rectForOffset(offset) else {
+            return nil
+        }
+        return TopAnchor(offset: offset, dy: top - row.minY)
+    }
+
+    /// Scrolls the pending top back to the top of the view, again while laying out the lines that come into view
+    /// moves it, at most 20 times.
+    private func keepTop() {
+        // The layout passes that scrolling makes come back here; this loop goes on instead.
+        guard !isKeepingTop else { return }
+        isKeepingTop = true
+        defer {
+            isKeepingTop = false
+            pendingTop = nil
+        }
+        for _ in 0..<20 {
+            guard let anchor = pendingTop, let top = viewTop, anchor.offset <= (textStorage?.length ?? 0),
+                  let row = rectForOffset(anchor.offset) else { return }
+            let target = row.minY + anchor.dy
+            guard abs(target - top) > 0.5 else { break }
+            delegate?.layoutManagerYAdjustment(target - top)
+            // At the end of the document, or the view did not move.
+            if viewTop == top { break }
+        }
+        if var anchor = pendingTop, let top = viewTop {
+            anchor.top = top
+            keptTop = anchor
+        }
     }
 
     /// Lays out a single text line.
