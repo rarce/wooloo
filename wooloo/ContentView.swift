@@ -1168,16 +1168,16 @@ struct ContentView: View {
         .merge(with: NotificationCenter.default.publisher(for: WorkspaceFiles.filesDidChange))
         .receive(on: DispatchQueue.main)
 
-    /// Open files may have changed on disk. A change somewhere (no object), such as a file
-    /// created, checks this Mac's files; SSH ones are checked by their own explorer polls.
+    /// Open files may have changed on disk: at one location, or anywhere without one.
     private func checkDisk(after notification: Notification) {
-        documentStore.checkDisk(at: notification.object as? String, localOnly: notification.object == nil)
+        documentStore.checkDisk(at: notification.object as? String)
     }
 
     private var overwriteAlert: some View {
         Color.clear.alert("“\(overwriteTarget?.title ?? "")” changed on disk", isPresented: Binding(
             get: { overwriteTarget != nil },
-            set: { if !$0, let id = overwriteTarget?.id { documentStore.cancelOverwrite(id) } }
+            // Each button, Cancel also for Escape, settles its own document.
+            set: { _ in }
         ), presenting: overwriteTarget) { document in
             Button("Overwrite") { commands.overwriteDocument(document.id) }
             Button("Reload", role: .destructive) { documentStore.revert(document.id) }

@@ -1060,9 +1060,10 @@ enum WorkspaceFiles {
                     versions[path] = .present(known.version)
                 } else if fields[0].range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil {
                     versions[path] = .present(fields[0])
-                    // Times are in seconds: a stamp modified in the last two seconds could hide a
-                    // write made in the same second, so it is not trusted yet.
-                    let modified = stamp.split(separator: " ").dropFirst().first.flatMap { Int($0) }
+                    // Times are in seconds: a stamp changed in the last two seconds could hide a
+                    // write made in the same second, so it is not trusted yet. The status change
+                    // time counts too: tools that keep the modification time cannot set it back.
+                    let modified = stamp.split(separator: " ").dropFirst().prefix(2).compactMap { Int($0) }.max()
                     remoteVersions.withLock { cache in
                         if cache.count > 500 { cache.removeAll() }
                         let key = location.identity + "\0" + path
@@ -1087,8 +1088,12 @@ enum WorkspaceFiles {
                 continue
             }
             let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
+            // The status change time too: tools that keep the modification time cannot set it back.
+            var status = stat()
+            let changed = stat(url.path, &status) == 0 ? status.st_ctimespec : timespec()
             let stamp = LocalFileStamp(size: size,
                                        modified: (attributes[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0,
+                                       changed: Int(changed.tv_sec) * 1_000_000_000 + Int(changed.tv_nsec),
                                        inode: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0)
             if let known = localVersions.withLock({ $0[url.path] }), known.stamp == stamp {
                 versions[path] = .present(known.version)
@@ -1110,6 +1115,7 @@ enum WorkspaceFiles {
     private struct LocalFileStamp: Equatable {
         let size: Int
         let modified: TimeInterval
+        let changed: Int
         let inode: UInt64
     }
 
@@ -1233,8 +1239,9 @@ enum WorkspaceFiles {
     /// Posted, on any thread, after a Git or file operation here or an explicit refresh; open
     /// editors reload their change bars' Git bases.
     static let repositoryDidChange = Notification.Name("WorkspaceFiles.repositoryDidChange")
-    /// Posted on the main queue when files of a local Space changed that its listing does not show;
-    /// the object is the location's identity. Open documents compare themselves with the disk.
+    /// Posted on the main queue, at most once per batching window, when files of a local Space
+    /// changed, including ones its listing skips; the object is the location's identity. Open
+    /// documents compare themselves with the disk.
     static let filesDidChange = Notification.Name("WorkspaceFiles.filesDidChange")
 
     /// A file's text at HEAD and in the index, for the editor's change bars. Nil when that version

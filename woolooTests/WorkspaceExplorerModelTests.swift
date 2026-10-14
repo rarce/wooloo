@@ -183,7 +183,7 @@ final class WorkspaceExplorerModelTests: XCTestCase {
     /// Changes the listing skips, in a collapsed ignored folder, still tell open documents to
     /// compare themselves with the disk. (FSEvents can also report a rescan, so whether the
     /// listing reloads is not checked.)
-    func testChangesInCollapsedIgnoredFoldersAreAnnouncedWithoutAReload() async throws {
+    func testChangesInCollapsedIgnoredFoldersAreAnnounced() async throws {
         try sandbox.write([".gitignore": "build/\n", "build/out.txt": "one\n"], in: "repo")
         await load()
         let monitoring = Task { await model.monitor(at: repo) }
@@ -198,6 +198,18 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         defer { NotificationCenter.default.removeObserver(observer) }
         try sandbox.write(["build/out.txt": "two\n"], in: "repo")
         try await waitUntil("The change is announced") { announced.contains(repo.identity) }
+    }
+
+    /// File events the listing skips are announced once per batching window.
+    func testAnnouncementsOfSkippedChangesAreBatched() async throws {
+        var announced = 0
+        let observer = NotificationCenter.default.addObserver(forName: WorkspaceFiles.filesDidChange, object: nil,
+                                                              queue: .main) { _ in MainActor.assumeIsolated { announced += 1 } }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        for _ in 0..<5 { model.announceFilesChanged(at: repo) }
+        try await waitUntil("Announced") { announced > 0 }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(announced, 1)
     }
 
     func testChangesWaitForActivationAndForInlineNamingToFinish() async throws {

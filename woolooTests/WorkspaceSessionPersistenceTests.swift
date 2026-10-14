@@ -133,6 +133,22 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: location.absolutePath("a.txt"), encoding: .utf8), text)
     }
 
+    /// A restored tab of a deleted file stays marked, so saving the session again before any
+    /// check keeps its backup.
+    func testRestoredTabsOfDeletedFilesKeepTheirBackups() async throws {
+        let first = await store()
+        await open("a.txt", in: first)
+        let text = first.documents[0].text
+        try FileManager.default.removeItem(atPath: location.absolutePath("a.txt"))
+        await first.checkDisk().value
+        try await first.flushPersistence()
+        let second = await store(using: WorkspaceSessionPersistence(root: root))
+        XCTAssertEqual(second.documents[0].diskState, .deleted)
+        try await second.flushPersistence()
+        let third = await store(using: WorkspaceSessionPersistence(root: root))
+        XCTAssertEqual(third.documents.map(\.text), [text])
+    }
+
     func testDeletedFileAndOfflineSSHDoNotPreventDirtyBufferRecovery() async throws {
         let first = await store()
         await open("a.txt", in: first)

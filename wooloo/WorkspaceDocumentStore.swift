@@ -535,6 +535,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                     documents[currentIndex].diskState = .current
                     documents[currentIndex].error = failure.message
                 case .present(let current) where current != version || recreate:
+                    if recreate { keepAsUnsaved(currentIndex) }
                     documents[currentIndex].diskState = .changed(version: current)
                     documents[currentIndex].asksToOverwrite = true
                     documents[currentIndex].error = nil
@@ -546,6 +547,12 @@ final class WorkspaceDocumentStore: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Makes a tab whose file was deleted count as unsaved, so a file that comes back at its
+    /// path neither replaces its text nor lets it close without asking.
+    private func keepAsUnsaved(_ index: Int) {
+        if !documents[index].text.isEmpty && !documents[index].isDirty { documents[index].savedText = "" }
     }
 
     private struct SaveFailure: Error {
@@ -619,13 +626,12 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// Compares the open files at a location (its `identity`; every location when nil) with the
     /// files on disk, as VS Code and Zed do: a tab without unsaved edits reloads, one with edits
     /// keeps them and is marked `.changed`, and a deleted file keeps its tab, marked `.deleted`.
-    /// `localOnly` leaves SSH machines, which their explorer polls check, to those polls.
     /// Each location is checked on its own, so an unreachable machine delays no other; checks
     /// asked for while one of a location runs are made after it.
     @discardableResult
-    func checkDisk(at identity: String? = nil, localOnly: Bool = false) -> Task<Void, Never> {
-        let identities = identity.map { [$0] } ?? Array(Set(documents
-            .filter { Self.followsDisk($0) && (!localOnly || $0.location.isLocal) }.map(\.location.identity)))
+    func checkDisk(at identity: String? = nil) -> Task<Void, Never> {
+        let identities = identity.map { [$0] }
+            ?? Array(Set(documents.filter(Self.followsDisk).map(\.location.identity)))
         let tasks = identities.map(checkDisk(location:))
         return Task { for task in tasks { await task.value } }
     }
@@ -670,6 +676,9 @@ final class WorkspaceDocumentStore: ObservableObject {
                 }
             case .present(let current):
                 let marked = documents[index].diskState == .changed(version: current)
+                // The buffer of a deleted file is the only copy of that text: the other file
+                // that came back is no reason to drop it.
+                if documents[index].isDeletedOnDisk { keepAsUnsaved(index) }
                 if !marked { documents[index].diskState = .changed(version: current) }
                 // Also once edits are undone. A reload that failed is not retried until the file
                 // changes again.

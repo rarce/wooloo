@@ -309,15 +309,15 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertEqual(store.documents[0].diskState, .current)
     }
 
-    /// A file that comes back after a deletion is followed again.
-    func testDeletedFileThatComesBackIsReloaded() async throws {
+    /// The same file coming back after a deletion is followed again.
+    func testDeletedFileThatComesBackIsFollowedAgain() async throws {
         _ = await open("a.txt")
         _ = try sandbox.sh("rm a.txt", in: "repo")
         await checkDisk()
-        try sandbox.write(["a.txt": "back\n"], in: "repo")
+        try sandbox.write(["a.txt": "one\n"], in: "repo")
         await checkDisk()
-        await wait("The file is read again") { store.documents[0].text == "back\n" }
         XCTAssertEqual(store.documents[0].diskState, .current)
+        XCTAssertFalse(store.documents[0].isDirty)
     }
 
     /// Saving a file deleted under unsaved edits recreates it, and one changed under them asks.
@@ -368,6 +368,10 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         store.save(store.documents[0].id)
         await settle()
         XCTAssertTrue(store.documents[0].asksToOverwrite)
+        await checkDisk()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(store.documents[0].text, "one\n", "No reload while the save asks")
+        XCTAssertTrue(store.documents[0].asksToOverwrite)
         var saved = false
         store.overwrite(store.documents[0].id) { saved = true }
         await settle()
@@ -388,6 +392,34 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo.absolutePath("a.txt")))
         XCTAssertEqual(store.documents[0].diskState, .deleted)
         XCTAssertFalse(store.documents[0].asksToOverwrite)
+    }
+
+    /// Another file appearing at a deleted file's path does not replace the tab's text, the only
+    /// copy left of the deleted file: the tab now has unsaved edits.
+    func testFileReplacingADeletedOneKeepsTheTabsText() async throws {
+        _ = await open("a.txt")
+        _ = try sandbox.sh("rm a.txt", in: "repo")
+        await checkDisk()
+        try sandbox.write(["a.txt": "another\n"], in: "repo")
+        await checkDisk()
+        await checkDisk()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(store.documents[0].text, "one\n")
+        XCTAssertTrue(store.documents[0].isDirty)
+        XCTAssertEqual(store.documents[0].diskState, .changed(version: WorkspaceFiles.gitBlobHash(Data("another\n".utf8))))
+        XCTAssertFalse(store.close(store.documents[0].id), "Closing asks first")
+    }
+
+    /// This Mac's files: a rewrite of the same size that puts the modification time back is
+    /// still seen, through the status change time.
+    func testLocalDiskVersionsSeeRewritesThatKeepTheModificationTime() throws {
+        try sandbox.write(["same.txt": "aaa\n"], in: "repo")
+        let before = WorkspaceFiles.diskVersions(["same.txt"], at: repo)
+        _ = try sandbox.sh("touch -r same.txt ref && printf 'bbb\\n' > same.txt && touch -r ref same.txt", in: "repo")
+        XCTAssertEqual(try sandbox.read("same.txt", in: "repo"), "bbb\n")
+        XCTAssertNotEqual(WorkspaceFiles.diskVersions(["same.txt"], at: repo), before)
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["same.txt"], at: repo),
+                       ["same.txt": .present(WorkspaceFiles.gitBlobHash(Data("bbb\n".utf8)))])
     }
 
     /// Only files at the location checked are compared.

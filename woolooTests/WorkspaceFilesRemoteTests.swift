@@ -143,24 +143,31 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
     }
 
     /// A remote file whose size, times and inode are unchanged is not hashed again, unless they
-    /// are from the last two seconds, which a write in the same second would not change.
+    /// changed in the last two seconds, which a write in the same second would not change; the
+    /// status change time counts, since tools that keep the modification time cannot set it back.
     func testRemoteDiskVersionsHashOnlyChangedFiles() throws {
-        try sandbox.repository("repo", files: ["old.txt": "one\n", "new.txt": "two\n"])
-        try sandbox.sh("touch -t 202001010000 old.txt", in: "repo")
+        try sandbox.repository("repo", files: ["old.txt": "one\n", "kept.txt": "two\n"])
+        try sandbox.sh("touch -t 202001010000 old.txt kept.txt", in: "repo")
+        Thread.sleep(forTimeInterval: 2.2)
         try sandbox.write(["shims/git": "#!/bin/sh\necho \"$@\" >> '\(sandbox.path("git.log"))'\nexec /usr/bin/git \"$@\"\n"], in: ".")
         try sandbox.sh("chmod 755 shims/git")
         func hashed() -> [String] {
             ((try? String(contentsOfFile: sandbox.path("git.log"), encoding: .utf8)) ?? "")
-                .split(separator: "\n").compactMap { $0.split(separator: "/").last.map(String.init) }
+                .split(separator: "\n").compactMap { $0.split(separator: "/").last.map(String.init) }.sorted()
         }
         let location = remote("repo")
-        let first = WorkspaceFiles.diskVersions(["old.txt", "new.txt"], at: location)
-        XCTAssertEqual(hashed().sorted(), ["new.txt", "old.txt"])
-        XCTAssertEqual(WorkspaceFiles.diskVersions(["old.txt", "new.txt"], at: location), first)
-        XCTAssertEqual(hashed().sorted(), ["new.txt", "new.txt", "old.txt"], "Only the recent file is hashed again")
-        try sandbox.write(["old.txt": "changed\n"], in: "repo")
-        XCTAssertEqual(WorkspaceFiles.diskVersions(["old.txt"], at: location),
-                       ["old.txt": .present(WorkspaceFiles.gitBlobHash(Data("changed\n".utf8)))])
+        let first = WorkspaceFiles.diskVersions(["old.txt", "kept.txt"], at: location)
+        XCTAssertEqual(hashed(), ["kept.txt", "old.txt"])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["old.txt", "kept.txt"], at: location), first)
+        XCTAssertEqual(hashed(), ["kept.txt", "old.txt"], "Unchanged files are not hashed again")
+
+        // The same size, with the modification time put back: only the change time moved.
+        try sandbox.sh("printf 'TWO\\n' > kept.txt && touch -t 202001010000 kept.txt", in: "repo")
+        let kept = WorkspaceFiles.gitBlobHash(Data("TWO\n".utf8))
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["kept.txt"], at: location), ["kept.txt": .present(kept)])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["kept.txt"], at: location), ["kept.txt": .present(kept)])
+        XCTAssertEqual(hashed(), ["kept.txt", "kept.txt", "kept.txt", "old.txt"],
+                       "A recent change time is hashed again each time")
     }
 
     /// An unreachable machine does not hold up the check of this Mac's files.
