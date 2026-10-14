@@ -43,9 +43,12 @@ final class WorkspaceGitSandbox {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
+        // Not `waitUntilExit()`, which on the test's main thread notices the exit 60–140 ms late.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         let text = String(decoding: data, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             throw WorkspaceFileError.message("Script failed (\(process.terminationStatus)): \(text)")

@@ -406,13 +406,19 @@ Some benchmark runs measured small-repository SSH loads at 130–160 ms instead 
 | local, `Process.waitUntilExit()` | 454 | 0 | 2 | 0.03 ms (at most 445 ms) |
 | local, termination handler | 454 | 0 | 0 | 0.02 ms (at most 0.1 ms) |
 
+From the end of its output, `ssh` exited within 0.12 ms at p95 and 2.2 ms at most in both runs.
+
 `waitUntilExit()` waits by running the calling thread's run loop. When the loop has a source, as the main thread's does, it notices the exit only when a turn of the loop ends; without one it returns at once. The benchmarks call `WorkspaceFiles` on the test's main thread, where the waits were late in some stretches of a run and not in others, likely as sources came and went; that, not SSH, made some runs slow. In the runs below, single-process SSH operations such as `open-file` took 100–137 ms instead of 20–27 ms. The ControlMaster session was not involved: run directly, the same batch over the shared connection ended its output, closed it and exited within 1 ms, 40 times out of 40. In a test program, the first wait on a new thread and 2–8 % of the later ones were late by about 135 ms too, so the app's `BlockingWork` threads were also affected, though less often.
 
-`WorkspaceFiles.run` now sets the process's `terminationHandler`, which Foundation calls from a dispatch queue once it has the exit status, and waits on a semaphore it signals. `WorkspaceFilesIntegrationTests.testResultComesBackWhenTheCommandExits` runs 15 commands on a thread whose run loop has a timer: with `waitUntilExit()` their median was 66 ms, with the handler 2–3 ms.
+`WorkspaceFiles.run` now sets the process's `terminationHandler`, which Foundation calls from a dispatch queue once it has the exit status, and waits on a semaphore it signals. `HerdrConfig.validate` (`herdr config check` when saving settings) and the tests' `WorkspaceGitSandbox.sh` and benchmark setup wait the same way. `WorkspaceFilesIntegrationTests.testResultComesBackWhenTheCommandExits` runs 15 commands on a thread whose run loop has a timer and 15 on one without sources: with `waitUntilExit()` their medians were 67 and 2 ms, with the handler 2 ms each.
 
-Alternating `main` and this change twice (p50, 5 repetitions):
+Foundation calls the handler on a utility-QoS queue, and a semaphore lends no priority, so a waiting thread of higher QoS depends on utility work. That queue is also where Foundation collects the exit status: right after a kqueue `NOTE_EXIT`, `isRunning` was still true in 185 of 200 runs, so `waitUntilExit()`, or a kqueue or dispatch process source at the caller's QoS, would wait for the same work. Measured in a test program on a `.userInitiated` thread, from the exit to the return of the wait, 300 runs each, under 16 and 32 busy `yes` processes on 16 cores: the handler took 0.75 and 0.03 ms at p95, 3.5 and 17 ms at most, and `waitUntilExit()` 138 and 137 ms at p95.
 
-| operation | SSH small, before → after | SSH large, before → after |
+`run`'s timeout and output limit now follow SIGTERM with SIGKILL 2 s later, so a command that ignores SIGTERM no longer holds its caller and its `BlockingWork` slot until it ends (`testTimedOutCommandThatIgnoresTerminationIsKilled`).
+
+Alternating `waitUntilExit()` and the termination handler twice (p50, 5 repetitions):
+
+| operation | SSH small, `waitUntilExit()` → handler | SSH large, `waitUntilExit()` → handler |
 |---|---|---|
 | refresh | 63–64 → 59–62 ms | 202–206 → 107–108 ms |
 | file-list | 65–66 → 62–70 ms | 210–215 → 105–110 ms |
@@ -423,7 +429,7 @@ Alternating `main` and this change twice (p50, 5 repetitions):
 | open-change | 486–510 → 77–80 ms | 475–505 → 79–80 ms |
 | folder-walk, `tree` | 163–167 → 59–65 ms | |
 
-In these runs the small repository's batches happened to be in their fast state on `main` too, so they did not change; the p95 of every SSH operation was within 9 ms of its p50 after the change. Local operations did not change beyond noise.
+In these runs the small repository's batches happened to be in their fast state with `waitUntilExit()` too, so they did not change; with the handler, the p95 of every SSH operation was within 9 ms of its p50. Local operations did not change beyond noise.
 
 ## Syntax colors for diffs
 

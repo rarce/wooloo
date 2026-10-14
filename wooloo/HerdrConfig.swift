@@ -46,9 +46,12 @@ enum HerdrConfigFile {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
+        // As in `WorkspaceFiles.run`: `waitUntilExit()` can notice the exit 60–140 ms late.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         guard process.terminationStatus == 0 else {
             let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw HerdrConfigError.validation(message?.isEmpty == false ? message! : "Herdr rejected config.toml")

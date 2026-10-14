@@ -447,23 +447,39 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
 
     /// A command's result comes back as soon as it exits, also on a thread whose run loop has a
     /// source, as the main thread's does. `Process.waitUntilExit()` runs that run loop and
-    /// notices the exit only when a turn of it ends, which here came about 65 ms after the exit.
+    /// notices the exit only when a turn of it ends, which here came about 65 ms after the exit,
+    /// while on a thread without sources it returned at once. Compared with such a thread, so a
+    /// slow machine slows both.
     func testResultComesBackWhenTheCommandExits() throws {
-        var millis: [Double] = []
-        let finished = DispatchSemaphore(value: 0)
-        Thread {
-            let timer = Timer(timeInterval: 3_600, repeats: false) { _ in }
-            RunLoop.current.add(timer, forMode: .default)
-            for _ in 0..<15 {
-                let started = DispatchTime.now().uptimeNanoseconds
-                let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "echo out"], limit: 1_000)
-                millis.append(output == Data("out\n".utf8) ? Double(DispatchTime.now().uptimeNanoseconds - started) / 1e6 : .infinity)
-            }
-            timer.invalidate()
-            finished.signal()
-        }.start()
-        XCTAssertEqual(finished.wait(timeout: .now() + 20), .success)
-        XCTAssertLessThan(millis.sorted()[millis.count / 2], 30, "Median of \(millis.map { Int($0) }) ms")
+        func medianMillis(withRunLoopSource: Bool) -> Double? {
+            var millis: [Double] = []
+            let finished = DispatchSemaphore(value: 0)
+            Thread {
+                let timer = Timer(timeInterval: 3_600, repeats: false) { _ in }
+                if withRunLoopSource { RunLoop.current.add(timer, forMode: .default) }
+                for _ in 0..<15 {
+                    let started = DispatchTime.now().uptimeNanoseconds
+                    let output = try? WorkspaceFiles.run("/bin/sh", ["-c", "echo out"], limit: 1_000)
+                    millis.append(output == Data("out\n".utf8) ? Double(DispatchTime.now().uptimeNanoseconds - started) / 1e6 : .infinity)
+                }
+                timer.invalidate()
+                finished.signal()
+            }.start()
+            guard finished.wait(timeout: .now() + 20) == .success else { return nil }
+            return millis.sorted()[millis.count / 2]
+        }
+        guard let plain = medianMillis(withRunLoopSource: false), let withSource = medianMillis(withRunLoopSource: true) else {
+            return XCTFail("The commands did not finish")
+        }
+        XCTAssertLessThan(withSource - plain, 25, "Median \(Int(withSource)) ms with a run loop source, \(Int(plain)) ms without")
+    }
+
+    /// A command that ignores SIGTERM is killed once its timeout has passed, rather than holding
+    /// the caller until it ends.
+    func testTimedOutCommandThatIgnoresTerminationIsKilled() {
+        let started = Date()
+        XCTAssertThrowsError(try WorkspaceFiles.run("/bin/sh", ["-c", "trap '' TERM; exec sleep 30"], limit: 1_000, timeout: 0.5))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
     }
 
     // MARK: Branches and worktrees
