@@ -269,7 +269,12 @@ final class WorkspaceExplorerModel: ObservableObject {
         gitWatchPaths = paths
         let next = WorkspaceFileWatcher(paths: [location.root] + paths) { [weak self] events in
             guard let self, self.monitoringToken == token else { return }
-            if self.eventsAffectListing(events, at: location) { self.requestRefresh() }
+            if self.eventsAffectListing(events, at: location) {
+                self.requestRefresh()
+            } else {
+                // Files the listing skips, such as in a collapsed ignored folder, can be open.
+                NotificationCenter.default.post(name: WorkspaceFiles.filesDidChange, object: location.identity)
+            }
         }
         watcher?.stop()
         watcher = next

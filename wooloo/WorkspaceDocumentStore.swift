@@ -441,12 +441,19 @@ final class WorkspaceDocumentStore: ObservableObject {
                 documents[index].error = nil
             case .success(.text(let content)):
                 // A slow local/SSH read must not replace work entered after it started.
-                if documents[index].text == document.text, documents[index].text != content.text {
-                    documents[index].text = content.text
-                    documents[index].diskReload = UUID()
+                if documents[index].text != document.text, kind == .file, let previous = document.version,
+                   previous != content.version {
+                    // Typed during the read: the edits start from the previous version, so a save
+                    // asks before overwriting the newer file.
+                    documents[index].diskState = .changed(version: content.version)
+                } else {
+                    if documents[index].text == document.text, documents[index].text != content.text {
+                        documents[index].text = content.text
+                        documents[index].diskReload = UUID()
+                    }
+                    documents[index].savedText = content.text
+                    documents[index].version = content.version
                 }
-                documents[index].savedText = content.text
-                documents[index].version = content.version
                 documents[index].diffPatches = content.patches
                 documents[index].error = nil
                 let length = (documents[index].text as NSString).length
@@ -466,10 +473,16 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// since it was read is not overwritten: the document asks first (`asksToOverwrite`), and
     /// `overwrite` saves over it.
     func save(_ id: String, onSaved: @escaping () -> Void = {}) {
+        save(id, overwriting: false, onSaved: onSaved)
+    }
+
+    /// `overwriting` writes the buffer even without edits, as Overwrite does for a tab whose
+    /// deleted file came back with other contents.
+    private func save(_ id: String, overwriting: Bool, onSaved: @escaping () -> Void) {
         guard let index = documents.firstIndex(where: { $0.id == id }),
               documents[index].isEditable, !documents[index].isUntitled, !documents[index].isSaving,
               let version = documents[index].version,
-              documents[index].isDirty || documents[index].isDeletedOnDisk else { return }
+              documents[index].isDirty || documents[index].isDeletedOnDisk || overwriting else { return }
         if case .changed = documents[index].diskState {
             documents[index].asksToOverwrite = true
             return
@@ -480,10 +493,16 @@ final class WorkspaceDocumentStore: ObservableObject {
         Task {
             let result = await WorkspaceFiles.blocking(at: document.location, priority: .userInitiated) {
                 () -> Result<String, any Error> in
+                var created = false
                 do {
                     if recreate {
+                        // Checked first, so a file too large to save does not leave an empty one.
+                        guard document.text.utf8.count <= WorkspaceFiles.fileByteLimit(for: document.path) else {
+                            throw WorkspaceFileError.message("File is too large")
+                        }
                         // Refuses a file something else created meanwhile, which then asks to overwrite.
                         try WorkspaceFiles.createFile(document.path, at: document.location)
+                        created = true
                         return .success(try WorkspaceFiles.save(document.text, path: document.path,
                             expectedVersion: WorkspaceFiles.gitBlobHash(Data()), at: document.location))
                     }
@@ -492,7 +511,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                 } catch {
                     // Whether it failed because the file changed or went away.
                     let disk = WorkspaceFiles.diskVersions([document.path], at: document.location)[document.path]
-                    return .failure(SaveFailure(message: error.localizedDescription, disk: disk))
+                    return .failure(SaveFailure(message: error.localizedDescription, disk: disk, created: created))
                 }
             }
             guard let currentIndex = documents.firstIndex(where: { $0.id == id && $0.backupID == document.backupID }) else { return }
@@ -507,8 +526,14 @@ final class WorkspaceDocumentStore: ObservableObject {
                 schedulePersistence(immediately: true)
                 onSaved()
             case .failure(let error):
-                let failure = error as? SaveFailure ?? SaveFailure(message: error.localizedDescription, disk: nil)
+                let failure = error as? SaveFailure ?? SaveFailure(message: error.localizedDescription, disk: nil, created: false)
                 switch failure.disk {
+                case .present(let current) where failure.created && current == WorkspaceFiles.gitBlobHash(Data()):
+                    // Recreated empty, then the write failed: the edits now stand against that file.
+                    documents[currentIndex].version = current
+                    documents[currentIndex].savedText = ""
+                    documents[currentIndex].diskState = .current
+                    documents[currentIndex].error = failure.message
                 case .present(let current) where current != version || recreate:
                     documents[currentIndex].diskState = .changed(version: current)
                     documents[currentIndex].asksToOverwrite = true
@@ -526,6 +551,7 @@ final class WorkspaceDocumentStore: ObservableObject {
     private struct SaveFailure: Error {
         let message: String
         let disk: WorkspaceDiskVersion?
+        let created: Bool
     }
 
     /// Keeps the edits of a document whose file changed on disk: its next save overwrites that
@@ -541,8 +567,19 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     /// Saves a document over the newer file on disk, as asked by `asksToOverwrite`.
     func overwrite(_ id: String, onSaved: @escaping () -> Void = {}) {
-        keepEdits(id)
-        save(id, onSaved: onSaved)
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        documents[index].asksToOverwrite = false
+        if case .changed(let current) = documents[index].diskState {
+            documents[index].version = current
+            documents[index].diskState = .current
+        }
+        save(id, overwriting: true, onSaved: onSaved)
+    }
+
+    /// Leaves a document unsaved, as Cancel does when its save asked to overwrite a newer file.
+    func cancelOverwrite(_ id: String) {
+        guard let index = documents.firstIndex(where: { $0.id == id }), documents[index].asksToOverwrite else { return }
+        documents[index].asksToOverwrite = false
     }
 
     /// Reads the file again, discarding unsaved edits.
@@ -574,39 +611,35 @@ final class WorkspaceDocumentStore: ObservableObject {
         }
     }
 
-    /// Reads again the open files that something else wrote, keeping tabs with unsaved edits.
-    func reloadUnedited(_ paths: [String], at location: WorkspaceFileLocation) {
-        for document in documents where document.kind == .file && !document.isDirty
-            && document.location.identity == location.identity && paths.contains(document.path) {
-            load(document.id)
-        }
-    }
-
     // MARK: Changes made outside the editor
 
-    private var diskCheckTask: Task<Void, Never>?
+    private var diskChecks: [String: Task<Void, Never>] = [:]
     private var queuedDiskChecks: Set<String> = []
 
     /// Compares the open files at a location (its `identity`; every location when nil) with the
     /// files on disk, as VS Code and Zed do: a tab without unsaved edits reloads, one with edits
     /// keeps them and is marked `.changed`, and a deleted file keeps its tab, marked `.deleted`.
-    /// Checks asked for while one runs are made after it.
+    /// `localOnly` leaves SSH machines, which their explorer polls check, to those polls.
+    /// Each location is checked on its own, so an unreachable machine delays no other; checks
+    /// asked for while one of a location runs are made after it.
     @discardableResult
-    func checkDisk(at identity: String? = nil) -> Task<Void, Never> {
-        if let identity {
-            queuedDiskChecks.insert(identity)
-        } else {
-            queuedDiskChecks.formUnion(documents.filter(Self.followsDisk).map(\.location.identity))
-        }
-        if let diskCheckTask { return diskCheckTask }
+    func checkDisk(at identity: String? = nil, localOnly: Bool = false) -> Task<Void, Never> {
+        let identities = identity.map { [$0] } ?? Array(Set(documents
+            .filter { Self.followsDisk($0) && (!localOnly || $0.location.isLocal) }.map(\.location.identity)))
+        let tasks = identities.map(checkDisk(location:))
+        return Task { for task in tasks { await task.value } }
+    }
+
+    private func checkDisk(location identity: String) -> Task<Void, Never> {
+        queuedDiskChecks.insert(identity)
+        if let running = diskChecks[identity] { return running }
         let task = Task { [weak self] in
-            while let self, let identity = self.queuedDiskChecks.first {
-                self.queuedDiskChecks.remove(identity)
-                await self.checkDisk(location: identity)
+            while let self, self.queuedDiskChecks.remove(identity) != nil {
+                await self.compareWithDisk(at: identity)
             }
-            self?.diskCheckTask = nil
+            self?.diskChecks[identity] = nil
         }
-        diskCheckTask = task
+        diskChecks[identity] = task
         return task
     }
 
@@ -616,7 +649,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             && !document.isLoading && !document.isSaving
     }
 
-    private func checkDisk(location identity: String) async {
+    private func compareWithDisk(at identity: String) async {
         let checked = documents.filter { Self.followsDisk($0) && $0.location.identity == identity }
         guard let location = checked.first?.location else { return }
         let paths = checked.map(\.path)

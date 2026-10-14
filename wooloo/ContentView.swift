@@ -151,12 +151,7 @@ struct ContentView: View {
             notifier.acknowledge(paneID: herdr.selectedPaneID)
             documentStore.checkDisk()
         }
-        // Posted when the explorer reloads its Space, on file events here and its polls over SSH,
-        // and after Git and file operations: open files may have changed on disk.
-        .onReceive(NotificationCenter.default.publisher(for: WorkspaceFiles.repositoryDidChange)
-            .receive(on: DispatchQueue.main)) { notification in
-                documentStore.checkDisk(at: notification.object as? String)
-            }
+        .onReceive(Self.diskChanges) { checkDisk(after: $0) }
         .sheet(isPresented: $window.showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               showShortcuts: window.settingsShowShortcuts,
@@ -213,6 +208,8 @@ struct ContentView: View {
             Button("Rename") { commitRename() }
             Button("Cancel", role: .cancel) { window.renameTarget = nil }
         }
+        // Here rather than in the document's view, which a tab saved from its context menu lacks.
+        .background { overwriteAlert }
         .confirmationDialog(window.closeTarget?.title ?? "Close?", isPresented: Binding(
             get: { window.closeTarget != nil }, set: { if !$0 { window.closeTarget = nil } }
         )) {
@@ -793,9 +790,6 @@ struct ContentView: View {
             documentStore.revert(id)
         }, onKeepEdits: {
             documentStore.keepEdits(id)
-        }, onOverwrite: {
-            documentStore.keepEdits(id)
-            saveDocument(id)
         }, onOpenFile: { [location = documentStore.documents[index].location] path in
             openDocument(.file, path: path, at: location)
         }, onScroll: { position, anchor in
@@ -1166,6 +1160,36 @@ struct ContentView: View {
 
     private func keepDocumentOpen(_ id: String) {
         documentStore.keepOpen(id)
+    }
+
+    /// Posted when the explorer reloads its Space, on file events here and its polls over SSH,
+    /// on file events its listing skips, and after Git and file operations.
+    private static let diskChanges = NotificationCenter.default.publisher(for: WorkspaceFiles.repositoryDidChange)
+        .merge(with: NotificationCenter.default.publisher(for: WorkspaceFiles.filesDidChange))
+        .receive(on: DispatchQueue.main)
+
+    /// Open files may have changed on disk. A change somewhere (no object), such as a file
+    /// created, checks this Mac's files; SSH ones are checked by their own explorer polls.
+    private func checkDisk(after notification: Notification) {
+        documentStore.checkDisk(at: notification.object as? String, localOnly: notification.object == nil)
+    }
+
+    private var overwriteAlert: some View {
+        Color.clear.alert("“\(overwriteTarget?.title ?? "")” changed on disk", isPresented: Binding(
+            get: { overwriteTarget != nil },
+            set: { if !$0, let id = overwriteTarget?.id { documentStore.cancelOverwrite(id) } }
+        ), presenting: overwriteTarget) { document in
+            Button("Overwrite") { commands.overwriteDocument(document.id) }
+            Button("Reload", role: .destructive) { documentStore.revert(document.id) }
+            Button("Cancel", role: .cancel) { documentStore.cancelOverwrite(document.id) }
+        } message: { _ in
+            Text("The file is newer than the version you edited. Overwrite it with your version, or reload it and discard your edits?")
+        }
+    }
+
+    /// A document whose save would overwrite a newer file on disk, to ask about.
+    private var overwriteTarget: WorkspaceDocument? {
+        documentStore.documents.first(where: \.asksToOverwrite)
     }
 
     private func saveDocument(_ id: String) {

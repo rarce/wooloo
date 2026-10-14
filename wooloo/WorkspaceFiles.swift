@@ -1032,20 +1032,47 @@ enum WorkspaceFiles {
         guard !paths.isEmpty else { return [:] }
         var versions: [String: WorkspaceDiskVersion] = [:]
         if let machine = location.machine {
-            // One line per path: its hash, `-` when it is not a regular file inside the Space, or
-            // `?` when it could not be hashed (e.g. no git), which says nothing about the file.
-            let script = "root=$(realpath \(quote(location.root))) || exit 70; "
-                + paths.map { path in
+            // A file whose size, times and inode match those of the version last hashed is not
+            // read again. The first line is the machine's clock; then one line per path: `-` when
+            // it is not a regular file inside the Space, `= stamp` when unchanged, or its hash (`?`
+            // when it could not be hashed, e.g. without git, which says nothing about the file)
+            // and stamp. `stat -c` is GNU's and BusyBox's, `stat -f` BSD's and macOS's.
+            let known = remoteVersions.withLock { cache in paths.map { cache[location.identity + "\0" + $0] } }
+            let script = "root=$(realpath \(quote(location.root))) || exit 70; date +%s; "
+                + zip(paths, known).map { path, known in
                     "if f=$(realpath \(quote(location.root + "/" + path)) 2>/dev/null) && case \"$f\" in \"$root\"/*) true;; *) false;; esac && [ -f \"$f\" ]; then "
-                        + "(cd / && GIT_DEFAULT_HASH=sha1 git hash-object --no-filters \"$f\" 2>/dev/null) || echo '?'; "
+                        + "s=$(stat -c '%s %Y %Z %i' \"$f\" 2>/dev/null || stat -f '%z %m %c %i' \"$f\" 2>/dev/null); "
+                        + (known.map { "if [ -n \"$s\" ] && [ \"$s\" = \(quote($0.stamp)) ]; then echo \"= $s\"; else " } ?? "")
+                        + "h=$(cd / && GIT_DEFAULT_HASH=sha1 git hash-object --no-filters \"$f\" 2>/dev/null) || h='?'; echo \"$h $s\"; "
+                        + (known == nil ? "" : "fi; ")
                         + "else echo -; fi; "
                 }.joined()
-            guard let output = try? ssh(machine, script, limit: paths.count * 64 + 1_000) else { return [:] }
-            let lines = String(decoding: output, as: UTF8.self).split(separator: "\n").map(String.init)
-            guard lines.count == paths.count else { return [:] }
-            for (path, line) in zip(paths, lines) {
-                if line == "-" { versions[path] = .missing }
-                else if line.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil { versions[path] = .present(line) }
+            guard let output = try? ssh(machine, script, limit: paths.count * 160 + 1_000) else { return [:] }
+            var lines = String(decoding: output, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+                .map(String.init)
+            if lines.last == "" { lines.removeLast() }
+            guard lines.count == paths.count + 1, let now = Int(lines.removeFirst()) else { return [:] }
+            for ((path, known), line) in zip(zip(paths, known), lines) {
+                if line == "-" { versions[path] = .missing; continue }
+                let fields = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                let stamp = fields.count > 1 ? fields[1] : ""
+                if fields[0] == "=", let known, known.stamp == stamp {
+                    versions[path] = .present(known.version)
+                } else if fields[0].range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil {
+                    versions[path] = .present(fields[0])
+                    // Times are in seconds: a stamp modified in the last two seconds could hide a
+                    // write made in the same second, so it is not trusted yet.
+                    let modified = stamp.split(separator: " ").dropFirst().first.flatMap { Int($0) }
+                    remoteVersions.withLock { cache in
+                        if cache.count > 500 { cache.removeAll() }
+                        let key = location.identity + "\0" + path
+                        if let modified, modified <= now - 2 {
+                            cache[key] = RemoteVersion(stamp: stamp, version: fields[0])
+                        } else {
+                            cache[key] = nil
+                        }
+                    }
+                }
             }
             return versions
         }
@@ -1090,6 +1117,14 @@ enum WorkspaceFiles {
         let stamp: LocalFileStamp
         let version: String
     }
+
+    private struct RemoteVersion {
+        let stamp: String
+        let version: String
+    }
+
+    /// The last version hashed of each SSH file `diskVersions` was asked about, by location and path.
+    private static let remoteVersions = OSAllocatedUnfairLock<[String: RemoteVersion]>(initialState: [:])
 
     /// The last version hashed of each local file `diskVersions` was asked about.
     private static let localVersions = OSAllocatedUnfairLock<[String: LocalVersion]>(initialState: [:])
@@ -1198,6 +1233,9 @@ enum WorkspaceFiles {
     /// Posted, on any thread, after a Git or file operation here or an explicit refresh; open
     /// editors reload their change bars' Git bases.
     static let repositoryDidChange = Notification.Name("WorkspaceFiles.repositoryDidChange")
+    /// Posted on the main queue when files of a local Space changed that its listing does not show;
+    /// the object is the location's identity. Open documents compare themselves with the disk.
+    static let filesDidChange = Notification.Name("WorkspaceFiles.filesDidChange")
 
     /// A file's text at HEAD and in the index, for the editor's change bars. Nil when that version
     /// doesn't exist or isn't UTF-8 text.

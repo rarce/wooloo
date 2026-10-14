@@ -342,6 +342,54 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "theirs\n")
     }
 
+    /// Typing while a reload reads the file keeps the version the edits started from, so saving
+    /// asks instead of overwriting the newer file.
+    func testTypingDuringAReloadKeepsTheConflict() async throws {
+        _ = await open("a.txt")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        store.load(store.documents[0].id)
+        edit("a.txt", "typed\n")
+        let theirs = WorkspaceFiles.gitBlobHash(Data("theirs\n".utf8))
+        await wait("The read finishes") { store.documents[0].diskState == .changed(version: theirs) }
+        XCTAssertEqual(store.documents[0].text, "typed\n")
+        XCTAssertEqual(store.documents[0].version, WorkspaceFiles.gitBlobHash(Data("one\n".utf8)))
+        store.save(store.documents[0].id)
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "theirs\n")
+    }
+
+    /// Overwrite writes the buffer of a deleted tab without edits whose file came back.
+    func testOverwritingADeletedTabWhoseFileCameBackWritesItsBuffer() async throws {
+        _ = await open("a.txt")
+        _ = try sandbox.sh("rm a.txt", in: "repo")
+        await checkDisk()
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        store.save(store.documents[0].id)
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite)
+        var saved = false
+        store.overwrite(store.documents[0].id) { saved = true }
+        await settle()
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\n")
+        XCTAssertEqual(store.documents[0].text, "one\n")
+    }
+
+    /// A deleted file too large to save is not recreated empty.
+    func testRecreatingTooLargeAFileLeavesNothingBehind() async throws {
+        _ = await open("a.txt")
+        _ = try sandbox.sh("rm a.txt", in: "repo")
+        await checkDisk()
+        edit("a.txt", String(repeating: "x", count: WorkspaceFiles.maximumFileBytes + 1))
+        store.save(store.documents[0].id)
+        await settle()
+        XCTAssertEqual(store.documents[0].error, "File is too large")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.absolutePath("a.txt")))
+        XCTAssertEqual(store.documents[0].diskState, .deleted)
+        XCTAssertFalse(store.documents[0].asksToOverwrite)
+    }
+
     /// Only files at the location checked are compared.
     func testCheckingAnotherLocationLeavesDocumentsAlone() async throws {
         _ = await open("a.txt")
@@ -396,7 +444,7 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertFalse(store.hasUnsavedEdits(at: sandbox.location("other"), path: "b.txt"))
 
         try sandbox.write(["a.txt": "replaced\n", "b.txt": "replaced\n"], in: "repo")
-        store.reloadUnedited(["a.txt", "b.txt"], at: repo)
+        await store.checkDisk(at: repo.identity).value
         // A reload keeps showing the old text rather than a spinner, so wait for the new one.
         for _ in 0..<500 where store.documents[0].text != "replaced\n" { try? await Task.sleep(nanoseconds: 10_000_000) }
         try? await Task.sleep(nanoseconds: 100_000_000)

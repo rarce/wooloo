@@ -143,8 +143,6 @@ struct WorkspaceDocumentView: View {
     var onReload: () -> Void = {}
     /// The file changed on disk under unsaved edits: keep them, so the next save overwrites it.
     var onKeepEdits: () -> Void = {}
-    /// Save over the newer file on disk.
-    var onOverwrite: () -> Void = {}
     var onOpenFile: (String) -> Void = { _ in }
     /// Records where the editor is scrolled. The document store looks the document up by id:
     /// `document`, a binding to its index, can outlive that index when a tab before it closes.
@@ -349,13 +347,6 @@ struct WorkspaceDocumentView: View {
             }
         }
         .onChange(of: find.current) { _, _ in syncEditorMatches() }
-        .alert("“\(document.title)” changed on disk", isPresented: $document.asksToOverwrite) {
-            Button("Overwrite") { onOverwrite() }
-            Button("Reload", role: .destructive) { onReload() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The file is newer than the version you edited. Overwrite it with your version, or reload it and discard your edits?")
-        }
         .onChange(of: find.revealRequest) { _, _ in revealFindMatch() }
         .onAppear { if isFocused { commandTarget?.register(commandToken) { run($0) } } }
         .onDisappear { commandTarget?.unregister(commandToken) }
@@ -704,10 +695,7 @@ final class EditorRevealCoordinator: TextViewCoordinator {
         let range = Self.changedRange(from: old, to: new)
         let replacement = new.substring(with: NSRange(location: range.location,
                                                       length: new.length - (old.length - range.length)))
-        let undo = textView._undoManager
-        undo?.beginGrouping()
-        textView.replaceCharacters(in: range, with: replacement)
-        undo?.endGrouping()
+        replace([(range, replacement)])
     }
 
     /// The range of `old` that differs from `new`, after their common prefix and before their common

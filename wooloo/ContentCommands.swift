@@ -301,8 +301,8 @@ struct ContentCommands {
             search.hasUnsavedEdits = { [documents] location, path in
                 documents.hasUnsavedEdits(at: location, path: path)
             }
-            search.didModifyFiles = { [documents, window] location, paths in
-                documents.reloadUnedited(paths, at: location)
+            search.didModifyFiles = { [documents, window] location, _ in
+                documents.checkDisk(at: location.identity)
                 window.fileRefreshVersion += 1
             }
         }
@@ -333,6 +333,11 @@ struct ContentCommands {
         } else {
             documents.save(id) { [window] in window.fileRefreshVersion += 1 }
         }
+    }
+
+    /// Saves a document over the newer file on disk, as its save asked.
+    func overwriteDocument(_ id: String) {
+        documents.overwrite(id) { [window] in window.fileRefreshVersion += 1 }
     }
 
     /// Saves the Save As sheet's untitled document at the path typed, relative to the Space

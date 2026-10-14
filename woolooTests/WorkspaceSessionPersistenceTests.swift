@@ -115,6 +115,24 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "external\n")
     }
 
+    /// A tab without edits whose file was deleted keeps its text across a relaunch.
+    func testTabsOfDeletedFilesAreBackedUp() async throws {
+        let first = await store()
+        await open("a.txt", in: first)
+        let text = first.documents[0].text
+        try FileManager.default.removeItem(atPath: location.absolutePath("a.txt"))
+        await first.checkDisk().value
+        XCTAssertEqual(first.documents[0].diskState, .deleted)
+        try await first.flushPersistence()
+        let restarted = await store(using: WorkspaceSessionPersistence(root: root))
+        XCTAssertEqual(restarted.documents.map(\.text), [text])
+        await restarted.checkDisk().value
+        XCTAssertEqual(restarted.documents[0].diskState, .deleted)
+        restarted.save(restarted.documents[0].id)
+        await settle(restarted)
+        XCTAssertEqual(try String(contentsOfFile: location.absolutePath("a.txt"), encoding: .utf8), text)
+    }
+
     func testDeletedFileAndOfflineSSHDoNotPreventDirtyBufferRecovery() async throws {
         let first = await store()
         await open("a.txt", in: first)

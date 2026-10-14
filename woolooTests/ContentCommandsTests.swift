@@ -388,6 +388,19 @@ final class ContentCommandsTests: XCTestCase {
         XCTAssertEqual(documents.documents.first?.text, "edited\n", "Unsaved edits are not reloaded")
     }
 
+    /// Overwrite, from the alert a save over a newer file shows, writes through the store and
+    /// refreshes the explorer.
+    func testOverwritingANewerFileSavesTheBufferAndRefreshes() async throws {
+        let id = try await openDocument(edited: true)
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        commands.saveDocument(id)
+        await waitUntil("asks") { documents.documents.first?.asksToOverwrite == true }
+        commands.overwriteDocument(id)
+        await waitUntil("saved") { window.fileRefreshVersion == 1 }
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "edited\n")
+        XCTAssertEqual(documents.documents.first?.asksToOverwrite, false)
+    }
+
     // MARK: Window and effects
 
     func testWindowCommandsChangeTheWindowsState() async {

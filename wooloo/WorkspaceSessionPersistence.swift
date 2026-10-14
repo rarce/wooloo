@@ -45,7 +45,8 @@ struct WorkspaceDocumentSnapshot: Codable {
         cursorPositions = document.cursorPositions
         scrollPosition = document.scrollPosition
         scrollAnchor = document.scrollAnchor
-        hasBackup = document.isDirty || document.isUntitled
+        // A tab whose file was deleted keeps the only copy of its text.
+        hasBackup = document.isDirty || document.isUntitled || document.isDeletedOnDisk
         text = hasBackup ? document.text : nil
         savedText = hasBackup ? document.savedText : nil
         version = hasBackup ? document.version : nil

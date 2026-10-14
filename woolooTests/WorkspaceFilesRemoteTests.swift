@@ -142,6 +142,44 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         ])
     }
 
+    /// A remote file whose size, times and inode are unchanged is not hashed again, unless they
+    /// are from the last two seconds, which a write in the same second would not change.
+    func testRemoteDiskVersionsHashOnlyChangedFiles() throws {
+        try sandbox.repository("repo", files: ["old.txt": "one\n", "new.txt": "two\n"])
+        try sandbox.sh("touch -t 202001010000 old.txt", in: "repo")
+        try sandbox.write(["shims/git": "#!/bin/sh\necho \"$@\" >> '\(sandbox.path("git.log"))'\nexec /usr/bin/git \"$@\"\n"], in: ".")
+        try sandbox.sh("chmod 755 shims/git")
+        func hashed() -> [String] {
+            ((try? String(contentsOfFile: sandbox.path("git.log"), encoding: .utf8)) ?? "")
+                .split(separator: "\n").compactMap { $0.split(separator: "/").last.map(String.init) }
+        }
+        let location = remote("repo")
+        let first = WorkspaceFiles.diskVersions(["old.txt", "new.txt"], at: location)
+        XCTAssertEqual(hashed().sorted(), ["new.txt", "old.txt"])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["old.txt", "new.txt"], at: location), first)
+        XCTAssertEqual(hashed().sorted(), ["new.txt", "new.txt", "old.txt"], "Only the recent file is hashed again")
+        try sandbox.write(["old.txt": "changed\n"], in: "repo")
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["old.txt"], at: location),
+                       ["old.txt": .present(WorkspaceFiles.gitBlobHash(Data("changed\n".utf8)))])
+    }
+
+    /// An unreachable machine does not hold up the check of this Mac's files.
+    @MainActor
+    func testSlowMachineDoesNotDelayLocalChecks() async throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n"])
+        try sandbox.repository("local", files: ["b.txt": "two\n"])
+        let store = WorkspaceDocumentStore()
+        store.open(.file, path: "a.txt", at: remote("repo"))
+        store.open(.file, path: "b.txt", at: sandbox.location("local"))
+        for _ in 0..<500 where store.documents.contains(where: \.isLoading) { try await Task.sleep(nanoseconds: 10_000_000) }
+        try sandbox.write(["slow": ""], in: ".")
+        try sandbox.write(["b.txt": "theirs\n"], in: "local")
+        let check = store.checkDisk()
+        for _ in 0..<30 where store.documents[1].text != "theirs\n" { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(store.documents[1].text, "theirs\n", "The local file reloads while the machine answers")
+        await check.value
+    }
+
     func testRemoteReadRefusesFilesOutsideTheSpace() throws {
         try sandbox.repository("repo")
         try sandbox.write(["secret.txt": "secret\n"], in: ".")
