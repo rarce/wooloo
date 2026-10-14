@@ -335,6 +335,13 @@ enum WorkspaceFileError: LocalizedError {
     }
 }
 
+/// A file's state on disk, as `WorkspaceFiles.diskVersions` finds it.
+enum WorkspaceDiskVersion: Equatable, Sendable {
+    /// Its Git blob hash, the version documents keep.
+    case present(String)
+    case missing
+}
+
 enum WorkspaceFiles {
     static let maximumFileBytes = 1_000_000
 
@@ -1014,6 +1021,78 @@ enum WorkspaceFiles {
         }
         return gitBlobHash(data)
     }
+
+    /// What is on disk now for each of `paths`, in the version `read` and `save` use, to tell open
+    /// documents that something else wrote or deleted. Paths whose state could not be learned,
+    /// such as when the machine is unreachable, are left out. Over SSH this is one command; on
+    /// this Mac a file whose size, modification time and inode are unchanged is not read again.
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func diskVersions(_ paths: [String], at location: WorkspaceFileLocation) -> [String: WorkspaceDiskVersion] {
+        let paths = Array(Set(paths.filter { (try? validateRelativePath($0)) != nil })).sorted()
+        guard !paths.isEmpty else { return [:] }
+        var versions: [String: WorkspaceDiskVersion] = [:]
+        if let machine = location.machine {
+            // One line per path: its hash, `-` when it is not a regular file inside the Space, or
+            // `?` when it could not be hashed (e.g. no git), which says nothing about the file.
+            let script = "root=$(realpath \(quote(location.root))) || exit 70; "
+                + paths.map { path in
+                    "if f=$(realpath \(quote(location.root + "/" + path)) 2>/dev/null) && case \"$f\" in \"$root\"/*) true;; *) false;; esac && [ -f \"$f\" ]; then "
+                        + "(cd / && GIT_DEFAULT_HASH=sha1 git hash-object --no-filters \"$f\" 2>/dev/null) || echo '?'; "
+                        + "else echo -; fi; "
+                }.joined()
+            guard let output = try? ssh(machine, script, limit: paths.count * 64 + 1_000) else { return [:] }
+            let lines = String(decoding: output, as: UTF8.self).split(separator: "\n").map(String.init)
+            guard lines.count == paths.count else { return [:] }
+            for (path, line) in zip(paths, lines) {
+                if line == "-" { versions[path] = .missing }
+                else if line.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil { versions[path] = .present(line) }
+            }
+            return versions
+        }
+        let base = URL(fileURLWithPath: location.root).resolvingSymlinksInPath()
+        for path in paths {
+            let url = base.appendingPathComponent(path).resolvingSymlinksInPath()
+            guard url.path.hasPrefix(base.path + "/"),
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  attributes[.type] as? FileAttributeType == .typeRegular else {
+                // Gone, or no longer a file inside the Space; a missing Space root says nothing.
+                if FileManager.default.fileExists(atPath: base.path) { versions[path] = .missing }
+                continue
+            }
+            let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
+            let stamp = LocalFileStamp(size: size,
+                                       modified: (attributes[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0,
+                                       inode: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0)
+            if let known = localVersions.withLock({ $0[url.path] }), known.stamp == stamp {
+                versions[path] = .present(known.version)
+                continue
+            }
+            // Far past what any document opens: a version that differs, and the reload explains why.
+            guard size <= 64 * 1_024 * 1_024 else { versions[path] = .present("size-\(size)"); continue }
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { continue }
+            let version = gitBlobHash(data)
+            localVersions.withLock { cache in
+                if cache.count > 500 { cache.removeAll() }
+                cache[url.path] = LocalVersion(stamp: stamp, version: version)
+            }
+            versions[path] = .present(version)
+        }
+        return versions
+    }
+
+    private struct LocalFileStamp: Equatable {
+        let size: Int
+        let modified: TimeInterval
+        let inode: UInt64
+    }
+
+    private struct LocalVersion {
+        let stamp: LocalFileStamp
+        let version: String
+    }
+
+    /// The last version hashed of each local file `diskVersions` was asked about.
+    private static let localVersions = OSAllocatedUnfairLock<[String: LocalVersion]>(initialState: [:])
 
     /// A changed file's patches. `.all` compares HEAD with the working tree; `.staged` and
     /// `.unstaged` are added when the file has both kinds of changes.

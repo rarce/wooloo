@@ -98,6 +98,50 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    /// Open documents learn what is on disk with one SSH command, in the version they keep;
+    /// a file outside the Space counts as gone, and one without a readable version is left out.
+    func testRemoteDiskVersionsMatchTheLocalOnes() throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n", "it's b.txt": "two\n"])
+        try sandbox.write(["secret.txt": "secret\n"], in: ".")
+        try sandbox.sh("ln -s ../secret.txt escape.txt && mkdir dir", in: "repo")
+        let paths = ["a.txt", "it's b.txt", "escape.txt", "dir", "missing.txt", "../secret.txt"]
+        let before = try invocations().count
+        let versions = WorkspaceFiles.diskVersions(paths, at: remote("repo"))
+        XCTAssertEqual(try invocations().count, before + 1, "One command for every file")
+        XCTAssertEqual(versions, [
+            "a.txt": .present(WorkspaceFiles.gitBlobHash(Data("one\n".utf8))),
+            "it's b.txt": .present(WorkspaceFiles.gitBlobHash(Data("two\n".utf8))),
+            "escape.txt": .missing, "dir": .missing, "missing.txt": .missing,
+        ])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(paths, at: sandbox.location("repo")), versions)
+
+        // Without git on the machine nothing is known, rather than every file seeming deleted.
+        try sandbox.write(["shims/git": "#!/bin/sh\nexit 127\n"], in: ".")
+        try sandbox.sh("chmod 755 shims/git")
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["a.txt", "missing.txt"], at: remote("repo")), ["missing.txt": .missing])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["a.txt"], at: remote("missing-space")), [:])
+    }
+
+    /// A document of an SSH Space reloads when its file changes there, and is marked when it was
+    /// edited or deleted.
+    @MainActor
+    func testRemoteDocumentsFollowTheirFiles() async throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n", "b.txt": "two\n", "c.txt": "three\n"])
+        let location = remote("repo")
+        let store = WorkspaceDocumentStore()
+        for path in ["a.txt", "b.txt", "c.txt"] { store.open(.file, path: path, at: location) }
+        for _ in 0..<500 where store.documents.contains(where: \.isLoading) { try await Task.sleep(nanoseconds: 10_000_000) }
+        store.documents[1].text = "mine\n"
+        try sandbox.write(["a.txt": "theirs\n", "b.txt": "theirs\n"], in: "repo")
+        try sandbox.sh("rm c.txt", in: "repo")
+        await store.checkDisk(at: location.identity).value
+        for _ in 0..<500 where store.documents[0].text != "theirs\n" { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(store.documents.map(\.text), ["theirs\n", "mine\n", "three\n"])
+        XCTAssertEqual(store.documents.map(\.diskState), [
+            .current, .changed(version: WorkspaceFiles.gitBlobHash(Data("theirs\n".utf8))), .deleted,
+        ])
+    }
+
     func testRemoteReadRefusesFilesOutsideTheSpace() throws {
         try sandbox.repository("repo")
         try sandbox.write(["secret.txt": "secret\n"], in: ".")

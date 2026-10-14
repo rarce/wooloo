@@ -182,9 +182,189 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         store.save(store.documents[0].id) { saved = true }
         await settle()
         XCTAssertFalse(saved)
-        XCTAssertNotNil(store.documents[0].error)
+        XCTAssertTrue(store.documents[0].asksToOverwrite, "Saving asks before overwriting")
         XCTAssertTrue(store.documents[0].isDirty)
         XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "from elsewhere\n")
+    }
+
+    // MARK: Changes on disk
+
+    /// Waits for `condition` on the main actor, giving pending loads time to finish.
+    private func wait(_ message: String, until condition: () -> Bool) async {
+        for _ in 0..<500 where !condition() { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(condition(), message)
+    }
+
+    private func checkDisk() async {
+        await store.checkDisk(at: repo.identity).value
+        await settle()
+    }
+
+    /// A preview tab without edits reloads silently when its file changes on disk, and tells a
+    /// shown editor to take the new text; nothing changes while the file stays the same.
+    func testCleanPreviewReloadsWhenItsFileChangesOnDisk() async throws {
+        let opened = await open("a.txt", preview: true)
+        let document = try XCTUnwrap(opened)
+        var changes = 0
+        let watch = store.objectWillChange.sink { changes += 1 }
+        await checkDisk()
+        XCTAssertEqual(changes, 0, "An unchanged file publishes nothing")
+        watch.cancel()
+
+        try sandbox.write(["a.txt": "from elsewhere\n"], in: "repo")
+        await checkDisk()
+        await wait("The preview reloads") { store.documents.first?.text == "from elsewhere\n" }
+        let reloaded = try XCTUnwrap(store.document(document.id))
+        XCTAssertTrue(reloaded.isPreview, "Reloading keeps it a preview")
+        XCTAssertFalse(reloaded.isDirty)
+        XCTAssertEqual(reloaded.diskState, .current)
+        XCTAssertEqual(reloaded.version, WorkspaceFiles.gitBlobHash(Data("from elsewhere\n".utf8)))
+        XCTAssertNotNil(reloaded.diskReload)
+    }
+
+    /// Unsaved edits are kept when the file changes on disk; the tab is marked until the user
+    /// reloads or keeps them, and saving asks before overwriting the newer file.
+    func testEditedDocumentKeepsItsEditsAndAsksBeforeOverwriting() async throws {
+        _ = await open("a.txt")
+        edit("a.txt", "mine\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        await checkDisk()
+        let theirs = WorkspaceFiles.gitBlobHash(Data("theirs\n".utf8))
+        XCTAssertEqual(store.documents[0].text, "mine\n")
+        XCTAssertEqual(store.documents[0].diskState, .changed(version: theirs))
+
+        var saved = 0
+        store.save(store.documents[0].id) { saved += 1 }
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite, "Saving asks first")
+        XCTAssertEqual(saved, 0)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "theirs\n")
+
+        store.overwrite(store.documents[0].id) { saved += 1 }
+        await settle()
+        XCTAssertEqual(saved, 1)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+        XCTAssertEqual(store.documents[0].diskState, .current)
+        XCTAssertFalse(store.documents[0].asksToOverwrite)
+        XCTAssertFalse(store.documents[0].isDirty)
+    }
+
+    /// Keep Mine makes the next save overwrite the file without asking.
+    func testKeepingEditsLetsTheNextSaveOverwrite() async throws {
+        _ = await open("a.txt")
+        edit("a.txt", "mine\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        await checkDisk()
+        store.keepEdits(store.documents[0].id)
+        XCTAssertEqual(store.documents[0].diskState, .current)
+        await checkDisk()
+        XCTAssertEqual(store.documents[0].diskState, .current, "The kept version is the one on disk")
+        store.save(store.documents[0].id)
+        await settle()
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+    }
+
+    /// Reload discards the edits and reads the newer file.
+    func testRevertingReadsTheNewerFile() async throws {
+        _ = await open("a.txt")
+        edit("a.txt", "mine\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        await checkDisk()
+        store.revert(store.documents[0].id)
+        await wait("The file is read again") { store.documents[0].text == "theirs\n" }
+        XCTAssertEqual(store.documents[0].diskState, .current)
+        XCTAssertFalse(store.documents[0].isDirty)
+    }
+
+    /// Undoing the edits of a marked tab reloads it, as Zed does.
+    func testUndoingEditsOfAChangedFileReloadsIt() async throws {
+        _ = await open("a.txt")
+        edit("a.txt", "mine\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        await checkDisk()
+        edit("a.txt", "one\n")
+        await checkDisk()
+        await wait("The file is read again") { store.documents[0].text == "theirs\n" }
+        XCTAssertEqual(store.documents[0].diskState, .current)
+    }
+
+    /// A file deleted on disk keeps its tab and buffer; Save creates it again.
+    func testDeletedFileKeepsItsTabAndSaveRecreatesIt() async throws {
+        _ = await open("a.txt")
+        _ = try sandbox.sh("rm a.txt", in: "repo")
+        await checkDisk()
+        XCTAssertEqual(store.documents.count, 1)
+        XCTAssertEqual(store.documents[0].diskState, .deleted)
+        XCTAssertEqual(store.documents[0].text, "one\n")
+        XCTAssertTrue(store.documents[0].canSave, "A clean buffer can be saved to recreate the file")
+
+        var saved = false
+        store.save(store.documents[0].id) { saved = true }
+        await settle()
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\n")
+        XCTAssertEqual(store.documents[0].diskState, .current)
+        XCTAssertFalse(store.documents[0].canSave)
+        await checkDisk()
+        XCTAssertEqual(store.documents[0].diskState, .current)
+    }
+
+    /// A file that comes back after a deletion is followed again.
+    func testDeletedFileThatComesBackIsReloaded() async throws {
+        _ = await open("a.txt")
+        _ = try sandbox.sh("rm a.txt", in: "repo")
+        await checkDisk()
+        try sandbox.write(["a.txt": "back\n"], in: "repo")
+        await checkDisk()
+        await wait("The file is read again") { store.documents[0].text == "back\n" }
+        XCTAssertEqual(store.documents[0].diskState, .current)
+    }
+
+    /// Saving a file deleted under unsaved edits recreates it, and one changed under them asks.
+    func testSavingFindsWhatHappenedOnDisk() async throws {
+        _ = await open("a.txt")
+        edit("a.txt", "mine\n")
+        _ = try sandbox.sh("rm a.txt", in: "repo")
+        store.save(store.documents[0].id)
+        await settle()
+        XCTAssertEqual(store.documents[0].diskState, .deleted, "The failed save finds the file gone")
+        store.save(store.documents[0].id)
+        await settle()
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+
+        edit("a.txt", "mine again\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        store.save(store.documents[0].id)
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite)
+        XCTAssertEqual(store.documents[0].diskState, .changed(version: WorkspaceFiles.gitBlobHash(Data("theirs\n".utf8))))
+        XCTAssertNil(store.documents[0].error)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "theirs\n")
+    }
+
+    /// Only files at the location checked are compared.
+    func testCheckingAnotherLocationLeavesDocumentsAlone() async throws {
+        _ = await open("a.txt")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        await store.checkDisk(at: sandbox.location("other").identity).value
+        XCTAssertEqual(store.documents[0].diskState, .current, "Not compared")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(store.documents[0].text, "one\n")
+        await store.checkDisk().value
+        await wait("Every location is checked") { store.documents[0].text == "theirs\n" }
+    }
+
+    /// A reload replaces in the editor only the text that differs, never half a surrogate pair.
+    func testReloadReplacesOnlyTheChangedText() {
+        func changed(_ old: String, _ new: String) -> NSRange {
+            EditorRevealCoordinator.changedRange(from: old as NSString, to: new as NSString)
+        }
+        XCTAssertEqual(changed("one\ntwo\nthree\n", "one\n2\nthree\n"), NSRange(location: 4, length: 3))
+        XCTAssertEqual(changed("abc", "abcdef"), NSRange(location: 3, length: 0))
+        XCTAssertEqual(changed("abcdef", "def"), NSRange(location: 0, length: 3))
+        XCTAssertEqual(changed("aaa", "aa"), NSRange(location: 2, length: 1))
+        XCTAssertEqual(changed("x😀y", "x😃y"), NSRange(location: 1, length: 2))
+        XCTAssertEqual(changed("", "new"), NSRange(location: 0, length: 0))
     }
 
     func testClosingAskFirstForUnsavedEdits() async throws {

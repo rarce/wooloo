@@ -110,7 +110,7 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(restarted.documents[0].text, "mine\n")
         restarted.save(restarted.documents[0].id)
         await settle(restarted)
-        XCTAssertNotNil(restarted.documents[0].error)
+        XCTAssertTrue(restarted.documents[0].asksToOverwrite, "Saving asks before overwriting")
         XCTAssertTrue(restarted.documents[0].isDirty)
         XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "external\n")
     }

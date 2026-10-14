@@ -529,6 +529,19 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    /// An edited file that changed on disk: the banner offers to reload it or keep the edits.
+    func testDocumentChangedOnDisk() throws {
+        let (sandbox, repo) = try snapshotSources()
+        defer { sandbox.tearDown() }
+        let binding = try loadedDocument("Sources/App/Greeter.swift", at: repo)
+        binding.wrappedValue.text += "// mine\n"
+        binding.wrappedValue.diskState = .changed(version: WorkspaceFiles.gitBlobHash(Data("theirs".utf8)))
+        let view = WorkspaceDocumentView(document: binding, onSave: {})
+        try assertSnapshot(render(view, size: NSSize(width: 820, height: 300), settle: 3) { highlightedEditor() != nil },
+                           named: "editor-changed-on-disk")
+        try skipIfRecorded()
+    }
+
     /// A README in the document's rendered Markdown preview.
     func testMarkdownPreview() throws {
         let (sandbox, repo) = try snapshotSources()

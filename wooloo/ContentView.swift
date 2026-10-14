@@ -149,7 +149,14 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             notifier.acknowledge(paneID: herdr.selectedPaneID)
+            documentStore.checkDisk()
         }
+        // Posted when the explorer reloads its Space, on file events here and its polls over SSH,
+        // and after Git and file operations: open files may have changed on disk.
+        .onReceive(NotificationCenter.default.publisher(for: WorkspaceFiles.repositoryDidChange)
+            .receive(on: DispatchQueue.main)) { notification in
+                documentStore.checkDisk(at: notification.object as? String)
+            }
         .sheet(isPresented: $window.showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               showShortcuts: window.settingsShowShortcuts,
@@ -783,7 +790,12 @@ struct ContentView: View {
         return WorkspaceDocumentView(document: $documentStore.documents[index], onSave: {
             saveDocument(id)
         }, onReload: {
-            documentStore.load(id)
+            documentStore.revert(id)
+        }, onKeepEdits: {
+            documentStore.keepEdits(id)
+        }, onOverwrite: {
+            documentStore.keepEdits(id)
+            saveDocument(id)
         }, onOpenFile: { [location = documentStore.documents[index].location] path in
             openDocument(.file, path: path, at: location)
         }, onScroll: { position, anchor in
@@ -800,6 +812,7 @@ struct ContentView: View {
             Image(systemName: document?.icon ?? "magnifyingglass")
                 .foregroundStyle(theme.accent)
             Text(document?.title ?? search.title).lineLimit(1)
+                .strikethrough(document?.isDeletedOnDisk == true)
                 .foregroundStyle(focused ? .primary : .secondary)
             if document?.isDirty == true { Circle().fill(theme.warning).frame(width: 5, height: 5) }
             Spacer(minLength: 6)
@@ -1036,6 +1049,7 @@ struct ContentView: View {
                     Image(systemName: document.icon)
                         .foregroundStyle(theme.accent)
                     Text(document.title).lineLimit(1).italic(document.isPreview)
+                        .strikethrough(document.isDeletedOnDisk)
                     if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
                 }
                 .font(.system(size: typography.body))
@@ -1216,7 +1230,7 @@ struct ContentView: View {
             Button("Save As…", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
         } else if document.kind == .file {
             Button("Save", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
-                .disabled(!document.isDirty)
+                .disabled(!document.canSave)
             Button("Open Changes", systemImage: "arrow.left.arrow.right") {
                 openDocument(.change, path: document.path, at: document.location)
             }
