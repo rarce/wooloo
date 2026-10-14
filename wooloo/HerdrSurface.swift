@@ -926,7 +926,8 @@ final class HerdrSurfaceStream {
         request(method: "tab.focus", params: ["tab_id": tabID])
     }
 
-    func focus(paneID: String) {
+    @discardableResult
+    func focus(paneID: String) -> Bool {
         request(method: "pane.focus", params: ["pane_id": paneID])
     }
 

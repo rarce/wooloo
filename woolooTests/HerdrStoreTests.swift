@@ -517,6 +517,32 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(store.selectedPaneID, "w1:p1")
     }
 
+    /// Until Herdr's surface answers a pane.focus, the last surface still names the pane left
+    /// behind; a click back there before the answer still focuses it, and repeated clicks don't.
+    func testClicksBeforeHerdrAnswersAFocusFollowTheLastRequest() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surface?.focusedPaneID == "w1:p1" }
+        let focuses = { Self.requests(in: endpoint).filter { $0.method == "pane.focus" }.compactMap { $0.params["pane_id"] as? String } }
+        let before = focuses().count
+        for pane in ["w1:p2", "w1:p1", "w1:p1", "w1:p2"] { store.select(paneID: pane) }
+        await waitUntil("focuses sent") { focuses().count >= before + 3 }
+        XCTAssertEqual(Array(focuses().dropFirst(before)), ["w1:p2", "w1:p1", "w1:p2"])
+
+        // Once a surface shows the pane focused, it decides again.
+        var focusedSecond = SurfaceModel(width: 4, height: 2)
+        focusedSecond.paneID = "w1:p2"
+        focusedSecond.revision = 2
+        endpoint.send(focusedSecond.surfaceFrame())
+        await waitUntil("surface focuses the second pane") { store.surface?.focusedPaneID == "w1:p2" }
+        store.select(paneID: "w1:p2")
+        store.select(paneID: "w1:p1")
+        await waitUntil("first pane focused") { focuses().count >= before + 4 }
+        XCTAssertEqual(Array(focuses().dropFirst(before)), ["w1:p2", "w1:p1", "w1:p2", "w1:p1"])
+    }
+
     /// A tab switch keeps the terminal view on the previous tab's surface until Herdr sends the
     /// new tab's, instead of falling back to the pane text and building a new view for it; if
     /// none comes, the window falls back after a grace period.

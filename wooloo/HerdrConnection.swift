@@ -678,6 +678,8 @@ final class HerdrStore: ObservableObject {
     /// keeps the terminal view on the previous tab's surface rather than showing the pane text
     /// and then building a new terminal view, which made a switch take about 30 ms to draw.
     private var surfaceSwitchTabID: String?
+    /// The pane last sent a pane.focus, until a surface shows it focused (see `select(paneID:)`).
+    private var requestedFocusPaneID: String?
     private var surfaceSwitchTimeout: Task<Void, Never>?
     /// How long a switch keeps the previous tab's surface if Herdr sends none for the new tab.
     static var surfaceSwitchGrace: Duration = .milliseconds(500)
@@ -877,7 +879,7 @@ final class HerdrStore: ObservableObject {
                                 } else if let workspaceID = store.selectedWorkspaceID {
                                     stream.focus(workspaceID: workspaceID)
                                 }
-                                if let paneID = store.selectedPaneID { stream.focus(paneID: paneID) }
+                                if let paneID = store.selectedPaneID { store.sendPaneFocus(paneID) }
                             }
                         } onSurface: { newSurface in
                             // Surfaces that arrive while the main thread is busy replace each other,
@@ -957,6 +959,7 @@ final class HerdrStore: ObservableObject {
         let completesSwitch = showsTab && surfaceSwitchTabID != nil
         if surface == nil || showsTab { endSurfaceSwitch() }
         if let surface { popupBlocksPaneInput = surface.popup != nil }
+        if surface == nil || surface?.focusedPaneID == requestedFocusPaneID { requestedFocusPaneID = nil }
         surfaceFeed.publish(surface, answersUser: completesSwitch)
         // The surface is drawn; the window shows the selection in the next turn, after this
         // turn's commit has put the surface on screen.
@@ -1044,7 +1047,7 @@ final class HerdrStore: ObservableObject {
         } else {
             surfaceStream?.focus(workspaceID: workspaceID)
         }
-        if let selectedPaneID { surfaceStream?.focus(paneID: selectedPaneID) }
+        if let selectedPaneID { sendPaneFocus(selectedPaneID) }
     }
 
     func clearActionError() { actionError = nil }
@@ -1248,7 +1251,7 @@ final class HerdrStore: ObservableObject {
                 self.snapshot = fresh
                 if selectedTabID == into, fresh.panes.contains(where: { $0.paneID == paneID && $0.tabID == into }) {
                     selectedPaneID = paneID
-                    surfaceStream?.focus(paneID: paneID)
+                    sendPaneFocus(paneID)
                 }
                 repairSelection()
             }
@@ -1345,7 +1348,7 @@ final class HerdrStore: ObservableObject {
             objectWillChange.send()
         }
         surfaceStream?.focus(tabID: tabID)
-        if let selectedPaneID { surfaceStream?.focus(paneID: selectedPaneID) }
+        if let selectedPaneID { sendPaneFocus(selectedPaneID) }
     }
 
     private func deferSelectionPublish(stalePaneID: String?) {
@@ -1379,10 +1382,15 @@ final class HerdrStore: ObservableObject {
         // Every click in a pane selects it; publishing the same pane again would update the whole window.
         if selectedPaneID != paneID { selectedPaneID = paneID }
         // Herdr answers every pane.focus with a complete surface, even for the pane it already
-        // focuses, so a click there would cost a full frame (45 KB at 126x48). The live surface
-        // says which pane that is; the snapshot does not, since a pane.focus emits no event that
-        // refreshes it, so after one click it still named the pane left behind.
-        if surface?.focusedPaneID != paneID { surfaceStream?.focus(paneID: paneID) }
+        // focuses, so a click there would cost a full frame (45 KB at 126x48). That pane is the
+        // one last asked for until a surface shows it, then the live surface's. The snapshot's is
+        // stale: a pane.focus emits no event that refreshes it.
+        if (requestedFocusPaneID ?? surface?.focusedPaneID) != paneID { sendPaneFocus(paneID) }
+    }
+
+    /// Asks Herdr to focus a pane, which it answers with a surface that shows the pane focused.
+    private func sendPaneFocus(_ paneID: String) {
+        if surfaceStream?.focus(paneID: paneID) == true { requestedFocusPaneID = paneID }
     }
 
     func resizeSurface(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) {
