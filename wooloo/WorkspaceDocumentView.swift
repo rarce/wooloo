@@ -38,6 +38,14 @@ struct WorkspaceDocumentReveal: Equatable {
     let token = UUID()
 }
 
+/// An open file against its file on disk, which something else may write or delete.
+enum WorkspaceDiskState: Equatable {
+    case current
+    /// The file on disk is now this version, while the tab has unsaved edits (or its reload failed).
+    case changed(version: String)
+    case deleted
+}
+
 struct WorkspaceDocument: Identifiable {
     /// Stable backup identity, including across Save As and changes to a draft's display number.
     var backupID = UUID()
@@ -90,8 +98,18 @@ struct WorkspaceDocument: Identifiable {
     /// A new file not yet on disk, shown as "Untitled-N" until it is saved somewhere; its
     /// `path` is empty and `location` is where saving it starts.
     var untitledNumber: Int?
+    /// Whether the file on disk still matches `version`; see `WorkspaceDocumentStore.checkDisk`.
+    var diskState = WorkspaceDiskState.current
+    /// Set when saving would overwrite a newer file on disk, to ask first.
+    var asksToOverwrite = false
+    /// Changes when the store replaces `text` with what is on disk, for a shown editor, which
+    /// only reads its text binding when it is created, to take the new text.
+    var diskReload: UUID?
 
     var isUntitled: Bool { untitledNumber != nil }
+    var isDeletedOnDisk: Bool { diskState == .deleted }
+    /// Whether Save has something to write: edits, or a file deleted on disk to recreate.
+    var canSave: Bool { isEditable && (isDirty || isUntitled || isDeletedOnDisk) }
     var isPDF: Bool { kind == .file && !isUntitled && WorkspacePDF.supports(path) }
     var isImage: Bool { kind == .file && !isUntitled && WorkspaceImage.supports(path) }
     var isReadOnly: Bool { isPDF || isImage }
@@ -123,6 +141,8 @@ struct WorkspaceDocumentView: View {
     @Binding var document: WorkspaceDocument
     let onSave: () -> Void
     var onReload: () -> Void = {}
+    /// The file changed on disk under unsaved edits: keep them, so the next save overwrites it.
+    var onKeepEdits: () -> Void = {}
     var onOpenFile: (String) -> Void = { _ in }
     /// Records where the editor is scrolled. The document store looks the document up by id:
     /// `document`, a binding to its index, can outlive that index when a tab before it closes.
@@ -233,7 +253,7 @@ struct WorkspaceDocumentView: View {
                 if document.isEditable {
                     Button(document.isUntitled ? "Save As…" : "Save") { onSave() }
                         .keyboardShortcut(isFocused ? KeyboardShortcut("s", modifiers: .command) : nil)
-                        .disabled(document.isLoading || document.isSaving || !(document.isDirty || document.isUntitled))
+                        .disabled(document.isLoading || document.isSaving || !document.canSave)
                 }
                 if document.isReadOnly {
                     Button("Reload", action: onReload)
@@ -245,6 +265,10 @@ struct WorkspaceDocumentView: View {
             .padding(.horizontal, 12)
             .frame(height: 33)
             Divider()
+            if document.kind == .file && !document.isLoading, let notice = diskNotice {
+                diskBanner(notice)
+                Divider()
+            }
             if document.isEditable && find.isVisible {
                 DocumentFindBar(model: find, allowsReplace: findTarget == .source,
                                 onReplace: replaceCurrentMatch, onReplaceAll: replaceAllMatches,
@@ -350,7 +374,7 @@ struct WorkspaceDocumentView: View {
         }
         switch command {
         case .save:
-            if (document.isDirty || document.isUntitled) && !document.isSaving { onSave() }
+            if document.canSave && !document.isSaving { onSave() }
         case .find: openFind(replace: false)
         case .findAndReplace: openFind(replace: true)
         case .findNext: find.isVisible ? find.move(1) : openFind(replace: false)
@@ -399,6 +423,7 @@ struct WorkspaceDocumentView: View {
         .onChange(of: document.reveal) { _, _ in applyReveal() }
         .onAppear { applyFocusRequest() }
         .onChange(of: document.focusRequest) { _, _ in applyFocusRequest() }
+        .onChange(of: document.diskReload) { _, _ in revealCoordinator.showText(document.text) }
         .onAppear { updateLineChangeColors() }
         .onChange(of: theme.id) { _, _ in updateLineChangeColors() }
         .task(id: "\(document.version ?? "")|\(gitBasesVersion)") { await loadGitBases() }
@@ -463,6 +488,42 @@ struct WorkspaceDocumentView: View {
         if document.markdownMode == .preview { document.markdownMode = .split }
         document.reveal = WorkspaceDocumentReveal(line: line, range: nil)
         document.focusRequest = UUID()
+    }
+
+    // MARK: Changes on disk
+
+    /// What the banner under the header says about the file on disk, if anything.
+    private var diskNotice: String? {
+        switch document.diskState {
+        case .current: return nil
+        case .changed:
+            // Without edits the tab reloads; it stays marked only when that reload failed.
+            guard document.isDirty else { return nil }
+            return "This file changed on disk. Reload it and discard your edits, or keep them and overwrite the file when you save."
+        case .deleted:
+            return document.isEditable ? "This file was deleted on disk. Save to create it again."
+                : "This file was deleted on disk."
+        }
+    }
+
+    private func diskBanner(_ notice: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(theme.warning)
+            Text(notice)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if case .changed = document.diskState {
+                Button("Reload", action: onReload)
+                    .help("Read the file again, discarding your unsaved edits")
+                Button("Keep Mine", action: onKeepEdits)
+                    .help("Keep your edits; saving overwrites the file on disk")
+            }
+        }
+        .font(.system(size: typography.body))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(theme.warning.opacity(0.12))
     }
 
     // MARK: Change bars
@@ -623,6 +684,33 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     }
 
     func scrollSelectionToVisible() { controller?.textView.scrollSelectionToVisible() }
+
+    /// Puts text the document read again from disk into the editor, replacing only the part that
+    /// differs, so the cursors and the scroll position stay where they were as far as possible.
+    /// The replacement can be undone, as in VS Code.
+    func showText(_ text: String) {
+        guard let textView = controller?.textView, textView.string != text else { return }
+        let old = textView.string as NSString
+        let new = text as NSString
+        let range = Self.changedRange(from: old, to: new)
+        let replacement = new.substring(with: NSRange(location: range.location,
+                                                      length: new.length - (old.length - range.length)))
+        replace([(range, replacement)])
+    }
+
+    /// The range of `old` that differs from `new`, after their common prefix and before their common
+    /// suffix, never splitting a surrogate pair.
+    static func changedRange(from old: NSString, to new: NSString) -> NSRange {
+        let shorter = min(old.length, new.length)
+        var prefix = 0
+        while prefix < shorter && old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        if prefix > 0, UTF16.isLeadSurrogate(old.character(at: prefix - 1)) { prefix -= 1 }
+        var suffix = 0
+        while suffix < shorter - prefix
+                && old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        if suffix > 0, UTF16.isTrailSurrogate(old.character(at: old.length - suffix)) { suffix -= 1 }
+        return NSRange(location: prefix, length: old.length - prefix - suffix)
+    }
 
     /// Gives the editor the keyboard, now or once its text view is in a window.
     func focus() {

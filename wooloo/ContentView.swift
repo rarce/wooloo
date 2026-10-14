@@ -149,7 +149,9 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             notifier.acknowledge(paneID: herdr.selectedPaneID)
+            documentStore.checkDisk()
         }
+        .onReceive(Self.diskChanges) { checkDisk(after: $0) }
         .sheet(isPresented: $window.showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               showShortcuts: window.settingsShowShortcuts,
@@ -206,6 +208,8 @@ struct ContentView: View {
             Button("Rename") { commitRename() }
             Button("Cancel", role: .cancel) { window.renameTarget = nil }
         }
+        // Here rather than in the document's view, which a tab saved from its context menu lacks.
+        .background { overwriteAlert }
         .confirmationDialog(window.closeTarget?.title ?? "Close?", isPresented: Binding(
             get: { window.closeTarget != nil }, set: { if !$0 { window.closeTarget = nil } }
         )) {
@@ -783,7 +787,9 @@ struct ContentView: View {
         return WorkspaceDocumentView(document: $documentStore.documents[index], onSave: {
             saveDocument(id)
         }, onReload: {
-            documentStore.load(id)
+            documentStore.revert(id)
+        }, onKeepEdits: {
+            documentStore.keepEdits(id)
         }, onOpenFile: { [location = documentStore.documents[index].location] path in
             openDocument(.file, path: path, at: location)
         }, onScroll: { position, anchor in
@@ -800,6 +806,7 @@ struct ContentView: View {
             Image(systemName: document?.icon ?? "magnifyingglass")
                 .foregroundStyle(theme.accent)
             Text(document?.title ?? search.title).lineLimit(1)
+                .strikethrough(document?.isDeletedOnDisk == true)
                 .foregroundStyle(focused ? .primary : .secondary)
             if document?.isDirty == true { Circle().fill(theme.warning).frame(width: 5, height: 5) }
             Spacer(minLength: 6)
@@ -1036,6 +1043,7 @@ struct ContentView: View {
                     Image(systemName: document.icon)
                         .foregroundStyle(theme.accent)
                     Text(document.title).lineLimit(1).italic(document.isPreview)
+                        .strikethrough(document.isDeletedOnDisk)
                     if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
                 }
                 .font(.system(size: typography.body))
@@ -1154,6 +1162,36 @@ struct ContentView: View {
         documentStore.keepOpen(id)
     }
 
+    /// Posted when the explorer reloads its Space, on file events here and its polls over SSH,
+    /// on file events its listing skips, and after Git and file operations.
+    private static let diskChanges = NotificationCenter.default.publisher(for: WorkspaceFiles.repositoryDidChange)
+        .merge(with: NotificationCenter.default.publisher(for: WorkspaceFiles.filesDidChange))
+        .receive(on: DispatchQueue.main)
+
+    /// Open files may have changed on disk: at one location, or anywhere without one.
+    private func checkDisk(after notification: Notification) {
+        documentStore.checkDisk(at: notification.object as? String)
+    }
+
+    private var overwriteAlert: some View {
+        Color.clear.alert("“\(overwriteTarget?.title ?? "")” changed on disk", isPresented: Binding(
+            get: { overwriteTarget != nil },
+            // Each button, Cancel also for Escape, settles its own document.
+            set: { _ in }
+        ), presenting: overwriteTarget) { document in
+            Button("Overwrite") { commands.overwriteDocument(document.id) }
+            Button("Reload", role: .destructive) { documentStore.revert(document.id) }
+            Button("Cancel", role: .cancel) { documentStore.cancelOverwrite(document.id) }
+        } message: { _ in
+            Text("The file is newer than the version you edited. Overwrite it with your version, or reload it and discard your edits?")
+        }
+    }
+
+    /// A document whose save would overwrite a newer file on disk, to ask about.
+    private var overwriteTarget: WorkspaceDocument? {
+        documentStore.documents.first(where: \.asksToOverwrite)
+    }
+
     private func saveDocument(_ id: String) {
         commands.saveDocument(id)
     }
@@ -1216,7 +1254,7 @@ struct ContentView: View {
             Button("Save As…", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
         } else if document.kind == .file {
             Button("Save", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
-                .disabled(!document.isDirty)
+                .disabled(!document.canSave)
             Button("Open Changes", systemImage: "arrow.left.arrow.right") {
                 openDocument(.change, path: document.path, at: document.location)
             }

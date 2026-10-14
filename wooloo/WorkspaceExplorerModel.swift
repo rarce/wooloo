@@ -139,6 +139,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     private var monitoredLocation: WorkspaceFileLocation?
     private var gitWatchPaths: [String] = []
     private var pendingRefresh: Task<Void, Never>?
+    private var filesAnnouncement: Task<Void, Never>?
     private var needsRefresh = false
     private var applicationIsActive = true
     /// Refreshes pause while the app is inactive; tests of a mounted browser turn this off, since
@@ -270,6 +271,9 @@ final class WorkspaceExplorerModel: ObservableObject {
         let next = WorkspaceFileWatcher(paths: [location.root] + paths) { [weak self] events in
             guard let self, self.monitoringToken == token else { return }
             if self.eventsAffectListing(events, at: location) { self.requestRefresh() }
+            // Open files can be anywhere, also where the listing skips events, such as in a
+            // collapsed ignored folder.
+            if self.eventsOutsideGit(events, at: location) { self.announceFilesChanged(at: location) }
         }
         watcher?.stop()
         watcher = next
@@ -277,7 +281,26 @@ final class WorkspaceExplorerModel: ObservableObject {
         requestRefresh()
     }
 
+    /// Whether some event is about the Space's files rather than Git's metadata.
+    private func eventsOutsideGit(_ events: [WorkspaceFileWatcher.Event], at location: WorkspaceFileLocation) -> Bool {
+        let git = gitWatchPaths + [WorkspaceFileWatcher.canonicalPath(location.root) + "/.git"]
+        return events.contains { event in !git.contains { event.path == $0 || event.path.hasPrefix($0 + "/") } }
+    }
+
+    /// Posts `WorkspaceFiles.filesDidChange` once for the changes of a bounded window, as
+    /// `requestRefresh` batches reloads, so build output does not compare open files each time.
+    func announceFilesChanged(at location: WorkspaceFileLocation) {
+        guard filesAnnouncement == nil else { return }
+        filesAnnouncement = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            self?.filesAnnouncement = nil
+            NotificationCenter.default.post(name: WorkspaceFiles.filesDidChange, object: location.identity)
+        }
+    }
+
     func stopMonitoring() {
+        filesAnnouncement?.cancel()
+        filesAnnouncement = nil
         monitoringToken = nil
         monitoredLocation = nil
         watcher?.stop()

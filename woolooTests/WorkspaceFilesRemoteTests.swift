@@ -98,6 +98,95 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    /// Open documents learn what is on disk with one SSH command, in the version they keep;
+    /// a file outside the Space counts as gone, and one without a readable version is left out.
+    func testRemoteDiskVersionsMatchTheLocalOnes() throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n", "it's b.txt": "two\n"])
+        try sandbox.write(["secret.txt": "secret\n"], in: ".")
+        try sandbox.sh("ln -s ../secret.txt escape.txt && mkdir dir", in: "repo")
+        let paths = ["a.txt", "it's b.txt", "escape.txt", "dir", "missing.txt", "../secret.txt"]
+        let before = try invocations().count
+        let versions = WorkspaceFiles.diskVersions(paths, at: remote("repo"))
+        XCTAssertEqual(try invocations().count, before + 1, "One command for every file")
+        XCTAssertEqual(versions, [
+            "a.txt": .present(WorkspaceFiles.gitBlobHash(Data("one\n".utf8))),
+            "it's b.txt": .present(WorkspaceFiles.gitBlobHash(Data("two\n".utf8))),
+            "escape.txt": .missing, "dir": .missing, "missing.txt": .missing,
+        ])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(paths, at: sandbox.location("repo")), versions)
+
+        // Without git on the machine nothing is known, rather than every file seeming deleted.
+        try sandbox.write(["shims/git": "#!/bin/sh\nexit 127\n"], in: ".")
+        try sandbox.sh("chmod 755 shims/git")
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["a.txt", "missing.txt"], at: remote("repo")), ["missing.txt": .missing])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["a.txt"], at: remote("missing-space")), [:])
+    }
+
+    /// A document of an SSH Space reloads when its file changes there, and is marked when it was
+    /// edited or deleted.
+    @MainActor
+    func testRemoteDocumentsFollowTheirFiles() async throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n", "b.txt": "two\n", "c.txt": "three\n"])
+        let location = remote("repo")
+        let store = WorkspaceDocumentStore()
+        for path in ["a.txt", "b.txt", "c.txt"] { store.open(.file, path: path, at: location) }
+        for _ in 0..<500 where store.documents.contains(where: \.isLoading) { try await Task.sleep(nanoseconds: 10_000_000) }
+        store.documents[1].text = "mine\n"
+        try sandbox.write(["a.txt": "theirs\n", "b.txt": "theirs\n"], in: "repo")
+        try sandbox.sh("rm c.txt", in: "repo")
+        await store.checkDisk(at: location.identity).value
+        for _ in 0..<500 where store.documents[0].text != "theirs\n" { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(store.documents.map(\.text), ["theirs\n", "mine\n", "three\n"])
+        XCTAssertEqual(store.documents.map(\.diskState), [
+            .current, .changed(version: WorkspaceFiles.gitBlobHash(Data("theirs\n".utf8))), .deleted,
+        ])
+    }
+
+    /// A remote file whose size, times and inode are unchanged is not hashed again, unless they
+    /// changed in the last two seconds, which a write in the same second would not change; the
+    /// status change time counts, since tools that keep the modification time cannot set it back.
+    func testRemoteDiskVersionsHashOnlyChangedFiles() throws {
+        try sandbox.repository("repo", files: ["old.txt": "one\n", "kept.txt": "two\n"])
+        try sandbox.sh("touch -t 202001010000 old.txt kept.txt", in: "repo")
+        Thread.sleep(forTimeInterval: 2.2)
+        try sandbox.write(["shims/git": "#!/bin/sh\necho \"$@\" >> '\(sandbox.path("git.log"))'\nexec /usr/bin/git \"$@\"\n"], in: ".")
+        try sandbox.sh("chmod 755 shims/git")
+        func hashed() -> [String] {
+            ((try? String(contentsOfFile: sandbox.path("git.log"), encoding: .utf8)) ?? "")
+                .split(separator: "\n").compactMap { $0.split(separator: "/").last.map(String.init) }.sorted()
+        }
+        let location = remote("repo")
+        let first = WorkspaceFiles.diskVersions(["old.txt", "kept.txt"], at: location)
+        XCTAssertEqual(hashed(), ["kept.txt", "old.txt"])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["old.txt", "kept.txt"], at: location), first)
+        XCTAssertEqual(hashed(), ["kept.txt", "old.txt"], "Unchanged files are not hashed again")
+
+        // The same size, with the modification time put back: only the change time moved.
+        try sandbox.sh("printf 'TWO\\n' > kept.txt && touch -t 202001010000 kept.txt", in: "repo")
+        let kept = WorkspaceFiles.gitBlobHash(Data("TWO\n".utf8))
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["kept.txt"], at: location), ["kept.txt": .present(kept)])
+        XCTAssertEqual(WorkspaceFiles.diskVersions(["kept.txt"], at: location), ["kept.txt": .present(kept)])
+        XCTAssertEqual(hashed(), ["kept.txt", "kept.txt", "kept.txt", "old.txt"],
+                       "A recent change time is hashed again each time")
+    }
+
+    /// An unreachable machine does not hold up the check of this Mac's files.
+    @MainActor
+    func testSlowMachineDoesNotDelayLocalChecks() async throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n"])
+        try sandbox.repository("local", files: ["b.txt": "two\n"])
+        let store = WorkspaceDocumentStore()
+        store.open(.file, path: "a.txt", at: remote("repo"))
+        store.open(.file, path: "b.txt", at: sandbox.location("local"))
+        for _ in 0..<500 where store.documents.contains(where: \.isLoading) { try await Task.sleep(nanoseconds: 10_000_000) }
+        try sandbox.write(["slow": ""], in: ".")
+        try sandbox.write(["b.txt": "theirs\n"], in: "local")
+        let check = store.checkDisk()
+        for _ in 0..<30 where store.documents[1].text != "theirs\n" { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(store.documents[1].text, "theirs\n", "The local file reloads while the machine answers")
+        await check.value
+    }
+
     func testRemoteReadRefusesFilesOutsideTheSpace() throws {
         try sandbox.repository("repo")
         try sandbox.write(["secret.txt": "secret\n"], in: ".")

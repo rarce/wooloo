@@ -418,6 +418,10 @@ final class WorkspaceDocumentStore: ObservableObject {
             }
             guard let index = documents.firstIndex(where: { $0.id == id && $0.loadRequest == request }) else { return }
             documents[index].isLoading = false
+            if case .success = result {
+                documents[index].diskState = .current
+                documents[index].asksToOverwrite = false
+            }
             switch result {
             case .success(.pdf(let content)):
                 if let pdf = documents[index].pdf {
@@ -437,9 +441,19 @@ final class WorkspaceDocumentStore: ObservableObject {
                 documents[index].error = nil
             case .success(.text(let content)):
                 // A slow local/SSH read must not replace work entered after it started.
-                if documents[index].text == document.text { documents[index].text = content.text }
-                documents[index].savedText = content.text
-                documents[index].version = content.version
+                if documents[index].text != document.text, kind == .file, let previous = document.version,
+                   previous != content.version {
+                    // Typed during the read: the edits start from the previous version, so a save
+                    // asks before overwriting the newer file.
+                    documents[index].diskState = .changed(version: content.version)
+                } else {
+                    if documents[index].text == document.text, documents[index].text != content.text {
+                        documents[index].text = content.text
+                        documents[index].diskReload = UUID()
+                    }
+                    documents[index].savedText = content.text
+                    documents[index].version = content.version
+                }
                 documents[index].diffPatches = content.patches
                 documents[index].error = nil
                 let length = (documents[index].text as NSString).length
@@ -455,18 +469,50 @@ final class WorkspaceDocumentStore: ObservableObject {
         }
     }
 
-    /// Saves a file with unsaved edits, unless it changed on disk since it was read.
+    /// Saves a file with unsaved edits, or recreates one deleted on disk. A file changed on disk
+    /// since it was read is not overwritten: the document asks first (`asksToOverwrite`), and
+    /// `overwrite` saves over it.
     func save(_ id: String, onSaved: @escaping () -> Void = {}) {
+        save(id, overwriting: false, onSaved: onSaved)
+    }
+
+    /// `overwriting` writes the buffer even without edits, as Overwrite does for a tab whose
+    /// deleted file came back with other contents.
+    private func save(_ id: String, overwriting: Bool, onSaved: @escaping () -> Void) {
         guard let index = documents.firstIndex(where: { $0.id == id }),
-              documents[index].isEditable,
+              documents[index].isEditable, !documents[index].isUntitled, !documents[index].isSaving,
               let version = documents[index].version,
-              documents[index].isDirty else { return }
+              documents[index].isDirty || documents[index].isDeletedOnDisk || overwriting else { return }
+        if case .changed = documents[index].diskState {
+            documents[index].asksToOverwrite = true
+            return
+        }
         let document = documents[index]
+        let recreate = document.isDeletedOnDisk
         documents[index].isSaving = true
         Task {
             let result = await WorkspaceFiles.blocking(at: document.location, priority: .userInitiated) {
-                Result { try WorkspaceFiles.save(document.text, path: document.path,
-                                                 expectedVersion: version, at: document.location) }
+                () -> Result<String, any Error> in
+                var created = false
+                do {
+                    if recreate {
+                        // Checked first, so a file too large to save does not leave an empty one.
+                        guard document.text.utf8.count <= WorkspaceFiles.fileByteLimit(for: document.path) else {
+                            throw WorkspaceFileError.message("File is too large")
+                        }
+                        // Refuses a file something else created meanwhile, which then asks to overwrite.
+                        try WorkspaceFiles.createFile(document.path, at: document.location)
+                        created = true
+                        return .success(try WorkspaceFiles.save(document.text, path: document.path,
+                            expectedVersion: WorkspaceFiles.gitBlobHash(Data()), at: document.location))
+                    }
+                    return .success(try WorkspaceFiles.save(document.text, path: document.path,
+                                                            expectedVersion: version, at: document.location))
+                } catch {
+                    // Whether it failed because the file changed or went away.
+                    let disk = WorkspaceFiles.diskVersions([document.path], at: document.location)[document.path]
+                    return .failure(SaveFailure(message: error.localizedDescription, disk: disk, created: created))
+                }
             }
             guard let currentIndex = documents.firstIndex(where: { $0.id == id && $0.backupID == document.backupID }) else { return }
             documents[currentIndex].isSaving = false
@@ -475,12 +521,79 @@ final class WorkspaceDocumentStore: ObservableObject {
                 documents[currentIndex].version = nextVersion
                 documents[currentIndex].savedText = document.text
                 documents[currentIndex].error = nil
+                documents[currentIndex].diskState = .current
+                documents[currentIndex].asksToOverwrite = false
                 schedulePersistence(immediately: true)
                 onSaved()
-            case .failure(let failure):
-                documents[currentIndex].error = failure.localizedDescription
+            case .failure(let error):
+                let failure = error as? SaveFailure ?? SaveFailure(message: error.localizedDescription, disk: nil, created: false)
+                switch failure.disk {
+                case .present(let current) where failure.created && current == WorkspaceFiles.gitBlobHash(Data()):
+                    // Recreated empty, then the write failed: the edits now stand against that file.
+                    documents[currentIndex].version = current
+                    documents[currentIndex].savedText = ""
+                    documents[currentIndex].diskState = .current
+                    documents[currentIndex].error = failure.message
+                case .present(let current) where current != version || recreate:
+                    if recreate { keepAsUnsaved(currentIndex) }
+                    documents[currentIndex].diskState = .changed(version: current)
+                    documents[currentIndex].asksToOverwrite = true
+                    documents[currentIndex].error = nil
+                case .missing:
+                    documents[currentIndex].diskState = .deleted
+                    documents[currentIndex].error = failure.message
+                default:
+                    documents[currentIndex].error = failure.message
+                }
             }
         }
+    }
+
+    /// Makes a tab whose file was deleted count as unsaved, so a file that comes back at its
+    /// path neither replaces its text nor lets it close without asking.
+    private func keepAsUnsaved(_ index: Int) {
+        if !documents[index].text.isEmpty && !documents[index].isDirty { documents[index].savedText = "" }
+    }
+
+    private struct SaveFailure: Error {
+        let message: String
+        let disk: WorkspaceDiskVersion?
+        let created: Bool
+    }
+
+    /// Keeps the edits of a document whose file changed on disk: its next save overwrites that
+    /// file. Without edits to keep, it reloads the file instead.
+    func keepEdits(_ id: String) {
+        guard let index = documents.firstIndex(where: { $0.id == id }),
+              case .changed(let current) = documents[index].diskState else { return }
+        documents[index].asksToOverwrite = false
+        guard documents[index].isDirty else { return load(id) }
+        documents[index].version = current
+        documents[index].diskState = .current
+    }
+
+    /// Saves a document over the newer file on disk, as asked by `asksToOverwrite`.
+    func overwrite(_ id: String, onSaved: @escaping () -> Void = {}) {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        documents[index].asksToOverwrite = false
+        if case .changed(let current) = documents[index].diskState {
+            documents[index].version = current
+            documents[index].diskState = .current
+        }
+        save(id, overwriting: true, onSaved: onSaved)
+    }
+
+    /// Leaves a document unsaved, as Cancel does when its save asked to overwrite a newer file.
+    func cancelOverwrite(_ id: String) {
+        guard let index = documents.firstIndex(where: { $0.id == id }), documents[index].asksToOverwrite else { return }
+        documents[index].asksToOverwrite = false
+    }
+
+    /// Reads the file again, discarding unsaved edits.
+    func revert(_ id: String) {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        documents[index].asksToOverwrite = false
+        load(id)
     }
 
     /// Closes a document. Unsaved edits need `force`; without it nothing closes and this
@@ -505,11 +618,74 @@ final class WorkspaceDocumentStore: ObservableObject {
         }
     }
 
-    /// Reads again the open files that something else wrote, keeping tabs with unsaved edits.
-    func reloadUnedited(_ paths: [String], at location: WorkspaceFileLocation) {
-        for document in documents where document.kind == .file && !document.isDirty
-            && document.location.identity == location.identity && paths.contains(document.path) {
-            load(document.id)
+    // MARK: Changes made outside the editor
+
+    private var diskChecks: [String: Task<Void, Never>] = [:]
+    private var queuedDiskChecks: Set<String> = []
+
+    /// Compares the open files at a location (its `identity`; every location when nil) with the
+    /// files on disk, as VS Code and Zed do: a tab without unsaved edits reloads, one with edits
+    /// keeps them and is marked `.changed`, and a deleted file keeps its tab, marked `.deleted`.
+    /// Each location is checked on its own, so an unreachable machine delays no other; checks
+    /// asked for while one of a location runs are made after it.
+    @discardableResult
+    func checkDisk(at identity: String? = nil) -> Task<Void, Never> {
+        let identities = identity.map { [$0] }
+            ?? Array(Set(documents.filter(Self.followsDisk).map(\.location.identity)))
+        let tasks = identities.map(checkDisk(location:))
+        return Task { for task in tasks { await task.value } }
+    }
+
+    private func checkDisk(location identity: String) -> Task<Void, Never> {
+        queuedDiskChecks.insert(identity)
+        if let running = diskChecks[identity] { return running }
+        let task = Task { [weak self] in
+            while let self, self.queuedDiskChecks.remove(identity) != nil {
+                await self.compareWithDisk(at: identity)
+            }
+            self?.diskChecks[identity] = nil
+        }
+        diskChecks[identity] = task
+        return task
+    }
+
+    /// Files read from disk and not being read or written right now.
+    private static func followsDisk(_ document: WorkspaceDocument) -> Bool {
+        document.kind == .file && !document.isUntitled && document.version != nil
+            && !document.isLoading && !document.isSaving
+    }
+
+    private func compareWithDisk(at identity: String) async {
+        let checked = documents.filter { Self.followsDisk($0) && $0.location.identity == identity }
+        guard let location = checked.first?.location else { return }
+        let paths = checked.map(\.path)
+        let versions = await WorkspaceFiles.blocking(at: location, priority: .utility) {
+            Optional(WorkspaceFiles.diskVersions(paths, at: location))
+        } ?? [:]
+        for document in checked {
+            // A load or save since the check started knows better.
+            guard let disk = versions[document.path],
+                  let index = documents.firstIndex(where: { $0.id == document.id && $0.backupID == document.backupID
+                      && $0.loadRequest == document.loadRequest && $0.version == document.version }),
+                  Self.followsDisk(documents[index]) else { continue }
+            switch disk {
+            case .present(let current) where current == document.version:
+                if documents[index].diskState != .current {
+                    documents[index].diskState = .current
+                    documents[index].asksToOverwrite = false
+                }
+            case .present(let current):
+                let marked = documents[index].diskState == .changed(version: current)
+                // The buffer of a deleted file is the only copy of that text: the other file
+                // that came back is no reason to drop it.
+                if documents[index].isDeletedOnDisk { keepAsUnsaved(index) }
+                if !marked { documents[index].diskState = .changed(version: current) }
+                // Also once edits are undone. A reload that failed is not retried until the file
+                // changes again.
+                if !documents[index].isDirty && !(marked && documents[index].error != nil) { load(document.id) }
+            case .missing:
+                if documents[index].diskState != .deleted { documents[index].diskState = .deleted }
+            }
         }
     }
 }

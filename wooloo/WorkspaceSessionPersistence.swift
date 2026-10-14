@@ -28,6 +28,8 @@ struct WorkspaceDocumentSnapshot: Codable {
     var text: String?
     var savedText: String?
     var version: String?
+    /// The file was deleted on disk; missing in sessions saved before this was kept.
+    var deletedOnDisk: Bool?
 
     @MainActor
     init(_ document: WorkspaceDocument) {
@@ -45,10 +47,12 @@ struct WorkspaceDocumentSnapshot: Codable {
         cursorPositions = document.cursorPositions
         scrollPosition = document.scrollPosition
         scrollAnchor = document.scrollAnchor
-        hasBackup = document.isDirty || document.isUntitled
+        // A tab whose file was deleted keeps the only copy of its text.
+        hasBackup = document.isDirty || document.isUntitled || document.isDeletedOnDisk
         text = hasBackup ? document.text : nil
         savedText = hasBackup ? document.savedText : nil
         version = hasBackup ? document.version : nil
+        deletedOnDisk = document.isDeletedOnDisk ? true : nil
     }
 
     var descriptor: Self {
@@ -84,6 +88,8 @@ struct WorkspaceDocumentSnapshot: Codable {
         result.text = text ?? ""
         result.savedText = savedText ?? ""
         result.version = version
+        // Until a check finds the file again, so the backup of its text is kept meanwhile.
+        if hasBackup && deletedOnDisk == true { result.diskState = .deleted }
         result.isLoading = !hasBackup
         let length = (result.text as NSString).length
         result.cursorPositions = cursorPositions.map { position in
