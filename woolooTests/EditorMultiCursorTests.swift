@@ -1397,9 +1397,10 @@ final class EditorMultiCursorTests: XCTestCase {
     }
 
     func testAnEditorWithNoRoomToWrapInKeepsALineInOneRow() throws {
-        // Narrower than the gutter, then room for less than a character beside it.
-        for width in [20.0, 55] {
-            let (_, textView) = try makeEditor(text: String(repeating: "word ", count: 1_000), wrapLines: true,
+        // Narrower than the gutter, then room for less than a character beside it, also for a line that
+        // starts with a character drawn without width.
+        for (width, text) in [(20.0, "word "), (55, "word "), (58, "\u{FEFF}word ")] {
+            let (_, textView) = try makeEditor(text: String(repeating: text, count: 40_000), wrapLines: true,
                                                width: width)
             XCTAssertEqual(textView.layoutManager.textLineForIndex(0)?.data.lineFragments.count, 1, "at \(width)")
             window?.close()
