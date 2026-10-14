@@ -1957,6 +1957,11 @@ enum WorkspaceFiles {
         let source = input.map { _ in Pipe() }
         // Without input, a command must not read the app's own stdin; SSH would forward it.
         process.standardInput = source ?? FileHandle.nullDevice
+        // Waited on through the termination handler, not `waitUntilExit()`: that one runs the
+        // thread's run loop and, when the loop has a source, notices the exit only when a turn of
+        // it ends, often 60–140 ms after the process exited (docs/perf/README.md).
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         // Drained on its own thread, so a command that writes a lot to stderr cannot stall on a full pipe.
         // A thread, not a global queue: callers block here on Swift's cooperative threads, and once they
@@ -1968,10 +1973,19 @@ enum WorkspaceFiles {
             errorData = errors.fileHandleForReading.readDataToEndOfFile()
             errorsRead.signal()
         }.start()
+        // Stops the command: SIGTERM, then SIGKILL 2 s later if it is still running, so a command
+        // that ignores SIGTERM cannot hold the caller and its slot forever.
+        let stop = {
+            guard process.isRunning else { return }
+            process.terminate()
+            processTimeouts.asyncAfter(deadline: .now() + 2) {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+        }
         // A private serial queue gets a thread beyond that limit too, so the timeout always fires.
         let timer = DispatchSource.makeTimerSource(queue: processTimeouts)
         timer.schedule(deadline: .now() + timeout)
-        timer.setEventHandler { if process.isRunning { process.terminate() } }
+        timer.setEventHandler { stop() }
         timer.resume()
         // Input is written on its own thread too, so a command that prints while it reads cannot fill
         // the output pipe and wait on us while we wait on it. A command that exits early closes the
@@ -2000,16 +2014,16 @@ enum WorkspaceFiles {
             while let chunk = try output.fileHandleForReading.read(upToCount: 65_536), !chunk.isEmpty {
                 data.append(chunk)
                 if data.count > limit {
-                    if process.isRunning { process.terminate() }
+                    stop()
                     break
                 }
             }
         } catch {
             // Stop the command rather than leave it, its threads and its timer behind.
             readError = error
-            if process.isRunning { process.terminate() }
+            stop()
         }
-        process.waitUntilExit()
+        exited.wait()
         timer.cancel()
         // A process the command left running in the background can keep stderr or stdin open after
         // the command exits. Its threads are then left to finish on their own rather than waited on.
