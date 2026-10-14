@@ -145,6 +145,7 @@ jobs:
           key: sparkle-${{ hashFiles('scripts/release-appcast.sh') }}
 
       # docs/releases/vX.Y.Z.md when written by hand, otherwise GitHub's notes since the last release.
+      # The Keychain note goes into the update dialog too, since updating is what triggers it.
       - name: Release notes
         run: |
           if [ -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
@@ -153,6 +154,12 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" \
               --jq .body > build/release/notes.md
           fi
+          {
+            printf '\n## After updating\n\n'
+            printf 'wooloo is signed ad hoc for now, so macOS may ask again to let it read its Keychain items: '
+            printf 'the Remote Access tunnel token, and Claude Code'"'"'s sign-in when QUOTAS is on. '
+            printf 'A tunnel set to start when wooloo opens stays down on an unattended Mac until someone answers.\n'
+          } >> build/release/notes.md
 
       - name: Sign the update feed
         env:

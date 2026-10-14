@@ -102,6 +102,9 @@ struct WorkspaceDocument: Identifiable {
     var diskState = WorkspaceDiskState.current
     /// Set when saving would overwrite a newer file on disk, to ask first.
     var asksToOverwrite = false
+    /// The version on disk that the question asked about: Overwrite replaces only that one, so a
+    /// change that arrives while the question is shown is never overwritten unseen.
+    var overwriteVersion: String?
     /// Changes when the store replaces `text` with what is on disk, for a shown editor, which
     /// only reads its text binding when it is created, to take the new text.
     var diskReload: UUID?

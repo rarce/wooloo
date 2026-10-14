@@ -13,7 +13,7 @@ Herdr keeps owning the processes, layout and terminal state, so the same session
 
 wooloo is an independent project, not affiliated with or endorsed by Herdr, Anthropic or OpenAI.
 
-> **Status:** early development. Expect rough edges and breaking changes. See [`TODO.md`](TODO.md) for known issues and planned work.
+> **Status:** early preview (0.x), not notarized yet. Expect rough edges and breaking changes. See [`TODO.md`](TODO.md) for known issues and planned work.
 
 ## Features
 
@@ -60,19 +60,30 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 
 > **Unofficial.** This section uses Claude Code's and Codex's own sign-ins against endpoints that Anthropic and OpenAI do not document for third-party apps. It is not endorsed by either company, may conflict with their terms, and can stop working at any time. Use it at your own risk.
 
-The QUOTAS section is off until you turn it on. Once on, every two minutes while a window is active, wooloo:
+The QUOTAS section is off until you agree to a dialog that lists what it reads and where it sends it. The section's **Turn On Quotas…** button and its context menu open the same dialog; Cancel (or Escape) leaves it off, and nothing is read before you choose **Turn On**. Agreeing is per machine: agreeing for this Mac does not read an SSH machine's sign-ins when the explorer moves there, and an SSH machine whose target changes is asked about again. Copies that had QUOTAS on in 0.3.1 or earlier ask again once. Once on, every two minutes while a window is active, wooloo:
 
 - reads Claude Code's sign-in from `~/.claude/.credentials.json`, or else from the Keychain item `Claude Code-credentials` (macOS asks you to allow wooloo the first time);
 - reads Codex's sign-in from `${CODEX_HOME:-~/.codex}/auth.json` and the rate limits in its newest session logs;
 - sends those tokens to the usage endpoints that Claude Code (`api.anthropic.com/api/oauth/usage`) and the Codex CLI (`chatgpt.com/backend-api/wham/usage`) use themselves.
 
-When the explorer points at an SSH machine, wooloo reads that machine's sign-ins (its files, or its Keychain through `security`) instead of this Mac's, and the requests still leave from your Mac. wooloo keeps the tokens in memory only, never refreshes them, and never writes or logs them. Turn the section off from its context menu.
+When the explorer points at an SSH machine you agreed for, wooloo reads that machine's sign-ins (its files, or its Keychain through `security` if it is a Mac) instead of this Mac's, and the requests still leave from your Mac. wooloo keeps the tokens in memory only, never refreshes them, and never writes or logs them. **Turn Off Quotas** in the section's context menu turns it off on every machine.
+
+While wooloo is signed ad hoc, macOS ties an "Always Allow" on Claude Code's Keychain item to one build, so it may ask again after each update.
 
 ## Remote access
 
-> **This puts your Mac's SSH login on the internet.** Before turning it on, allow only key authentication: add a file such as `/etc/ssh/sshd_config.d/100-keys-only.conf` with `PasswordAuthentication no` and `KbdInteractiveAuthentication no`, then turn Remote Login off and on again.
+> **This puts your Mac's SSH login on the internet.** What is published is this Mac's SSH server (Remote Login, `localhost:22`), not only Herdr: anyone who reaches the tunnel's address can try to sign in to any account allowed to use SSH. Before turning it on, allow only key authentication: add a file such as `/etc/ssh/sshd_config.d/100-keys-only.conf` with `PasswordAuthentication no` and `KbdInteractiveAuthentication no`, then turn Remote Login off and on again. wooloo never changes SSH, firewall, Keychain or sharing settings for you.
 
 Settings → Remote Access (also in the command palette) publishes this Mac's SSH server through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), so an SSH client elsewhere can reach the Herdr session without opening a port. Clients still sign in with SSH, then run Herdr's own commands (`remote-api-bridge`, `terminal session control`).
+
+What wooloo checks before starting the tunnel, and what it does not:
+
+- **Checked:** that something answers on `localhost:22`, and which sign-in methods sshd offers your account. wooloo runs `ssh` to `127.0.0.1` offering no credential (no key, agent or password), and sshd answers with the methods it would accept. `cloudflared` also connects from this Mac, so sshd treats tunnel clients like this check. The attempt may appear in sshd's log as a failed sign-in.
+- **Key-only** (for example only `publickey`): the tunnel starts.
+- **Passwords accepted** (`password` or `keyboard-interactive`), **or the methods could not be learned:** nothing is published until you choose **Start Anyway**. That is your decision, not a check, and the status keeps saying the tunnel runs without verified key-only SSH.
+- **Sign-in without any credential:** wooloo refuses to publish.
+- **Not checked:** other accounts on this Mac (sshd's `Match User` rules can differ per account), whether Cloudflare Access protects a named tunnel, changes to sshd after the tunnel started, and the strength of your keys or passwords.
+- **Start the tunnel when wooloo opens** starts it only after a key-only check, since nobody is there to confirm anything else.
 
 - Needs `cloudflared` (`brew install cloudflared`) and Remote Login (System Settings → General → Sharing).
 - **Quick tunnel**: no Cloudflare account; a new `*.trycloudflare.com` address on every start. Anyone who learns it reaches your SSH login.
@@ -80,21 +91,23 @@ Settings → Remote Access (also in the command palette) publishes this Mac's SS
 - Other computers connect with `cloudflared` installed: `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" user@host`.
 - While the tunnel runs, wooloo also shows a QR code for a companion Android app that is not published yet.
 - The tunnel is wooloo's own `cloudflared` process: it stops when wooloo quits, and can start when wooloo opens.
+- **Updates and the Keychain.** wooloo is signed ad hoc for now, and macOS trusts an ad hoc app's access to a Keychain item for that exact build. After each update, macOS may ask again to let wooloo read the named tunnel's token. A tunnel set to start when wooloo opens on an unattended Mac stays down until someone answers that prompt.
 
 ## Privacy
 
-wooloo has no analytics or telemetry. It talks to the Herdr server on this Mac, to SSH machines you saved in Herdr, and over the network only to:
+The wooloo app has no analytics or telemetry. (The website, wooloo.dev, counts visits with Google Analytics; that is the site, not the app.) The app talks to the Herdr server on this Mac, to SSH machines you saved in Herdr, and over the network only to:
 
 - GitHub, at build time, to download the pinned Herdr binaries and Swift packages;
 - GitHub, to check for and download updates, once a day if you allow automatic checks;
 - your Git remotes, when you fetch, pull or push;
 - web images that a Markdown file you preview links to;
-- Anthropic's and OpenAI's usage endpoints, when you turn on QUOTAS;
+- Anthropic's and OpenAI's unofficial usage endpoints, when you turn on QUOTAS;
 - Cloudflare, when you turn on Remote Access.
 
 ## Requirements
 
-- **To run:** macOS 14 or later. Herdr 0.9.3 is included in the app; an existing compatible Herdr installation can also be used. Git and coding agent CLIs are optional, installed separately for their respective features.
+- **To run:** macOS 14 or later, Apple silicon or Intel. Herdr 0.9.3 is included in the app; an existing Herdr 0.9 or later installation can also be used. Git is optional, for the Git features.
+- **Coding agents are separate.** wooloo runs whatever agent CLI you have installed (Claude Code, Codex and others) inside Herdr's terminals; it does not include them. Each agent's CLI, account and subscription are your own and are set up with that agent.
 - **To build:** macOS 15.6 or later with Xcode 26 (one vendored package needs Swift 6.2).
 
 ## Install
@@ -110,6 +123,14 @@ xattr -dr com.apple.quarantine /Applications/wooloo.app
 Check the download against the SHA-256 in the release notes (`shasum -a 256 wooloo-<version>.zip`), or build from source below.
 
 From 0.2.0 on, wooloo updates itself from the GitHub releases with [Sparkle](https://sparkle-project.org): **wooloo → Check for Updates…**, or automatically once a day if you allow it when asked on the second launch. Updates are installed only when signed with the project's EdDSA key, and they skip the Gatekeeper prompt of the first install. Version 0.1.0 has no updater; download 0.2.0 or later once by hand.
+
+### First run
+
+1. Open wooloo. The setup window offers the included Herdr; keep **Use included Herdr**.
+2. **Choose Folder…** and pick a project folder. wooloo creates your first Space there, with a terminal.
+3. In that terminal, start an agent CLI you have installed, for example `claude` or `codex`. It appears in the sidebar's Agents section; its changed files show in the explorer and the Changes tree, where you can open their diffs and edit them.
+
+Quitting wooloo leaves Herdr and your agents running; the next launch reconnects to them.
 
 ## Build and run
 

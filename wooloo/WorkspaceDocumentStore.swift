@@ -421,6 +421,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             if case .success = result {
                 documents[index].diskState = .current
                 documents[index].asksToOverwrite = false
+                documents[index].overwriteVersion = nil
             }
             switch result {
             case .success(.pdf(let content)):
@@ -483,8 +484,9 @@ final class WorkspaceDocumentStore: ObservableObject {
               documents[index].isEditable, !documents[index].isUntitled, !documents[index].isSaving,
               let version = documents[index].version,
               documents[index].isDirty || documents[index].isDeletedOnDisk || overwriting else { return }
-        if case .changed = documents[index].diskState {
+        if case .changed(let current) = documents[index].diskState {
             documents[index].asksToOverwrite = true
+            documents[index].overwriteVersion = current
             return
         }
         let document = documents[index]
@@ -523,6 +525,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                 documents[currentIndex].error = nil
                 documents[currentIndex].diskState = .current
                 documents[currentIndex].asksToOverwrite = false
+                documents[currentIndex].overwriteVersion = nil
                 schedulePersistence(immediately: true)
                 onSaved()
             case .failure(let error):
@@ -538,6 +541,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                     if recreate { keepAsUnsaved(currentIndex) }
                     documents[currentIndex].diskState = .changed(version: current)
                     documents[currentIndex].asksToOverwrite = true
+                    documents[currentIndex].overwriteVersion = current
                     documents[currentIndex].error = nil
                 case .missing:
                     documents[currentIndex].diskState = .deleted
@@ -567,32 +571,45 @@ final class WorkspaceDocumentStore: ObservableObject {
         guard let index = documents.firstIndex(where: { $0.id == id }),
               case .changed(let current) = documents[index].diskState else { return }
         documents[index].asksToOverwrite = false
+        documents[index].overwriteVersion = nil
         guard documents[index].isDirty else { return load(id) }
         documents[index].version = current
         documents[index].diskState = .current
     }
 
-    /// Saves a document over the newer file on disk, as asked by `asksToOverwrite`.
+    /// Saves a document over the newer file on disk, as asked by `asksToOverwrite`. Only the
+    /// version the question was about is overwritten: when the file changed again while it was
+    /// shown, nothing is written, and the next save asks about the newer file.
     func overwrite(_ id: String, onSaved: @escaping () -> Void = {}) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        let asked = documents[index].overwriteVersion
         documents[index].asksToOverwrite = false
+        documents[index].overwriteVersion = nil
         if case .changed(let current) = documents[index].diskState {
+            if let asked, asked != current {
+                documents[index].error = Self.changedAgainMessage
+                return
+            }
             documents[index].version = current
             documents[index].diskState = .current
         }
         save(id, overwriting: true, onSaved: onSaved)
     }
 
+    static let changedAgainMessage = "The file changed on disk again while you were asked, so nothing was saved. Save again to decide about the newer file."
+
     /// Leaves a document unsaved, as Cancel does when its save asked to overwrite a newer file.
     func cancelOverwrite(_ id: String) {
         guard let index = documents.firstIndex(where: { $0.id == id }), documents[index].asksToOverwrite else { return }
         documents[index].asksToOverwrite = false
+        documents[index].overwriteVersion = nil
     }
 
     /// Reads the file again, discarding unsaved edits.
     func revert(_ id: String) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
         documents[index].asksToOverwrite = false
+        documents[index].overwriteVersion = nil
         load(id)
     }
 
@@ -673,6 +690,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                 if documents[index].diskState != .current {
                     documents[index].diskState = .current
                     documents[index].asksToOverwrite = false
+                    documents[index].overwriteVersion = nil
                 }
             case .present(let current):
                 let marked = documents[index].diskState == .changed(version: current)

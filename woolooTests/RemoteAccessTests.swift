@@ -79,8 +79,10 @@ final class RemoteAccessTests: XCTestCase {
             exec sleep 30
             """)
         model.start()
-        XCTAssertEqual(model.state, .starting)
+        XCTAssertEqual(model.state, .checking, "sshd is checked before anything is published")
         try await waitFor { model.state == .running(hostname: "fake-host.trycloudflare.com") }
+        XCTAssertFalse(model.startedWithoutVerifiedKeys)
+        XCTAssertEqual(model.sshCheck, keysOnly)
         model.stop()
         XCTAssertEqual(model.state, .stopped)
         XCTAssertFalse(model.isActive)
@@ -159,6 +161,9 @@ final class RemoteAccessTests: XCTestCase {
         let model = RemoteAccessModel(defaults: defaults, tokens: memoryTokens)
         model.start()
         defer { model.stop() }
+        try await waitFor({ model.state != .checking }, timeout: 30)
+        // Running this test is the developer's confirmation for a server that accepts passwords.
+        if case .needsConfirmation = model.state { model.startDespiteCheck() }
         try await waitFor({ if case .running = model.state { true } else { false } }, timeout: 120)
         guard case .running(let hostname) = model.state else { return XCTFail("\(model.state)") }
         // A client speaks SSH inside binary WebSocket messages, as `cloudflared access ssh` and the Android app do.
@@ -173,18 +178,161 @@ final class RemoteAccessTests: XCTestCase {
         XCTAssertTrue(banner.hasPrefix("SSH-2.0-"), banner)
     }
 
+    // MARK: Checking sshd before publishing it
+
+    func testSSHCheckReadsTheMethodsSSHDOffers() {
+        XCTAssertEqual(RemoteAccessSSHProbe.result(user: "me", failure: "me@127.0.0.1: Permission denied (publickey)."),
+                       .keysOnly(user: "me", methods: ["publickey"]))
+        XCTAssertEqual(RemoteAccessSSHProbe.result(
+            user: "me", failure: "Warning: something\nme@127.0.0.1: Permission denied (publickey,password,keyboard-interactive)."),
+            .acceptsPasswords(user: "me", methods: ["publickey", "password", "keyboard-interactive"]))
+        XCTAssertEqual(RemoteAccessSSHProbe.result(user: "me", failure: "me@127.0.0.1: Permission denied (keyboard-interactive)."),
+                       .acceptsPasswords(user: "me", methods: ["keyboard-interactive"]))
+        XCTAssertEqual(RemoteAccessSSHProbe.result(user: "me", failure: nil), .acceptsNoCredential(user: "me"))
+        XCTAssertEqual(RemoteAccessSSHProbe.result(user: "me", failure: "ssh: connect to host 127.0.0.1 port 22: Connection refused"),
+                       .unknown(reason: "ssh: connect to host 127.0.0.1 port 22: Connection refused"))
+        XCTAssertEqual(RemoteAccessSSHProbe.result(user: "me", failure: "me@127.0.0.1: Permission denied ()."),
+                       .unknown(reason: "sshd listed no sign-in methods"))
+        XCTAssertTrue(RemoteAccessSSHCheck.keysOnly(user: "me", methods: ["publickey"]).isVerifiedKeysOnly)
+        XCTAssertFalse(RemoteAccessSSHCheck.unknown(reason: "x").isVerifiedKeysOnly)
+        XCTAssertTrue(RemoteAccessSSHCheck.acceptsNoCredential(user: "me").refusesStart)
+    }
+
+    /// The probe offers no credential and touches no user configuration or known_hosts file.
+    func testSSHProbeSendsNoCredential() {
+        let arguments = RemoteAccessSSHProbe.arguments(user: "me")
+        let options = stride(from: 0, to: arguments.count - 1, by: 1)
+            .filter { arguments[$0] == "-o" }.map { arguments[$0 + 1] }
+        for option in ["BatchMode=yes", "PreferredAuthentications=none", "PubkeyAuthentication=no",
+                       "IdentityAgent=none", "NumberOfPasswordPrompts=0", "UserKnownHostsFile=/dev/null"] {
+            XCTAssertTrue(options.contains(option), option)
+        }
+        XCTAssertEqual(Array(arguments.prefix(2)), ["-F", "/dev/null"])
+        XCTAssertEqual(Array(arguments.suffix(2)), ["me@127.0.0.1", "true"])
+    }
+
+    /// The probe runs `ssh` and reads its refusal; a missing `ssh` is reported, not guessed.
+    func testSSHProbeRunsSSH() throws {
+        let ssh = directory.appendingPathComponent("ssh")
+        try "#!/bin/sh\necho \"me@127.0.0.1: Permission denied (publickey,password).\" >&2\nexit 255\n"
+            .write(to: ssh, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ssh.path)
+        XCTAssertEqual(RemoteAccessSSHProbe.check(user: "me", ssh: ssh.path),
+                       .acceptsPasswords(user: "me", methods: ["publickey", "password"]))
+        guard case .unknown = RemoteAccessSSHProbe.check(user: "me", ssh: directory.appendingPathComponent("none").path)
+        else { return XCTFail("A missing ssh is unknown") }
+    }
+
+    /// sshd accepting passwords publishes nothing until the user confirms; Cancel leaves it off,
+    /// and a tunnel started on the user's word says so.
+    func testPasswordsWaitForConfirmation() async throws {
+        let marker = directory.appendingPathComponent("ran")
+        let passwords = RemoteAccessSSHCheck.acceptsPasswords(user: "me", methods: ["publickey", "password"])
+        let model = makeModel(script: markedTunnel(marker), check: { passwords })
+        model.start()
+        try await waitFor { model.state == .needsConfirmation(passwords) }
+        XCTAssertFalse(model.isActive)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Nothing runs before confirming")
+
+        model.cancelStart()
+        XCTAssertEqual(model.state, .stopped)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+        model.start()
+        try await waitFor { model.state == .needsConfirmation(passwords) }
+        model.startDespiteCheck()
+        try await waitFor { model.state == .running(hostname: "fake-host.trycloudflare.com") }
+        XCTAssertTrue(model.startedWithoutVerifiedKeys, "Confirmed, not verified")
+        model.stop()
+        XCTAssertFalse(model.startedWithoutVerifiedKeys)
+    }
+
+    /// A check that could not learn the methods asks too.
+    func testAnUnknownCheckAsksBeforePublishing() async throws {
+        let marker = directory.appendingPathComponent("ran")
+        let unknown = RemoteAccessSSHCheck.unknown(reason: "timed out")
+        let model = makeModel(script: markedTunnel(marker), check: { unknown })
+        model.start()
+        try await waitFor { model.state == .needsConfirmation(unknown) }
+        XCTAssertTrue(unknown.summary.contains("cannot tell whether it accepts passwords"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        model.cancelStart()
+    }
+
+    /// sshd letting anyone in is never published, even on the user's word.
+    func testAServerWithoutCredentialsIsNeverPublished() async throws {
+        let marker = directory.appendingPathComponent("ran")
+        let open = RemoteAccessSSHCheck.acceptsNoCredential(user: "me")
+        let model = makeModel(script: markedTunnel(marker), check: { open })
+        model.start()
+        try await waitFor { model.state == .failed(open.summary) }
+        model.startDespiteCheck()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(model.state, .failed(open.summary))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    /// Starting as wooloo opens needs a key-only check: nobody is there to confirm.
+    func testStartAtLaunchNeedsKeyOnlySSH() async throws {
+        let marker = directory.appendingPathComponent("ran")
+        let passwords = makeModel(script: markedTunnel(marker),
+                                  check: { .acceptsPasswords(user: "me", methods: ["password"]) })
+        passwords.startAtLaunch()
+        try await waitFor { if case .failed = passwords.state { true } else { false } }
+        guard case .failed(let message) = passwords.state else { return XCTFail("\(passwords.state)") }
+        XCTAssertTrue(message.hasPrefix("Not started when wooloo opened"), message)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+        let keys = makeModel(script: markedTunnel(marker))
+        keys.startAtLaunch()
+        try await waitFor { keys.state == .running(hostname: "fake-host.trycloudflare.com") }
+        keys.stop()
+    }
+
+    /// Stopping while sshd is being checked publishes nothing.
+    func testStoppingDuringTheCheckPublishesNothing() async throws {
+        let marker = directory.appendingPathComponent("ran")
+        let model = makeModel(script: markedTunnel(marker), check: {
+            Thread.sleep(forTimeInterval: 0.3)
+            return .keysOnly(user: "me", methods: ["publickey"])
+        })
+        model.start()
+        XCTAssertTrue(model.isActive)
+        model.stop()
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(model.state, .stopped)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     // MARK: Helpers
 
     private var memoryTokens: RemoteAccessTokenStore {
         RemoteAccessTokenStore(load: { [unowned self] in token }, save: { [unowned self] in token = $0 })
     }
 
-    private func makeModel(script: String) -> RemoteAccessModel {
+    private let keysOnly = RemoteAccessSSHCheck.keysOnly(user: "me", methods: ["publickey"])
+
+    /// A fake `cloudflared` running `script`, and an SSH check answering `check`.
+    private func makeModel(script: String,
+                           check: @escaping @Sendable () -> RemoteAccessSSHCheck = {
+                               .keysOnly(user: "me", methods: ["publickey"])
+                           }) -> RemoteAccessModel {
         let url = directory.appendingPathComponent("cloudflared-\(UUID().uuidString)")
         try? ("#!/bin/sh\n" + script + "\n").write(to: url, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return RemoteAccessModel(defaults: defaults, tokens: memoryTokens, executable: { url.path },
-                                 isPublished: { _ in true })
+                                 isPublished: { _ in true }, checkSSHSignIn: check)
+    }
+
+    /// A fake `cloudflared` that leaves `marker` behind once it runs, then registers a quick tunnel.
+    private func markedTunnel(_ marker: URL) -> String {
+        """
+        touch '\(marker.path)'
+        echo "2026-10-07T14:09:27Z INF |  https://fake-host.trycloudflare.com  |" >&2
+        echo "2026-10-07T14:09:28Z INF Registered tunnel connection connIndex=0" >&2
+        exec sleep 30
+        """
     }
 
     private func waitFor(_ condition: @escaping @MainActor () -> Bool, timeout: TimeInterval = 5) async throws {

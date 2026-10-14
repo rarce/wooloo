@@ -115,6 +115,37 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "external\n")
     }
 
+    /// Edits restored after a relaunch over a file an agent changed meanwhile are kept and marked;
+    /// Cancel keeps both versions, and Keep Mine then saves them.
+    func testRestoredEditsOverAFileChangedWhileClosedAreKeptAndMarked() async throws {
+        let first = await store()
+        await open("a.txt", in: first)
+        first.documents[0].text = "mine\n"
+        try await first.flushPersistence()
+        try sandbox.write(["a.txt": "external\n"], in: "repo")
+
+        let restarted = await store(using: WorkspaceSessionPersistence(root: root))
+        await restarted.checkDisk().value
+        await settle(restarted)
+        let external = WorkspaceFiles.gitBlobHash(Data("external\n".utf8))
+        XCTAssertEqual(restarted.documents[0].text, "mine\n")
+        XCTAssertEqual(restarted.documents[0].diskState, .changed(version: external))
+
+        let id = restarted.documents[0].id
+        restarted.save(id)
+        await settle(restarted)
+        XCTAssertTrue(restarted.documents[0].asksToOverwrite)
+        restarted.cancelOverwrite(id)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "external\n")
+        XCTAssertEqual(restarted.documents[0].text, "mine\n")
+
+        restarted.keepEdits(id)
+        restarted.save(id)
+        await settle(restarted)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+        XCTAssertFalse(restarted.documents[0].isDirty)
+    }
+
     /// A tab without edits whose file was deleted keeps its text across a relaunch.
     func testTabsOfDeletedFilesAreBackedUp() async throws {
         let first = await store()
