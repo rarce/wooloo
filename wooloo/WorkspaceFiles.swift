@@ -476,6 +476,9 @@ enum WorkspaceFiles {
     /// `finished`. Skipped folders count as records too, so a walk with more than 1,000 of them
     /// and markers together can be cut, and truncated, a little before `maximumFiles` files.
     static var folderWalkMaximumRecords: Int { maximumFiles + 1_001 }
+    /// Links the SSH walk describes at most, the first it finds: each costs a `readlink`, about
+    /// 0.6 ms on one CPU, so 5,000 take about 3 s.
+    static let folderWalkMaximumLinks = 5_000
     /// How many folders down the walk of a folder outside a repository reads.
     static let folderWalkMaximumDepth = 12
     /// Seconds the walk of a folder outside a repository spends after reading the root; tests replace it.
@@ -749,10 +752,10 @@ enum WorkspaceFiles {
     /// `wooloo-symbolic-links` record. The records pass through `head`, with NUL and newline
     /// swapped around it, so the walk stops after `folderWalkMaximumRecords` of them, also inside
     /// the root, and its output stays under the SSH output limit; the walk is then truncated, as
-    /// on this Mac, and its links are not described. Once `head` is done it marks "$t/cut", and
-    /// the next batch ends there: a write into the pipe may not fail for a while, since `tr`
-    /// buffers what it passes on.
-    static func folderWalkScript(readingSkipped: Bool, links: Bool) -> String {
+    /// on this Mac. Once `head` is done it marks "$t/cut", and the next `find` ends the walk there:
+    /// a write into the pipe may not fail for a while, since `tr` buffers what it passes on. Only
+    /// the first `maximumLinks` links found are described, cut or not.
+    static func folderWalkScript(readingSkipped: Bool, links: Bool, maximumLinks: Int = folderWalkMaximumLinks) -> String {
         let skipped = readingSkipped ? [] : folderWalkSkippedFolders
         let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
         let entries = #"find "$@" -mindepth 1 -maxdepth 1 ! -name .git"#
@@ -760,14 +763,22 @@ enum WorkspaceFiles {
         // started in the background and its process ID left in "$t/pid" for the watchdog, which
         // marks the time as up ("$t/late") before reading that file, while `run_find` writes it
         // before checking the mark, so one of them always stops it. The batch then ends with
-        // status 255. (Not `r`, which some shells, such as mksh, define as an alias.) No find runs
-        // a command with -exec: a command it started would outlive it and print after the walk.
-        var batch = #"run_find() { if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
+        // status 255, as it does once `head` has cut the walk ("$t/cut"). (Not `r`, which some
+        // shells, such as mksh, define as an alias.) No find runs a command with -exec: a command
+        // it started would outlive it and print after the walk.
+        var batch = #"run_find() { [ ! -e "$t/cut" ] || exit 255; if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
             + #"[ -e "$t/late" ] && kill "$p" 2>/dev/null; wait "$p"; : > "$t/pid"; [ ! -e "$t/late" ] || exit 255; }; "#
-            + #"if [ -e "$t/cut" ] || { [ "$d" -gt 1 ] && [ -e "$t/late" ]; }; then exit 255; fi; "#
-            + "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
+            + #"if [ "$d" -gt 1 ] && [ -e "$t/late" ]; then exit 255; fi; "#
+        // Links are collected first, so a walk cut in a huge folder still has those it lists there,
+        // and only until `maximumLinks` are kept.
+        let swap = #"tr '\000\n' '\n\000'"#
+        if links {
+            batch += #"k=$(tr -cd '\000' < "$t/links" | wc -c); [ $k -ge "# + String(maximumLinks) + " ] || { run_find " + entries
+                + " -type l -print0 2>/dev/null | " + swap + " | head -n $((" + String(maximumLinks) + #" - k)) | "# + swap
+                + #" >> "$t/links"; }; "#
+        }
+        batch += "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
             + "run_find " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
-        if links { batch += "run_find " + entries + #" -type l -print0 2>/dev/null >> "$t/links"; "# }
         if !skipped.isEmpty {
             batch += #"printf 'wooloo-skipped\0'; run_find "# + entries + #" -type d \( "#
                 + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
@@ -791,12 +802,9 @@ enum WorkspaceFiles {
             + #"[ -n "$(xargs -0 sh -c "$c" sh < "$t/level" | head -n 1)" ] && printf '\0wooloo-partial\0'; break; fi; "#
             + #": > "$t/next"; if ! xargs -0 -n 256 sh -c "$b" sh < "$t/level"; then printf '\0wooloo-partial\0'; break; fi; "#
             + #"mv "$t/next" "$t/level"; d=$((d + 1)); done; printf 'wooloo-end\0'; } 2>/dev/null "#
-            + #"| tr '\000\n' '\n\000' | { head -n "# + String(folderWalkMaximumRecords) + #"; : > "$t/cut"; }"#
-            + (links ? #" | tee "$t/records""# : "") + #" | tr '\000\n' '\n\000'; "#
+            + #"| tr '\000\n' '\n\000' | { head -n "# + String(folderWalkMaximumRecords) + #"; : > "$t/cut"; } | tr '\000\n' '\n\000'; "#
         if links {
-            // Links are described only for a walk `head` did not cut, whose last record is
-            // `wooloo-end`; a cut one could have far more links than it lists.
-            script += #"printf 'wooloo-symbolic-links\0'; [ "$(tail -n 1 "$t/records")" = wooloo-end ] && [ -s "$t/links" ] && xargs -0 sh -c "#
+            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && xargs -0 sh -c "#
                 + quote(symbolicLinkMetadataScript) + " sh < \"$t/links\"; "
         }
         return script + "exit 0"

@@ -299,13 +299,26 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             XCTAssertTrue(listing.truncated && listing.partial, location.root)
             XCTAssertLessThanOrEqual(listing.files.count, 5)
         }
-        let links = remote("many").root
-        try sandbox.sh("for i in $(seq 1 1200); do ln -s f1.txt l$i; done", in: "many")
-        let linkWords = ["sh", "-c", WorkspaceFiles.folderWalkScript(readingSkipped: false, links: true), "sh", links]
-        let linked = try WorkspaceFiles.remoteOutput(machine, script: linkWords.map(WorkspaceFiles.quote).joined(separator: " "),
+        // A cut walk still describes the links it lists, and no more than `maximumLinks` of all it finds.
+        try sandbox.write(["f.txt": "x\n"], in: "linked")
+        try sandbox.sh("for i in $(seq 1 1500); do ln -s f.txt link-with-a-much-longer-name-to-fill-the-pipe-$i; done", in: "linked")
+        // Its `find` of files waits after printing, so `head` has cut the walk before the next one.
+        try sandbox.write(["shims/find": """
+            #!/bin/sh
+            case " $* " in *" -type f "*) /usr/bin/find "$@"; sleep 0.3; exit 0;; esac
+            exec /usr/bin/find "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/find")
+        WorkspaceFiles.forgetRecentResults()
+        let linked = try WorkspaceFiles.listing(at: remote("linked"))
+        XCTAssertTrue(linked.truncated)
+        XCTAssertEqual(Set(linked.symbolicLinks.keys), Set(linked.files).subtracting(["f.txt"]))
+        let linkWords = ["sh", "-c", WorkspaceFiles.folderWalkScript(readingSkipped: false, links: true, maximumLinks: 3), "sh",
+                         sandbox.path("linked")]
+        let capped = try WorkspaceFiles.remoteOutput(machine, script: linkWords.map(WorkspaceFiles.quote).joined(separator: " "),
                                                      label: "walk", limit: 1_000_000)
-        XCTAssertEqual(WorkspaceFiles.folderWalkSections(linked).linkMetadata, Data(),
-                       "A cut walk describes none of its links, which could be far more than it lists")
+        let metadata = WorkspaceFiles.folderWalkSections(capped).linkMetadata
+        XCTAssertEqual(metadata.split(separator: 0).count, 3 * 3, "Three links of 1,500, with target and kind each")
 
         let few = try WorkspaceFiles.listing(at: remote("few"))
         XCTAssertEqual(few.files, ["a.txt", "sub/b.txt"])
@@ -313,29 +326,33 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertFalse(try WorkspaceFiles.quickOpenFiles(at: remote("few")).truncated)
     }
 
-    /// Once `head` cut the walk, the next batch ends it, even reading skipped folders, when
-    /// nothing else the walk prints may fail for a while: here each folder level takes 0.5 s,
-    /// and reading all twelve would take until the time limit.
+    /// Once `head` cut the walk, the next `find` ends it, even in the folder being read: a write
+    /// into the pipe may not fail for a while, since `tr` buffers it. Here every `find` of folders
+    /// takes 2 s, and the one of files waits 0.3 s after printing, by when `head` has cut the walk.
     func testRemoteWalkStopsSoonAfterItIsCut() throws {
         let maximum = WorkspaceFiles.maximumFiles
+        let budget = WorkspaceFiles.folderWalkBudget
         defer {
             WorkspaceFiles.maximumFiles = maximum
-            WorkspaceFiles.folderWalkBudget = 2
+            WorkspaceFiles.folderWalkBudget = budget
         }
         WorkspaceFiles.maximumFiles = 5
         WorkspaceFiles.folderWalkBudget = 30
         try sandbox.write(Dictionary(uniqueKeysWithValues: (0..<3_000).map { ("f\($0).txt", "x\n") }), in: "deep")
-        try sandbox.sh("mkdir -p " + (1...WorkspaceFiles.folderWalkMaximumDepth).map { "d\($0)" }.joined(separator: "/"), in: "deep")
+        try sandbox.sh("mkdir -p a/b/c", in: "deep")
         try sandbox.write(["shims/find": """
             #!/bin/sh
-            case " $* " in *" -type d "*) sleep 0.5;; esac
+            case " $* " in
+            *" -type d "*) sleep 2;;
+            *" -type f "*) /usr/bin/find "$@"; sleep 0.3; exit 0;;
+            esac
             exec /usr/bin/find "$@"
             """], in: ".")
         try sandbox.sh("chmod 755 shims/find")
         for includeIgnored in [true, false] {
             let started = Date()
             XCTAssertTrue(try WorkspaceFiles.quickOpenFiles(at: remote("deep"), includeIgnored: includeIgnored).truncated)
-            XCTAssertLessThan(Date().timeIntervalSince(started), 4, "Ignored: \(includeIgnored)")
+            XCTAssertLessThan(Date().timeIntervalSince(started), 1.8, "Ignored: \(includeIgnored)")
         }
     }
 
