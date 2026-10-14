@@ -118,9 +118,12 @@ final class DiffHighlighterTests: XCTestCase {
         process.currentDirectoryURL = directory
         let pipe = Pipe()
         process.standardOutput = pipe
+        // Not `waitUntilExit()`, which on the test's main thread notices the exit 60–140 ms late.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         return String(decoding: data, as: UTF8.self)
     }
 
