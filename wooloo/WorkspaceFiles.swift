@@ -472,9 +472,9 @@ enum WorkspaceFiles {
     }
 
     /// Records the SSH walk prints at most: `maximumFiles` names, with room for the markers
-    /// between them, two per 256 folders read; names beyond `maximumFiles` are cut by `finished`.
-    /// A walk with more than 1,000 markers, from over 100,000 folders, can be cut a little before
-    /// `maximumFiles` files.
+    /// between them, about two per 256 folders read; names beyond `maximumFiles` are cut by
+    /// `finished`. Skipped folders count as records too, so a walk with more than 1,000 of them
+    /// and markers together can be cut, and truncated, a little before `maximumFiles` files.
     static var folderWalkMaximumRecords: Int { maximumFiles + 1_001 }
     /// How many folders down the walk of a folder outside a repository reads.
     static let folderWalkMaximumDepth = 12
@@ -749,7 +749,9 @@ enum WorkspaceFiles {
     /// `wooloo-symbolic-links` record. The records pass through `head`, with NUL and newline
     /// swapped around it, so the walk stops after `folderWalkMaximumRecords` of them, also inside
     /// the root, and its output stays under the SSH output limit; the walk is then truncated, as
-    /// on this Mac.
+    /// on this Mac, and its links are not described. Once `head` is done it marks "$t/cut", and
+    /// the next batch ends there: a write into the pipe may not fail for a while, since `tr`
+    /// buffers what it passes on.
     static func folderWalkScript(readingSkipped: Bool, links: Bool) -> String {
         let skipped = readingSkipped ? [] : folderWalkSkippedFolders
         let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
@@ -762,7 +764,7 @@ enum WorkspaceFiles {
         // a command with -exec: a command it started would outlive it and print after the walk.
         var batch = #"run_find() { if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
             + #"[ -e "$t/late" ] && kill "$p" 2>/dev/null; wait "$p"; : > "$t/pid"; [ ! -e "$t/late" ] || exit 255; }; "#
-            + #"if [ "$d" -gt 1 ] && [ -e "$t/late" ]; then exit 255; fi; "#
+            + #"if [ -e "$t/cut" ] || { [ "$d" -gt 1 ] && [ -e "$t/late" ]; }; then exit 255; fi; "#
             + "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
             + "run_find " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
         if links { batch += "run_find " + entries + #" -type l -print0 2>/dev/null >> "$t/links"; "# }
@@ -789,9 +791,12 @@ enum WorkspaceFiles {
             + #"[ -n "$(xargs -0 sh -c "$c" sh < "$t/level" | head -n 1)" ] && printf '\0wooloo-partial\0'; break; fi; "#
             + #": > "$t/next"; if ! xargs -0 -n 256 sh -c "$b" sh < "$t/level"; then printf '\0wooloo-partial\0'; break; fi; "#
             + #"mv "$t/next" "$t/level"; d=$((d + 1)); done; printf 'wooloo-end\0'; } 2>/dev/null "#
-            + #"| tr '\000\n' '\n\000' | head -n "# + String(folderWalkMaximumRecords) + #" | tr '\000\n' '\n\000'; "#
+            + #"| tr '\000\n' '\n\000' | { head -n "# + String(folderWalkMaximumRecords) + #"; : > "$t/cut"; }"#
+            + (links ? #" | tee "$t/records""# : "") + #" | tr '\000\n' '\n\000'; "#
         if links {
-            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && xargs -0 sh -c "#
+            // Links are described only for a walk `head` did not cut, whose last record is
+            // `wooloo-end`; a cut one could have far more links than it lists.
+            script += #"printf 'wooloo-symbolic-links\0'; [ "$(tail -n 1 "$t/records")" = wooloo-end ] && [ -s "$t/links" ] && xargs -0 sh -c "#
                 + quote(symbolicLinkMetadataScript) + " sh < \"$t/links\"; "
         }
         return script + "exit 0"
@@ -1643,14 +1648,17 @@ enum WorkspaceFiles {
             #"trap 'kill $p 2>/dev/null; exit 1' HUP INT PIPE TERM"#,
             #"export GIT_OPTIONAL_LOCKS=0"#,
             #"run() { i=$1; shift; "$@" >"$d/o$i" 2>"$d/e$i"; r=$?; echo "$r" >"$d/r$i"; return $r; }"#,
-            #"c=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null); n=0"#,
-            #"start() { if [ "${c:-0}" -gt 0 ] 2>/dev/null && [ "$n" -ge $((c * 2)) ]; then wait; n=0; fi; "#
+            #"start() { if [ "${c:-0}" -gt 0 ] 2>/dev/null && [ "$n" -ge $((c * 2)) ]; then wait; n=0; p=; fi; "#
                 + #"run "$@" & p="$p $!"; n=$((n + 1)); }"#,
             #"emit() { for i do r=$(cat "$d/r$i" 2>/dev/null); "#
                 + #"printf 'wooloo-section %s %s %s\n' "${r:-1}" $(wc -c <"$d/o$i") $(wc -c <"$d/e$i"); "#
                 + #"cat "$d/o$i" "$d/e$i"; done; }"#,
         ]
         func words(_ words: [String]) -> String { words.map(quote).joined(separator: " ") }
+        // Two background commands never reach the cap, so their batch skips looking up the processors.
+        if commands.filter({ !$0.gate }).count > 2 {
+            lines.append(#"c=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null); n=0"#)
+        }
         for (index, command) in commands.enumerated() {
             guard command.gate else {
                 lines.append("start \(index) " + words(command.words))

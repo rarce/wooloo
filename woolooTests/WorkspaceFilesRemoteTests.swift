@@ -299,10 +299,44 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             XCTAssertTrue(listing.truncated && listing.partial, location.root)
             XCTAssertLessThanOrEqual(listing.files.count, 5)
         }
+        let links = remote("many").root
+        try sandbox.sh("for i in $(seq 1 1200); do ln -s f1.txt l$i; done", in: "many")
+        let linkWords = ["sh", "-c", WorkspaceFiles.folderWalkScript(readingSkipped: false, links: true), "sh", links]
+        let linked = try WorkspaceFiles.remoteOutput(machine, script: linkWords.map(WorkspaceFiles.quote).joined(separator: " "),
+                                                     label: "walk", limit: 1_000_000)
+        XCTAssertEqual(WorkspaceFiles.folderWalkSections(linked).linkMetadata, Data(),
+                       "A cut walk describes none of its links, which could be far more than it lists")
+
         let few = try WorkspaceFiles.listing(at: remote("few"))
         XCTAssertEqual(few.files, ["a.txt", "sub/b.txt"])
         XCTAssertFalse(few.truncated || few.partial)
         XCTAssertFalse(try WorkspaceFiles.quickOpenFiles(at: remote("few")).truncated)
+    }
+
+    /// Once `head` cut the walk, the next batch ends it, even reading skipped folders, when
+    /// nothing else the walk prints may fail for a while: here each folder level takes 0.5 s,
+    /// and reading all twelve would take until the time limit.
+    func testRemoteWalkStopsSoonAfterItIsCut() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        defer {
+            WorkspaceFiles.maximumFiles = maximum
+            WorkspaceFiles.folderWalkBudget = 2
+        }
+        WorkspaceFiles.maximumFiles = 5
+        WorkspaceFiles.folderWalkBudget = 30
+        try sandbox.write(Dictionary(uniqueKeysWithValues: (0..<3_000).map { ("f\($0).txt", "x\n") }), in: "deep")
+        try sandbox.sh("mkdir -p " + (1...WorkspaceFiles.folderWalkMaximumDepth).map { "d\($0)" }.joined(separator: "/"), in: "deep")
+        try sandbox.write(["shims/find": """
+            #!/bin/sh
+            case " $* " in *" -type d "*) sleep 0.5;; esac
+            exec /usr/bin/find "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/find")
+        for includeIgnored in [true, false] {
+            let started = Date()
+            XCTAssertTrue(try WorkspaceFiles.quickOpenFiles(at: remote("deep"), includeIgnored: includeIgnored).truncated)
+            XCTAssertLessThan(Date().timeIntervalSince(started), 4, "Ignored: \(includeIgnored)")
+        }
     }
 
     func testWalkRecordsDropOnlyANameCutShortByTheTimeLimit() {
@@ -795,6 +829,20 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
         XCTAssertEqual(counts.compactMap { $0 }.count, 5)
         XCTAssertEqual(counts.compactMap { $0 }.max(), 2, "\(counts)")
+    }
+
+    /// A batch with at most two commands in the background, such as most Git operations, never
+    /// reaches the cap and does not look up the processors.
+    func testSmallRemoteBatchDoesNotLookUpTheProcessors() throws {
+        try sandbox.repository("repo")
+        let marker = sandbox.path("looked-up")
+        try sandbox.write(["shims/nproc": "#!/bin/sh\ntouch \(WorkspaceFiles.quote(marker))\necho 1\n"], in: ".")
+        try sandbox.sh("chmod 755 shims/nproc")
+        let section = WorkspaceFiles.GitSection(["rev-parse", "HEAD"], limit: 100)
+        _ = try WorkspaceFiles.gitBatch(remote("repo"), [section, .root, section])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker))
+        _ = try WorkspaceFiles.gitBatch(remote("repo"), [section, section, section])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker))
     }
 
     /// The script removes its temporary folder when the connection closes before it printed
