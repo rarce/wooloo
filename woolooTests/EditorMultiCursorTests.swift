@@ -1597,6 +1597,169 @@ final class EditorMultiCursorTests: XCTestCase {
         }
     }
 
+    // MARK: - Rows kept across a change of height
+
+    /// Lines laid out at a new font or line height have other heights. The vendored layout manager
+    /// made up only for the line starting above its layout rect, 350 points above the view, so the
+    /// lines between there and the top moved the row at the top, and the line at the top rewrapped
+    /// around it: by ten rows at 16 pt.
+    func testChangingTheFontKeepsTheRowAtTheTop() throws {
+        for wrapLines in [false, true] {
+            for size in [CGFloat(16), 10] {
+                let spy = ControllerSpy()
+                let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: wrapLines, spy: spy,
+                                                   highlights: true)
+                let controller = try XCTUnwrap(spy.controller)
+                try scrollDown(textView, to: 4_000)
+                let offset = try XCTUnwrap(topOffset(textView))
+                let line = try topLine(textView)
+                controller.font = .monospacedSystemFont(ofSize: size, weight: .regular)
+                // The highlighter sets the font on the text in view, after the change.
+                try waitUntil {
+                    let font = textView.textStorage.attribute(.font, at: offset, effectiveRange: nil) as? NSFont
+                    return font?.pointSize == size
+                }
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                let label = "\(size) pt, \(wrapLines ? "wrapped" : "unwrapped")"
+                XCTAssertEqual(try topLine(textView), line, label)
+                // The character that was at the top is in the row at the top.
+                let row = try XCTUnwrap(textView.layoutManager.rectForOffset(offset))
+                let pixel = 1 / (window?.backingScaleFactor ?? 1)
+                XCTAssertGreaterThan(try depth(of: offset, in: textView), -pixel, label)
+                XCTAssertLessThan(try depth(of: offset, in: textView), row.height, label)
+                window?.close()
+            }
+        }
+    }
+
+    func testChangingTheLineHeightKeepsTheRowAtTheTop() throws {
+        for wrapLines in [false, true] {
+            let spy = ControllerSpy()
+            let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: wrapLines, spy: spy)
+            let controller = try XCTUnwrap(spy.controller)
+            try scrollDown(textView, to: 4_000)
+            let offset = try XCTUnwrap(topOffset(textView))
+            let rowHeight = try XCTUnwrap(textView.layoutManager.rectForOffset(offset)).height
+            let share = try depth(of: offset, in: textView) / rowHeight
+            controller.lineHeightMultiple = 1.6
+            textView.needsLayout = true
+            textView.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            let label = wrapLines ? "wrapped" : "unwrapped"
+            XCTAssertEqual(try XCTUnwrap(textView.layoutManager.rectForOffset(offset)).height, rowHeight * 1.6 / 1.15,
+                           accuracy: 0.01, label)
+            let pixel = 1 / (window?.backingScaleFactor ?? 1)
+            XCTAssertEqual(try depth(of: offset, in: textView), share * rowHeight * 1.6 / 1.15, accuracy: pixel,
+                           label)
+            window?.close()
+        }
+    }
+
+    /// Shift-Page Down lays out a page at the cursor's position; with the cursor below the view,
+    /// lines there that change height are not above the view's top and do not move it.
+    func testExtendingTheSelectionByAPageBelowTheViewDoesNotScrollIt() throws {
+        let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: true)
+        try scrollDown(textView, to: 1_000)
+        let offset = try XCTUnwrap(topOffset(textView))
+        let dy = try depth(of: offset, in: textView)
+        let cursor = lineStart(300, in: wrappedDocument)
+        textView.selectionManager.setSelectedRange(NSRange(location: cursor, length: 0))
+        textView.selectionManager.moveSelections(direction: .down, destination: .page, modifySelection: true)
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel)
+    }
+
+    /// Rows that get shorter keep the top as far into the row, in proportion: a depth kept in
+    /// points went past the end of a shorter row, into the next.
+    func testMakingRowsShorterKeepsTheRowAtTheTop() throws {
+        for wrapLines in [false, true] {
+            let spy = ControllerSpy()
+            let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: wrapLines, spy: spy)
+            let controller = try XCTUnwrap(spy.controller)
+            controller.lineHeightMultiple = 1.6
+            textView.needsLayout = true
+            textView.layoutSubtreeIfNeeded()
+            try scrollDown(textView, to: 4_000)
+            // The top near the end of its row.
+            let clip = try XCTUnwrap(textView.enclosingScrollView?.contentView)
+            var offset = try XCTUnwrap(topOffset(textView))
+            var row = try XCTUnwrap(textView.layoutManager.rectForOffset(offset))
+            clip.scroll(to: NSPoint(x: 0, y: clip.bounds.minY + row.maxY - 3 - (try viewTop(textView))))
+            offset = try XCTUnwrap(topOffset(textView))
+            row = try XCTUnwrap(textView.layoutManager.rectForOffset(offset))
+            let share = try depth(of: offset, in: textView) / row.height
+            XCTAssertGreaterThan(share, 0.8)
+            controller.lineHeightMultiple = 1.15
+            textView.needsLayout = true
+            textView.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            let label = wrapLines ? "wrapped" : "unwrapped"
+            let shorter = try XCTUnwrap(textView.layoutManager.rectForOffset(offset)).height
+            XCTAssertLessThan(shorter, row.height, label)
+            let pixel = 1 / (window?.backingScaleFactor ?? 1)
+            XCTAssertEqual(try depth(of: offset, in: textView), share * shorter, accuracy: pixel, label)
+            window?.close()
+        }
+    }
+
+    /// Upstream made up for the whole difference of a line starting above the layout rect; a 2 MB
+    /// line covering the view keeps the row at the top, without laying out again and again.
+    func testATwoMegabyteLineKeepsTheRowAtTheTopWhenItsHeightChanges() throws {
+        let unit = "function(a,b){return a.concat(b)};var x=\"abc\",y=[1,2,3];if(x&&y){z(x)}else{w(y)}"
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: String(repeating: unit, count: 2_000_000 / unit.utf16.count),
+                                           wrapLines: true, spy: spy)
+        try scrollDown(textView, to: 200_000)
+        let offset = try XCTUnwrap(topOffset(textView))
+        let share = try depth(of: offset, in: textView)
+            / XCTUnwrap(textView.layoutManager.rectForOffset(offset)).height
+        let controller = try XCTUnwrap(spy.controller)
+        controller.lineHeightMultiple = 1.6
+        textView.needsLayout = true
+        textView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let row = try XCTUnwrap(textView.layoutManager.rectForOffset(offset))
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        XCTAssertEqual(try depth(of: offset, in: textView), share * row.height, accuracy: pixel)
+    }
+
+    /// A row added to the line the view's top is in, by typing in view, goes below the rows above
+    /// the cursor, as before: they stay in place.
+    func testTypingInTheLineAtTheTopKeepsItsRowsInPlace() throws {
+        let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: true)
+        try scrollDown(textView, to: 4_000)
+        let offset = try XCTUnwrap(topOffset(textView))
+        let dy = try depth(of: offset, in: textView)
+        let line = try XCTUnwrap(textView.layoutManager.textLineForOffset(offset))
+        XCTAssertLessThan(line.yPos, try viewTop(textView), "the line starts above the top")
+        let rows = line.data.lineFragments.count
+        // In view, in the same line, before its line break.
+        textView.replaceCharacters(in: NSRange(location: min(offset + 10, line.range.max - 1), length: 0),
+                                   with: String(repeating: "typed ", count: 20))
+        textView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertGreaterThan(try XCTUnwrap(textView.layoutManager.textLineForOffset(offset)).data.lineFragments.count,
+                             rows)
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel)
+    }
+
+    /// Scrolling up more than the layout rect's padding at a time lays out several wrapped lines
+    /// above the view whose heights were only estimated; the text that was on screen stays where
+    /// the scroll put it.
+    func testScrollingUpSeveralRowsAtATimeThroughWrappedLinesNotLaidOutKeepsTheTextInPlace() throws {
+        let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: true)
+        let clip = try XCTUnwrap(textView.enclosingScrollView?.contentView)
+        clip.scroll(to: NSPoint(x: 0, y: 5_000))
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        for step in 1...8 {
+            let offset = try XCTUnwrap(topOffset(textView))
+            let dy = try depth(of: offset, in: textView)
+            clip.scroll(to: NSPoint(x: 0, y: clip.bounds.minY - 250))
+            XCTAssertEqual(try depth(of: offset, in: textView), dy - 250, accuracy: pixel, "step \(step)")
+        }
+    }
+
     // MARK: - Helpers
 
     private final class SwappedEditorModel: ObservableObject {
@@ -1652,7 +1815,7 @@ final class EditorMultiCursorTests: XCTestCase {
     /// With `resizable`, the editor fills the window, which `resize(to:)` makes narrower or wider.
     private func makeEditor(text: String, wrapLines: Bool = false, width: CGFloat = 500,
                             contentInsets: NSEdgeInsets? = nil, coordinators: [TextViewCoordinator] = [],
-                            spy: ControllerSpy = ControllerSpy(),
+                            spy: ControllerSpy = ControllerSpy(), highlights: Bool = false,
                             resizable: Bool = false) throws -> (EditorMultiCursorCoordinator, TextView) {
         let coordinator = EditorMultiCursorCoordinator()
         coordinator.currentEvent = { nil }
@@ -1667,7 +1830,8 @@ final class EditorMultiCursorTests: XCTestCase {
             lineHeight: 1.15,
             wrapLines: wrapLines,
             cursorPositions: .constant([]),
-            highlightProviders: [],
+            // The app's highlighter, which applies a new font to the text as it comes into view.
+            highlightProviders: highlights ? [TreeSitterClient()] : [],
             contentInsets: contentInsets,
             coordinators: [spy, coordinator] + coordinators
         )

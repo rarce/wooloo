@@ -44,6 +44,7 @@ final class ViewSnapshotTests: XCTestCase {
         defer { window.close(); rendered = nil }
 
         func capture() -> NSBitmapImageRep {
+            Self.useLegacyScrollers(in: host)
             host.layoutSubtreeIfNeeded()
             let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
             host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -60,6 +61,16 @@ final class ViewSnapshotTests: XCTestCase {
         }
         XCTAssertTrue(ready(), "The view did not finish loading")
         return previous
+    }
+
+    /// Gives every scroll view the always shown scrollers the snapshots were recorded with. With
+    /// "Show scroll bars: Automatic", macOS picks overlay or legacy scrollers by the pointing
+    /// devices connected, and a legacy scroller takes a column from the content.
+    private static func useLegacyScrollers(in view: NSView) {
+        if let scrollView = view as? NSScrollView, scrollView.scrollerStyle != .legacy {
+            scrollView.scrollerStyle = .legacy
+        }
+        view.subviews.forEach { useLegacyScrollers(in: $0) }
     }
 
     /// Compares with the saved snapshot, allowing for a few antialiased pixels.

@@ -112,6 +112,9 @@ public class TextLayoutManager: NSObject {
     /// back keeps the same character rather than the start of the row it was in.
     var keptTop: TopAnchor?
     private var lastLayoutWidth: CGFloat?
+    /// wooloo patch: where an adjustment of the scroll position meant the view's top to be, while the layout passes
+    /// it causes run.
+    private var adjustedTop: CGFloat?
 
     /// The calculated maximum width of all laid out lines.
     /// - Note: This does not indicate *the* maximum width of the text view if all lines have not been laid out.
@@ -255,6 +258,12 @@ public class TextLayoutManager: NSObject {
         #endif
         let minY = max(visibleRect.minY - verticalLayoutPadding, 0)
         let maxY = max(visibleRect.maxY + verticalLayoutPadding, 0)
+        // wooloo patch: the lines above the view's top that change height move the view by as much, not only the
+        // line that starts above the layout rect, as upstream does. `grown` is how much the lines laid out so far in
+        // this pass grew, to find where a line started before the pass. The view's own top, also for a pass over
+        // another rect (Shift-Page Up or Down lays out a page at the cursor), since the adjustment scrolls the view.
+        let top = viewTop ?? visibleRect.minY
+        var grown: CGFloat = 0
         let originalHeight = lineStorage.height
         var usedFragmentIDs = Set<UUID>()
         var forceLayout: Bool = needsLayout
@@ -268,6 +277,14 @@ public class TextLayoutManager: NSObject {
             if forceLayout
                 || linePosition.data.needsLayout(maxWidth: layoutWidth) // wooloo patch: once a pass
                 || !visibleLineIds.contains(linePosition.data.id) {
+                // wooloo patch: how far below the line's start the view's top is, and for the line it is in, the row
+                // there as laid out before (its first character in the line, and how far into the row the top is, as a
+                // share of the row's height, which can change).
+                let depth = top - (linePosition.yPos - grown)
+                let straddlesTop = depth > 0 && depth < linePosition.height
+                let topRow = straddlesTop ? linePosition.data.lineFragments.getLine(atPosition: depth).map {
+                    (offset: $0.range.location, share: $0.height > 0 ? (depth - $0.yPos) / $0.height : 0)
+                } : nil
                 let lineSize = layoutLine(
                     linePosition,
                     textStorage: textStorage,
@@ -275,17 +292,26 @@ public class TextLayoutManager: NSObject {
                     laidOutFragmentIDs: &usedFragmentIDs
                 )
                 if lineSize.height != linePosition.height {
+                    let deltaHeight = lineSize.height - linePosition.height
                     lineStorage.update(
                         atIndex: linePosition.range.location,
                         delta: 0,
-                        deltaHeight: lineSize.height - linePosition.height
+                        deltaHeight: deltaHeight
                     )
                     // If we've updated a line's height, force re-layout for the rest of the pass.
                     forceLayout = true
+                    grown += deltaHeight
 
-                    if linePosition.yPos < minY {
+                    if depth >= linePosition.height {
                         // Adjust the scroll position by the difference between the new height and old.
-                        yContentAdjustment += lineSize.height - linePosition.height
+                        yContentAdjustment += deltaHeight
+                    } else if let topRow, let row = linePosition.data.lineFragments.getLine(atOffset: topRow.offset) {
+                        // wooloo patch: the row that was at the top stays there.
+                        yContentAdjustment += row.yPos + topRow.share * row.height - depth
+                    } else if straddlesTop {
+                        // wooloo patch: without its rows from before (an estimated height, or a layout dropped, as
+                        // by a new font), the same share of the line stays above the top.
+                        yContentAdjustment += deltaHeight * depth / linePosition.height
                     }
                 }
                 if maxFoundLineWidth < lineSize.width {
@@ -320,7 +346,14 @@ public class TextLayoutManager: NSObject {
         }
 
         if yContentAdjustment != 0 && !keepsTop { // wooloo patch: keeping the top moves the view instead
-            delegate?.layoutManagerYAdjustment(yContentAdjustment)
+            // wooloo patch: from where the adjustment that led to this pass meant the top to be, rather than where
+            // the scroll view put it, aligned to the display's pixels: on a 1x display each scroll lands up to half a
+            // point away, which added up over the passes the adjustments cause.
+            let adjustment = yContentAdjustment + (adjustedTop.map { $0 - top } ?? 0)
+            let outerTop = adjustedTop
+            adjustedTop = top + adjustment
+            delegate?.layoutManagerYAdjustment(adjustment)
+            adjustedTop = outerTop
         }
 
         if originalHeight != lineStorage.height || layoutView?.frame.size.height != lineStorage.height {
