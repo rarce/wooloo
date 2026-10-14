@@ -112,6 +112,9 @@ public class TextLayoutManager: NSObject {
     /// back keeps the same character rather than the start of the row it was in.
     var keptTop: TopAnchor?
     private var lastLayoutWidth: CGFloat?
+    /// wooloo patch: where an adjustment of the scroll position meant the view's top to be, while the layout passes
+    /// it causes run.
+    private var adjustedTop: CGFloat?
 
     /// The calculated maximum width of all laid out lines.
     /// - Note: This does not indicate *the* maximum width of the text view if all lines have not been laid out.
@@ -343,7 +346,14 @@ public class TextLayoutManager: NSObject {
         }
 
         if yContentAdjustment != 0 && !keepsTop { // wooloo patch: keeping the top moves the view instead
-            delegate?.layoutManagerYAdjustment(yContentAdjustment)
+            // wooloo patch: from where the adjustment that led to this pass meant the top to be, rather than where
+            // the scroll view put it, aligned to the display's pixels: on a 1x display each scroll lands up to half a
+            // point away, which added up over the passes the adjustments cause.
+            let adjustment = yContentAdjustment + (adjustedTop.map { $0 - top } ?? 0)
+            let outerTop = adjustedTop
+            adjustedTop = top + adjustment
+            delegate?.layoutManagerYAdjustment(adjustment)
+            adjustedTop = outerTop
         }
 
         if originalHeight != lineStorage.height || layoutView?.frame.size.height != lineStorage.height {
