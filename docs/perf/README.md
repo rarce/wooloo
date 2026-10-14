@@ -395,6 +395,36 @@ A refresh starts ten commands. None is redundant: the two `git status` differ (t
 
 On their own, each `git status` peaked at 49 MB, each `git ls-files` at 27 MB and the other commands at 10 MB; the link check, which tests every listed path in `sh`, took 180 of the 205 ms. One at a time saved a little more memory on one CPU (64 MB) but cost 21 % on 2 CPUs and 41 % on 15; a fixed 4 cost 22 % on 15. The script now starts its commands in groups of twice the remote's processor count (`nproc`, else `getconf _NPROCESSORS_ONLN`, else all at once), each group once the previous one finished. Batches on this Mac already run one command at a time, so nothing changed locally, and the workspace benchmark against the VM (15 CPUs) did not change beyond noise.
 
+## Waiting for a process's exit
+
+Some benchmark runs measured small-repository SSH loads at 130–160 ms instead of 57–77 ms, and timing the process runner showed `ssh` ending 60–90 ms after its output. `ssh` was not late. A kqueue `NOTE_EXIT` watch on each process, with the end of its output and the return of the wait timed beside it, gave this over a whole benchmark run against the OrbStack VM (2026-10-14, Mac16,5, load 6–9):
+
+| | processes | exited more than 30 ms after the end of the output | wait returned more than 30 ms after the exit | wait after the exit, median |
+|---|---|---|---|---|
+| SSH, `Process.waitUntilExit()` | 250 (46 batches) | 0 | 234 (31 batches) | 63.5 ms |
+| SSH, termination handler | 250 (46 batches) | 0 | 0 | 0.02 ms (at most 0.5 ms) |
+| local, `Process.waitUntilExit()` | 454 | 0 | 2 | 0.03 ms (at most 445 ms) |
+| local, termination handler | 454 | 0 | 0 | 0.02 ms (at most 0.1 ms) |
+
+`waitUntilExit()` waits by running the calling thread's run loop. When the loop has a source, as the main thread's does, it notices the exit only when a turn of the loop ends; without one it returns at once. The benchmarks call `WorkspaceFiles` on the test's main thread, where the waits were late in some stretches of a run and not in others, likely as sources came and went; that, not SSH, made some runs slow. In the runs below, single-process SSH operations such as `open-file` took 100–137 ms instead of 20–27 ms. The ControlMaster session was not involved: run directly, the same batch over the shared connection ended its output, closed it and exited within 1 ms, 40 times out of 40. In a test program, the first wait on a new thread and 2–8 % of the later ones were late by about 135 ms too, so the app's `BlockingWork` threads were also affected, though less often.
+
+`WorkspaceFiles.run` now sets the process's `terminationHandler`, which Foundation calls from a dispatch queue once it has the exit status, and waits on a semaphore it signals. `WorkspaceFilesIntegrationTests.testResultComesBackWhenTheCommandExits` runs 15 commands on a thread whose run loop has a timer: with `waitUntilExit()` their median was 66 ms, with the handler 2–3 ms.
+
+Alternating `main` and this change twice (p50, 5 repetitions):
+
+| operation | SSH small, before → after | SSH large, before → after |
+|---|---|---|
+| refresh | 63–64 → 59–62 ms | 202–206 → 107–108 ms |
+| file-list | 65–66 → 62–70 ms | 210–215 → 105–110 ms |
+| git-bar | 63 → 61–62 ms | 208–209 → 106–108 ms |
+| repository | 62–69 → 62–67 ms | 202 → 103–106 ms |
+| open-file | 100–122 → 21–27 ms | 127–137 → 20–25 ms |
+| commit-diff | 103–117 → 24–25 ms | 122–130 → 23 ms |
+| open-change | 486–510 → 77–80 ms | 475–505 → 79–80 ms |
+| folder-walk, `tree` | 163–167 → 59–65 ms | |
+
+In these runs the small repository's batches happened to be in their fast state on `main` too, so they did not change; the p95 of every SSH operation was within 9 ms of its p50 after the change. Local operations did not change beyond noise.
+
 ## Syntax colors for diffs
 
 `ParsedDiff` with both sides parsed each whole file with tree-sitter, ran the highlight query over it, and placed every capture on its lines. Sampled on the benchmark's diff, each side spent about 40 % parsing, 35 % in the query (half of it in SwiftTreeSitter building capture names, which the app can't avoid through its API) and 25 % finding each capture's first line with a linear search over the line starts.
