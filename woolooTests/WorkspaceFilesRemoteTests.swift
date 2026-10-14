@@ -292,7 +292,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                                                      label: "walk", limit: 1_000_000)
         XCTAssertEqual(WorkspaceFiles.folderWalkSections(output).records,
                        Array(WorkspaceFiles.folderWalkSections(output).records.prefix(WorkspaceFiles.folderWalkMaximumFileRecords))
-                           + ["wooloo-skipped", "wooloo-files", "wooloo-linked-folders"],
+                           + ["wooloo-linked-folders", "wooloo-skipped", "wooloo-files"],
                        "The remote stops printing files")
 
         for location in [remote("many"), sandbox.location("many")] {
@@ -334,7 +334,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
 
     /// Over SSH, skipped folders are printed after the files, so many of them do not cut the walk
     /// before `maximumFiles` files. Past `folderWalkMaximumRecords` in all, the skipped folders
-    /// are cut and the walk is partial.
+    /// are left out; every file was read, so the walk is not partial.
     func testRemoteWalkCountsOnlyFilesAgainstTheMaximum() throws {
         let maximum = WorkspaceFiles.maximumFiles
         defer { WorkspaceFiles.maximumFiles = maximum }
@@ -357,7 +357,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let listing = try WorkspaceFiles.listing(at: remote("skips"))
         XCTAssertEqual(listing.files, files)
         XCTAssertFalse(listing.truncated)
-        XCTAssertTrue(listing.partial, "Skipped folders were cut")
+        XCTAssertFalse(listing.partial, "Skipped folders were cut, but every file was read")
         XCTAssertLessThan(listing.ignored.directories.count, 1_200)
         XCTAssertGreaterThan(listing.ignored.directories.count, 990)
         try sandbox.write(["z/y/f.txt": "x\n"], in: "skips")
@@ -381,16 +381,34 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    /// Runs the walk with links, describing the first `maximumLinks` in full, with `environment`
+    /// set for the remote shell.
+    private func linkedWalk(_ name: String, maximumLinks: Int, environment: String = "") throws -> WorkspaceFolderWalk {
+        let words = ["sh", "-c", WorkspaceFiles.folderWalkScript(readingSkipped: false, links: true, maximumLinks: maximumLinks),
+                     "sh", sandbox.path(name)]
+        let output = try WorkspaceFiles.remoteOutput(machine, script: environment + words.map(WorkspaceFiles.quote).joined(separator: " "),
+                                                     label: "walk", limit: 1_000_000)
+        return WorkspaceFiles.folderWalk(linkedScriptOutput: output)
+    }
+
     /// Past the links described in full, the walk still describes linked folders, without their
-    /// targets, so the explorer shows them as folders.
+    /// targets, so the explorer shows them as folders; they go before skipped folders when the
+    /// records run out, and are looked at only within the walk's time limit.
     func testRemoteWalkDescribesLinkedFoldersPastTheLinksItDescribesInFull() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        let budget = WorkspaceFiles.folderWalkBudget
+        defer {
+            WorkspaceFiles.maximumFiles = maximum
+            WorkspaceFiles.folderWalkBudget = budget
+        }
         try sandbox.write(["f.txt": "x\n", "sub/g.txt": "x\n"], in: "links")
         try sandbox.sh("for i in 1 2 3 4; do ln -s f.txt file$i; ln -s sub folder$i; done; ln -s missing broken", in: "links")
-        let words = ["sh", "-c", WorkspaceFiles.folderWalkScript(readingSkipped: false, links: true, maximumLinks: 3), "sh",
-                     sandbox.path("links")]
-        let output = try WorkspaceFiles.remoteOutput(machine, script: words.map(WorkspaceFiles.quote).joined(separator: " "),
-                                                     label: "walk", limit: 1_000_000)
-        let links = WorkspaceFiles.folderWalk(linkedScriptOutput: output).symbolicLinks
+        try sandbox.sh("for i in $(seq 1 1100); do mkdir -p p$i/node_modules; done", in: "links")
+        WorkspaceFiles.maximumFiles = 20
+        let walk = try linkedWalk("links", maximumLinks: 3)
+        XCTAssertLessThan(walk.skippedFolders.count, 1_100, "The records ran out in the skipped folders")
+        XCTAssertFalse(walk.partial, "Every file was read")
+        let links = walk.symbolicLinks
         let full = links.filter { !$0.value.target.isEmpty }
         XCTAssertEqual(full.count, 3, "\(links)")
         XCTAssertTrue(full.allSatisfy { $0.value.target == ($0.value.isDirectory ? "sub" : $0.key == "broken" ? "missing" : "f.txt") },
@@ -399,6 +417,27 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(Set(links.filter(\.value.isDirectory).keys), Set(folders), "Every linked folder is described")
         XCTAssertEqual(Set(links.keys).subtracting(full.keys), Set(folders).subtracting(full.keys),
                        "Only folders are described past the first three")
+
+        WorkspaceFiles.folderWalkBudget = 0
+        XCTAssertEqual(try linkedWalk("links", maximumLinks: 3).symbolicLinks.count, 3,
+                       "Once the time is up, only the links described in full")
+    }
+
+    /// The walk's `tr` runs in the C locale: in a UTF-8 one, BSD `tr` stops at a name that is not
+    /// UTF-8, and the records after it would run together.
+    func testRemoteWalkPassesNamesThatAreNotUTF8() throws {
+        try sandbox.write(["a.txt": "x\n", "z/b.txt": "x\n", "node_modules/m.js": "x\n"], in: "odd")
+        // APFS refuses such names, so a stand-in `find` prints one among the root's files.
+        try sandbox.write(["shims/find": """
+            #!/bin/sh
+            case " $* " in *" -type f "*) printf './bad\\377name\\0';; esac
+            exec /usr/bin/find "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/find")
+        let walk = try linkedWalk("odd", maximumLinks: 3, environment: "LC_ALL=en_US.UTF-8 ")
+        XCTAssertEqual(walk.files.sorted(), ["a.txt", "z/b.txt"], "The name that is not UTF-8 is left out, as locally")
+        XCTAssertEqual(walk.skippedFolders, ["node_modules"])
+        XCTAssertFalse(walk.truncated || walk.partial)
     }
 
     /// Once `head` cut the walk, the next `find` ends it, even in the folder being read: a write
@@ -459,8 +498,17 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                                                    readingSkipped: false)
         XCTAssertEqual(cutSkipped.files, ["a"])
         XCTAssertEqual(cutSkipped.skippedFolders, ["n1"])
-        XCTAssertTrue(cutSkipped.partial)
-        XCTAssertFalse(cutSkipped.truncated)
+        XCTAssertFalse(cutSkipped.partial || cutSkipped.truncated)
+        // Past `maximumFiles` files the walk is truncated, not partial, as locally.
+        let maximum = WorkspaceFiles.maximumFiles
+        defer { WorkspaceFiles.maximumFiles = maximum }
+        WorkspaceFiles.maximumFiles = 2
+        let over = WorkspaceFiles.folderWalk(scriptOutput: Data("./a\0./b\0./c\0\0wooloo-partial\0wooloo-end\0".utf8),
+                                             readingSkipped: false)
+        XCTAssertTrue(over.truncated)
+        XCTAssertFalse(over.partial)
+        XCTAssertTrue(WorkspaceFiles.folderWalk(scriptOutput: Data("./a\0./b\0\0wooloo-partial\0wooloo-end\0".utf8),
+                                                readingSkipped: false).partial)
 
         // Cut at the maximum before `wooloo-end`: truncated, and the last name, which the time
         // limit may have cut short, is dropped; the skipped folders are kept.
