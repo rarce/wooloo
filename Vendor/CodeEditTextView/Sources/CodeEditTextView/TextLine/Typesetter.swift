@@ -38,14 +38,22 @@ final class Typesetter {
         characters = self.string.string as NSString
         self.typesetter = CTTypesetterCreateWithAttributedString(self.string)
         generateLines(
-            // wooloo patch: with no room to wrap in, as before the editor has its width, keep the line in one row.
-            // Upstream broke it after every character, two million rows for a 2 MB line, laid out again once the
-            // width was known. Upstream 0.12 sets such a line as one empty row instead.
-            maxWidth: displayData.maxWidth > 0 ? displayData.maxWidth : .greatestFiniteMagnitude,
+            maxWidth: hasRoom(for: displayData.maxWidth) ? displayData.maxWidth : .greatestFiniteMagnitude,
             lineHeightMultiplier: displayData.lineHeightMultiplier,
             estimatedLineHeight: displayData.estimatedLineHeight,
             breakStrategy: breakStrategy
         )
+    }
+
+    /// wooloo patch: whether the first character fits in `maxWidth`. Without room to wrap in, as before the editor has
+    /// its width or beside a gutter left almost no space, the line stays in one row. Upstream broke it after every
+    /// character, two million rows for a 2 MB line, laid out again once there was room. Upstream 0.12 sets a line
+    /// as one empty row when the width is not positive.
+    private func hasRoom(for maxWidth: CGFloat) -> Bool {
+        guard maxWidth < .greatestFiniteMagnitude, let typesetter, string.length > 0 else { return true }
+        let first = CTTypesetterSuggestClusterBreak(typesetter, 0, max(maxWidth, 0))
+        let line = CTTypesetterCreateLine(typesetter, CFRangeMake(0, max(first, 1)))
+        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) <= maxWidth
     }
 
     // MARK: - Generate lines

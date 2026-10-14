@@ -1317,6 +1317,42 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(try depth(of: shifted, in: textView), shiftedDY, accuracy: pixel, "after an edit")
     }
 
+    /// Lines above that grow as they come into view move the text under a y the view goes back to;
+    /// the next width change keeps what is at the top then, not the character kept before.
+    func testAWidthChangeAfterTheTextUnderTheTopMovedKeepsTheRowThereNow() throws {
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: true, width: 700, spy: spy,
+                                           resizable: true)
+        try scrollDown(textView, to: 4_000)
+        try resize(to: 300)
+        // Up through lines not laid out at this width, which grow, and back to the same y.
+        let clip = try XCTUnwrap(textView.enclosingScrollView?.contentView)
+        let kept = clip.bounds.origin
+        for step in 1...10 { clip.scroll(to: NSPoint(x: 0, y: kept.y - CGFloat(step) * 300)) }
+        clip.scroll(to: kept)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let offset = try XCTUnwrap(topOffset(textView))
+        let dy = try depth(of: offset, in: textView)
+        try resize(to: 450)
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel)
+    }
+
+    /// Turning wrapping off and on again before the editor lays out keeps the row at the top.
+    func testTurningWrappingOffAndOnAtOnceKeepsTheRowAtTheTop() throws {
+        let spy = ControllerSpy()
+        let (_, textView) = try makeEditor(text: wrappedDocument, wrapLines: true, spy: spy)
+        let controller = try XCTUnwrap(spy.controller)
+        try scrollDown(textView, to: 4_000)
+        let offset = try XCTUnwrap(topOffset(textView))
+        let dy = try depth(of: offset, in: textView)
+        controller.wrapLines = false
+        controller.wrapLines = true
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel)
+    }
+
     /// Lines laid out while wrapped kept their wrapped heights after wrapping was turned off, until
     /// they came into view, so the document was taller than it is.
     func testTurningWrappingOffOrOnKeepsTheRowAtTheTopAndEstimatesTheOtherLinesAgain() throws {
@@ -1344,24 +1380,30 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(last.height, layout.estimateLineHeight(), "a line not laid out since is estimated")
     }
 
-    /// The vendored typesetter took about 13 s on the main thread to wrap a 2 MB line: it broke the
-    /// line after every character while the editor had no width yet, and made a character set for
-    /// each break candidate it checked.
-    func testWrappingATwoMegabyteLineTakesWellUnderASecond() throws {
+    /// The vendored typesetter took about 15 s on the main thread to wrap a 2 MB line: it broke the
+    /// line after every character while the editor had no width yet (see the test below), and made
+    /// a character set for each break candidate it checked. With `WOOLOO_BENCH=1`, as the benchmark
+    /// scripts set, the time is checked too: about 0.1 s.
+    func testATwoMegabyteLineWrapsAtTheEditorsWidth() throws {
         let unit = "function(a,b){return a.concat(b)};var x=\"abc\",y=[1,2,3];if(x&&y){z(x)}else{w(y)}"
         let text = String(repeating: unit, count: 2_000_000 / unit.utf16.count)
         let start = Date()
         let (_, textView) = try makeEditor(text: text, wrapLines: true)
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertGreaterThan(textView.layoutManager.textLineForIndex(0)?.data.lineFragments.count ?? 0, 20_000)
-        // About 0.1 s here; 14 s before.
-        XCTAssertLessThan(elapsed, 2, "took \(elapsed) s")
+        if ProcessInfo.processInfo.environment["WOOLOO_BENCH"] == "1" {
+            XCTAssertLessThan(elapsed, 2, "took \(elapsed) s")
+        }
     }
 
     func testAnEditorWithNoRoomToWrapInKeepsALineInOneRow() throws {
-        // Narrower than the gutter.
-        let (_, textView) = try makeEditor(text: String(repeating: "word ", count: 1_000), wrapLines: true, width: 20)
-        XCTAssertEqual(textView.layoutManager.textLineForIndex(0)?.data.lineFragments.count, 1)
+        // Narrower than the gutter, then room for less than a character beside it.
+        for width in [20.0, 55] {
+            let (_, textView) = try makeEditor(text: String(repeating: "word ", count: 1_000), wrapLines: true,
+                                               width: width)
+            XCTAssertEqual(textView.layoutManager.textLineForIndex(0)?.data.lineFragments.count, 1, "at \(width)")
+            window?.close()
+        }
     }
 
     /// Words break after whitespace or punctuation, and never inside a CRLF line ending.
