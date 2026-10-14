@@ -247,6 +247,20 @@ public final class TextLineStorage<Data: Identifiable> {
         height = 0
     }
 
+    /// wooloo patch: gives every line the height `height` in place, without rebuilding the tree, and calls `body`
+    /// with each line's data.
+    public func resetHeights(to height: CGFloat, _ body: (Data) -> Void) {
+        var stack: [Node<Data>] = root.map { [$0] } ?? []
+        while let node = stack.popLast() {
+            node.height = height
+            node.leftSubtreeHeight = CGFloat(node.leftSubtreeCount) * height
+            body(node.data)
+            if let left = node.left { stack.append(left) }
+            if let right = node.right { stack.append(right) }
+        }
+        self.height = CGFloat(count) * height
+    }
+
     /// Efficiently builds the tree from the given array of lines.
     /// - Note: Calls ``TextLineStorage/removeAll()`` before building.
     /// - Parameter lines: The lines to use to build the tree.

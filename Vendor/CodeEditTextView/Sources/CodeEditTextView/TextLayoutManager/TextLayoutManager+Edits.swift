@@ -19,6 +19,9 @@ extension TextLayoutManager: NSTextStorageDelegate {
     ///   - range: The range of the edit.
     ///   - string: The string to replace in the given range.
     public func willReplaceCharactersInRange(range: NSRange, with string: String) {
+        // wooloo patch: the kept top's offset may not be the same character after the edit.
+        keptTop = nil
+        pendingTop = nil
         // Loop through each line being replaced in reverse, updating and removing where necessary.
          for linePosition in lineStorage.linesInRange(range).reversed() {
             // Two cases: Updated line, deleted line entirely
