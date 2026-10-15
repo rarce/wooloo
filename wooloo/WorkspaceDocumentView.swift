@@ -323,7 +323,8 @@ struct WorkspaceDocumentView: View {
                 if document.isEditable, cursorPositions.count > 1 {
                     Text("\(cursorPositions.count) cursors")
                 } else if document.isEditable, let cursor = cursorPositions.first {
-                    Text("Ln \(cursor.line), Col \(cursor.column)")
+                    let place = cursor.lineAndColumn(in: document.text)
+                    Text("Ln \(place.line), Col \(place.column)")
                 }
                 if document.isSaving { ProgressView().controlSize(.small) }
             }
@@ -832,6 +833,27 @@ final class EditorRevealCoordinator: TextViewCoordinator {
             findLayers.append(layer)
             location = rowEnd
         }
+    }
+}
+
+extension CursorPosition {
+    /// The editor fills in line and column once it reports a selection; a position set from a
+    /// range, such as one restored after a relaunch, has -1 until then.
+    func lineAndColumn(in text: String) -> (line: Int, column: Int) {
+        if line > 0, column > 0 { return (line, column) }
+        let string = text as NSString
+        let location = range.location == NSNotFound ? 0 : min(max(range.location, 0), string.length)
+        var line = 1, start = 0
+        while start < location {
+            var end = 0, contentsEnd = 0
+            string.getLineStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: start, length: 0))
+            // The last line has no line break to step over.
+            guard end > contentsEnd, end <= location else { break }
+            line += 1
+            start = end
+        }
+        // Columns count UTF-16 units from the line's start, as the editor does.
+        return (line, location - start + 1)
     }
 }
 
