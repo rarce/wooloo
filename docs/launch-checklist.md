@@ -13,8 +13,8 @@ Checks to run on a Mac before announcing a release as an early preview. Record t
 
 On a Mac user account without Herdr (`~/.config/herdr` absent, no `herdr` on `PATH`) and without wooloo's data (`~/Library/Application Support/wooloo` absent):
 
-- [ ] Download the release zip, check its SHA-256, move the app to /Applications.
-- [ ] First launch is blocked by Gatekeeper; **Open Anyway** works as the site and README describe.
+- [ ] Download the release zip, check its SHA-256, drag the app to /Applications in Finder. Once open, `ps` shows it running from `/Applications`, not from an `AppTranslocation` folder.
+- [ ] First launch is blocked by Gatekeeper; **Open Anyway**, its confirmation and the password or Touch ID prompt work as the site, README and release notes describe.
 - [ ] The setup window offers the included Herdr; choosing a project folder creates the first Space with a terminal. No download, Homebrew or administrator password is asked for.
 - [ ] Type in the terminal; resize the window; split a pane.
 

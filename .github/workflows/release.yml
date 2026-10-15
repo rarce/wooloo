@@ -180,9 +180,10 @@ jobs:
           {
             cat build/release/notes.md
             printf '\n## Install\n\n'
-            printf '1. Download `%s`, unzip it and move `wooloo.app` to `/Applications`.\n' "$archive"
+            printf '1. Download `%s`, unzip it and drag `wooloo.app` to `/Applications` in Finder.\n' "$archive"
             printf '2. This build is **not notarized** (it is signed ad hoc), so Gatekeeper blocks the first launch. '
-            printf 'Open it once, then go to System Settings → Privacy & Security and click **Open Anyway**, or run:\n\n'
+            printf 'Open it once, then go to System Settings → Privacy & Security, click **Open Anyway**, '
+            printf 'confirm with **Open Anyway** again and enter your password or use Touch ID. Or run:\n\n'
             printf '   ```sh\n   xattr -dr com.apple.quarantine /Applications/wooloo.app\n   ```\n\n'
             printf 'Copies already installed update themselves: **wooloo → Check for Updates…**.\n\n'
             printf 'Requires macOS 14 or later. Universal build (Apple silicon and Intel). Herdr %s is included.\n\n' "$herdr"

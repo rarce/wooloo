@@ -112,9 +112,9 @@ The wooloo app has no analytics or telemetry. (The website, wooloo.dev, counts v
 
 ## Install
 
-Download `wooloo-<version>.zip` from the [latest release](https://github.com/rarce/wooloo/releases/latest), unzip it and move `wooloo.app` to `/Applications`. The build is universal (Apple silicon and Intel).
+Download `wooloo-<version>.zip` from the [latest release](https://github.com/rarce/wooloo/releases/latest), unzip it and drag `wooloo.app` to `/Applications` in Finder. The build is universal (Apple silicon and Intel). Until a downloaded app has been moved in Finder, macOS runs it from a temporary read-only copy (App Translocation), which shows up as a second wooloo that cannot be deleted while it is open.
 
-The app is not notarized yet (it is signed ad hoc), so Gatekeeper blocks the first launch. Either open it once, then go to System Settings → Privacy & Security and click **Open Anyway**, or remove the quarantine flag:
+The app is not notarized yet (it is signed ad hoc), so Gatekeeper blocks the first launch. Either open it once, then go to System Settings → Privacy & Security, click **Open Anyway**, click **Open Anyway** again in the confirmation and enter your password or use Touch ID; or remove the quarantine flag:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/wooloo.app
