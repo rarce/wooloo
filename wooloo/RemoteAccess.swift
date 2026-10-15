@@ -426,8 +426,8 @@ final class RemoteAccessModel: ObservableObject {
             } else if check.refusesStart {
                 state = .failed(check.summary)
             } else if unattended {
-                state = .failed("Not started when wooloo opened: \(check.summary) "
-                                + "Open Settings → Remote Access to review it and start the tunnel yourself.")
+                // Shown in Settings and in the sidebar mark that opens them, so it names no way there.
+                state = .failed("Not started when wooloo opened: \(check.summary)")
             } else {
                 state = .needsConfirmation(check)
             }

@@ -282,6 +282,7 @@ final class RemoteAccessTests: XCTestCase {
         try await waitFor { if case .failed = passwords.state { true } else { false } }
         guard case .failed(let message) = passwords.state else { return XCTFail("\(passwords.state)") }
         XCTAssertTrue(message.hasPrefix("Not started when wooloo opened"), message)
+        XCTAssertFalse(message.contains("Open Settings"), "The message is shown in Settings")
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
 
         let keys = makeModel(script: markedTunnel(marker))
