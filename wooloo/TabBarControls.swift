@@ -360,6 +360,8 @@ struct UntitledSaveSheet: View {
         }
         .padding(18)
         .frame(width: 420)
+        // Quitting backs up the draft; only a save under way holds it.
+        .allowsQuitWhileShown(!isSaving)
         .onAppear { fieldFocused = true }
     }
 

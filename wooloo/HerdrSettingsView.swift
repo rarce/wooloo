@@ -100,6 +100,8 @@ struct HerdrSettingsView: View {
         .foregroundStyle(theme.text)
         .tint(theme.accent)
         .preferredColorScheme(theme.colorScheme)
+        // Like Done, which is disabled while the configuration is written.
+        .allowsQuitWhileShown(!model.isSaving)
         .onAppear(perform: model.load)
     }
 

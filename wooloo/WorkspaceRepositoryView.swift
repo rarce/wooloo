@@ -127,6 +127,7 @@ struct WorkspaceRepositoryView: View {
             AddWorktreeSheet(request: request) { branch, path, newBranch in
                 if let location { model.addWorktree(at: location, branch: branch, path: path, newBranch: newBranch) }
             }
+            .allowsQuitWhileShown()
         }
         .confirmationDialog("Remove worktree?", isPresented: Binding(
             get: { removing != nil }, set: { if !$0 { removing = nil } }

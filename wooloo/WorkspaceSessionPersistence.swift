@@ -360,6 +360,36 @@ final class WoolooAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+extension View {
+    /// AppKit refuses Quit while a sheet is shown, without asking the app delegate, unless the
+    /// sheet's window allows it. Quitting then closes the sheet as its Cancel or Done would;
+    /// the delegate still backs up unsaved documents first.
+    func allowsQuitWhileShown(_ allowed: Bool = true) -> some View {
+        background(SheetQuitPolicy(allowed: allowed))
+    }
+}
+
+private struct SheetQuitPolicy: NSViewRepresentable {
+    let allowed: Bool
+
+    func makeNSView(context: Context) -> SheetQuitPolicyView { SheetQuitPolicyView() }
+
+    func updateNSView(_ view: SheetQuitPolicyView, context: Context) { view.allowsQuit = allowed }
+}
+
+final class SheetQuitPolicyView: NSView {
+    var allowsQuit = true {
+        didSet { apply() }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        apply()
+    }
+
+    private func apply() { window?.preventsApplicationTerminationWhenModal = !allowsQuit }
+}
+
 /// SwiftUI owns the window's existing delegate. Forward its other callbacks while delaying
 /// a user-initiated window close until the same backup check used by application quit finishes.
 struct WorkspaceSessionWindowGuard: NSViewRepresentable {
