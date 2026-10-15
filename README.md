@@ -5,7 +5,9 @@
 
 **A native macOS home for your coding agents.**
 
-![wooloo with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right](docs/images/main-window.png)
+![A one-minute demo: Codex adds a feature in a Herdr pane, wooloo shows it finish, then the diff is reviewed, the README edited with a live preview, the changes staged and committed, and the tests run in a terminal](docs/images/demo.gif)
+
+<sub>A real session with the Codex CLI, recorded in one take. Waiting and typing are sped up where the video says so. [MP4 version](docs/images/demo.mp4).</sub>
 
 wooloo is a Mac app for [Herdr](https://herdr.dev/), the server that runs and organizes coding agent sessions. It is for developers who work with several agents at once, use a mouse alongside the keyboard, and want some of the convenience of an IDE without leaving an environment built around their agents.
 

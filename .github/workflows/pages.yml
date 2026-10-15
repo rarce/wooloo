@@ -7,6 +7,8 @@ on:
       - site/**
       - docs/images/main-window.png
       - docs/images/social-preview.png
+      - docs/images/demo.mp4
+      - docs/images/demo-poster.jpg
       - wooloo/Assets.xcassets/AppIcon.appiconset/icon-256.png
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -35,7 +37,7 @@ jobs:
         run: |
           mkdir _site
           cp -R site/. _site/
-          cp docs/images/main-window.png docs/images/social-preview.png _site/
+          cp docs/images/main-window.png docs/images/social-preview.png docs/images/demo.mp4 docs/images/demo-poster.jpg _site/
           cp wooloo/Assets.xcassets/AppIcon.appiconset/icon-256.png _site/icon.png
 
       - uses: actions/configure-pages@v5
