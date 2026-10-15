@@ -484,17 +484,35 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertFalse(store.documents[0].isDirty)
     }
 
-    /// The same without a disk check in between: the conflict-checked write finds the newer file
-    /// and asks again instead of writing over it.
+    /// The same without a disk check in between: the conflict-checked write finds the newer file,
+    /// writes nothing and says why. Asking the same question again would read as a missed click,
+    /// and a second Overwrite would then replace a version nobody saw.
     func testAChangeBeforeAnyCheckIsFoundByTheWrite() async throws {
         let id = try await conflict()
         try sandbox.write(["a.txt": "third\n"], in: "repo")
-        store.overwrite(id)
+        var saved = 0
+        store.overwrite(id) { saved += 1 }
         await settle()
+        let third = WorkspaceFiles.gitBlobHash(Data("third\n".utf8))
+        XCTAssertEqual(saved, 0)
         XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "third\n")
-        XCTAssertTrue(store.documents[0].asksToOverwrite)
-        XCTAssertEqual(store.documents[0].overwriteVersion, WorkspaceFiles.gitBlobHash(Data("third\n".utf8)))
+        XCTAssertFalse(store.documents[0].asksToOverwrite)
+        XCTAssertNil(store.documents[0].overwriteVersion)
+        XCTAssertEqual(store.documents[0].error, WorkspaceDocumentStore.changedAgainMessage)
+        XCTAssertEqual(store.documents[0].diskState, .changed(version: third))
         XCTAssertEqual(store.documents[0].text, "mine\n")
+        XCTAssertTrue(store.documents[0].isDirty)
+
+        // The next save asks about the newer file, and Overwrite then writes over it.
+        store.save(id)
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite)
+        XCTAssertEqual(store.documents[0].overwriteVersion, third)
+        store.overwrite(id) { saved += 1 }
+        await settle()
+        XCTAssertEqual(saved, 1)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+        XCTAssertNil(store.documents[0].error)
     }
 
     /// Repeated clicks save once.

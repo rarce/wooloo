@@ -540,9 +540,11 @@ final class WorkspaceDocumentStore: ObservableObject {
                 case .present(let current) where current != version || recreate:
                     if recreate { keepAsUnsaved(currentIndex) }
                     documents[currentIndex].diskState = .changed(version: current)
-                    documents[currentIndex].asksToOverwrite = true
-                    documents[currentIndex].overwriteVersion = current
-                    documents[currentIndex].error = nil
+                    // Overwrite answered about another version: asking the same question again
+                    // would read as a missed click, so say why nothing was saved, as `overwrite` does.
+                    documents[currentIndex].asksToOverwrite = !overwriting
+                    documents[currentIndex].overwriteVersion = overwriting ? nil : current
+                    documents[currentIndex].error = overwriting ? Self.changedAgainMessage : nil
                 case .missing:
                     documents[currentIndex].diskState = .deleted
                     documents[currentIndex].error = failure.message
