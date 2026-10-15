@@ -11,7 +11,10 @@ final class WorkspaceDocumentStore: ObservableObject {
     }
     /// Every Space's documents; `visibleDocuments` are the shown Space's.
     @Published var documents: [WorkspaceDocument] = [] {
-        didSet { schedulePersistence() }
+        didSet {
+            schedulePersistence()
+            watchOpenFiles()
+        }
     }
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
     @Published var activeID: String? {
@@ -50,9 +53,17 @@ final class WorkspaceDocumentStore: ObservableObject {
     private var changeRevision: UInt64 = 0
 
     init(persistence: WorkspaceSessionPersistence? = WoolooApp.isHostingTests ? nil : .shared,
-         backupDelay: UInt64 = 500_000_000) {
+         backupDelay: UInt64 = 500_000_000, watchesOpenFiles: Bool = !WoolooApp.isHostingTests) {
         self.persistence = persistence
         self.backupDelay = backupDelay
+        if watchesOpenFiles {
+            openFileWatcher = WorkspaceOpenFileWatcher { [weak self] path in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    for identity in self.watchedFiles[path] ?? [] { self.checkDisk(at: identity) }
+                }
+            }
+        }
         if persistence != nil {
             WorkspaceSessionRegistry.shared.register(self)
             restoreSpace(nil)
@@ -641,6 +652,22 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     private var diskChecks: [String: Task<Void, Never>] = [:]
     private var queuedDiskChecks: Set<String> = []
+    /// The explorer's FSEvents stream can report a change seconds late, so this Mac's open files
+    /// are also watched one by one. Absolute paths, with the locations they are open at.
+    private var openFileWatcher: WorkspaceOpenFileWatcher?
+    private var watchedFiles: [String: Set<String>] = [:]
+
+    /// Runs on every change to `documents`, also per keystroke, so it compares a few paths only.
+    private func watchOpenFiles() {
+        guard let openFileWatcher else { return }
+        var files: [String: Set<String>] = [:]
+        for document in documents where document.kind == .file && !document.isUntitled && document.location.isLocal {
+            files[document.location.absolutePath(document.path), default: []].insert(document.location.identity)
+        }
+        guard files != watchedFiles else { return }
+        watchedFiles = files
+        openFileWatcher.watch(Set(files.keys))
+    }
 
     /// Compares the open files at a location (its `identity`; every location when nil) with the
     /// files on disk, as VS Code and Zed do: a tab without unsaved edits reloads, one with edits
