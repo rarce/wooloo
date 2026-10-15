@@ -107,6 +107,91 @@ enum RemoteAccessHostKeys {
     }
 }
 
+/// Which sign-in methods this Mac's SSH server offers a client that arrives the way tunnel
+/// clients do: `cloudflared` connects to `localhost:22`, so sshd sees every tunnel client as a
+/// connection from this Mac, and a probe from here meets the same `Match Address` rules.
+enum RemoteAccessSSHCheck: Equatable {
+    /// Only key-based methods, such as `publickey`, for `user`.
+    case keysOnly(user: String, methods: [String])
+    /// `password` or `keyboard-interactive`, which on macOS asks for the account password.
+    case acceptsPasswords(user: String, methods: [String])
+    /// sshd let `user` in without any password or key.
+    case acceptsNoCredential(user: String)
+    /// The methods could not be learned, so nothing is known about passwords.
+    case unknown(reason: String)
+
+    static let passwordMethods: Set<String> = ["password", "keyboard-interactive"]
+
+    /// Only a verified key-only server starts without asking.
+    var isVerifiedKeysOnly: Bool {
+        if case .keysOnly = self { true } else { false }
+    }
+
+    /// A server that lets anyone in is never published.
+    var refusesStart: Bool {
+        if case .acceptsNoCredential = self { true } else { false }
+    }
+
+    /// What the check found, for the settings and the confirmation.
+    var summary: String {
+        switch self {
+        case .keysOnly(let user, let methods):
+            "Checked: this Mac's SSH server offers \(user) only key sign-in (\(methods.joined(separator: ", "))) "
+                + "to connections like the tunnel's. Other accounts on this Mac were not checked."
+        case .acceptsPasswords(let user, let methods):
+            "Checked: this Mac's SSH server accepts a password for \(user) (\(methods.joined(separator: ", "))). "
+                + "Anyone who reaches the tunnel's address can try to guess it."
+        case .acceptsNoCredential(let user):
+            "This Mac's SSH server let \(user) in without a password or key, so wooloo will not publish it."
+        case .unknown(let reason):
+            "Could not check which sign-in methods this Mac's SSH server accepts (\(reason)), "
+                + "so wooloo cannot tell whether it accepts passwords."
+        }
+    }
+}
+
+/// Asks this Mac's SSH server which methods it offers, without sending any credential: `ssh`
+/// offers only the `none` method, which sshd refuses with the list of methods it would accept.
+/// sshd may log the attempt as a failed sign-in.
+enum RemoteAccessSSHProbe {
+    static func arguments(user: String, port: UInt16 = 22) -> [String] {
+        // No user configuration, agent, key, known_hosts file or prompt is used.
+        ["-F", "/dev/null", "-p", String(port),
+         "-o", "BatchMode=yes", "-o", "PreferredAuthentications=none", "-o", "PubkeyAuthentication=no",
+         "-o", "GSSAPIAuthentication=no", "-o", "IdentityAgent=none", "-o", "NumberOfPasswordPrompts=0",
+         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+         "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5",
+         "-T", "\(user)@127.0.0.1", "true"]
+    }
+
+    /// The check from `ssh`'s outcome: nil `failure` when it signed in.
+    static func result(user: String, failure: String?) -> RemoteAccessSSHCheck {
+        guard let failure else { return .acceptsNoCredential(user: user) }
+        guard let range = failure.range(of: #"Permission denied \(([^)]*)\)"#, options: .regularExpression) else {
+            let line = failure.split(separator: "\n").last.map(String.init) ?? failure
+            return .unknown(reason: line.trimmingCharacters(in: .whitespaces).isEmpty ? "no answer" : line)
+        }
+        let list = failure[range].dropFirst("Permission denied (".count).dropLast()
+        let methods = list.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !methods.isEmpty else { return .unknown(reason: "sshd listed no sign-in methods") }
+        return methods.contains(where: RemoteAccessSSHCheck.passwordMethods.contains)
+            ? .acceptsPasswords(user: user, methods: methods)
+            : .keysOnly(user: user, methods: methods)
+    }
+
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    static func check(user: String = NSUserName(), ssh: String = "/usr/bin/ssh") -> RemoteAccessSSHCheck {
+        guard FileManager.default.isExecutableFile(atPath: ssh) else { return .unknown(reason: "\(ssh) is missing") }
+        do {
+            _ = try WorkspaceFiles.run(ssh, arguments(user: user), limit: 16_000, timeout: 15,
+                                       label: "remote-access-ssh-check")
+            return result(user: user, failure: nil)
+        } catch {
+            return result(user: user, failure: error.localizedDescription)
+        }
+    }
+}
+
 /// The named tunnel's token in this Mac's Keychain. It is a credential for the tunnel, so it is
 /// neither stored in defaults nor passed on the command line.
 struct RemoteAccessTokenStore {
@@ -186,6 +271,9 @@ enum RemoteAccessSystem {
 
 /// Runs `cloudflared` to publish this Mac's SSH, which remote SSH clients use to
 /// run Herdr's own commands. The tunnel belongs to wooloo: it stops when wooloo quits.
+/// Before publishing, it checks which sign-in methods sshd offers (`RemoteAccessSSHCheck`):
+/// a verified key-only server starts at once; otherwise the user must confirm, and a start at
+/// launch, which nobody is there to confirm, does not happen. It never changes sshd's settings.
 @MainActor
 final class RemoteAccessModel: ObservableObject {
     static let shared = RemoteAccessModel()
@@ -195,6 +283,10 @@ final class RemoteAccessModel: ObservableObject {
 
     enum State: Equatable {
         case stopped
+        /// Asking sshd which sign-in methods it offers, before anything is published.
+        case checking
+        /// The check did not find key-only SSH; nothing is published until the user confirms.
+        case needsConfirmation(RemoteAccessSSHCheck)
         case starting
         case running(hostname: String)
         case failed(String)
@@ -214,11 +306,16 @@ final class RemoteAccessModel: ObservableObject {
     @Published private(set) var hasToken: Bool
     /// nil until checked.
     @Published private(set) var acceptsSSH: Bool?
+    /// The last check of sshd's sign-in methods; nil until checked.
+    @Published private(set) var sshCheck: RemoteAccessSSHCheck?
+    /// Whether the running tunnel was started on the user's word rather than a key-only check.
+    @Published private(set) var startedWithoutVerifiedKeys = false
 
     private let defaults: UserDefaults
     private let tokens: RemoteAccessTokenStore
     private let executable: () -> String?
     private let isPublished: @Sendable (String) -> Bool
+    private let checkSSHSignIn: @Sendable () -> RemoteAccessSSHCheck
     private var process: Process?
     /// Callbacks from an earlier process are ignored.
     private var generation = 0
@@ -234,11 +331,13 @@ final class RemoteAccessModel: ObservableObject {
 
     init(defaults: UserDefaults = .standard, tokens: RemoteAccessTokenStore = .keychain,
          executable: @escaping () -> String? = RemoteAccessSystem.cloudflared,
-         isPublished: @escaping @Sendable (String) -> Bool = RemoteAccessSystem.isPublished) {
+         isPublished: @escaping @Sendable (String) -> Bool = RemoteAccessSystem.isPublished,
+         checkSSHSignIn: @escaping @Sendable () -> RemoteAccessSSHCheck = { RemoteAccessSSHProbe.check() }) {
         self.defaults = defaults
         self.tokens = tokens
         self.executable = executable
         self.isPublished = isPublished
+        self.checkSSHSignIn = checkSSHSignIn
         mode = defaults.string(forKey: Self.modeKey).flatMap(RemoteAccessMode.init) ?? .quick
         hostname = defaults.string(forKey: Self.hostnameKey) ?? ""
         startsAtLaunch = defaults.bool(forKey: Self.startsAtLaunchKey)
@@ -247,8 +346,8 @@ final class RemoteAccessModel: ObservableObject {
 
     var isActive: Bool {
         switch state {
-        case .starting, .running: true
-        case .stopped, .failed: false
+        case .checking, .starting, .running: true
+        case .stopped, .needsConfirmation, .failed: false
         }
     }
 
@@ -260,11 +359,15 @@ final class RemoteAccessModel: ObservableObject {
         hasToken = !trimmed.isEmpty
     }
 
+    /// Whether Remote Login is on and, if so, which sign-in methods sshd offers.
     func checkSSH() {
+        let checkSSHSignIn = checkSSHSignIn
         Task {
             // nil when cancelled.
             guard let accepts = await BlockingWork.run({ Optional(RemoteAccessSystem.acceptsSSH()) }) else { return }
             if acceptsSSH != accepts { acceptsSSH = accepts }
+            guard accepts, let check = await BlockingWork.run({ Optional(checkSSHSignIn()) }) else { return }
+            if sshCheck != check { sshCheck = check }
         }
     }
 
@@ -278,20 +381,77 @@ final class RemoteAccessModel: ObservableObject {
         }
     }
 
+    /// Checks sshd, then publishes it if it offers only key sign-in; otherwise waits in
+    /// `.needsConfirmation` for `startDespiteCheck` or `cancelStart`.
     func start() {
+        start(unattended: false)
+    }
+
+    /// Starts the tunnel as wooloo opens: only after a key-only check, since nobody is there to
+    /// confirm anything else.
+    func startAtLaunch() {
+        start(unattended: true)
+    }
+
+    /// Publishes sshd although the check did not find it key-only, because the user said so.
+    /// That is the user's decision, not a check: the status keeps saying so.
+    func startDespiteCheck() {
+        guard case .needsConfirmation(let check) = state, !check.refusesStart else { return }
+        guard let prepared = prepare() else { return }
+        launch(path: prepared.path, token: prepared.token, verified: false)
+    }
+
+    /// Leaves the tunnel off after a check that asked for confirmation.
+    func cancelStart() {
+        guard case .needsConfirmation = state else { return }
+        state = .stopped
+    }
+
+    private func start(unattended: Bool) {
         guard !isActive else { return }
+        guard prepare() != nil else { return }
+        generation += 1
+        let generation = generation
+        state = .checking
+        let checkSSHSignIn = checkSSHSignIn
+        Task {
+            let check = await BlockingWork.run({ Optional(checkSSHSignIn()) })
+                ?? .unknown(reason: "the check was cancelled")
+            guard self.generation == generation, state == .checking else { return }
+            sshCheck = check
+            if check.isVerifiedKeysOnly {
+                // The settings may have changed while checking.
+                guard let prepared = prepare() else { return }
+                launch(path: prepared.path, token: prepared.token, verified: true)
+            } else if check.refusesStart {
+                state = .failed(check.summary)
+            } else if unattended {
+                state = .failed("Not started when wooloo opened: \(check.summary) "
+                                + "Open Settings → Remote Access to review it and start the tunnel yourself.")
+            } else {
+                state = .needsConfirmation(check)
+            }
+        }
+    }
+
+    /// The executable and the named tunnel's token, or nil after reporting what is missing.
+    private func prepare() -> (path: String, token: String?)? {
         guard let path = executable() else {
             state = .failed("cloudflared was not found. Install it with `brew install cloudflared`.")
-            return
+            return nil
         }
         let token = mode == .named ? tokens.load() : nil
         if mode == .named {
-            guard token != nil else { state = .failed("Paste the tunnel token from Cloudflare first."); return }
+            guard token != nil else { state = .failed("Paste the tunnel token from Cloudflare first."); return nil }
             guard !RemoteAccessLink.normalizedHostname(hostname).isEmpty else {
                 state = .failed("Enter the tunnel's public hostname first.")
-                return
+                return nil
             }
         }
+        return (path, token)
+    }
+
+    private func launch(path: String, token: String?, verified: Bool) {
         let command = Self.command(mode: mode, token: token)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
@@ -363,6 +523,7 @@ final class RemoteAccessModel: ObservableObject {
         do {
             try process.run()
             self.process = process
+            startedWithoutVerifiedKeys = !verified
             state = .starting
             checkSSH()
         } catch {
@@ -372,6 +533,7 @@ final class RemoteAccessModel: ObservableObject {
 
     func stop() {
         generation += 1
+        startedWithoutVerifiedKeys = false
         process?.terminate()
         process = nil
         output?.readabilityHandler = nil

@@ -219,4 +219,241 @@ final class AgentQuotaTests: XCTestCase {
         monitor.apply(.claude, .success(nil))
         XCTAssertNil(monitor.states[.claude])
     }
+
+    // MARK: Consent
+
+    private let devMachine = HerdrMachineProfile(id: "dev", label: "Dev", target: "dev.example.test",
+                                                 session: "default", enabled: true)
+
+    /// Defaults of their own, removed after the test.
+    private func consentDefaults() -> UserDefaults {
+        let name = "AgentQuotaConsentTests-\(UUID().uuidString)"
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: name) }
+        return UserDefaults(suiteName: name)!
+    }
+
+    /// Monitors handed out by machine, recording each machine asked for. Polling is off, so a
+    /// monitor never reads anything: holding one is what would make it read.
+    @MainActor
+    private final class Monitors {
+        private(set) var asked: [HerdrMachineProfile?] = []
+        private var monitors: [String: AgentQuotaMonitor] = [:]
+
+        func monitor(for machine: HerdrMachineProfile?) -> AgentQuotaMonitor {
+            asked.append(machine)
+            let key = AgentQuotaConsent.key(for: machine)
+            if let monitor = monitors[key] { return monitor }
+            let monitor = AgentQuotaMonitor(machine: machine)
+            monitors[key] = monitor
+            return monitor
+        }
+
+        func inUse(_ machine: HerdrMachineProfile?) -> Bool {
+            monitors[AgentQuotaConsent.key(for: machine)]?.isInUse ?? false
+        }
+    }
+
+    @MainActor
+    private func makeActivation(_ defaults: UserDefaults, _ monitors: Monitors) -> AgentQuotaActivation {
+        AgentQuotaMonitor.isPollingEnabled = false
+        addTeardownBlock { await MainActor.run { AgentQuotaMonitor.isPollingEnabled = true } }
+        return AgentQuotaActivation(defaults: defaults, monitorFor: monitors.monitor(for:))
+    }
+
+    /// The dialog says what is read where, where it is sent from and to, and that the endpoints
+    /// are unofficial.
+    func testConsentExplainsWhatIsReadAndWhereItIsSent() {
+        let local = AgentQuotaConsent.explanation(for: nil)
+        for part in ["on this Mac", "~/.claude/.credentials.json", "Claude Code-credentials", "~/.codex/auth.json",
+                     "$CODEX_HOME", "session logs", "api.anthropic.com", "chatgpt.com", "every two minutes",
+                     "unofficial", "change or stop working", "never refreshes, saves or logs"] {
+            XCTAssertTrue(local.localizedCaseInsensitiveContains(part), "Missing “\(part)”")
+        }
+        XCTAssertFalse(local.contains("leave from this Mac"))
+
+        let remote = AgentQuotaConsent.explanation(for: devMachine)
+        for part in ["on Dev (dev.example.test), over SSH", "`security`", "The requests leave from this Mac",
+                     "unofficial"] {
+            XCTAssertTrue(remote.contains(part), "Missing “\(part)”")
+        }
+        XCTAssertEqual(AgentQuotaConsent.title(for: nil), "Turn on Quotas for this Mac?")
+        XCTAssertEqual(AgentQuotaConsent.title(for: devMachine), "Turn on Quotas for “Dev”?")
+    }
+
+    /// Nothing is polled before the user agrees; agreeing polls this machine and is remembered.
+    @MainActor
+    func testAcceptingTurnsQuotasOnAndOnlyThenPolls() {
+        let defaults = consentDefaults()
+        let monitors = Monitors()
+        let activation = makeActivation(defaults, monitors)
+        activation.show(machine: nil, windowActive: true)
+        XCTAssertFalse(activation.isEnabled)
+        XCTAssertTrue(monitors.asked.isEmpty, "Off asks for no monitor")
+
+        activation.requestEnable()
+        let request = activation.request
+        XCTAssertNotNil(request)
+        XCTAssertNil(request?.machine)
+        XCTAssertFalse(activation.isEnabled, "Asking turns nothing on")
+        XCTAssertTrue(monitors.asked.isEmpty, "The dialog reads nothing")
+
+        activation.accept(request!)
+        XCTAssertNil(activation.request)
+        XCTAssertTrue(activation.isEnabled)
+        XCTAssertTrue(monitors.inUse(nil))
+        XCTAssertEqual(AgentQuotaConsent(stored: defaults.string(forKey: AgentQuotaConsent.storageKey)),
+                       AgentQuotaConsent(machines: ["local"]))
+
+        let reopened = makeActivation(defaults, Monitors())
+        reopened.show(machine: nil, windowActive: true)
+        XCTAssertTrue(reopened.isEnabled, "The agreement is remembered")
+        reopened.disappear()
+        activation.disappear()
+        XCTAssertFalse(monitors.inUse(nil), "Leaving the window stops polling")
+    }
+
+    /// Cancel, also Escape, closes the dialog and leaves QUOTAS off without reading anything.
+    @MainActor
+    func testCancellingLeavesQuotasOffWithoutReading() {
+        let defaults = consentDefaults()
+        let monitors = Monitors()
+        let activation = makeActivation(defaults, monitors)
+        activation.show(machine: nil, windowActive: true)
+        activation.requestEnable()
+        activation.cancel()
+        XCTAssertNil(activation.request)
+        XCTAssertFalse(activation.isEnabled)
+        XCTAssertTrue(monitors.asked.isEmpty)
+        XCTAssertNil(defaults.string(forKey: AgentQuotaConsent.storageKey), "Nothing is saved")
+
+        activation.show(machine: nil, windowActive: false)
+        activation.show(machine: nil, windowActive: true)
+        XCTAssertTrue(monitors.asked.isEmpty, "Reactivating the window does not turn it on")
+    }
+
+    /// The section's button and its context menu both ask through `requestEnable`, which shows
+    /// one dialog however often it is asked; accepting twice holds the monitor once. The switch
+    /// that 0.3.1's context menu turned on without any explanation is not consent.
+    @MainActor
+    func testContextMenuAndRepeatedRequestsShowOneDialog() {
+        let defaults = consentDefaults()
+        defaults.set(true, forKey: AgentQuotaConsent.legacyEnabledKey)
+        let monitors = Monitors()
+        let activation = makeActivation(defaults, monitors)
+        activation.show(machine: nil, windowActive: true)
+        XCTAssertFalse(activation.isEnabled, "The old switch is asked about again")
+        XCTAssertNil(defaults.object(forKey: AgentQuotaConsent.legacyEnabledKey))
+
+        activation.requestEnable() // the button
+        let first = activation.request
+        activation.requestEnable() // the context menu
+        XCTAssertEqual(activation.request, first, "A second request does not stack another dialog")
+
+        activation.accept(first!)
+        activation.accept(first!)
+        activation.requestEnable()
+        XCTAssertNil(activation.request, "Nothing to ask once on")
+        activation.show(machine: nil, windowActive: true)
+        activation.disappear()
+        XCTAssertFalse(monitors.inUse(nil), "The monitor was held once")
+    }
+
+    /// Agreeing is per machine: moving the explorer to an SSH machine reads nothing there until
+    /// the user agrees for it, and a dialog answered after the explorer moved turns QUOTAS on only
+    /// for the machine it named.
+    @MainActor
+    func testConsentFollowsTheExplorersMachine() {
+        let defaults = consentDefaults()
+        let monitors = Monitors()
+        let activation = makeActivation(defaults, monitors)
+        activation.show(machine: nil, windowActive: true)
+        activation.requestEnable()
+        activation.accept(activation.request!)
+        XCTAssertTrue(monitors.inUse(nil))
+
+        activation.show(machine: devMachine, windowActive: true)
+        XCTAssertFalse(activation.isEnabled, "This Mac's agreement does not cover Dev")
+        XCTAssertFalse(monitors.inUse(nil), "This Mac is no longer polled")
+        XCTAssertFalse(monitors.asked.contains(devMachine), "Dev is not read")
+
+        activation.requestEnable()
+        let devRequest = activation.request!
+        XCTAssertEqual(devRequest.machine, devMachine)
+        activation.show(machine: nil, windowActive: true)
+        XCTAssertTrue(monitors.inUse(nil))
+        activation.accept(devRequest)
+        XCTAssertTrue(activation.consent.allows(devMachine), "Dev, which the dialog named, is on")
+        XCTAssertFalse(monitors.asked.contains(devMachine), "Dev is read only once the explorer shows it")
+        activation.show(machine: devMachine, windowActive: true)
+        XCTAssertTrue(monitors.inUse(devMachine))
+
+        // A dialog for this Mac answered once the explorer is on another machine.
+        activation.turnOff()
+        XCTAssertFalse(monitors.inUse(devMachine))
+        activation.show(machine: nil, windowActive: true)
+        activation.requestEnable()
+        let localRequest = activation.request!
+        let other = HerdrMachineProfile(id: "other", label: "Other", target: "other.example.test",
+                                        session: "default", enabled: true)
+        activation.show(machine: other, windowActive: true)
+        activation.accept(localRequest)
+        XCTAssertFalse(activation.isEnabled, "Other was never agreed to")
+        XCTAssertFalse(monitors.asked.contains(other))
+        XCTAssertTrue(activation.consent.allows(nil))
+        activation.disappear()
+    }
+
+    /// A machine profile whose SSH target changed, or a saved agreement of another version,
+    /// asks again.
+    func testChangedTargetsAndOlderAgreementsAskAgain() {
+        var consent = AgentQuotaConsent()
+        consent.grant(devMachine)
+        XCTAssertTrue(consent.allows(devMachine))
+        XCTAssertFalse(consent.allows(HerdrMachineProfile(id: "dev", label: "Dev", target: "elsewhere.example.test",
+                                                          session: "default", enabled: true)))
+        XCTAssertFalse(consent.allows(nil))
+        XCTAssertEqual(AgentQuotaConsent(stored: consent.stored), consent)
+        XCTAssertEqual(AgentQuotaConsent(stored: #"{"machines":["local"],"version":0}"#), AgentQuotaConsent())
+        XCTAssertEqual(AgentQuotaConsent(stored: "not json"), AgentQuotaConsent())
+        XCTAssertEqual(AgentQuotaConsent(stored: nil), AgentQuotaConsent())
+    }
+
+    /// Turning QUOTAS off in one window stops every window's polling, on every machine.
+    @MainActor
+    func testTurningOffInOneWindowStopsTheOthers() async {
+        let defaults = consentDefaults()
+        let monitors = Monitors()
+        let first = makeActivation(defaults, monitors)
+        let second = makeActivation(defaults, monitors)
+        first.show(machine: nil, windowActive: true)
+        second.show(machine: nil, windowActive: true)
+        first.requestEnable()
+        first.accept(first.request!)
+        for _ in 0..<100 where !second.isEnabled { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(second.isEnabled, "The other window follows")
+
+        second.turnOff()
+        for _ in 0..<100 where first.isEnabled { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(first.isEnabled)
+        XCTAssertFalse(monitors.inUse(nil), "No window polls")
+        XCTAssertEqual(AgentQuotaConsent(stored: defaults.string(forKey: AgentQuotaConsent.storageKey)),
+                       AgentQuotaConsent())
+    }
+
+    /// An inactive window holds no monitor even when QUOTAS is on.
+    @MainActor
+    func testInactiveWindowsDoNotPoll() {
+        let defaults = consentDefaults()
+        let monitors = Monitors()
+        let activation = makeActivation(defaults, monitors)
+        activation.show(machine: nil, windowActive: false)
+        activation.requestEnable()
+        activation.accept(activation.request!)
+        XCTAssertTrue(activation.isEnabled)
+        XCTAssertFalse(monitors.inUse(nil))
+        activation.show(machine: nil, windowActive: true)
+        XCTAssertTrue(monitors.inUse(nil))
+        activation.show(machine: nil, windowActive: false)
+        XCTAssertFalse(monitors.inUse(nil))
+    }
 }

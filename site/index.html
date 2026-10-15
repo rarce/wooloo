@@ -13,7 +13,7 @@
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wooloo — a native macOS home for your coding agents</title>
-<meta name="description" content="wooloo is an open source Mac app for Herdr: live terminals, a file explorer, an editor and Git tools for your coding agent sessions.">
+<meta name="description" content="Watch your coding agents, open the files they change, review the Git diff and edit, in one native Mac window. Open source; Herdr included. Early preview.">
 <link rel="icon" type="image/png" href="icon.png">
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="canonical" href="https://wooloo.dev/">
@@ -60,6 +60,7 @@
   p a, li a { text-decoration: underline; text-decoration-color: rgba(138, 173, 244, 0.45); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
   p a:hover, li a:hover { text-decoration-color: currentColor; }
   a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .shot a:focus-visible { outline-offset: 6px; }
   code { font: 0.88em var(--mono); background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px; padding: 0.1em 0.4em; }
   .icon-svg { width: 1.1em; height: 1.1em; flex: none; fill: currentColor; }
   .wrap { max-width: var(--max); margin: 0 auto; padding: 0 16px; }
@@ -77,14 +78,21 @@
   .top nav { display: flex; align-items: center; gap: 4px; font-size: 15px; }
   .top nav a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; color: var(--text-2); }
   .top nav a:hover { color: var(--text); background: var(--bg-raised); }
+  .top nav a { white-space: nowrap; }
   @media (max-width: 400px) { .top nav a { padding: 6px 7px; } .top nav .github span { display: none; } }
+  /* On a phone the header already shows the icon, and Privacy is a section further down. */
+  @media (max-width: 480px) { .hero img.icon, .top nav .nav-privacy { display: none; } .hero h1 { margin-top: 4px; } }
 
-  .hero { text-align: center; padding: 48px 16px 36px; }
-  @media (min-width: 720px) { .hero { padding: 64px 32px 44px; } }
-  .hero img.icon { width: 112px; height: 112px; border-radius: 26px; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45); }
-  .hero h1 { font-size: clamp(34px, 6vw, 62px); line-height: 1.06; letter-spacing: -0.025em; margin: 28px 0 18px; font-weight: 700; }
+  .hero { text-align: center; padding: 20px 16px 24px; }
+  @media (min-width: 720px) { .hero { padding: 28px 32px 28px; } }
+  .hero img.icon { width: 60px; height: 60px; border-radius: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+  .hero h1 { font-size: clamp(32px, 5vw, 52px); line-height: 1.06; letter-spacing: -0.025em; margin: 14px 0 12px; font-weight: 700; }
+  .hero p.herdr { font-size: 15.5px; color: var(--text-3); max-width: 44em; margin: 10px auto 0; }
   .hero p.lede { font-size: clamp(17px, 2.2vw, 20px); line-height: 1.55; color: var(--text-2); max-width: 36em; margin: 0 auto; }
-  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 34px 0 18px; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 12px; margin: 22px 0 12px; }
+  .download { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  @media (max-width: 480px) { .download { flex: 1 1 100%; } .download .button { width: 100%; } }
+  .status { display: inline-block; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(238, 212, 159, 0.45); color: var(--warn); font-size: 13px; line-height: 1.5; }
   .button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 48px; padding: 0 22px; border-radius: 12px; font-weight: 600; font-size: 16px; line-height: 1; border: 1px solid var(--line-strong); color: var(--text); background: var(--bg-raised); transition: background-color 0.15s, border-color 0.15s; }
   .button .icon-svg { width: 18px; height: 18px; }
   .button.primary .icon-svg { margin-top: -2px; } /* The Apple glyph's leaf sits above its optical center. */
@@ -95,8 +103,17 @@
   @media (max-width: 480px) { .actions .button { flex: 1 1 100%; } }
   ul.meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 20px; list-style: none; margin: 0 auto; padding: 0; color: var(--text-3); font-size: 14px; max-width: 40em; }
 
-  .shot { margin: 28px auto 0; }
+  .shot { margin: 8px auto 0; }
+  .shot a { display: block; border-radius: 12px; }
   .shot img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55); }
+  .shot figcaption { margin-top: 10px; text-align: center; color: var(--text-3); font-size: 14px; }
+  /* The full-size screenshot, opened from the page; without the script, the link opens the image itself. */
+  dialog.zoom { padding: 0; border: 0; background: transparent; max-width: 100vw; max-height: 100vh; width: 100vw; height: 100vh; margin: 0; }
+  dialog.zoom::backdrop { background: rgba(9, 9, 16, 0.92); }
+  dialog.zoom .frame { width: 100%; height: 100%; overflow: auto; padding: 60px 16px 16px; }
+  dialog.zoom img { display: block; margin: 0 auto; width: 2560px; max-width: none; height: auto; }
+  @media (max-width: 2600px) { dialog.zoom img { width: max(1600px, 100%); } }
+  dialog.zoom .close { position: fixed; top: 12px; right: 12px; height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--text); font: 600 14px/1 -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; }
 
   section { padding: 88px 0 0; }
   section h2 { font-size: clamp(27px, 3.6vw, 36px); line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 14px; font-weight: 700; }
@@ -164,6 +181,10 @@
   .copy:hover { color: var(--text); border-color: var(--line-hover); }
   .note { border-left: 3px solid var(--warn); background: var(--bg-raised); padding: 14px 18px; border-radius: 0 10px 10px 0; color: var(--text-2); font-size: 15.5px; max-width: 46em; margin: 0; }
 
+  ul.links { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px 24px; grid-template-columns: 1fr; max-width: 46em; }
+  @media (min-width: 720px) { ul.links { grid-template-columns: 1fr 1fr; } }
+  ul.links li { color: var(--text-2); font-size: 15.5px; }
+  .card p + p { margin-top: 10px; }
   footer { margin-top: 96px; border-top: 1px solid var(--line); padding: 28px 0 44px; color: var(--text-3); font-size: 14px; }
   footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 24px; }
   footer .privacy { flex-basis: 100%; }
@@ -178,7 +199,8 @@
   <a class="brand" href="./"><img src="icon.png" alt="">wooloo</a>
   <nav>
     <a href="#features">Features</a>
-    <a href="#install">Install</a>
+    <a href="#start">Get started</a>
+    <a class="nav-privacy" href="#privacy">Privacy</a>
     <a class="github" href="https://github.com/rarce/wooloo" aria-label="GitHub"><svg class="icon-svg" aria-hidden="true" focusable="false"><use href="#gh"/></svg><span>GitHub</span></a>
   </nav>
 </header>
@@ -187,19 +209,30 @@
   <div class="wrap hero">
     <img class="icon" src="icon.png" alt="The wooloo icon: a sheep peeking out of a window">
     <h1>A native macOS home<br>for your coding agents</h1>
-    <p class="lede">wooloo is an open source Mac app for <a href="https://herdr.dev/">Herdr</a>, the server that runs and organizes coding agent sessions. Live terminals, a file explorer, an editor and Git tools, without leaving an environment built around your agents.</p>
+    <p class="lede">Watch your agent sessions, open the files they change, review the Git diff and edit it, all in one native Mac window.</p>
+    <p class="herdr">Sessions are kept by <a href="https://herdr.dev/">Herdr</a>, which is included: they keep running when you close wooloo, and stay available from Herdr's own terminal UI.</p>
     <div class="actions">
-      <a class="button primary" href="https://github.com/rarce/wooloo/releases/latest"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Download for macOS</a>
+      <div class="download">
+      <a class="button primary" href="https://github.com/rarce/wooloo/releases/latest" aria-describedby="release-status"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Download for macOS</a>
+      <span class="status" id="release-status">Early preview · Not notarized yet</span>
+      </div>
       <a class="button" href="https://github.com/rarce/wooloo"><svg class="icon-svg" aria-hidden="true" focusable="false"><use href="#gh"/></svg>View on GitHub</a>
     </div>
     <ul class="meta" role="list">
-      <li>Free and MIT licensed</li><li>macOS 14 or later</li><li>Apple silicon and Intel</li><li>Herdr included</li>
+      <li>Free and MIT licensed</li><li>macOS 14 or later</li><li>Apple silicon and Intel</li><li>Agent CLIs not included</li>
     </ul>
   </div>
 
-  <div class="wrap shot">
-    <img src="main-window.png" width="2560" height="1600" alt="wooloo with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right">
-  </div>
+  <figure class="wrap shot">
+    <a href="main-window.png" id="zoom-open" aria-label="Open the screenshot at full size">
+      <img src="main-window.png" width="2560" height="1600" alt="wooloo with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right">
+    </a>
+    <figcaption>Select the screenshot to see it at full size.</figcaption>
+  </figure>
+  <dialog class="zoom" id="zoom" aria-label="Screenshot at full size">
+    <button type="button" class="close" id="zoom-close">Close</button>
+    <div class="frame"><img src="main-window.png" width="2560" height="1600" alt="wooloo with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right, at full size"></div>
+  </dialog>
 
   <section id="features">
     <div class="wrap">
@@ -255,36 +288,55 @@
     </div>
   </section>
 
-  <section>
+  <section id="privacy">
     <div class="wrap">
       <h2>Your Mac, your data</h2>
       <div class="grid three">
         <div class="card">
-          <h3>No telemetry</h3>
-          <p>The wooloo app has no analytics. It talks to Herdr on your Mac, your saved SSH machines and your Git remotes. Everything else is opt-in.</p>
+          <h3>No telemetry in the app</h3>
+          <p>The wooloo app has no analytics. It talks to Herdr on your Mac, your saved SSH machines, your Git remotes and GitHub for updates. Everything else is opt-in. <a href="https://github.com/rarce/wooloo#privacy">What the app connects to</a>.</p>
+          <p>This website is different: it counts visits with Google Analytics.</p>
+        </div>
+        <div class="card">
+          <h3>Quotas, only if you agree</h3>
+          <p>Optionally shows your Claude Code and Codex plan usage. It reads their sign-ins and calls unofficial endpoints that can change, so it stays off until you agree to a dialog that says exactly what it reads. <a href="https://github.com/rarce/wooloo#agent-quotas">How Quotas works</a>.</p>
         </div>
         <div class="card">
           <h3>Remote access, if you want it</h3>
-          <p>Publish this Mac's SSH through a Cloudflare Tunnel to reach your sessions from elsewhere. Off by default; use key-only SSH first.</p>
-        </div>
-        <div class="card">
-          <h3>Open source</h3>
-          <p>MIT licensed and built in the open. Read the code, file issues and send pull requests on <a href="https://github.com/rarce/wooloo">GitHub</a>.</p>
+          <p>Publishes this Mac's SSH server through a Cloudflare Tunnel. Off by default. wooloo checks whether SSH still accepts passwords and asks before publishing if it does, but never changes your SSH settings. <a href="https://github.com/rarce/wooloo#remote-access">Read this first</a>.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <section id="install">
+  <section id="start">
     <div class="wrap">
-      <h2>Install</h2>
+      <h2>Get started</h2>
       <ol class="steps" role="list">
-        <li>Download the latest <code>wooloo-&lt;version&gt;.zip</code> from <a href="https://github.com/rarce/wooloo/releases/latest">GitHub Releases</a>, unzip it and move <code>wooloo.app</code> to Applications.</li>
-        <li>Open it once. Then go to System Settings → Privacy &amp; Security and click <strong>Open Anyway</strong>, or remove the quarantine flag:
+        <li>Download the latest <code>wooloo-&lt;version&gt;.zip</code> from <a href="https://github.com/rarce/wooloo/releases/latest">GitHub Releases</a>, unzip it and drag <code>wooloo.app</code> to Applications in Finder.</li>
+        <li>Open it once. Then go to System Settings → Privacy &amp; Security, click <strong>Open Anyway</strong>, confirm with <strong>Open Anyway</strong> again and enter your password or use Touch ID. Or remove the quarantine flag:
           <div class="command"><pre><code>xattr -dr com.apple.quarantine /Applications/wooloo.app</code></pre></div>
         </li>
+        <li>In the setup window, keep <strong>Use included Herdr</strong>, then <strong>Choose Folder…</strong> and pick a project folder. wooloo opens it with a terminal.</li>
+        <li>In that terminal, start an agent CLI you already have, such as <code>claude</code> or <code>codex</code>. It appears in the Agents list, and the files it changes show up in the explorer and the Changes tree.</li>
       </ol>
-      <p class="note">wooloo is in early development and not notarized yet, so macOS warns on the first launch. You can also <a href="https://github.com/rarce/wooloo#build-and-run">build it from source</a>.</p>
+      <p class="note">Agent CLIs, their accounts and their subscriptions are separate from wooloo: install and sign in to each agent on its own. wooloo is an early preview and not notarized yet, so macOS warns on the first launch. You can also <a href="https://github.com/rarce/wooloo#build-and-run">build it from source</a>.</p>
+    </div>
+  </section>
+
+  <section id="links">
+    <div class="wrap">
+      <h2>Read more</h2>
+      <ul class="links" role="list">
+        <li><a href="https://github.com/rarce/wooloo/releases/latest">Latest release</a> and its notes</li>
+        <li><a href="https://github.com/rarce/wooloo">Source code</a>, MIT licensed</li>
+        <li><a href="https://github.com/rarce/wooloo#privacy">Privacy</a>: what the app connects to</li>
+        <li><a href="https://github.com/rarce/wooloo#agent-quotas">Quotas</a>: what it reads and sends</li>
+        <li><a href="https://github.com/rarce/wooloo#remote-access">Remote Access</a>: what is exposed and checked</li>
+        <li><a href="https://github.com/rarce/wooloo/blob/main/SECURITY.md">Security</a>: reporting and supported versions</li>
+        <li><a href="https://github.com/rarce/wooloo/blob/main/TODO.md">Known issues and plans</a></li>
+        <li><a href="https://herdr.dev/">Herdr</a>, the session server wooloo includes</li>
+      </ul>
     </div>
   </section>
 </main>
@@ -293,7 +345,7 @@
   <div class="wrap">
     <span>wooloo is an independent project, not affiliated with or endorsed by Herdr, Anthropic or OpenAI.</span>
     <span><a href="https://github.com/rarce/wooloo">GitHub</a> · <a href="https://github.com/rarce/wooloo/blob/main/LICENSE">MIT License</a></span>
-    <span class="privacy">This site uses Google Analytics to count visits. The wooloo app has no analytics.</span>
+    <span class="privacy">This site uses Google Analytics to count visits. The wooloo app has no analytics or telemetry.</span>
   </div>
 </footer>
 <script>
@@ -314,6 +366,23 @@
       observer.observe(area);
       area.addEventListener('mouseenter', function () { activate(area); });
     });
+  })();
+  // Opens the screenshot at full size in a dialog; Escape or Close returns focus to the link.
+  (function () {
+    var link = document.getElementById('zoom-open');
+    var dialog = document.getElementById('zoom');
+    if (!link || !dialog || typeof dialog.showModal !== 'function') return;
+    link.addEventListener('click', function (event) {
+      event.preventDefault();
+      dialog.showModal();
+      document.getElementById('zoom-close').focus();
+    });
+    document.getElementById('zoom-close').addEventListener('click', function () { dialog.close(); });
+    // A click beside the image, not on it, closes it too.
+    dialog.addEventListener('click', function (event) {
+      if (event.target === dialog || event.target.classList.contains('frame')) dialog.close();
+    });
+    dialog.addEventListener('close', function () { link.focus(); });
   })();
   // Adds a Copy button to the install command where the Clipboard API is available.
   (function () {

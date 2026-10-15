@@ -393,7 +393,8 @@ struct HerdrSettingsView: View {
 
     @ViewBuilder
     private var remoteAccessFields: some View {
-        description("SSH clients reach this Mac through a Cloudflare Tunnel to its SSH server, then run Herdr's own commands. No port opens on your network, and clients still sign in with SSH.")
+        description("Publishes this Mac's SSH server (Remote Login, localhost:22) through a Cloudflare Tunnel. Anyone who reaches the tunnel's address can try to sign in to any account allowed to use SSH, not only Herdr. No port opens on your network, and clients still sign in with SSH, then run Herdr's own commands.")
+        description("Before starting, wooloo asks sshd which sign-in methods it offers and starts at once only when that is keys alone. It does not change SSH, firewall or Keychain settings. Turn passwords off yourself, as the README explains.")
         if remoteAccess.cloudflaredPath == nil {
             warning("cloudflared is not installed. Install it with `brew install cloudflared`, then come back here.")
         }
@@ -405,6 +406,16 @@ struct HerdrSettingsView: View {
                 }
             }
         }
+        if remoteAccess.acceptsSSH == true, let check = remoteAccess.sshCheck {
+            if check.isVerifiedKeysOnly {
+                Label(check.summary, systemImage: "checkmark.shield")
+                    .font(.system(size: typography.body))
+                    .foregroundStyle(theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                warning(check.summary)
+            }
+        }
         settingsGroup("Tunnel", subtitle: "wooloo only · applies immediately · stops when wooloo quits") {
             RemoteAccessStatusView(model: remoteAccess)
             if case .running(let hostname) = remoteAccess.state {
@@ -412,7 +423,7 @@ struct HerdrSettingsView: View {
             }
             field("Type", hint: remoteAccess.mode == .quick
                   ? "No Cloudflare account needed. The address changes every time the tunnel starts, so scan the new QR code each time. Anyone who learns it can reach your SSH login: use key authentication."
-                  : "A tunnel you created in Cloudflare, with a hostname of your own that stays the same. Protect it with Cloudflare Access to stop others from reaching your SSH login.") {
+                  : "A tunnel you created in Cloudflare, with a hostname of your own that stays the same. Protect it with Cloudflare Access to stop others from reaching your SSH login; wooloo cannot check whether Access is set up.") {
                 Picker("", selection: $remoteAccess.mode) {
                     ForEach(RemoteAccessMode.allCases) { Text($0.title).tag($0) }
                 }
@@ -427,9 +438,10 @@ struct HerdrSettingsView: View {
                         .textFieldStyle(.roundedBorder)
                         .disabled(remoteAccess.isActive)
                 }
-                field("Tunnel token", hint: remoteAccess.hasToken
+                field("Tunnel token", hint: (remoteAccess.hasToken
                       ? "Saved in this Mac's Keychain. Paste a new one to replace it."
-                      : "From Cloudflare Zero Trust → Networks → Tunnels: the token in the tunnel's install command. Saved in this Mac's Keychain.") {
+                      : "From Cloudflare Zero Trust → Networks → Tunnels: the token in the tunnel's install command. Saved in this Mac's Keychain.")
+                      + " wooloo is signed ad hoc for now, so after an update macOS may ask again to let it read the token.") {
                     HStack(spacing: 6) {
                         SecureField(remoteAccess.hasToken ? "Saved" : "eyJ…", text: $tunnelToken)
                             .textFieldStyle(.roundedBorder)
@@ -445,7 +457,12 @@ struct HerdrSettingsView: View {
                     .disabled(remoteAccess.isActive)
                 }
             }
-            Toggle("Start the tunnel when wooloo opens", isOn: $remoteAccess.startsAtLaunch)
+            field("At launch", hint: "Starts only if the check finds key-only SSH, since nobody is there to confirm anything else."
+                  + (remoteAccess.mode == .named
+                     ? " After a wooloo update, macOS may first ask for Keychain access to the token; until someone answers, an unattended Mac keeps the tunnel down."
+                     : "")) {
+                Toggle("Start the tunnel when wooloo opens", isOn: $remoteAccess.startsAtLaunch)
+            }
         }
         .onAppear(perform: remoteAccess.checkSSH)
     }

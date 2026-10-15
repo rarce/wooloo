@@ -47,7 +47,7 @@ For each workload, the script reports:
 - the longest decode; decoding takes well under 1 ms, so a longer one means the stream thread was not running
 - latency from arrival to screen, estimated (see below)
 - main-thread busy share
-- for `keys`, keystroke-to-screen latency, split into:
+- for `keys`, keystroke latency, split into the parts below. `total` (the event to its echo drawn into the view's layer) and `screen` (the event to the estimated refresh that shows it) are different measures: `screen` adds the 12–15 ms wait for the display described below.
   - `queue`: from the event's timestamp until `keyDown` runs
   - `send`: from `keyDown` until the input is written to the socket
   - `herdr`: from the write until the echo frame is received (the first frame whose cursor moved)
@@ -102,9 +102,9 @@ Live, 311×80 window:
 
 wooloo now draws every frame Herdr sends. The frame rate is limited by Herdr, not by the app. After a clear or a tab switch, a cold layout of the whole grid takes about 5 ms at 311×80, down from about 28 ms.
 
-### Keystroke to screen
+### Keystroke to draw
 
-Measured with the `keys` workload on a 120×48 grid:
+Measured with the `keys` workload on a 120×48 grid. These are `total` times: from the key event to the echo frame drawn into the view's layer, not to the screen. They predate the screen estimate below, which adds about 12–15 ms at p50 on a 120 Hz display; the screen time of these runs was not recorded.
 
 | | before | after |
 |---|---|---|
@@ -256,7 +256,7 @@ Live, 113×48 grid. Live numbers vary up to threefold between runs on a loaded m
 | unicode | 2.38 → 1.56 ms | 3.93 → 3.25 ms | 13.5% → 10.4% | 5.3 → 0.8 |
 | mouse-drag | 6.80 → 1.43 ms | 7.74 → 2.94 ms | 10.7% → 3.3% | 1.95 → 1.95 |
 
-With scrolled patches as well, two later runs decoded ascii frames in 120–240 µs at p50 instead of about 330 µs, and drew them 0.8–2.3 ms after arrival. Keystroke to screen took 0.7–1.1 ms at p50 in those runs. `e2e-baseline.json` holds the slower of the two.
+With scrolled patches as well, two later runs decoded ascii frames in 120–240 µs at p50 instead of about 330 µs, and drew them 0.8–2.3 ms after arrival. A keystroke took 0.7–1.1 ms at p50 from the key event to its echo drawn into the layer (`total`) in those runs; that excludes the display. `e2e-baseline.json` holds the slower of the two runs; its `keys` phase has `key_total_p50_ms` 0.82 and an estimated event to screen (`key_screen_p50_ms`) of 13.6 ms at p50 (14.4 ms p95).
 
 ### Cells by row (2026-10-13)
 

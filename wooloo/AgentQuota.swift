@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Security
 
@@ -442,6 +443,8 @@ final class AgentQuotaMonitor: ObservableObject {
     private let reader: AgentQuotaReader
     private let interval: Duration
     private var users = 0
+    /// Whether a sidebar section holds it, which is what makes it poll.
+    var isInUse: Bool { users > 0 }
     private var task: Task<Void, Never>?
     private var lastFetch: ContinuousClock.Instant?
 
@@ -493,5 +496,184 @@ final class AgentQuotaMonitor: ObservableObject {
         case .failure(let error): next = State(quota: states[provider]?.quota, failure: error.localizedDescription)
         }
         if states[provider] != next { states[provider] = next }
+    }
+}
+
+/// The machines whose agents' sign-ins the user agreed to let QUOTAS read. Agreeing is per
+/// machine: turning it on for this Mac does not read an SSH machine's sign-ins when the explorer
+/// moves there, and a machine profile whose SSH target changes is asked about again.
+struct AgentQuotaConsent: Equatable {
+    /// Raised when what QUOTAS reads, or where it sends it, changes, so an agreement given to an
+    /// older explanation is asked for again.
+    static let version = 1
+    static let storageKey = "AgentQuotasConsent"
+    /// The single switch of 0.3.1 and earlier, whose context menu turned QUOTAS on without the
+    /// explanation. It is ignored and removed, so everyone is asked once more.
+    static let legacyEnabledKey = "AgentQuotasEnabled"
+
+    private(set) var machines: Set<String>
+
+    init(machines: Set<String> = []) {
+        self.machines = machines
+    }
+
+    /// Reads `stored`; one saved for another version, or unreadable, agrees to nothing.
+    init(stored: String?) {
+        struct Stored: Decodable {
+            let version: Int
+            let machines: [String]
+        }
+        guard let data = stored?.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(Stored.self, from: data),
+              decoded.version == Self.version else {
+            self.init()
+            return
+        }
+        self.init(machines: Set(decoded.machines))
+    }
+
+    var stored: String {
+        let object: [String: Any] = ["version": Self.version, "machines": machines.sorted()]
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func key(for machine: HerdrMachineProfile?) -> String {
+        machine.map { "ssh:\($0.id)|\($0.target)" } ?? "local"
+    }
+
+    func allows(_ machine: HerdrMachineProfile?) -> Bool { machines.contains(Self.key(for: machine)) }
+    mutating func grant(_ machine: HerdrMachineProfile?) { machines.insert(Self.key(for: machine)) }
+    mutating func revokeAll() { machines.removeAll() }
+
+    /// The consent dialog's title.
+    static func title(for machine: HerdrMachineProfile?) -> String {
+        machine.map { "Turn on Quotas for “\($0.label)”?" } ?? "Turn on Quotas for this Mac?"
+    }
+
+    /// What turning QUOTAS on reads and sends, as `AgentQuotaProbe` and `AgentQuotaReader` do it.
+    static func explanation(for machine: HerdrMachineProfile?) -> String {
+        let place = machine.map { "on \($0.label) (\($0.target)), over SSH" } ?? "on this Mac"
+        let keychain = machine == nil
+            ? "or else its Keychain item “Claude Code-credentials” (macOS asks you to allow wooloo)"
+            : "or else, if that machine is a Mac, its Keychain item “Claude Code-credentials” through `security`"
+        let origin = machine.map { " The requests leave from this Mac, not from \($0.label)." } ?? ""
+        return """
+            To show how much of your Claude Code and Codex plans you have used, wooloo reads \(place):
+            • Claude Code's sign-in, from ~/.claude/.credentials.json \(keychain);
+            • Codex's sign-in, from ~/.codex/auth.json (or $CODEX_HOME), and the rate limits in its newest session logs.
+
+            Every two minutes while a wooloo window is active, it sends those tokens to api.anthropic.com and chatgpt.com.\(origin) \
+            These are the usage endpoints Claude Code and Codex use themselves. They are unofficial: not documented for other apps, \
+            not endorsed by Anthropic or OpenAI, possibly against their terms, and they can change or stop working at any time.
+
+            wooloo keeps the tokens in memory only. It never refreshes, saves or logs them. Nothing is read until you choose Turn On, \
+            and Turn Off Quotas in the section's context menu stops it.
+            """
+    }
+}
+
+/// The consent dialog shown for one machine.
+struct AgentQuotaConsentRequest: Identifiable, Equatable {
+    let id = UUID()
+    let machine: HerdrMachineProfile?
+}
+
+/// Whether a sidebar QUOTAS section reads its machine's agents. Every way of turning QUOTAS on,
+/// the section's button and its context menu alike, asks `requestEnable` for the same consent
+/// dialog; nothing is read or requested until `accept`. It holds the machine's shared monitor
+/// only while the user agreed for that machine and the window is active.
+@MainActor
+final class AgentQuotaActivation: ObservableObject {
+    @Published private(set) var consent: AgentQuotaConsent
+    /// The consent dialog to show; nil while none is.
+    @Published private(set) var request: AgentQuotaConsentRequest?
+    private(set) var machine: HerdrMachineProfile?
+    private(set) var isWindowActive = false
+    /// The monitor this section polls through, while it does.
+    private(set) var acquired: AgentQuotaMonitor?
+    private let defaults: UserDefaults
+    private let monitorFor: @MainActor (HerdrMachineProfile?) -> AgentQuotaMonitor
+    /// Another window's section turning QUOTAS on or off.
+    private var defaultsChanges: AnyCancellable?
+
+    init(defaults: UserDefaults = .standard,
+         monitorFor: @escaping @MainActor (HerdrMachineProfile?) -> AgentQuotaMonitor = AgentQuotaMonitor.shared(for:)) {
+        self.defaults = defaults
+        self.monitorFor = monitorFor
+        defaults.removeObject(forKey: AgentQuotaConsent.legacyEnabledKey)
+        consent = AgentQuotaConsent(stored: defaults.string(forKey: AgentQuotaConsent.storageKey))
+        defaultsChanges = NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.reloadConsent() }
+            }
+    }
+
+    var isEnabled: Bool { consent.allows(machine) }
+
+    /// The machine the explorer points at and whether the window is active, as they change.
+    func show(machine: HerdrMachineProfile?, windowActive: Bool) {
+        self.machine = machine
+        isWindowActive = windowActive
+        update()
+    }
+
+    /// Asks for consent for the shown machine. A dialog already shown stays, so a repeated
+    /// request does not stack another.
+    func requestEnable() {
+        guard !isEnabled, request == nil else { return }
+        request = AgentQuotaConsentRequest(machine: machine)
+    }
+
+    /// Turns QUOTAS on for the machine the dialog named, even if the explorer moved meanwhile.
+    func accept(_ accepted: AgentQuotaConsentRequest) {
+        if request?.id == accepted.id { request = nil }
+        guard !consent.allows(accepted.machine) else { return update() }
+        consent.grant(accepted.machine)
+        save()
+        update()
+    }
+
+    /// Closes the dialog; QUOTAS stays off and nothing is read.
+    func cancel() {
+        request = nil
+    }
+
+    /// Turns QUOTAS off for every machine.
+    func turnOff() {
+        request = nil
+        guard !consent.machines.isEmpty else { return }
+        consent.revokeAll()
+        save()
+        update()
+    }
+
+    /// The section left the window.
+    func disappear() {
+        isWindowActive = false
+        update()
+    }
+
+    private func save() {
+        defaults.set(consent.stored, forKey: AgentQuotaConsent.storageKey)
+    }
+
+    private func reloadConsent() {
+        let stored = AgentQuotaConsent(stored: defaults.string(forKey: AgentQuotaConsent.storageKey))
+        guard stored != consent else { return }
+        consent = stored
+        update()
+    }
+
+    private func update() {
+        let wanted = isEnabled && isWindowActive
+        if let acquired, wanted, acquired === monitorFor(machine) { return }
+        acquired?.release()
+        acquired = nil
+        guard wanted else { return }
+        let next = monitorFor(machine)
+        next.acquire()
+        acquired = next
     }
 }

@@ -410,6 +410,209 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertFalse(store.close(store.documents[0].id), "Closing asks first")
     }
 
+    // MARK: The Overwrite / Reload / Cancel question
+
+    /// Sets up a tab with unsaved edits over a file changed on disk, whose save asks.
+    private func conflict(mine: String = "mine\n", theirs: String = "theirs\n") async throws -> String {
+        _ = await open("a.txt")
+        edit("a.txt", mine)
+        try sandbox.write(["a.txt": theirs], in: "repo")
+        let id = store.documents[0].id
+        store.save(id)
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite, "Saving asks before overwriting")
+        XCTAssertEqual(store.documents[0].overwriteVersion, WorkspaceFiles.gitBlobHash(Data(theirs.utf8)))
+        return id
+    }
+
+    /// Cancel keeps the edits and the newer file; the next save asks again.
+    func testCancellingTheOverwriteQuestionKeepsBothVersions() async throws {
+        let id = try await conflict()
+        store.cancelOverwrite(id)
+        store.cancelOverwrite(id)
+        XCTAssertFalse(store.documents[0].asksToOverwrite)
+        XCTAssertEqual(store.documents[0].text, "mine\n")
+        XCTAssertTrue(store.documents[0].isDirty)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "theirs\n")
+        await checkDisk()
+        XCTAssertEqual(store.documents[0].text, "mine\n", "A disk check does not drop the edits")
+
+        store.save(id)
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite, "Asked again")
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "theirs\n")
+    }
+
+    /// Reload, from the question, discards the edits for the newer file.
+    func testReloadingFromTheOverwriteQuestionReadsTheNewerFile() async throws {
+        let id = try await conflict()
+        store.revert(id)
+        await wait("The newer file is read") { store.documents[0].text == "theirs\n" }
+        XCTAssertFalse(store.documents[0].asksToOverwrite)
+        XCTAssertNil(store.documents[0].overwriteVersion)
+        XCTAssertFalse(store.documents[0].isDirty)
+        XCTAssertEqual(store.documents[0].diskState, .current)
+    }
+
+    /// A change on disk while the question is shown is not overwritten unseen: Overwrite writes
+    /// nothing and says why, and the next save asks about the newer file.
+    func testAChangeWhileTheQuestionIsShownIsNotOverwrittenUnseen() async throws {
+        let id = try await conflict()
+        try sandbox.write(["a.txt": "third\n"], in: "repo")
+        await checkDisk()
+        let third = WorkspaceFiles.gitBlobHash(Data("third\n".utf8))
+        XCTAssertEqual(store.documents[0].diskState, .changed(version: third))
+        var saved = 0
+        store.overwrite(id) { saved += 1 }
+        await settle()
+        XCTAssertEqual(saved, 0)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "third\n")
+        XCTAssertEqual(store.documents[0].error, WorkspaceDocumentStore.changedAgainMessage)
+        XCTAssertEqual(store.documents[0].text, "mine\n")
+        XCTAssertTrue(store.documents[0].isDirty)
+        XCTAssertFalse(store.documents[0].asksToOverwrite)
+
+        store.save(id)
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite)
+        XCTAssertEqual(store.documents[0].overwriteVersion, third)
+        store.overwrite(id) { saved += 1 }
+        await settle()
+        XCTAssertEqual(saved, 1)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+        XCTAssertNil(store.documents[0].error)
+        XCTAssertFalse(store.documents[0].isDirty)
+    }
+
+    /// The same without a disk check in between: the conflict-checked write finds the newer file,
+    /// writes nothing and says why. Asking the same question again would read as a missed click,
+    /// and a second Overwrite would then replace a version nobody saw.
+    func testAChangeBeforeAnyCheckIsFoundByTheWrite() async throws {
+        let id = try await conflict()
+        try sandbox.write(["a.txt": "third\n"], in: "repo")
+        var saved = 0
+        store.overwrite(id) { saved += 1 }
+        await settle()
+        let third = WorkspaceFiles.gitBlobHash(Data("third\n".utf8))
+        XCTAssertEqual(saved, 0)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "third\n")
+        XCTAssertFalse(store.documents[0].asksToOverwrite)
+        XCTAssertNil(store.documents[0].overwriteVersion)
+        XCTAssertEqual(store.documents[0].error, WorkspaceDocumentStore.changedAgainMessage)
+        XCTAssertEqual(store.documents[0].diskState, .changed(version: third))
+        XCTAssertEqual(store.documents[0].text, "mine\n")
+        XCTAssertTrue(store.documents[0].isDirty)
+
+        // The next save asks about the newer file, and Overwrite then writes over it.
+        store.save(id)
+        await settle()
+        XCTAssertTrue(store.documents[0].asksToOverwrite)
+        XCTAssertEqual(store.documents[0].overwriteVersion, third)
+        store.overwrite(id) { saved += 1 }
+        await settle()
+        XCTAssertEqual(saved, 1)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+        XCTAssertNil(store.documents[0].error)
+    }
+
+    /// Repeated clicks save once.
+    func testRepeatedSavesAndOverwritesWriteOnce() async throws {
+        _ = await open("a.txt")
+        edit("a.txt", "changed\n")
+        var saved = 0
+        let id = store.documents[0].id
+        store.save(id) { saved += 1 }
+        store.save(id) { saved += 1 }
+        await settle()
+        XCTAssertEqual(saved, 1)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "changed\n")
+
+        edit("a.txt", "mine\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        store.save(id)
+        await settle()
+        store.overwrite(id) { saved += 1 }
+        store.overwrite(id) { saved += 1 }
+        await settle()
+        XCTAssertEqual(saved, 2)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+        store.keepEdits(id)
+        store.revert(id)
+        store.revert(id)
+        await wait("Read again") { !store.documents[0].isDirty && store.documents[0].text == "mine\n" }
+    }
+
+    /// Saving a tab other than the active one writes that tab's own text and leaves the active one alone.
+    func testSavingAnInactiveTabWritesItsOwnText() async throws {
+        let firstOpened = await open("a.txt")
+        let first = try XCTUnwrap(firstOpened)
+        let secondOpened = await open("b.txt")
+        let second = try XCTUnwrap(secondOpened)
+        edit("a.txt", "a edited\n")
+        edit("b.txt", "b edited\n")
+        XCTAssertEqual(store.activeID, second.id)
+
+        store.save(first.id)
+        await settle()
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "a edited\n")
+        XCTAssertEqual(try sandbox.read("b.txt", in: "repo"), "bee\n")
+        XCTAssertFalse(try XCTUnwrap(store.document(first.id)).isDirty)
+        XCTAssertTrue(try XCTUnwrap(store.document(second.id)).isDirty)
+        XCTAssertEqual(store.activeID, second.id, "Saving does not switch tabs")
+
+        // A conflict on the inactive tab asks about that tab.
+        edit("a.txt", "a again\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        store.save(first.id)
+        await settle()
+        XCTAssertTrue(try XCTUnwrap(store.document(first.id)).asksToOverwrite)
+        XCTAssertFalse(try XCTUnwrap(store.document(second.id)).asksToOverwrite)
+    }
+
+    /// A failed write keeps the edits and the file as it was; saving works once it can.
+    func testAFailedWriteKeepsTheEdits() async throws {
+        _ = await open("a.txt")
+        edit("a.txt", "mine\n")
+        let folder = repo.root
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder) }
+        var saved = false
+        store.save(store.documents[0].id) { saved = true }
+        await settle()
+        XCTAssertFalse(saved)
+        XCTAssertNotNil(store.documents[0].error)
+        XCTAssertEqual(store.documents[0].text, "mine\n")
+        XCTAssertTrue(store.documents[0].isDirty)
+        XCTAssertFalse(store.documents[0].asksToOverwrite)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\n")
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder)
+        store.save(store.documents[0].id) { saved = true }
+        await settle()
+        XCTAssertTrue(saved)
+        XCTAssertNil(store.documents[0].error)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+    }
+
+    /// A failed read, such as a reload of a file that became unreadable, keeps the edits.
+    func testAFailedReloadKeepsTheEdits() async throws {
+        _ = await open("a.txt")
+        edit("a.txt", "mine\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        let file = repo.absolutePath("a.txt")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file) }
+        store.revert(store.documents[0].id)
+        await wait("The read fails") { store.documents[0].error != nil }
+        XCTAssertEqual(store.documents[0].text, "mine\n")
+        XCTAssertTrue(store.documents[0].isDirty)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file)
+        store.revert(store.documents[0].id)
+        await wait("The read succeeds") { store.documents[0].text == "theirs\n" }
+        XCTAssertNil(store.documents[0].error)
+    }
+
     /// This Mac's files: a rewrite of the same size that puts the modification time back is
     /// still seen, through the status change time.
     func testLocalDiskVersionsSeeRewritesThatKeepTheModificationTime() throws {

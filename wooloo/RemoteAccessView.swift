@@ -64,27 +64,44 @@ struct RemoteAccessConnectionView: View {
     }
 }
 
-/// The tunnel's state, with a start or stop button.
+/// The tunnel's state, with a start or stop button, and the confirmation asked for when the
+/// check did not find key-only SSH.
 struct RemoteAccessStatusView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     @ObservedObject var model: RemoteAccessModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: symbol)
-                .foregroundStyle(color)
-            Text(text)
-                .font(.system(size: typography.body))
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
-            if model.isActive {
-                Button("Stop") { model.stop() }
-            } else {
-                Button("Start") { model.start() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.cloudflaredPath == nil)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .foregroundStyle(color)
+                Text(text)
+                    .font(.system(size: typography.body))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+                if model.isActive {
+                    Button("Stop") { model.stop() }
+                } else if case .needsConfirmation = model.state {
+                    EmptyView()
+                } else {
+                    Button("Start") { model.start() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.cloudflaredPath == nil)
+                }
+            }
+            if case .needsConfirmation = model.state {
+                Text("wooloo does not change SSH settings. Start anyway only if you accept that risk; "
+                     + "your confirmation is not a check, and the status will say the tunnel runs unverified.")
+                    .font(.system(size: typography.secondary))
+                    .foregroundStyle(theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Start Anyway", role: .destructive) { model.startDespiteCheck() }
+                    Button("Cancel") { model.cancelStart() }
+                        .keyboardShortcut(.cancelAction)
+                }
             }
         }
     }
@@ -92,8 +109,13 @@ struct RemoteAccessStatusView: View {
     private var text: String {
         switch model.state {
         case .stopped: "Off"
+        case .checking: "Checking which sign-in methods this Mac's SSH server accepts…"
+        case .needsConfirmation(let check): check.summary
         case .starting: "Connecting to Cloudflare and publishing the address…"
-        case .running(let hostname): "On at \(hostname)"
+        case .running(let hostname):
+            model.startedWithoutVerifiedKeys
+                ? "On at \(hostname), started without verified key-only SSH"
+                : "On at \(hostname)"
         case .failed(let message): message
         }
     }
@@ -101,17 +123,17 @@ struct RemoteAccessStatusView: View {
     private var symbol: String {
         switch model.state {
         case .stopped: "circle"
-        case .starting: "arrow.triangle.2.circlepath"
-        case .running: "checkmark.circle.fill"
-        case .failed: "exclamationmark.triangle.fill"
+        case .checking, .starting: "arrow.triangle.2.circlepath"
+        case .running: model.startedWithoutVerifiedKeys ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
+        case .needsConfirmation, .failed: "exclamationmark.triangle.fill"
         }
     }
 
     private var color: Color {
         switch model.state {
-        case .stopped, .starting: theme.subtext
-        case .running: theme.success
-        case .failed: theme.warning
+        case .stopped, .checking, .starting: theme.subtext
+        case .running: model.startedWithoutVerifiedKeys ? theme.warning : theme.success
+        case .needsConfirmation, .failed: theme.warning
         }
     }
 }
@@ -138,16 +160,20 @@ struct RemoteAccessIndicator: View {
 
     private var color: Color {
         switch model.state {
-        case .running: theme.success
-        case .failed: theme.warning
-        case .stopped, .starting: theme.subtext
+        case .running: model.startedWithoutVerifiedKeys ? theme.warning : theme.success
+        case .failed, .needsConfirmation: theme.warning
+        case .stopped, .checking, .starting: theme.subtext
         }
     }
 
     private var help: String {
         switch model.state {
-        case .running(let hostname): "Remote access on at \(hostname)"
+        case .running(let hostname):
+            model.startedWithoutVerifiedKeys ? "Remote access on at \(hostname), without verified key-only SSH"
+                : "Remote access on at \(hostname)"
         case .failed(let message): "Remote access stopped: \(message)"
+        case .needsConfirmation: "Remote access is waiting for your confirmation"
+        case .checking: "Remote access is checking this Mac's SSH sign-in"
         case .stopped, .starting: "Remote access is connecting"
         }
     }

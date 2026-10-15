@@ -774,7 +774,8 @@ final class ViewSnapshotTests: XCTestCase {
         let values: [String: Any] = [
             "HerdrLastSession": "work", "SidebarWidth": 206.0, "FilesSidebarWidth": 244.0,
             "AgentsInSelectedSpaceOnly": false, "HostStatsCollapsed": false, "RepositoryCollapsed": false,
-            "AgentQuotasCollapsed": true, AgentQuotaSection.enabledKey: true,
+            "AgentQuotasCollapsed": true,
+            AgentQuotaConsent.storageKey: AgentQuotaConsent(machines: [AgentQuotaConsent.key(for: nil)]).stored,
             WoolooTypography.baseKey: WoolooTypography.defaultBase, WoolooTypography.codeKey: WoolooTypography.defaultCode,
             HerdrNotifier.dockBadgeKey: false, DiffDisplayMode.storageKey: DiffDisplayMode.unified.rawValue,
             MarkdownPreviewStyle.storageKey: MarkdownPreviewStyle.theme.rawValue,

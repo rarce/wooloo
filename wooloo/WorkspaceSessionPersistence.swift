@@ -329,7 +329,7 @@ final class WoolooAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppUpdater.shared.start()
-        if !WoolooApp.isHostingTests, RemoteAccessModel.shared.startsAtLaunch { RemoteAccessModel.shared.start() }
+        if !WoolooApp.isHostingTests, RemoteAccessModel.shared.startsAtLaunch { RemoteAccessModel.shared.startAtLaunch() }
     }
 
     /// The tunnel belongs to wooloo; cloudflared would otherwise keep publishing SSH after quitting.
