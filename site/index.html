@@ -104,8 +104,8 @@
   ul.meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 20px; list-style: none; margin: 0 auto; padding: 0; color: var(--text-3); font-size: 14px; max-width: 40em; }
 
   .shot { margin: 8px auto 0; }
-  .shot a { display: block; border-radius: 12px; }
-  .shot img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55); }
+  .shot > a { display: block; border-radius: 12px; }
+  .shot img, .shot video { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55); background: #0e0f12; }
   .shot figcaption { margin-top: 10px; text-align: center; color: var(--text-3); font-size: 14px; }
   /* The full-size screenshot, opened from the page; without the script, the link opens the image itself. */
   dialog.zoom { padding: 0; border: 0; background: transparent; max-width: 100vw; max-height: 100vh; width: 100vw; height: 100vh; margin: 0; }
@@ -224,10 +224,8 @@
   </div>
 
   <figure class="wrap shot">
-    <a href="main-window.png" id="zoom-open" aria-label="Open the screenshot at full size">
-      <img src="main-window.png" width="2560" height="1600" alt="wooloo with agents in the sidebar, a split terminal running Claude Code, and the explorer and repository history on the right">
-    </a>
-    <figcaption>Select the screenshot to see it at full size.</figcaption>
+    <video id="demo" src="demo.mp4" poster="demo-poster.jpg" width="1920" height="1200" controls muted loop playsinline preload="metadata" aria-label="A one-minute demo: Codex adds a feature in a Herdr pane, wooloo shows it finish, then the diff is reviewed, the README edited with a live preview, the changes staged and committed, and the tests run in a terminal"></video>
+    <figcaption>A real session with the Codex CLI, recorded in one take; sped-up parts are marked. <a href="main-window.png" id="zoom-open">See a full-size screenshot</a>.</figcaption>
   </figure>
   <dialog class="zoom" id="zoom" aria-label="Screenshot at full size">
     <button type="button" class="close" id="zoom-close">Close</button>
@@ -366,6 +364,17 @@
       observer.observe(area);
       area.addEventListener('mouseenter', function () { activate(area); });
     });
+  })();
+  // Plays the demo once it is on screen, unless the visitor prefers reduced motion; the controls stay.
+  (function () {
+    var video = document.getElementById('demo');
+    if (!video || !('IntersectionObserver' in window)) return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) { video.play().catch(function () {}); } else { video.pause(); }
+      });
+    }, { threshold: 0.4 }).observe(video);
   })();
   // Opens the screenshot at full size in a dialog; Escape or Close returns focus to the link.
   (function () {
