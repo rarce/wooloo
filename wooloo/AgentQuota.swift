@@ -309,12 +309,19 @@ actor AgentQuotaReader {
     private var rejectedClaudeToken: String?
     /// Keychain reads are spaced out, since a changed item ACL can make each one ask for permission.
     private var nextKeychainRead = Date.distantPast
+    /// Whether the last Keychain read failed. The reads skipped while the next one waits cannot
+    /// tell, and would otherwise report a signed-in Claude Code as not signed in.
+    private var claudeKeychainUnreadable = false
+    private let probe: @Sendable (HerdrMachineProfile?, Bool, [String: String]) throws -> AgentQuotaFiles
 
     private static let session = URLSession(configuration: .ephemeral)
 
-    init(machine: HerdrMachineProfile? = nil, environment: [String: String] = [:]) {
+    init(machine: HerdrMachineProfile? = nil, environment: [String: String] = [:],
+         probe: @escaping @Sendable (HerdrMachineProfile?, Bool, [String: String]) throws -> AgentQuotaFiles
+             = { try AgentQuotaProbe.read(machine: $0, keychain: $1, environment: $2) }) {
         self.machine = machine
         self.environment = environment
+        self.probe = probe
     }
 
     /// A nil quota means the agent is not set up on the machine.
@@ -324,12 +331,13 @@ actor AgentQuotaReader {
         if keychain { nextKeychainRead = now.addingTimeInterval(5 * 60) }
         let files: AgentQuotaFiles
         do {
-            files = try await WorkspaceFiles.blocking(on: machine) { [machine, environment] in
-                try AgentQuotaProbe.read(machine: machine, keychain: keychain, environment: environment)
+            files = try await WorkspaceFiles.blocking(on: machine) { [machine, environment, probe] in
+                try probe(machine, keychain, environment)
             }
         } catch {
             return [.claude: .failure(error), .codex: .failure(error)]
         }
+        if keychain { claudeKeychainUnreadable = files.claudeKeychainFailed }
         if files.claudeKeychainFailed { nextKeychainRead = now.addingTimeInterval(15 * 60) }
         async let claude = Self.outcome { try await self.claude(files, now: now) }
         async let codex = Self.outcome { try await self.codex(files, now: now) }
@@ -346,7 +354,7 @@ actor AgentQuotaReader {
             claudeCredential = credential
         }
         guard let credential = claudeCredential else {
-            throw quotaError(files.claudeKeychainFailed ? "Claude Code's Keychain item is not readable"
+            throw quotaError(claudeKeychainUnreadable ? "Claude Code's Keychain item is not readable"
                                                         : "Not signed in to Claude Code")
         }
         guard !credential.isExpired(at: now), credential.token != rejectedClaudeToken else {

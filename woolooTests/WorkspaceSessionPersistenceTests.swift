@@ -77,6 +77,8 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(restarted.activeID, restarted.documents[1].id)
         XCTAssertEqual(restarted.documents[1].savedText, "original\n")
         XCTAssertEqual(restarted.documents[1].cursorPositions[0].range, NSRange(location: 3, length: 2))
+        let place = restarted.documents[1].cursorPositions[0].lineAndColumn(in: restarted.documents[1].text)
+        XCTAssertEqual([place.line, place.column], [1, 4], "The status bar never shows the -1 of an unknown position")
         XCTAssertEqual(restarted.documents[1].scrollPosition, CGPoint(x: 12, y: 240))
         XCTAssertEqual(restarted.documents[1].scrollAnchor, EditorScrollAnchor(offset: 5, dy: 3))
         XCTAssertFalse(restarted.documents[1].isPreview, "A dirty preview becomes a regular tab")
@@ -84,6 +86,22 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "original\n")
         let metadata = try JSONDecoder().decode(WorkspaceSessionSnapshot.self, from: Data(contentsOf: sessionURL()))
         XCTAssertTrue(metadata.documents.allSatisfy { $0.text == nil && $0.savedText == nil })
+    }
+
+    func testPositionsFromARangeGetTheirLineAndColumnFromTheText() {
+        func place(_ location: Int, _ text: String) -> [Int] {
+            let place = CursorPosition(range: NSRange(location: location, length: 0)).lineAndColumn(in: text)
+            return [place.line, place.column]
+        }
+        XCTAssertEqual(place(0, ""), [1, 1])
+        XCTAssertEqual(place(1, "ab\ncd"), [1, 2])
+        XCTAssertEqual(place(3, "ab\ncd"), [2, 1])
+        XCTAssertEqual(place(5, "ab\ncd"), [2, 3])
+        XCTAssertEqual(place(6, "ab\r\ncd\n"), [2, 3])
+        XCTAssertEqual(place(4, "😀\nx"), [2, 2], "Columns count UTF-16 units, as the editor does")
+        XCTAssertEqual(place(99, "ab\n"), [2, 1])
+        let reported = CursorPosition(line: 7, column: 3).lineAndColumn(in: "")
+        XCTAssertEqual([reported.line, reported.column], [7, 3])
     }
 
     func testCleanFilesReloadCurrentDiskContentsWithoutCreatingBackups() async throws {

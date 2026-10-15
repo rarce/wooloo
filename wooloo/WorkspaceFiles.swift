@@ -1013,7 +1013,13 @@ enum WorkspaceFiles {
             let permissions = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue ?? 0o644
             let temp = url.deletingLastPathComponent().appendingPathComponent(".wooloo-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: temp) }
-            try data.write(to: temp)
+            do {
+                try data.write(to: temp)
+            } catch let error as CocoaError {
+                // Its message would name the temporary file, which nobody has heard of.
+                throw CocoaError(error.code, userInfo: [NSFilePathErrorKey: url.path, NSURLErrorKey: url,
+                                                        NSUnderlyingErrorKey: error])
+            }
             try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: temp.path)
             guard rename(temp.path, url.path) == 0 else {
                 throw WorkspaceFileError.message("Could not replace file: \(String(cString: strerror(errno)))")

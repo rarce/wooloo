@@ -188,6 +188,25 @@ final class AgentQuotaTests: XCTestCase {
         XCTAssertNil(files.codexAuth)
     }
 
+    func testFailedKeychainReadIsReportedUntilTheNextRead() async {
+        // Each read that asks for the Keychain fails; the ones in between do not ask.
+        let reader = AgentQuotaReader(probe: { _, keychain, _ in
+            AgentQuotaFiles(claudeInstalled: true, claudeKeychainFailed: keychain)
+        })
+        func claudeError(at date: Date) async -> String? {
+            guard case .failure(let error) = await reader.read(now: date)[.claude] else { return nil }
+            return error.localizedDescription
+        }
+        let start = Date()
+        var errors: [String?] = []
+        for minutes in [0.0, 1, 14] { errors.append(await claudeError(at: start.addingTimeInterval(minutes * 60))) }
+        XCTAssertEqual(errors, Array(repeating: "Claude Code's Keychain item is not readable", count: 3))
+
+        let signedOut = AgentQuotaReader(probe: { _, _, _ in AgentQuotaFiles(claudeInstalled: true) })
+        guard case .failure(let error) = await signedOut.read()[.claude] else { return XCTFail("Expected a failure") }
+        XCTAssertEqual(error.localizedDescription, "Not signed in to Claude Code")
+    }
+
     func testJWTExpiry() {
         func base64URL(_ text: String) -> String {
             Data(text.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-")

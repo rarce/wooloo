@@ -259,6 +259,17 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.save(tooLarge, path: "a.txt", expectedVersion: current, at: repo))
     }
 
+    func testSaveIntoAReadOnlyFolderNamesTheFile() throws {
+        let repo = try sandbox.repository("repo")
+        let file = try WorkspaceFiles.read("a.txt", at: repo)
+        try sandbox.sh("chmod 555 .", in: "repo")
+        defer { _ = try? sandbox.sh("chmod 755 .", in: "repo") }
+        XCTAssertThrowsError(try WorkspaceFiles.save("two\n", path: "a.txt", expectedVersion: file.version, at: repo)) {
+            XCTAssertEqual($0.localizedDescription, "You don’t have permission to save the file “a.txt” in the folder “repo”.")
+        }
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\n")
+    }
+
     func testReadRefusesFilesItCannotEditSafely() throws {
         let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "dir/b.txt": "b\n"])
         try sandbox.sh("""

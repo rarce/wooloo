@@ -222,6 +222,27 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertNotNil(reloaded.diskReload)
     }
 
+    /// This Mac's open files are watched one by one, so a change is followed without waiting for
+    /// the explorer's file events: written in place, replaced through a rename, deleted and back.
+    func testOpenLocalFilesFollowTheDiskWithoutADiskCheck() async throws {
+        store = WorkspaceDocumentStore(watchesOpenFiles: true)
+        _ = await open("a.txt")
+        try sandbox.write(["a.txt": "in place\n"], in: "repo")
+        await wait("A write reloads the tab") { store.documents[0].text == "in place\n" }
+        _ = try sandbox.sh("printf 'renamed\\n' > a.tmp && mv a.tmp a.txt", in: "repo")
+        await wait("A file replaced through a rename reloads the tab") { store.documents[0].text == "renamed\n" }
+        _ = try sandbox.sh("rm a.txt", in: "repo")
+        await wait("A deleted file is marked") { store.documents[0].diskState == .deleted }
+        try sandbox.write(["a.txt": "renamed\n"], in: "repo")
+        await wait("The file coming back is followed again") { store.documents[0].diskState == .current }
+        edit("a.txt", "mine\n")
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        await wait("Unsaved edits are kept and marked") {
+            store.documents[0].diskState == .changed(version: WorkspaceFiles.gitBlobHash(Data("theirs\n".utf8)))
+        }
+        XCTAssertEqual(store.documents[0].text, "mine\n")
+    }
+
     /// Unsaved edits are kept when the file changes on disk; the tab is marked until the user
     /// reloads or keeps them, and saving asks before overwriting the newer file.
     func testEditedDocumentKeepsItsEditsAndAsksBeforeOverwriting() async throws {

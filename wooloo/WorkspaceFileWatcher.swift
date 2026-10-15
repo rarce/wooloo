@@ -70,3 +70,53 @@ final class WorkspaceFileWatcher {
 
     deinit { stop() }
 }
+
+/// Watches single files through kqueue, which reports a write at once, where FSEvents was seen
+/// to deliver writes up to 8 s late on macOS 26, merging several into one event. The editor's
+/// tabs use it. A file replaced through a rename is watched again under its path; a missing file
+/// is waited for through its folder. Callbacks run on the main queue.
+final class WorkspaceOpenFileWatcher {
+    private let receive: (String) -> Void
+    private var sources: [String: DispatchSourceFileSystemObject] = [:]
+
+    init(receive: @escaping (String) -> Void) { self.receive = receive }
+
+    func watch(_ paths: Set<String>) {
+        for (path, source) in sources where !paths.contains(path) {
+            source.cancel()
+            sources[path] = nil
+        }
+        for path in paths where sources[path] == nil { arm(path) }
+    }
+
+    private func arm(_ path: String) {
+        var watchesFolder = false
+        var descriptor = open(path, O_EVTONLY)
+        if descriptor < 0 {
+            watchesFolder = true
+            descriptor = open((path as NSString).deletingLastPathComponent, O_EVTONLY)
+        }
+        guard descriptor >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor,
+            eventMask: [.write, .extend, .attrib, .delete, .rename, .revoke, .link], queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self, !source.isCancelled else { return }
+            if watchesFolder || !source.data.isDisjoint(with: [.delete, .rename, .revoke]) {
+                source.cancel()
+                self.sources[path] = nil
+                self.arm(path)
+            }
+            self.receive(path)
+        }
+        source.setCancelHandler { close(descriptor) }
+        sources[path] = source
+        source.resume()
+    }
+
+    func stop() {
+        for source in sources.values { source.cancel() }
+        sources = [:]
+    }
+
+    deinit { stop() }
+}
