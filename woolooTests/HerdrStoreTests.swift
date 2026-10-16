@@ -1102,6 +1102,139 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertFalse(server.requests.contains { $0.method == "pane.send_input" })
     }
 
+
+    /// Model SSH's duplex stdio without touching saved hosts or requiring a local sshd.
+    /// The real bridge owns its UNIX listeners, Process, cancellation and both protocols.
+    private func fakeSSH(api: String, client: String) throws -> String {
+        let binaryDirectory = root.appendingPathComponent("remote-bin")
+        try FileManager.default.createDirectory(at: binaryDirectory, withIntermediateDirectories: true)
+        let path = binaryDirectory.appendingPathComponent("herdr").path
+        let script = """
+        #!/usr/bin/python3
+        import os, sys, socket, select
+        assert sys.argv[1:3] == ['--session', 'agents'], sys.argv
+        if '--check' in sys.argv:
+            print('herdr-api-bridge-v1')
+            sys.exit(0)
+        command = sys.argv[3]
+        path = \(String(reflecting: api)) if 'remote-api-bridge' in command else \(String(reflecting: client))
+        sock = socket.socket(socket.AF_UNIX)
+        try:
+            sock.connect(path)
+            while True:
+                ready, _, _ = select.select([0, sock], [], [])
+                for source in ready:
+                    data = os.read(0, 65536) if source == 0 else sock.recv(65536)
+                    if not data: sys.exit(0)
+                    if source == 0: sock.sendall(data)
+                    else:
+                        while data:
+                            count = os.write(1, data)
+                            data = data[count:]
+        except (OSError, BrokenPipeError):
+            sys.exit(1)
+        """
+        try script.write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+        let sshPath = root.appendingPathComponent("ssh.py").path
+        let ssh = """
+        #!/usr/bin/python3
+        import os, sys
+        os.environ['PATH'] = \(String(reflecting: binaryDirectory.path)) + ':/usr/bin:/bin'
+        os.execl('/bin/sh', 'sh', '-c', sys.argv[-1])
+        """
+        try ssh.write(toFile: sshPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sshPath)
+        return sshPath
+    }
+
+    func testHostSwitchRoutesSpacesTerminalAndActionsToTheSameRemoteServer() async throws {
+        let originalSSH = WorkspaceFiles.sshExecutable
+        let localSession = store.sessionName
+        defer { WorkspaceFiles.sshExecutable = originalSSH }
+        let remote = try FakeHerdrServer(path: root.appendingPathComponent("remote/api").path) { [state] method, _ in
+            if method == "session.snapshot" {
+                var snapshot = state.snapshot()
+                var result = snapshot["result"] as! [String: Any]
+                var value = result["snapshot"] as! [String: Any]
+                value["workspaces"] = [["workspace_id": "w1", "label": "remote project", "active_tab_id": "w1:t1"]]
+                result["snapshot"] = value
+                snapshot["result"] = result
+                return snapshot
+            }
+            if method == "tab.create" { return ["result": ["tab": ["tab_id": "w1:t2"]]] }
+            return ["result": [:]]
+        }
+        defer { remote.stop() }
+        let client = root.appendingPathComponent("remote/client").path
+        let remoteAgents = [AgentViewFixture.agent("w1:p1", status: "blocked")]
+        let remoteSurface = try FakeSurfaceEndpoint(path: client,
+            welcome: ["capabilities": ["agent_view_projection"]], afterHello: [FakeSurfaceEndpoint.control("shell.snapshot.v1",
+                String(decoding: try AgentViewFixture.data(AgentViewFixture.snapshot(remoteAgents)), as: UTF8.self)),
+                SurfaceModel(width: 7, height: 2).surfaceFrame()])
+        defer { remoteSurface.stop() }
+        WorkspaceFiles.sshExecutable = try fakeSSH(api: remote.path, client: client)
+        await connect()
+        XCTAssertEqual(store.snapshot?.workspaces.first?.label, "project")
+        let localContext = store.contextID
+        let machine = HerdrMachineProfile(id: "remote-a", label: "Remote A", target: "test-host", session: "agents", enabled: true)
+        store.connect(to: machine)
+        XCTAssertNil(store.snapshot)
+        XCTAssertNil(store.surface)
+        XCTAssertNotEqual(store.contextID, localContext)
+        XCTAssertFalse(store.socketPath.hasPrefix(HerdrStore.sessionRoot.path))
+        await waitUntil("remote Space selected") { store.snapshot?.workspaces.first?.label == "remote project" }
+        await waitUntil("remote terminal attached") { store.surface?.width == 7 }
+        await waitUntil("remote agents attached") { store.agentViewState?.agents.count == 1 }
+        server.emit(["event": "workspace.created"])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(store.snapshot?.workspaces.first?.label, "remote project")
+        let localInputs = server.requests.filter { $0.method == "pane.send_input" }.count
+        store.sendText("remote input", to: "w1:p1")
+        await waitUntil("remote binary input") { remoteSurface.received.contains { $0.first == 13 } }
+        XCTAssertEqual(server.requests.filter { $0.method == "pane.send_input" }.count, localInputs)
+        store.createTab(cwd: "/remote/project")
+        await waitUntil("remote tab command") {
+            Self.requests(in: remoteSurface).contains { $0.method == "tab.create" }
+                || remote.requests.contains { $0.method == "tab.create" }
+        }
+        XCTAssertFalse(server.requests.contains { $0.method == "tab.create" })
+        await waitUntil("remote tab created") { store.selectedTabID == "w1:t2" }
+        XCTAssertNil(store.actionError)
+        let oldSocket = store.socketPath
+        store.connect(to: localSession)
+        XCTAssertNil(store.machine)
+        XCTAssertEqual(store.contextID, localContext)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldSocket))
+        await waitUntil("local Space restored") { store.snapshot?.workspaces.first?.label == "project" }
+        XCTAssertNil(store.surface)
+    }
+
+    func testUnreachableRemoteNeverReusesLocalSnapshotOrSocket() async throws {
+        await connect()
+        let localSocket = store.socketPath
+        let originalSSH = WorkspaceFiles.sshExecutable
+        WorkspaceFiles.sshExecutable = "/usr/bin/false"
+        defer { WorkspaceFiles.sshExecutable = originalSSH }
+        store.connect(to: HerdrMachineProfile(id: "missing", label: "Missing", target: "absent", session: "agents", enabled: true))
+        await waitUntil("remote error") { store.errorMessage != nil }
+        XCTAssertNil(store.snapshot)
+        XCTAssertNil(store.selectedWorkspaceID)
+        XCTAssertNotEqual(store.socketPath, localSocket)
+        XCTAssertEqual(store.machine?.id, "missing")
+        XCTAssertTrue(store.errorMessage?.contains("Missing") == true)
+    }
+
+    func testBridgePreservesSSHPortAndQuotesSession() throws {
+        let machine = HerdrMachineProfile(id: "a", label: "A", target: "ssh://user@example.test:2222", session: "agents", enabled: true)
+        let arguments = HerdrRemoteBridge.arguments(machine, command: "remote-api-bridge")
+        XCTAssertEqual(arguments.suffix(2).first, "user@example.test")
+        XCTAssertTrue(arguments.contains("2222"))
+        XCTAssertTrue(arguments.last?.contains("remote-api-bridge") == true)
+        XCTAssertThrowsError(try HerdrRemoteBridge(machine: HerdrMachineProfile(id: "b", label: "B", target: "-oBad", session: "agents", enabled: true)))
+        XCTAssertThrowsError(try HerdrRemoteBridge(machine: HerdrMachineProfile(id: "b", label: "B", target: "host", session: "bad;session", enabled: true)))
+    }
+
     /// The JSON requests (tag 15) the store sent through the endpoint.
     private static func requests(in endpoint: FakeSurfaceEndpoint) -> [(method: String, params: [String: Any])] {
         endpoint.received.filter { $0.first == 15 }.compactMap { frame in

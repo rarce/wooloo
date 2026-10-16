@@ -754,16 +754,31 @@ final class HerdrStore: ObservableObject {
     }
 
     var socketPath: String {
-        Self.sessionDirectory(sessionName).appendingPathComponent("herdr.sock").path
+        if machine != nil { return remoteBridge?.apiPath ?? "/dev/null" }
+        return Self.sessionDirectory(sessionName).appendingPathComponent("herdr.sock").path
     }
 
     var isConnected: Bool { snapshot != nil && errorMessage == nil }
 
     var clientSocketPath: String {
-        Self.sessionDirectory(sessionName).appendingPathComponent("herdr-client.sock").path
+        if machine != nil { return remoteBridge?.clientPath ?? "/dev/null" }
+        return Self.sessionDirectory(sessionName).appendingPathComponent("herdr-client.sock").path
+    }
+
+    @Published private(set) var machine: HerdrMachineProfile?
+    /// Keep the existing local document keys; remote IDs are scoped to their machine.
+    var contextID: String { machine.map { "ssh:\($0.id)|\(sessionName)" } ?? sessionName }
+    private var remoteBridge: HerdrRemoteBridge?
+
+    func connect(to machine: HerdrMachineProfile) {
+        switchConnection(to: machine.session, machine: machine)
     }
 
     func connect(to name: String) {
+        switchConnection(to: name, machine: nil)
+    }
+
+    private func switchConnection(to name: String, machine: HerdrMachineProfile?) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.utf8.count <= 64,
               trimmed.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
@@ -772,10 +787,13 @@ final class HerdrStore: ObservableObject {
         }
         sessionSelectionError = nil
         stop()
+        self.machine = machine
         sessionName = trimmed
-        UserDefaults.standard.set(trimmed, forKey: Self.lastSessionKey)
+        if machine == nil { UserDefaults.standard.set(trimmed, forKey: Self.lastSessionKey) }
         snapshot = nil
         paneText = [:]
+        lastPaneByTab = [:]
+        workspaceGitStatuses = [:]
         setSurface(nil)
         surfaceError = nil
         selectedWorkspaceID = nil
@@ -791,6 +809,10 @@ final class HerdrStore: ObservableObject {
 
     func start() {
         guard eventTask == nil else { return }
+        if let machine, remoteBridge == nil {
+            do { remoteBridge = try HerdrRemoteBridge(machine: machine) }
+            catch { errorMessage = error.localizedDescription; return }
+        }
         let path = socketPath
         let currentGeneration = generation
         eventTask = Task.detached(priority: .utility) { [weak self] in
@@ -827,7 +849,9 @@ final class HerdrStore: ObservableObject {
                     await MainActor.run {
                         guard store.generation == currentGeneration else { return }
                         store.snapshot = nil
-                        if store.errorMessage != message { store.errorMessage = message }
+                        let detail = store.remoteBridge?.lastError ?? message
+                        let targetMessage = store.machine.map { "\($0.label): \(detail)" } ?? detail
+                        if store.errorMessage != targetMessage { store.errorMessage = targetMessage }
                         if store.isServerStopped != stopped { store.isServerStopped = stopped }
                     }
                 }
@@ -1054,6 +1078,8 @@ final class HerdrStore: ObservableObject {
         inputTask?.cancel()
         inputTask = nil
         pendingInput = []
+        remoteBridge?.stop()
+        remoteBridge = nil
     }
 
     func select(workspaceID: String, tabID: String? = nil, paneID: String? = nil) {

@@ -84,7 +84,7 @@ final class WorkspaceExplorerModelTests: XCTestCase {
             "workspaces": [["workspace_id": "repo", "label": "repo", "worktree": ["checkout_path": repo.root]]],
             "panes": [], "tabs": [], "agents": [], "layouts": []
         ] as [String: Any]))
-        let view = WorkspaceBrowserView(localSnapshot: snapshot, localWorkspaceID: "repo", localSession: "test",
+        let view = WorkspaceBrowserView(snapshot: snapshot, workspaceID: "repo", session: "test",
             machine: nil, refreshVersion: 0, onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in },
             onNewTab: { _ in }, onNewSpace: { _, _ in }, onLocationChange: { _ in },
             onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in }, onOpenCommitFile: { _, _, _ in }, model: self.model)

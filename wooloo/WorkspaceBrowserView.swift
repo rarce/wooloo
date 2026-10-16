@@ -4,9 +4,9 @@ import UniformTypeIdentifiers
 struct WorkspaceBrowserView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
-    let localSnapshot: HerdrSnapshot?
-    let localWorkspaceID: String?
-    let localSession: String
+    let snapshot: HerdrSnapshot?
+    let workspaceID: String?
+    let session: String
     /// The SSH machine chosen in the session picker; nil browses this Mac.
     let machine: HerdrMachineProfile?
     let refreshVersion: Int
@@ -28,8 +28,6 @@ struct WorkspaceBrowserView: View {
     var commandTarget: ExplorerCommandTarget?
     @State private var commandToken = UUID()
 
-    @State private var remoteSnapshot: HerdrSnapshot?
-    @State private var remoteWorkspaceID: String?
     /// Not private so snapshot tests can open folders and select a row before it appears.
     @StateObject var model = WorkspaceExplorerModel()
     @FocusState private var draftFocused: Bool
@@ -48,18 +46,10 @@ struct WorkspaceBrowserView: View {
     /// Where the rows start in the tree's content, below the root and its hints.
     @State private var rowsOffset: CGFloat = 0
 
-    private var snapshot: HerdrSnapshot? {
-        machine == nil ? localSnapshot : remoteSnapshot
-    }
-
-    private var workspaceID: String? {
-        machine == nil ? localWorkspaceID : remoteWorkspaceID
-    }
-
     private var location: WorkspaceFileLocation? {
         guard let snapshot, let workspaceID else { return nil }
         return WorkspaceFiles.location(snapshot: snapshot, workspaceID: workspaceID,
-                                       session: machine?.session ?? localSession, machine: machine)
+                                       session: session, machine: machine)
     }
 
     private var listingIdentity: String {
@@ -86,7 +76,6 @@ struct WorkspaceBrowserView: View {
         }
         .background(theme.sidebarBackground)
         .background(WindowReader(box: windowBox))
-        .task(id: machine) { machineChanged() }
         .onAppear {
             model.setApplicationActive(NSApplication.shared.isActive)
             keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -132,7 +121,7 @@ struct WorkspaceBrowserView: View {
         WorkspaceRepositoryView(location: location, refreshVersion: model.listingVersion,
                                 isCollapsed: $repositoryCollapsed,
                                 onChange: { loadListing() },
-                                onNewSpace: location?.isLocal == true ? onNewSpace : nil,
+                                onNewSpace: onNewSpace,
                                 onOpenCommitFile: onOpenCommitFile,
                                 historyPath: $historyPath)
     }
@@ -170,21 +159,6 @@ struct WorkspaceBrowserView: View {
             .padding(.horizontal, 11)
             .frame(height: typography.metric(35))
             Divider()
-
-            if let snapshot, machine != nil {
-                Menu {
-                    ForEach(snapshot.workspaces) { workspace in
-                        Button(workspace.label) { remoteWorkspaceID = workspace.workspaceID }
-                    }
-                } label: {
-                    Label(snapshot.workspaces.first(where: { $0.workspaceID == remoteWorkspaceID })?.label ?? "Choose Space",
-                          systemImage: "square.stack")
-                        .lineLimit(1)
-                }
-                .menuStyle(.borderlessButton)
-                .padding(.horizontal, 9)
-                .frame(height: typography.metric(26))
-            }
 
             HStack(spacing: 0) {
                 segment("Files", icon: "doc.text", selected: !model.showsChanges) { model.showsChanges = false }
@@ -415,10 +389,8 @@ struct WorkspaceBrowserView: View {
                 .keyboardShortcut(ExplorerFileCommand.paste.shortcut)
             Divider()
         }
-        if location.isLocal {
-            Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
-            Divider()
-        }
+        Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.root) }
+        Divider()
         Button(model.undoName(at: location).map { "Undo \($0)" } ?? "Undo", systemImage: "arrow.uturn.backward") {
             model.undo(at: location)
         }
@@ -766,9 +738,10 @@ struct WorkspaceBrowserView: View {
                 NSWorkspace.shared.open(URL(fileURLWithPath: location.absolutePath(node.path)))
             }
             .keyboardShortcut(ExplorerFileCommand.openInDefaultApp.shortcut)
-            Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.absolutePath(folder)) }
             Divider()
         }
+        Button("Open in New Tab", systemImage: "terminal") { onNewTab(location.absolutePath(folder)) }
+        Divider()
         Button("Cut", systemImage: "scissors") { model.copyItems([node.path], in: location, cut: true) }
             .keyboardShortcut(ExplorerFileCommand.cut.shortcut)
         Button("Copy", systemImage: "doc.on.doc") { model.copyItems([node.path], in: location, cut: false) }
@@ -931,37 +904,9 @@ struct WorkspaceBrowserView: View {
             .help(machine.map { "SSH · \($0.label)" } ?? "Local")
     }
 
-    private func machineChanged() {
-        remoteSnapshot = nil
-        remoteWorkspaceID = nil
-        model.clearListing()
-        if let machine { loadRemote(machine) }
-    }
-
     private func refresh() {
         WorkspaceFiles.forgetRecentResults()
-        if let machine { loadRemote(machine) }
-        else { loadListing() }
-    }
-
-    private func loadRemote(_ profile: HerdrMachineProfile) {
-        model.isLoading = true
-        model.error = nil
-        Task {
-            let result = await BlockingWork.run { Result { try WorkspaceFiles.remoteSnapshot(profile) } }
-            guard machine?.id == profile.id else { return }
-            switch result {
-            case .success(let snapshot):
-                let shown = location?.identity
-                remoteSnapshot = snapshot
-                remoteWorkspaceID = snapshot.focusedWorkspaceID ?? snapshot.workspaces.first?.workspaceID
-                // A refresh that keeps the location does not restart the listing's task.
-                if let identity = location?.identity, identity == shown { loadListing() }
-            case .failure(let failure):
-                model.error = failure.localizedDescription
-                model.isLoading = false
-            }
-        }
+        loadListing()
     }
 
     private func loadListing(quietly: Bool = false) {

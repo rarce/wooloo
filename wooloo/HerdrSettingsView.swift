@@ -6,6 +6,7 @@ struct HerdrSettingsView: View {
     @Environment(\.woolooTheme) private var theme
     let socketPath: String
     let sessionName: String
+    let remoteHost: String?
     let onSaved: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -57,10 +58,11 @@ struct HerdrSettingsView: View {
         }
     }
 
-    init(socketPath: String, sessionName: String, showShortcuts: Bool = false,
+    init(socketPath: String, sessionName: String, remoteHost: String? = nil, showShortcuts: Bool = false,
          showRemoteAccess: Bool = false, onSaved: @escaping () -> Void = {}) {
         self.socketPath = socketPath
         self.sessionName = sessionName
+        self.remoteHost = remoteHost
         self.onSaved = onSaved
         _category = State(initialValue: showShortcuts ? .shortcuts : showRemoteAccess ? .remoteAccess : .terminal)
     }
@@ -73,7 +75,12 @@ struct HerdrSettingsView: View {
                 header
                 Divider()
                 Group {
-                    if category == .advanced {
+                    if let remoteHost, category != .appearance && category != .notifications && category != .remoteAccess {
+                        Text("Herdr configuration for \(remoteHost) is managed on that host. Switch to Local to edit this Mac’s configuration.")
+                            .foregroundStyle(.secondary)
+                            .padding(24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if category == .advanced {
                         advancedEditor
                     } else {
                         ScrollView {
@@ -88,7 +95,7 @@ struct HerdrSettingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // Remote access is wooloo's own and applies immediately; it has nothing to save.
-                if category != .remoteAccess {
+                if category != .remoteAccess && remoteHost == nil {
                     Divider()
                     footer
                 }
@@ -153,7 +160,7 @@ struct HerdrSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Label("Herdr configuration", systemImage: "doc.text")
                     .font(.system(size: typography.secondary, weight: .medium))
-                Text("Shared across local sessions.\nReload applies to \(sessionName).")
+                Text(remoteHost.map { "Connected to \($0).\nRemote configuration stays on that host." } ?? "Shared across local sessions.\nReload applies to \(sessionName).")
                     .font(.system(size: typography.caption))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -274,7 +281,7 @@ struct HerdrSettingsView: View {
                     }
                 }
             }
-            settingsGroup("Sounds", subtitle: "Herdr · Save & reload to apply") {
+            settingsGroup("Sounds", subtitle: remoteHost == nil ? "Herdr · Save & reload to apply" : "Managed on the remote host") {
                 description("Sounds play for agents outside the pane you are viewing, or when wooloo is in the background.")
                 Toggle("Play sounds", isOn: bool("ui.sound", "enabled", default: true))
                 field("Sound file", hint: "Optional mp3 for all alerts. Relative paths resolve from config.toml's folder. Blank uses the system sound.") {
@@ -305,7 +312,8 @@ struct HerdrSettingsView: View {
                     }
                 }
             }
-            settingsGroup("Pop-up notifications", subtitle: "Herdr · Save & reload to apply") {
+            .disabled(remoteHost != nil)
+            settingsGroup("Pop-up notifications", subtitle: remoteHost == nil ? "Herdr · Save & reload to apply" : "Managed on the remote host") {
                 field("Delivery", hint: "Herdr's [ui.toast] delivery. Unset, wooloo uses System (Herdr itself defaults to Off). wooloo has no outer terminal, so Terminal uses system notifications.") {
                     Picker("", selection: string("ui.toast", "delivery",
                                                  default: HerdrNotificationSettings.defaultDelivery.rawValue)) {
@@ -333,6 +341,7 @@ struct HerdrSettingsView: View {
                     .frame(width: 220, alignment: .leading)
                 }
             }
+            .disabled(remoteHost != nil)
         case .appearance:
             settingsGroup("wooloo", subtitle: "This app only · applies immediately") {
                 field("Interface text size", hint: "Sidebar, tabs, History, Files, and settings. Default: \(Int(WoolooTypography.defaultBase)) pt") {
@@ -372,6 +381,7 @@ struct HerdrSettingsView: View {
                                   lightName: optionalString("theme", "light_name"),
                                   darkName: optionalString("theme", "dark_name"))
             }
+            .disabled(remoteHost != nil)
         case .server:
             description("Headless size applies when no client is attached. These values must be positive.")
             settingsGroup("Headless terminal") {
@@ -421,7 +431,8 @@ struct HerdrSettingsView: View {
         settingsGroup("Tunnel", subtitle: "wooloo only · applies immediately · stops when wooloo quits") {
             RemoteAccessStatusView(model: remoteAccess)
             if case .running(let hostname) = remoteAccess.state {
-                RemoteAccessConnectionView(hostname: hostname, sessionName: sessionName)
+                RemoteAccessConnectionView(hostname: hostname, sessionName: remoteHost == nil ? sessionName
+                    : UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName)
             }
             field("Type", hint: remoteAccess.mode == .quick
                   ? "No Cloudflare account needed. The address changes every time the tunnel starts, so scan the new QR code each time. Anyone who learns it can reach your SSH login: use key authentication."

@@ -2119,7 +2119,7 @@ enum WorkspaceFiles {
 
     /// Where SSH keeps the sockets of shared connections: a short path, since socket paths are
     /// limited to about 100 bytes, in a directory only this user can use. Nil turns sharing off.
-    private static let sshControlDirectory: String? = {
+    static let sshControlDirectory: String? = {
         let path = "/tmp/wooloo-ssh-\(getuid())"
         mkdir(path, 0o700)
         var info = stat()
