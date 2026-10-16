@@ -271,7 +271,7 @@ struct TerminalPaneView: NSViewRepresentable {
         view.closePopup = closePopup
         view.isRichText = false
         view.isEditable = true
-        view.registerForDraggedTypes([.fileURL, .string, TerminalTabDrop.pasteboardType])
+        view.registerForDraggedTypes([.fileURL, .string, TerminalTabDrop.pasteboardType, TerminalTabDrop.panePasteboardType])
         view.isSelectable = true
         view.selectedTextAttributes = [
             .backgroundColor: NSColor.selectedTextBackgroundColor,
@@ -293,6 +293,8 @@ struct TerminalPaneView: NSViewRepresentable {
         overlay.autoresizingMask = [.width, .height]
         scrollView.addSubview(overlay, positioned: .above, relativeTo: nil)
         view.dropOverlay = overlay
+        overlay.pointerMoved = { [weak view] point in view?.updateMoveHandle(at: point) }
+        overlay.moveHandle.makeMenu = { [weak view] pane in view?.paneMoveMenu(pane) ?? NSMenu() }
         return scrollView
     }
 
@@ -1479,6 +1481,7 @@ final class HerdrTerminalTextView: NSTextView {
         // The tracking area also fires under views drawn over this one, such as a sidebar's resize
         // handle; leave the cursor to them.
         guard ownsPointer(at: event.locationInWindow) else { return }
+        updateMoveHandle(at: event.locationInWindow)
         updateHoveredLink(at: event.locationInWindow, modifiers: event.modifierFlags)
         // NSTextView's own handling would set the I-beam, also over a divider.
         if let cursor = cursor(at: event.locationInWindow) {
@@ -1534,6 +1537,28 @@ final class HerdrTerminalTextView: NSTextView {
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         setHoveredLink(nil)
+        if let overlay = dropOverlay,
+           !overlay.moveHandle.frame.contains(overlay.convert(event.locationInWindow, from: nil)) {
+            overlay.showHandle(for: nil, rect: nil)
+        }
+    }
+
+    fileprivate func updateMoveHandle(at point: NSPoint) {
+        guard let overlay = dropOverlay, surface?.popup == nil, let tabDrop else {
+            dropOverlay?.showHandle(for: nil, rect: nil)
+            return
+        }
+        let panes = surface.map {
+            TerminalTabDrop.paneRects(of: $0, inset: textContainerInset,
+                                      cell: CGSize(width: TerminalPaneView.cellWidth, height: TerminalPaneView.cellHeight))
+        } ?? [(id: paneID, rect: visibleRect)]
+        let local = convert(point, from: nil)
+        guard let pane = panes.first(where: { $0.rect.contains(local) }),
+              tabDrop.canDetach(pane.id) || !tabDrop.targets(pane.id).isEmpty else {
+            overlay.showHandle(for: nil, rect: nil)
+            return
+        }
+        overlay.showHandle(for: pane.id, rect: overlay.convert(pane.rect.intersection(visibleRect), from: self))
     }
 
     override func flagsChanged(with event: NSEvent) {
@@ -1738,6 +1763,10 @@ final class HerdrTerminalTextView: NSTextView {
         menu.addItem(.separator())
         menu.addItem(herdrItem("Split Right", "split_vertical", symbol: "rectangle.split.2x1"))
         menu.addItem(herdrItem("Split Down", "split_horizontal", symbol: "rectangle.split.1x2"))
+        let source = surface.flatMap { mouseHit(event, in: $0)?.0 } ?? paneID
+        let move = NSMenuItem(title: "Move Terminal", action: nil, keyEquivalent: "")
+        move.submenu = paneMoveMenu(source)
+        menu.addItem(move)
         menu.addItem(herdrItem("Zoom Pane", "zoom", symbol: "arrow.up.left.and.arrow.down.right"))
         let focus = NSMenuItem(title: "Focus Pane", action: nil, keyEquivalent: "")
         focus.image = NSImage(systemSymbolName: "scope", accessibilityDescription: nil)
@@ -1764,6 +1793,42 @@ final class HerdrTerminalTextView: NSTextView {
         menu.addItem(.separator())
         menu.addItem(herdrItem("Close Pane…", "close_pane", symbol: "xmark.square"))
         return menu
+    }
+
+    func paneMoveMenu(_ source: String) -> NSMenu {
+        let menu = NSMenu()
+        guard let tabDrop else { return menu }
+        for target in tabDrop.targets(source) {
+            let item = NSMenuItem(title: "Next to \(target.title)", action: nil, keyEquivalent: "")
+            let sides = NSMenu()
+            for edge in TerminalDropEdge.allCases {
+                let side = NSMenuItem(title: edge.title, action: #selector(moveTerminal(_:)), keyEquivalent: "")
+                side.target = self
+                side.representedObject = [source, target.id, edge.title]
+                sides.addItem(side)
+            }
+            item.submenu = sides
+            menu.addItem(item)
+        }
+        if !menu.items.isEmpty { menu.addItem(.separator()) }
+        let detach = NSMenuItem(title: "Move to Own Tab", action: #selector(detachTerminal(_:)), keyEquivalent: "")
+        detach.target = self
+        detach.representedObject = source
+        detach.isEnabled = tabDrop.canDetach(source)
+        menu.autoenablesItems = false
+        menu.addItem(detach)
+        return menu
+    }
+
+    @objc private func moveTerminal(_ sender: NSMenuItem) {
+        guard let values = sender.representedObject as? [String], values.count == 3,
+              let edge = TerminalDropEdge.allCases.first(where: { $0.title == values[2] }) else { return }
+        _ = tabDrop?.movePane(values[0], values[1], edge)
+    }
+
+    @objc private func detachTerminal(_ sender: NSMenuItem) {
+        guard let source = sender.representedObject as? String else { return }
+        tabDrop?.detach(source)
     }
 
     private func standardItem(_ title: String, _ selector: Selector, enabled: Bool) -> NSMenuItem {
@@ -2006,11 +2071,16 @@ final class HerdrTerminalTextView: NSTextView {
         super.draggingEnded(sender)
     }
 
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if sender.draggingPasteboard.types?.contains(TerminalTabDrop.panePasteboardType) == true {
+            return tabDropTarget(sender) != nil
+        }
+        return true
+    }
 
     /// NSTextView registers these again whenever it updates its drag types; keep tab drags in.
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
-        super.acceptableDragTypes + [TerminalTabDrop.pasteboardType]
+        super.acceptableDragTypes + [TerminalTabDrop.pasteboardType, TerminalTabDrop.panePasteboardType]
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -2022,6 +2092,9 @@ final class HerdrTerminalTextView: NSTextView {
             let target = tabDropTarget(sender)
             showTabDrop(nil)
             guard let target, let tabDrop else { return false }
+            if let source = sender.draggingPasteboard.string(forType: TerminalTabDrop.panePasteboardType) {
+                return tabDrop.movePane(source, target.paneID, target.edge)
+            }
             return tabDrop.drop(target.paneID, target.edge)
         }
         guard let text = droppedText(sender.draggingPasteboard) else { return false }
@@ -2047,13 +2120,23 @@ final class HerdrTerminalTextView: NSTextView {
     /// Where a dragged terminal tab would drop, when the window accepts it here: in a live
     /// surface's pane under the pointer, or in this view's only pane while showing `pane.read` text.
     private func tabDropTarget(_ sender: NSDraggingInfo) -> TerminalTabDropTarget? {
-        guard let tabDrop, tabDrop.accepts() else { return nil }
+        guard let tabDrop else { return nil }
+        let source = sender.draggingPasteboard.string(forType: TerminalTabDrop.panePasteboardType)
+        if source != nil {
+            // Pane IDs are only unique inside a Herdr session. A foreign window may
+            // have the same IDs while referring to entirely different terminals.
+            guard let handle = sender.draggingSource as? TerminalMoveHandle,
+                  let window, handle.window === window else { return nil }
+        }
+        guard source != nil || tabDrop.accepts() else { return nil }
         let point = convert(sender.draggingLocation, from: nil)
         let panes = surface.map {
             TerminalTabDrop.paneRects(of: $0, inset: textContainerInset,
                                       cell: CGSize(width: TerminalPaneView.cellWidth, height: TerminalPaneView.cellHeight))
         } ?? [(paneID, visibleRect)]
-        return TerminalTabDrop.target(at: point, panes: panes)
+        guard let target = TerminalTabDrop.target(at: point, panes: panes) else { return nil }
+        if let source, !tabDrop.targets(source).contains(where: { $0.id == target.paneID }) { return nil }
+        return target
     }
 
     private func showTabDrop(_ target: TerminalTabDropTarget?) {

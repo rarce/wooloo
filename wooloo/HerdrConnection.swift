@@ -1225,19 +1225,60 @@ final class HerdrStore: ObservableObject {
         guard isConnected, let into = selectedTabID, let snapshot,
               let paneID = snapshot.paneToSplit(fromTab: tabID, into: into),
               snapshot.panes.contains(where: { $0.paneID == targetPaneID && $0.tabID == into }) else { return false }
+        return movePane(paneID, nextTo: targetPaneID, edge: edge)
+    }
+
+    func canMovePane(_ paneID: String, nextTo targetPaneID: String) -> Bool {
+        guard isConnected, paneID != targetPaneID, let snapshot,
+              let source = snapshot.panes.first(where: { $0.paneID == paneID }),
+              let target = snapshot.panes.first(where: { $0.paneID == targetPaneID }),
+              source.workspaceID == target.workspaceID,
+              target.tabID == selectedTabID else { return false }
+        return snapshot.layouts.first(where: { $0.tabID == target.tabID })?.zoomed != true
+    }
+
+    @discardableResult
+    func detachPane(_ paneID: String) -> Bool {
+        guard isConnected, let snapshot, let source = snapshot.panes.first(where: { $0.paneID == paneID }),
+              snapshot.panes.filter({ $0.tabID == source.tabID }).count > 1 else { return false }
+        relocatePane(paneID, destination: ["type": "new_tab"], targetPaneID: nil, edge: nil,
+                     detachFirst: false)
+        return true
+    }
+
+    @discardableResult
+    func movePane(_ paneID: String, nextTo targetPaneID: String, edge: TerminalDropEdge) -> Bool {
+        guard canMovePane(paneID, nextTo: targetPaneID), let snapshot,
+              let source = snapshot.panes.first(where: { $0.paneID == paneID }),
+              let target = snapshot.panes.first(where: { $0.paneID == targetPaneID }) else { return false }
+        relocatePane(paneID, destination: ["type": "tab", "tab_id": target.tabID, "split": edge.split,
+                                          "target_pane_id": targetPaneID],
+                     targetPaneID: targetPaneID, edge: edge, detachFirst: source.tabID == target.tabID)
+        return true
+    }
+
+    /// Herdr refuses same-tab moves. Temporarily detach the pane, then insert it beside the
+    /// target. Always refresh after a partial failure so the surviving terminal remains reachable.
+    private func relocatePane(_ paneID: String, destination: [String: Any], targetPaneID: String?,
+                              edge: TerminalDropEdge?, detachFirst: Bool) {
         let path = socketPath
+        let originalTab = snapshot?.panes.first(where: { $0.paneID == paneID })?.tabID
+        let originalSelection = selectedTabID
         let currentGeneration = generation
         Task {
             let result = await BlockingWork.run(priority: .userInitiated) {
                 Result { () throws -> Void in
+                    if detachFirst {
+                        let detached = try HerdrSocket.request(path: path, method: "pane.move", params: [
+                            "pane_id": paneID, "destination": ["type": "new_tab"], "focus": false
+                        ])
+                        try Self.requireChange(detached, in: "move_result", doing: "detach the pane")
+                    }
                     let moved = try HerdrSocket.request(path: path, method: "pane.move", params: [
-                        "pane_id": paneID,
-                        "destination": ["type": "tab", "tab_id": into, "split": edge.split,
-                                        "target_pane_id": targetPaneID] as [String: Any],
-                        "focus": true
+                        "pane_id": paneID, "destination": destination, "focus": true
                     ])
                     try Self.requireChange(moved, in: "move_result", doing: "move the pane")
-                    guard edge.swapsAfterMove else { return }
+                    guard edge?.swapsAfterMove == true, let targetPaneID else { return }
                     let swapped = try HerdrSocket.request(path: path, method: "pane.swap", params: [
                         "source_pane_id": paneID, "target_pane_id": targetPaneID
                     ])
@@ -1249,7 +1290,12 @@ final class HerdrStore: ObservableObject {
             guard generation == currentGeneration else { return }
             if let fresh {
                 self.snapshot = fresh
-                if selectedTabID == into, fresh.panes.contains(where: { $0.paneID == paneID && $0.tabID == into }) {
+                let succeeded: Bool
+                if case .success = result { succeeded = true } else { succeeded = false }
+                if selectedTabID == originalSelection,
+                   let moved = fresh.panes.first(where: { $0.paneID == paneID }),
+                   succeeded || moved.tabID != originalTab {
+                    selectedTabID = moved.tabID
                     selectedPaneID = paneID
                     sendPaneFocus(paneID)
                 }
@@ -1260,7 +1306,6 @@ final class HerdrStore: ObservableObject {
             case .failure(let error): actionError = error.localizedDescription
             }
         }
-        return true
     }
 
     /// Herdr answers a move or swap it did not make with `changed: false` and a reason, not an error.

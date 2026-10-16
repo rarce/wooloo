@@ -940,6 +940,16 @@ struct ContentView: View {
                 .frame(minWidth: proxy.size.width, minHeight: proxy.size.height, alignment: .leading)
             }
         }
+        .overlay {
+            TerminalPaneTabDropView(accent: NSColor(theme.accent), canDetach: { pane in
+                herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.paneID == pane }
+            }, detach: { pane in
+                guard herdr.detachPane(pane) else { return false }
+                activeDocumentID = nil
+                commands.focusPanel(.main)
+                return true
+            })
+        }
     }
 
     private var terminalTabsEnd: TabDropEnd {
@@ -995,7 +1005,16 @@ struct ContentView: View {
             drop: { [herdr, drag = window.tabDrag] paneID, edge in
                 guard let tabID = drag.dropTerminalTab() else { return false }
                 return herdr.splitTab(tabID, nextTo: paneID, edge: edge)
-            })
+            },
+            targets: { [herdr] source in
+                herdr.selectedPanes.filter { herdr.canMovePane(source, nextTo: $0.paneID) }
+                    .map { (id: $0.paneID, title: $0.paneID) }
+            },
+            movePane: { [herdr] in herdr.movePane($0, nextTo: $1, edge: $2) },
+            canDetach: { [herdr] source in
+                herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.paneID == source }
+            },
+            detach: { [herdr] in herdr.detachPane($0) })
     }
 
     /// Asks before closing a terminal tab; the last tab of a Space stays.

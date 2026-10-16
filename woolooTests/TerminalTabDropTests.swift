@@ -99,7 +99,7 @@ final class TerminalTabDropViewTests: XCTestCase {
         var draggingSourceOperationMask: NSDragOperation { [.copy, .move, .generic] }
         var draggedImageLocation: NSPoint { draggingLocation }
         var draggedImage: NSImage? { nil }
-        var draggingSource: Any? { nil }
+        var draggingSource: Any?
         var draggingSequenceNumber: Int { 1 }
         func slideDraggedImage(to screenPoint: NSPoint) {}
         var draggingFormation: NSDraggingFormation = .none
@@ -203,6 +203,108 @@ final class TerminalTabDropViewTests: XCTestCase {
         XCTAssertEqual(drops, ["w1:p1 top"])
         XCTAssertTrue(pastes.isEmpty, "A tab never pastes its ID")
         XCTAssertNil(highlight, "The highlight goes with the drop")
+    }
+
+    func testNativeTabBarReceivesPaneDragAndDetachesIt() {
+        let target = TerminalPaneTabDropTargetView(frame: CGRect(x: 0, y: 0, width: 400, height: 30))
+        var detached: String?
+        target.canDetach = { $0 == "w1:p1" }
+        target.detach = { detached = $0; return true }
+        pasteboard.clearContents()
+        pasteboard.setString("w1:p1", forType: TerminalTabDrop.panePasteboardType)
+        let info = drag(column: 2, row: 1)
+        XCTAssertEqual(target.draggingEntered(info), .move)
+        XCTAssertTrue(target.isTargeted)
+        XCTAssertTrue(target.prepareForDragOperation(info))
+        XCTAssertTrue(target.performDragOperation(info))
+        XCTAssertEqual(detached, "w1:p1")
+        XCTAssertFalse(target.isTargeted)
+        target.canDetach = { _ in false }
+        XCTAssertEqual(target.draggingUpdated(info), [])
+        XCTAssertFalse(target.performDragOperation(info))
+    }
+
+    func testNativeTabBarOnlyInterceptsPointerDuringThisWindowsPaneDrag() {
+        let target = TerminalPaneTabDropTargetView(frame: CGRect(x: 0, y: 0, width: 400, height: 30))
+        window.contentView!.addSubview(target)
+        let point = CGPoint(x: 20, y: 15)
+        XCTAssertNil(target.hitTest(point), "Normal tab controls keep their events")
+        let handle = TerminalMoveHandle(frame: .zero)
+        window.contentView!.addSubview(handle)
+        TerminalMoveHandle.activeHandle = handle
+        defer { TerminalMoveHandle.activeHandle = nil }
+        XCTAssertTrue(target.hitTest(point) === target)
+        handle.removeFromSuperview()
+        XCTAssertNil(target.hitTest(point), "A different window cannot detach the wrong session's pane")
+    }
+
+    func testPaneDragMovesOntoAnotherPaneWithoutPasting() {
+        pasteboard.clearContents()
+        pasteboard.setString("w1:p1", forType: TerminalTabDrop.panePasteboardType)
+        view.tabDrop?.targets = { source in source == "w1:p1" ? [(id: "w1:p2", title: "2")] : [] }
+        view.tabDrop?.movePane = { [unowned self] source, target, edge in
+            drops.append("\(source) \(target) \(edge)")
+            return true
+        }
+        let handle = TerminalMoveHandle(frame: .zero)
+        window.contentView!.addSubview(handle)
+        let selfDrop = drag(column: 1, row: 2)
+        selfDrop.draggingSource = handle
+        let destination = drag(column: 18.5, row: 2)
+        destination.draggingSource = handle
+        XCTAssertEqual(view.draggingEntered(selfDrop), [], "Cannot drop on itself")
+        XCTAssertNil(highlight)
+        XCTAssertEqual(view.draggingUpdated(destination), .move)
+        XCTAssertNotNil(highlight)
+        XCTAssertTrue(view.prepareForDragOperation(destination))
+        XCTAssertTrue(view.performDragOperation(destination))
+        XCTAssertEqual(drops, ["w1:p1 w1:p2 right"])
+        XCTAssertTrue(pastes.isEmpty)
+        XCTAssertNil(highlight)
+    }
+
+    func testPaneDropsRejectForeignWindowEvenWhenPaneIDsMatch() {
+        pasteboard.clearContents()
+        pasteboard.setString("w1:p1", forType: TerminalTabDrop.panePasteboardType)
+        pasteboard.setString("w1:p1", forType: .string)
+        view.tabDrop?.targets = { _ in [(id: "w1:p2", title: "2")] }
+        view.tabDrop?.movePane = { [unowned self] _, _, _ in
+            drops.append("unexpected move")
+            return true
+        }
+        let foreignWindow = NSWindow(contentRect: view.frame, styleMask: .borderless,
+                                     backing: .buffered, defer: true)
+        foreignWindow.isReleasedWhenClosed = false
+        defer { foreignWindow.close() }
+        let foreignHandle = TerminalMoveHandle(frame: .zero)
+        foreignWindow.contentView!.addSubview(foreignHandle)
+        let destination = drag(column: 18.5, row: 2)
+        // Missing sources and detached handles must fail closed too.
+        for source in [nil, TerminalMoveHandle(frame: .zero), foreignHandle] as [Any?] {
+            destination.draggingSource = source
+            XCTAssertEqual(view.draggingEntered(destination), [])
+            XCTAssertEqual(view.draggingUpdated(destination), [])
+            XCTAssertNil(highlight)
+            XCTAssertFalse(view.prepareForDragOperation(destination))
+            XCTAssertFalse(view.performDragOperation(destination))
+        }
+        XCTAssertTrue(drops.isEmpty)
+        XCTAssertTrue(pastes.isEmpty, "Rejected pane IDs must never be pasted into the shell")
+    }
+
+    func testMoveMenuUsesClickedPaneAndOffersOwnTab() {
+        view.tabDrop?.targets = { _ in [(id: "w1:p2", title: "2")] }
+        view.tabDrop?.canDetach = { $0 == "w1:p1" }
+        var detached: String?
+        view.tabDrop?.detach = { detached = $0 }
+        let menu = view.paneMoveMenu("w1:p1")
+        XCTAssertEqual(menu.items.first?.submenu?.items.map(\.title), ["Left", "Right", "Top", "Bottom"])
+        let item = menu.items.last!
+        XCTAssertEqual(item.title, "Move to Own Tab")
+        XCTAssertTrue(item.isEnabled)
+        NSApp.sendAction(item.action!, to: item.target, from: item)
+        XCTAssertEqual(detached, "w1:p1")
+        XCTAssertFalse(view.paneMoveMenu("w1:p2").items.last!.isEnabled)
     }
 
     func testRefusedTabDragsShowNothingAndDropNothing() {
