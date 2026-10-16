@@ -8,12 +8,16 @@ final class FakeSurfaceEndpoint {
     let path: String
     private let listener: Int32
     private let lock = NSLock()
+    private let writeLock = NSLock()
+    private let readingGate = DispatchSemaphore(value: 0)
     private var connection: Int32 = -1
     private var frames: [Data] = []
     private var stopped = false
 
     /// `welcome` overrides fields of the welcome message; `afterHello` frames follow the snapshot.
-    init(path: String, welcome: [String: Any] = [:], afterHello: [Data]) throws {
+    init(path: String, welcome: [String: Any] = [:], afterHello: [Data],
+         sendsWelcome: Bool = true, sendsSnapshot: Bool = true, readsClient: Bool = true,
+         echoesHealth: Bool = true, wrongHealthToken: Bool = false) throws {
         self.path = path
         listener = try listenUnixSocket(at: path)
         var message: [String: Any] = ["generation": 1, "error": NSNull(),
@@ -24,16 +28,36 @@ final class FakeSurfaceEndpoint {
         Thread.detachNewThread { [self] in
             let fd = accept(listener, nil, nil)
             guard fd >= 0 else { return }
+            var noSignal: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+            var timeout = timeval(tv_sec: 1, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
             lock.lock()
             connection = fd
+            let wasStopped = stopped
             lock.unlock()
+            defer {
+                lock.withLock { connection = -1 }
+                close(fd)
+            }
+            guard !wasStopped else { return }
             guard let hello = readFrame(fd) else { return }
             record(hello)
-            send(Self.control("endpoint.welcome.v1", welcomeJSON))
-            send(Self.control("shell.snapshot.v1", #"{"boot_id":"boot-test"}"#))
+            if sendsWelcome { send(Self.control("endpoint.welcome.v1", welcomeJSON)) }
+            if sendsSnapshot { send(Self.control("shell.snapshot.v1", #"{"boot_id":"boot-test"}"#)) }
             for frame in afterHello { send(frame) }
-            while let frame = readFrame(fd) { record(frame) }
-            close(fd)
+            if !readsClient { readingGate.wait(); return }
+            while let frame = readFrame(fd) {
+                record(frame)
+                if echoesHealth, frame.first == 20 {
+                    var reader = SurfaceReaderProbe(frame)
+                    _ = reader.number()
+                    if reader.string() == "endpoint.health.ping.v1" {
+                        let token = reader.string()
+                        send(Self.control("endpoint.health.pong.v1", wrongHealthToken ? "wrong-token" : token))
+                    }
+                }
+            }
         }
     }
 
@@ -53,13 +77,34 @@ final class FakeSurfaceEndpoint {
 
     /// Sends one length-prefixed frame; `length` overrides the prefix to test malformed frames.
     func send(_ payload: Data, length: UInt32? = nil) {
-        lock.lock()
-        let fd = connection
-        lock.unlock()
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        let fd = lock.withLock { connection >= 0 && !stopped ? dup(connection) : -1 }
+        guard fd >= 0 else { return }
+        defer { close(fd) }
         let size = length ?? UInt32(payload.count)
         var frame = Data((0..<4).map { UInt8((size >> ($0 * 8)) & 0xff) })
         frame += payload
-        frame.withUnsafeBytes { _ = Darwin.write(fd, $0.baseAddress, $0.count) }
+        frame.withUnsafeBytes { bytes in
+            var sent = 0
+            while sent < bytes.count {
+                let count = Darwin.write(fd, bytes.baseAddress!.advanced(by: sent), bytes.count - sent)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { return }
+                sent += count
+            }
+        }
+    }
+
+    /// Writes a truncated length prefix without completing it.
+    func sendPartialHeader() {
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        lock.withLock {
+            guard connection >= 0 else { return }
+            var byte: UInt8 = 42
+            _ = Darwin.write(connection, &byte, 1)
+        }
     }
 
     func stop() {
@@ -68,6 +113,8 @@ final class FakeSurfaceEndpoint {
         stopped = true
         if connection >= 0 { shutdown(connection, SHUT_RDWR) }
         lock.unlock()
+        readingGate.signal()
+        shutdown(listener, SHUT_RDWR)
         close(listener)
         unlink(path)
     }
@@ -199,6 +246,131 @@ final class HerdrSurfaceStreamTests: XCTestCase {
         let deadline = Date().addingTimeInterval(5)
         while !condition() && Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
         XCTAssertTrue(condition())
+    }
+
+    private var shortTimeouts: HerdrEndpointTimeouts {
+        HerdrEndpointTimeouts(handshake: .milliseconds(200), frame: .milliseconds(200),
+                              write: .milliseconds(400), healthInterval: .milliseconds(100),
+                              healthReply: .milliseconds(200))
+    }
+
+    func testMissingWelcomeOrSnapshotTimesOutAndCanBeCancelled() throws {
+        for welcome in [false, true] {
+            let endpoint = try FakeSurfaceEndpoint(path: directory + "/\(welcome).sock", afterHello: [],
+                                                   sendsWelcome: welcome, sendsSnapshot: false)
+            defer { endpoint.stop() }
+            let stream = HerdrSurfaceStream(timeouts: shortTimeouts)
+            let run = start(stream, path: endpoint.path)
+            run.ready.isInverted = true
+            wait(for: [run.finished], timeout: 2)
+            wait(for: [run.ready], timeout: 0.01)
+            XCTAssertTrue(String(describing: run.error()).contains("handshake"))
+            XCTAssertFalse(stream.isReady)
+            stream.cancel()
+        }
+    }
+
+    func testIncompleteHeaderAndPayloadHaveAWholeFrameDeadline() throws {
+        for header in [true, false] {
+            let endpoint = try FakeSurfaceEndpoint(path: directory + "/\(header).sock", afterHello: [])
+            defer { endpoint.stop() }
+            let stream = HerdrSurfaceStream(timeouts: shortTimeouts)
+            let run = start(stream, path: endpoint.path)
+            wait(for: [run.ready], timeout: 3)
+            if header { endpoint.sendPartialHeader() }
+            else { endpoint.send(Data([20]), length: 200) }
+            wait(for: [run.finished], timeout: 2)
+            XCTAssertTrue(String(describing: run.error()).contains("frame"))
+            XCTAssertFalse(stream.isReady)
+        }
+    }
+
+    func testHealthyIdleEndpointsStayConnectedWithAndWithoutHealthCapability() throws {
+        for health in [false, true] {
+            let endpoint = try FakeSurfaceEndpoint(path: directory + "/\(health).sock",
+                                                   welcome: ["capabilities": health ? ["health_check"] : []], afterHello: [])
+            defer { endpoint.stop() }
+            let stream = HerdrSurfaceStream(timeouts: shortTimeouts)
+            let run = start(stream, path: endpoint.path)
+            wait(for: [run.ready], timeout: 3)
+            // Longer than the handshake, frame, and health-reply limits, without any surfaces.
+            Thread.sleep(forTimeInterval: 0.9)
+            XCTAssertTrue(stream.isReady)
+            let probes = endpoint.received.filter { frame in
+                guard frame.first == 20 else { return false }
+                var reader = SurfaceReaderProbe(frame)
+                _ = reader.number()
+                return reader.string() == "endpoint.health.ping.v1"
+            }
+            XCTAssertEqual(probes.isEmpty, !health)
+            stream.cancel()
+            wait(for: [run.finished], timeout: 2)
+        }
+    }
+
+    func testMissingOrUnmatchedHealthRepliesEndEvenAnActiveEndpoint() throws {
+        for wrong in [false, true] {
+            let endpoint = try FakeSurfaceEndpoint(path: directory + "/\(wrong).sock",
+                                                   welcome: ["capabilities": ["health_check"]], afterHello: [model.surfaceFrame()],
+                                                   echoesHealth: wrong, wrongHealthToken: wrong)
+            defer { endpoint.stop() }
+            let stream = HerdrSurfaceStream(timeouts: shortTimeouts)
+            let run = start(stream, path: endpoint.path)
+            wait(for: [run.ready, run.finished], timeout: 3)
+            XCTAssertTrue(String(describing: run.error()).contains("health reply"))
+            XCTAssertFalse(stream.isReady)
+        }
+    }
+
+    func testStoppedReaderDoesNotBlockSendingOrCancellation() throws {
+        let endpoint = try FakeSurfaceEndpoint(path: directory + "/c.sock", afterHello: [], readsClient: false)
+        defer { endpoint.stop() }
+        var timeouts = shortTimeouts
+        timeouts.write = .seconds(5)
+        let stream = HerdrSurfaceStream(timeouts: timeouts)
+        let run = start(stream, path: endpoint.path)
+        wait(for: [run.ready], timeout: 3)
+        let before = ContinuousClock.now
+        XCTAssertTrue(stream.sendInput(.paste(String(repeating: "x", count: 8 * 1024 * 1024)), to: "w1:p1"))
+        // The writer now has more than a socket buffer to deliver to a peer which never reads.
+        Thread.sleep(forTimeInterval: 0.1)
+        stream.cancel()
+        XCTAssertLessThan(before.duration(to: .now), .seconds(1))
+        wait(for: [run.finished], timeout: 2)
+        XCTAssertFalse(stream.sendInput(.text("late"), to: "w1:p1"))
+    }
+
+    func testStoppedReaderWriteTimesOutWithoutCancellation() throws {
+        let endpoint = try FakeSurfaceEndpoint(path: directory + "/c.sock", afterHello: [], readsClient: false)
+        defer { endpoint.stop() }
+        let stream = HerdrSurfaceStream(timeouts: shortTimeouts)
+        let run = start(stream, path: endpoint.path)
+        wait(for: [run.ready], timeout: 3)
+        XCTAssertTrue(stream.sendInput(.paste(String(repeating: "x", count: 8 * 1024 * 1024)), to: "w1:p1"))
+        wait(for: [run.finished], timeout: 2)
+        XCTAssertTrue(String(describing: run.error()).contains("write"))
+        XCTAssertFalse(stream.isReady)
+    }
+
+    func testCancellationInterruptsHandshakeAndPartialRead() throws {
+        for ready in [false, true] {
+            let endpoint = try FakeSurfaceEndpoint(path: directory + "/\(ready).sock", afterHello: [],
+                                                   sendsWelcome: ready, sendsSnapshot: ready)
+            defer { endpoint.stop() }
+            let stream = HerdrSurfaceStream()
+            let run = start(stream, path: endpoint.path)
+            if ready {
+                wait(for: [run.ready], timeout: 3)
+                endpoint.sendPartialHeader()
+            } else {
+                run.ready.isInverted = true
+                waitUntil { !endpoint.received.isEmpty }
+            }
+            stream.cancel()
+            wait(for: [run.finished], timeout: 1)
+            if !ready { wait(for: [run.ready], timeout: 0.01) }
+            XCTAssertFalse(stream.isReady)
+        }
     }
 
     func testHandshakeSurfacesAndClientMessages() throws {
