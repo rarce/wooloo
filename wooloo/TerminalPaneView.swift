@@ -1040,7 +1040,9 @@ final class HerdrTerminalTextView: NSTextView {
     private func handleShortcut(_ event: NSEvent) -> Bool {
         guard surface?.popup == nil else { return false }
         switch shortcutMap.match(event, prefixPending: shortcutPrefixPending) {
-        case .pass: return false
+        case .pass:
+            if shortcutPrefixPending { clearShortcutPrefix() }
+            return false
         case .prefix:
             shortcutPrefixPending = true
             onPrefixChanged?(true)

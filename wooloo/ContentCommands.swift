@@ -20,10 +20,16 @@ enum HerdrCloseTarget: Equatable {
     case workspace(String, String)
     case tab(String, String)
     case pane(String)
+    case lastTab(String, String)
+
+    var isLastTab: Bool {
+        if case .lastTab = self { return true }
+        return false
+    }
 
     var title: String {
         switch self {
-        case .workspace(_, let label): return "Close Space “\(label)”?"
+        case .workspace(_, let label), .lastTab(_, let label): return "Close Space “\(label)”?"
         case .tab(_, let label): return "Close Tab “\(label)”?"
         case .pane(let id): return "Close Pane \(id)?"
         }
@@ -205,8 +211,8 @@ struct ContentCommands {
             window.renameText = tab.label
             window.renameTarget = .tab(tab.tabID)
         case .closeTab:
-            guard tabs.count > 1, let tab = tabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
-            window.closeTarget = .tab(tab.tabID, tab.label)
+            guard let tab = tabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
+            requestCloseTab(tab)
         case .closeCurrentTab:
             if focusedDocumentID == WorkspaceSearchModel.tabID {
                 closeSearch()
@@ -217,7 +223,7 @@ struct ContentCommands {
             }
         case .closePane:
             guard let paneID = herdr.selectedPaneID else { return }
-            window.closeTarget = .pane(paneID)
+            requestClosePane(paneID)
         case .projectSearch(let replace): openSearch(replace: replace)
         case .quickOpen:
             if window.quickOpen.isPresented {
@@ -373,10 +379,44 @@ struct ContentCommands {
         }
     }
 
+    /// The last terminal is a decision about the Space. Keep its live agent/session intact
+    /// until the user confirms, so cancelling cannot restart or resume a different session.
+    func requestCloseTab(_ tab: HerdrTab) {
+        guard let snapshot = herdr.snapshot,
+              snapshot.tabs.contains(where: { $0.tabID == tab.tabID }) else { return }
+        if snapshot.tabs.filter({ $0.workspaceID == tab.workspaceID }).count == 1,
+           let workspace = snapshot.workspaces.first(where: { $0.workspaceID == tab.workspaceID }) {
+            window.closeTarget = .lastTab(workspace.workspaceID, workspace.label)
+        } else {
+            window.closeTarget = .tab(tab.tabID, tab.label)
+        }
+    }
+
+    func requestClosePane(_ paneID: String) {
+        guard let snapshot = herdr.snapshot,
+              let pane = snapshot.panes.first(where: { $0.paneID == paneID }) else { return }
+        if snapshot.panes.filter({ $0.workspaceID == pane.workspaceID }).count == 1,
+           let workspace = snapshot.workspaces.first(where: { $0.workspaceID == pane.workspaceID }) {
+            window.closeTarget = .lastTab(workspace.workspaceID, workspace.label)
+        } else {
+            window.closeTarget = .pane(paneID)
+        }
+    }
+
+    func cancelClose() {
+        if case .lastTab(let id, _) = window.closeTarget,
+           herdr.snapshot?.workspaces.contains(where: { $0.workspaceID == id }) == true {
+            documents.activeID = nil
+            herdr.select(workspaceID: id)
+            focusPanel(.main)
+        }
+        window.closeTarget = nil
+    }
+
     func commitClose() {
         defer { window.closeTarget = nil }
         switch window.closeTarget {
-        case .workspace(let id, _):
+        case .workspace(let id, _), .lastTab(let id, _):
             documents.activeID = nil
             herdr.closeWorkspace(id)
         case .tab(let id, _): herdr.closeTab(id)

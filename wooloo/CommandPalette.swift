@@ -280,7 +280,7 @@ struct WoolooCommandItem: Identifiable, Equatable {
               requires: .tabs(2)),
         .init("next_tab", "Space", "Next Tab", KeyboardShortcut("]", modifiers: [.command, .shift]), requires: .tabs(2)),
         .init("rename_tab", "Space", "Rename Tab…", requires: .tabs(1)),
-        .init("close_tab", "Space", "Close Tab…", requires: .tabs(2)),
+        .init("close_tab", "Space", "Close Tab…", requires: .tabs(1)),
         .init("split_vertical", "Pane", "Split Right", KeyboardShortcut("d", modifiers: .command), requires: .pane),
         .init("split_horizontal", "Pane", "Split Down", KeyboardShortcut("d", modifiers: [.command, .shift]),
               requires: .pane),

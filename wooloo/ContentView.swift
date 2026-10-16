@@ -215,11 +215,17 @@ struct ContentView: View {
         // Here rather than in the document's view, which a tab saved from its context menu lacks.
         .background { overwriteAlert }
         .confirmationDialog(window.closeTarget?.title ?? "Close?", isPresented: Binding(
-            get: { window.closeTarget != nil }, set: { if !$0 { window.closeTarget = nil } }
+            get: { window.closeTarget != nil }, set: { if !$0 { commands.cancelClose() } }
         )) {
-            Button("Close", role: .destructive) { commitClose() }
+            Button(window.closeTarget?.isLastTab == true ? "Close Space" : "Close",
+                   role: .destructive) { commitClose() }
+            Button(window.closeTarget?.isLastTab == true ? "Keep Space" : "Cancel", role: .cancel) { commands.cancelClose() }
         } message: {
-            Text("Processes running in its terminals will be terminated.")
+            if case .lastTab = window.closeTarget {
+                Text("This is the last terminal tab. Close the Space, or keep it with its active agent session.")
+            } else {
+                Text("Processes running in its terminals will be terminated.")
+            }
         }
     }
 
@@ -487,7 +493,7 @@ struct ContentView: View {
                                 }
                                 Divider()
                                 Button("Close Pane…", systemImage: "xmark.square", role: .destructive) {
-                                    window.closeTarget = .pane(agent.paneID)
+                                    commands.requestClosePane(agent.paneID)
                                 }
                             }
                         }
@@ -1014,7 +1020,6 @@ struct ContentView: View {
             }
             Divider()
             Button("Close Tab…", systemImage: "xmark", role: .destructive) { closeTerminalTab(tab) }
-                .disabled(selectedTabs.count < 2)
         }
         .tabReorder(.terminal, id: tab.tabID, index: index, drag: window.tabDrag,
                     onMove: { herdr.moveTab($0, to: $1) })
@@ -1042,10 +1047,9 @@ struct ContentView: View {
             detach: { [herdr] in herdr.detachPane($0) })
     }
 
-    /// Asks before closing a terminal tab; the last tab of a Space stays.
+    /// Asks before closing a terminal tab, or its Space when this is the last tab.
     private func closeTerminalTab(_ tab: HerdrTab) {
-        guard selectedTabs.count >= 2 else { return }
-        window.closeTarget = .tab(tab.tabID, tab.label)
+        commands.requestCloseTab(tab)
     }
 
     private var searchTab: some View {
@@ -1155,7 +1159,7 @@ struct ContentView: View {
                 }
                 Divider()
                 Button("Close Pane…", systemImage: "xmark.square", role: .destructive) {
-                    window.closeTarget = .pane(pane.paneID)
+                    commands.requestClosePane(pane.paneID)
                 }
             }
             Divider()

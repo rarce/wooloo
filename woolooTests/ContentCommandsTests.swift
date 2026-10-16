@@ -192,11 +192,42 @@ final class ContentCommandsTests: XCTestCase {
                       "Nothing changes before confirmation")
     }
 
-    func testTheOnlyTabOfASpaceCannotBeClosed() async {
+    func testTheOnlyTabAsksToCloseItsSpaceAndCancellationKeepsTheSession() async {
         state.update { $0.tabs.removeLast(2) }
         await connect()
         commands.perform("close_tab")
+        XCTAssertEqual(window.closeTarget, .lastTab("w1", "project"))
+        documents.activeID = "doc"
+        commands.cancelClose()
         XCTAssertNil(window.closeTarget)
+        XCTAssertNil(documents.activeID)
+        XCTAssertEqual(herdr.selectedTabID, "w1:t1")
+        XCTAssertEqual(herdr.selectedPaneID, "w1:p1")
+        XCTAssertTrue(server.requests.allSatisfy { !$0.method.hasSuffix(".close") && $0.method != "tab.create" },
+                      "Keeping the Space must preserve the exact running session")
+    }
+
+    func testConfirmingLastTabClosesWorkspaceInsteadOfTab() async {
+        state.update { $0.tabs.removeLast(2) }
+        await connect()
+        commands.perform("close_current_tab")
+        XCTAssertEqual(window.closeTarget, .lastTab("w1", "project"))
+        commands.commitClose()
+        await waitUntil("space closed") { !requests("workspace.close").isEmpty }
+        XCTAssertEqual(requests("workspace.close").first?.params["workspace_id"] as? String, "w1")
+        XCTAssertTrue(requests("tab.close").isEmpty)
+    }
+
+    func testLastPaneAsksAboutSpaceButSplitPaneClosesOnlyPane() async {
+        await connect()
+        commands.requestClosePane("w1:p1")
+        XCTAssertEqual(window.closeTarget, .pane("w1:p1"))
+        let previous = try! XCTUnwrap(herdr.snapshot)
+        herdr.receive(HerdrSnapshot(workspaces: previous.workspaces, tabs: [previous.tabs[0]],
+                                    panes: [previous.panes[0]], agents: [], layouts: [],
+                                    focusedWorkspaceID: "w1", focusedTabID: "w1:t1", focusedPaneID: "w1:p1"))
+        commands.requestClosePane("w1:p1")
+        XCTAssertEqual(window.closeTarget, .lastTab("w1", "project"))
     }
 
     func testCommitRenameTrimsTheNameAndSkipsEmptyOnes() async {
