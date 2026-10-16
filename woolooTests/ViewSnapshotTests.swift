@@ -565,6 +565,25 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    func testMarkdownTables() throws {
+        try markdownTables(style: .theme, name: "markdown-tables")
+    }
+
+    func testMarkdownTablesDocument() throws {
+        try markdownTables(style: .document, name: "markdown-tables-document")
+    }
+
+    private func markdownTables(style: MarkdownPreviewStyle, name: String) throws {
+        let location = WorkspaceFileLocation(machine: nil, session: "work", workspaceID: "tables",
+                                             workspaceLabel: "Tables", root: "/private/tmp")
+        try withPreviewStyle(style) {
+            let preview = MarkdownPreviewView(text: MarkdownTableFixtures.snapshot, path: "tables.md",
+                                              location: location, onOpenFile: { _ in })
+            try assertSnapshot(render(preview, size: NSSize(width: 1000, height: 800), settle: 3), named: name)
+        }
+        try skipIfRecorded()
+    }
+
     private func withPreviewStyle(_ style: MarkdownPreviewStyle, _ body: () throws -> Void) rethrows {
         let defaults = UserDefaults.standard
         let saved = defaults.object(forKey: MarkdownPreviewStyle.storageKey)

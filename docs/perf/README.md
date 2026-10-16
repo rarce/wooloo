@@ -488,3 +488,31 @@ Run directly on the VM without SSH, alternating main and this change 15 times ea
 | `huge`, explorer, 1 s limit | 118.2–118.8 ms | 116.9–117.0 ms |
 
 With the first version of this change, `scripts/workspace-bench.sh` over SSH gave 68 → 74 ms for `walk-tree` and 146 → 149 ms for `walk-huge` at load 32–68, and a second run of main at load 83 gave 201 and 336 ms, so its walk rows were within the noise of that load.
+
+## Markdown tables
+
+`scripts/markdown-bench.sh` measures the actual SwiftUI Markdown preview in Release: first render (host creation through layout and paint), a resize from 1000×800 to 780×800, a subsequent cached draw, and a scroll to the end (including a 10 ms run-loop turn to build newly visible blocks). It runs three repetitions of prose, ten small tables (80 body rows), one tall table (100 rows), and a wide table (12 columns), in both Theme and Document styles. The fixtures contain alignment, wrapping, links, inline code and Unicode. Ordinary unit tests skip the timing suite.
+
+Results include the exact input SHA-256, viewport, typography, OS, hardware and machine load. A changed document is not compared with the saved one. The table snapshots check alignment, wrapping, borders and alternating row colors in documents containing multiple tables; the existing Markdown preview snapshots retain their original references. `MarkdownPreviewRenderingTests` checks that Find still reaches a table beyond the initial viewport in both styles. The benchmark also runs the checkbox and double-click source-action tests.
+
+```sh
+scripts/markdown-bench.sh
+scripts/markdown-bench.sh --check
+scripts/markdown-bench.sh --baseline docs/perf/markdown-before.jsonl
+scripts/markdown-bench.sh --save-baseline
+WOOLOO_BENCH_MARKDOWN_FILE=/absolute/path/document.md scripts/markdown-bench.sh
+```
+
+`--check` fails for a missing or changed workload, incompatible viewport/typography, or a median increase over both 25% and 10 ms. Run without competing CPU-heavy work when checking a baseline. `WOOLOO_BENCH_REPEAT` changes the repetitions; `WOOLOO_DERIVED_DATA` changes the build directory. An optional local document stays outside the repository; its contents and path are not written to the results. The checked-in baselines cover only the synthetic fixtures.
+
+The preview now constructs top-level blocks on demand instead of building every table before displaying the start of a document. Individual tables still lay out all of their rows, so the tall-table workload also measures the cost of a large visible table. Table text remains native SwiftUI text. GitHub-style borders are painted together from cell bounds, rather than creating a geometry reader, two style reductions and decoration views for every cell. Default tables with no cell decorations skip that geometry entirely. Custom table styles retain their existing decoration path.
+
+Measured on 2026-10-15, Mac16,5, macOS 26.6.2, three repetitions, Document style (median):
+
+| workload | first render before → after | cached draw before → after | resize before → after |
+| --- | --- | --- | --- |
+| many small tables | 4925 → 135 ms | 2999 → 41 ms | 3114 → 51 ms |
+| 100-row table | 5555 → 943 ms | 3298 → 52 ms | 3361 → 138 ms |
+| 12-column table | 2219 → 426 ms | 1324 → 47 ms | 1381 → 95 ms |
+
+`markdown-before.jsonl` holds the pre-change measurements and `markdown-baseline.jsonl` the optimized reference, with SHA-256 fingerprints of the renderer sources. The style comparison also avoids expired unsafe buffer pointers, so changing a heading or table color correctly invalidates the environment. The original single-document Markdown snapshots remain unchanged; the new multi-table snapshots verify consistent alternating row colors and independent table geometry.

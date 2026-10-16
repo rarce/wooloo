@@ -78,6 +78,9 @@ private struct DoubleClickMonitor: NSViewRepresentable {
     final class MonitorView: NSView {
         var action: (@MainActor () -> Void)?
         private var monitor: Any?
+        // A lazy layout can keep more than one background view for a block alive.
+        // Each AppKit double-click must reveal its source only once, also during a rebuild.
+        private static weak var handledEvent: NSEvent?
 
         /// Leaving the window, as before the view goes away, removes the monitor.
         override func viewDidMoveToWindow() {
@@ -88,7 +91,11 @@ private struct DoubleClickMonitor: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
                 MainActor.assumeIsolated {
                     guard let self, event.clickCount == 2, event.window === self.window,
-                          self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return }
+                          !self.isHiddenOrHasHiddenAncestor,
+                          Self.handledEvent !== event else { return }
+                    let point = self.convert(event.locationInWindow, from: nil)
+                    guard self.bounds.contains(point), self.visibleRect.contains(point) else { return }
+                    Self.handledEvent = event
                     self.action?()
                 }
                 return event

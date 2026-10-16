@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D40000000000000000000001 /* MarkdownTableBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000002 /* MarkdownTableBenchmarks.swift */; };
 		C3000000000000000000B101 /* HerdrRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000B102 /* HerdrRuntimeTests.swift */; };
 		A1000000000000000000B103 /* HerdrSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000B104 /* HerdrSetupView.swift */; };
 		A1000000000000000000B101 /* HerdrRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000B102 /* HerdrRuntime.swift */; };
@@ -141,6 +142,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D40000000000000000000002 /* MarkdownTableBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownTableBenchmarks.swift; sourceTree = "<group>"; };
 		C3000000000000000000B102 /* HerdrRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRuntimeTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000B104 /* HerdrSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSetupView.swift; sourceTree = "<group>"; };
 		A1000000000000000000B102 /* HerdrRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRuntime.swift; sourceTree = "<group>"; };
@@ -359,6 +361,7 @@
 				B20000000000000000000012 /* SurfaceDecodingTests.swift */,
 				B20000000000000000000013 /* TerminalRenderHarness.swift */,
 				B20000000000000000000014 /* TerminalRenderingTests.swift */,
+				D40000000000000000000002 /* MarkdownTableBenchmarks.swift */,
 				B20000000000000000000015 /* TerminalPipelineBenchmarks.swift */,
 				B20000000000000000000016 /* WorkspaceFilesBenchmarks.swift */,
 				B20000000000000000000017 /* SharedLoadsTests.swift */,
@@ -613,6 +616,7 @@
 				B20000000000000000000022 /* SurfaceDecodingTests.swift in Sources */,
 				B20000000000000000000023 /* TerminalRenderHarness.swift in Sources */,
 				B20000000000000000000024 /* TerminalRenderingTests.swift in Sources */,
+				D40000000000000000000001 /* MarkdownTableBenchmarks.swift in Sources */,
 				B20000000000000000000025 /* TerminalPipelineBenchmarks.swift in Sources */,
 				B20000000000000000000026 /* WorkspaceFilesBenchmarks.swift in Sources */,
 				B20000000000000000000027 /* SharedLoadsTests.swift in Sources */,

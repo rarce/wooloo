@@ -12,6 +12,8 @@ struct MarkdownRendererConfiguration: Hashable, AllowingModifyThroughKeyPath, Se
     var preferredBaseURL: URL?
     var componentSpacing: CGFloat = 8
     var blockSpacing: CGFloat = 8
+    /// Build top-level blocks only as the containing ScrollView needs them (wooloo patch).
+    var lazyBlocks = false
     
     var tintColors: [MarkdownTintableComponent : Color] = [:]
     var underlineLinks: Bool = false

@@ -4,19 +4,13 @@ import SwiftUI
 extension AnyShapeStyle: @retroactive Equatable {
     @_spi(Internal)
     public static func == (lhs: AnyShapeStyle, rhs: AnyShapeStyle) -> Bool {
-        let oldBuffer = withUnsafeBytes(of: lhs) { $0 }
-        let newBuffer = withUnsafeBytes(of: rhs) { $0 }
-        
-        if let oldPointer = oldBuffer.baseAddress,
-           let newPointer = newBuffer.baseAddress {
-            let oldBytes = Data(bytes: oldPointer, count: oldBuffer.count)
-            let newBytes = Data(bytes: newPointer, count: newBuffer.count)
-            // Compare the hash value of two data.
-            // When `style` changes, the data changes.
-            if oldBytes.hashValue == newBytes.hashValue {
-                return true
+        // wooloo patch: compare boxed style identity conservatively, while both borrows
+        // are alive. Returning either buffer lets its stack storage expire/reuse, making
+        // different styles compare equal and suppressing environment changes.
+        withUnsafeBytes(of: lhs) { old in
+            withUnsafeBytes(of: rhs) { new in
+                old.elementsEqual(new)
             }
         }
-        return false
     }
 }

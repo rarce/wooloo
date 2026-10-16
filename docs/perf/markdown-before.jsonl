@@ -1,0 +1,27 @@
+{"machine":"Mac16,5","os":"26.6.2","commit":"c63b20c","load_before":"{ 21.51 26.01 25.43 }","source_sha256":"5fb8c271d6e67434e4f508479c8846435f0781087baa6d98e5f361eef2df87cd"}
+{"config":{"base_font":13,"code_font":12,"height":800,"repeat":3,"resize_width":780,"width":1000}}
+{"bytes":1848,"max_ms":73.582333,"n":3,"p50_ms":50.954417,"p95_ms":73.582333,"scenario":"prose","sha256":"76b71a19babedf95160bee9c482ffa8fbb707e8ac0fa90040b0bc1fd7e182e25","stage":"first-render","style":"Theme"}
+{"bytes":1848,"max_ms":10.572167,"n":3,"p50_ms":4.26375,"p95_ms":10.572167,"scenario":"prose","sha256":"76b71a19babedf95160bee9c482ffa8fbb707e8ac0fa90040b0bc1fd7e182e25","stage":"resize","style":"Theme"}
+{"bytes":1848,"max_ms":2.534458,"n":3,"p50_ms":2.252458,"p95_ms":2.534458,"scenario":"prose","sha256":"76b71a19babedf95160bee9c482ffa8fbb707e8ac0fa90040b0bc1fd7e182e25","stage":"cached-draw","style":"Theme"}
+{"bytes":18768,"max_ms":794.82,"n":3,"p50_ms":756.095209,"p95_ms":794.82,"scenario":"many-tables","sha256":"a80d5d768a5833f36f5dea6148de65b2cc7f211fa6f1ab933bb0546bdf24005d","stage":"first-render","style":"Theme"}
+{"bytes":18768,"max_ms":96.588292,"n":3,"p50_ms":94.966375,"p95_ms":96.588292,"scenario":"many-tables","sha256":"a80d5d768a5833f36f5dea6148de65b2cc7f211fa6f1ab933bb0546bdf24005d","stage":"resize","style":"Theme"}
+{"bytes":18768,"max_ms":18.329125,"n":3,"p50_ms":13.655417,"p95_ms":18.329125,"scenario":"many-tables","sha256":"a80d5d768a5833f36f5dea6148de65b2cc7f211fa6f1ab933bb0546bdf24005d","stage":"cached-draw","style":"Theme"}
+{"bytes":22780,"max_ms":1005.435166,"n":3,"p50_ms":931.793208,"p95_ms":1005.435166,"scenario":"tall-table","sha256":"5b6a0bb25805d2e8648ed56ecc446f502bc0546c9f13e9f231f14c2ccac23400","stage":"first-render","style":"Theme"}
+{"bytes":22780,"max_ms":120.468709,"n":3,"p50_ms":118.277417,"p95_ms":120.468709,"scenario":"tall-table","sha256":"5b6a0bb25805d2e8648ed56ecc446f502bc0546c9f13e9f231f14c2ccac23400","stage":"resize","style":"Theme"}
+{"bytes":22780,"max_ms":16.582083,"n":3,"p50_ms":16.314541,"p95_ms":16.582083,"scenario":"tall-table","sha256":"5b6a0bb25805d2e8648ed56ecc446f502bc0546c9f13e9f231f14c2ccac23400","stage":"cached-draw","style":"Theme"}
+{"bytes":8240,"max_ms":425.047792,"n":3,"p50_ms":424.156292,"p95_ms":425.047792,"scenario":"wide-table","sha256":"242a5efeaedbb23cef0a6974046317acd081bcc1ecce420e0607588df488df51","stage":"first-render","style":"Theme"}
+{"bytes":8240,"max_ms":102.184375,"n":3,"p50_ms":98.271208,"p95_ms":102.184375,"scenario":"wide-table","sha256":"242a5efeaedbb23cef0a6974046317acd081bcc1ecce420e0607588df488df51","stage":"resize","style":"Theme"}
+{"bytes":8240,"max_ms":13.146292,"n":3,"p50_ms":11.487125,"p95_ms":13.146292,"scenario":"wide-table","sha256":"242a5efeaedbb23cef0a6974046317acd081bcc1ecce420e0607588df488df51","stage":"cached-draw","style":"Theme"}
+{"bytes":1848,"max_ms":99.95075,"n":3,"p50_ms":94.523584,"p95_ms":99.95075,"scenario":"prose","sha256":"76b71a19babedf95160bee9c482ffa8fbb707e8ac0fa90040b0bc1fd7e182e25","stage":"first-render","style":"Document"}
+{"bytes":1848,"max_ms":35.908167,"n":3,"p50_ms":35.161042,"p95_ms":35.908167,"scenario":"prose","sha256":"76b71a19babedf95160bee9c482ffa8fbb707e8ac0fa90040b0bc1fd7e182e25","stage":"resize","style":"Document"}
+{"bytes":1848,"max_ms":30.71875,"n":3,"p50_ms":29.982292,"p95_ms":30.71875,"scenario":"prose","sha256":"76b71a19babedf95160bee9c482ffa8fbb707e8ac0fa90040b0bc1fd7e182e25","stage":"cached-draw","style":"Document"}
+{"bytes":18768,"max_ms":4986.829125,"n":3,"p50_ms":4924.80125,"p95_ms":4986.829125,"scenario":"many-tables","sha256":"a80d5d768a5833f36f5dea6148de65b2cc7f211fa6f1ab933bb0546bdf24005d","stage":"first-render","style":"Document"}
+{"bytes":18768,"max_ms":3141.451292,"n":3,"p50_ms":3113.848209,"p95_ms":3141.451292,"scenario":"many-tables","sha256":"a80d5d768a5833f36f5dea6148de65b2cc7f211fa6f1ab933bb0546bdf24005d","stage":"resize","style":"Document"}
+{"bytes":18768,"max_ms":3020.779583,"n":3,"p50_ms":2999.350542,"p95_ms":3020.779583,"scenario":"many-tables","sha256":"a80d5d768a5833f36f5dea6148de65b2cc7f211fa6f1ab933bb0546bdf24005d","stage":"cached-draw","style":"Document"}
+{"bytes":22780,"max_ms":5659.682833,"n":3,"p50_ms":5555.187458,"p95_ms":5659.682833,"scenario":"tall-table","sha256":"5b6a0bb25805d2e8648ed56ecc446f502bc0546c9f13e9f231f14c2ccac23400","stage":"first-render","style":"Document"}
+{"bytes":22780,"max_ms":3465.4525,"n":3,"p50_ms":3361.156583,"p95_ms":3465.4525,"scenario":"tall-table","sha256":"5b6a0bb25805d2e8648ed56ecc446f502bc0546c9f13e9f231f14c2ccac23400","stage":"resize","style":"Document"}
+{"bytes":22780,"max_ms":3342.334792,"n":3,"p50_ms":3297.604875,"p95_ms":3342.334792,"scenario":"tall-table","sha256":"5b6a0bb25805d2e8648ed56ecc446f502bc0546c9f13e9f231f14c2ccac23400","stage":"cached-draw","style":"Document"}
+{"bytes":8240,"max_ms":2275.384833,"n":3,"p50_ms":2219.151916,"p95_ms":2275.384833,"scenario":"wide-table","sha256":"242a5efeaedbb23cef0a6974046317acd081bcc1ecce420e0607588df488df51","stage":"first-render","style":"Document"}
+{"bytes":8240,"max_ms":1409.303417,"n":3,"p50_ms":1381.429042,"p95_ms":1409.303417,"scenario":"wide-table","sha256":"242a5efeaedbb23cef0a6974046317acd081bcc1ecce420e0607588df488df51","stage":"resize","style":"Document"}
+{"bytes":8240,"max_ms":1329.287208,"n":3,"p50_ms":1324.362,"p95_ms":1329.287208,"scenario":"wide-table","sha256":"242a5efeaedbb23cef0a6974046317acd081bcc1ecce420e0607588df488df51","stage":"cached-draw","style":"Document"}
+{"load_after":"{ 10.27 21.12 24.01 }"}
