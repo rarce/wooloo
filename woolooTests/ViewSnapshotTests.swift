@@ -505,6 +505,28 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     /// A Swift file in the editor, highlighted, then with the find bar open on a query.
+    func testConfigurationEditor() throws {
+        let sandbox = try WorkspaceGitSandbox()
+        defer { sandbox.tearDown() }
+        let repo = try sandbox.repository("repo", files: ["server.conf": """
+        # Application server
+        [server]
+        host = "localhost"
+        port = 8080
+        enabled = true
+        timeout = 30 ; seconds
+
+        [logging]
+        level = "info"
+        path = /var/log/app.log
+        """])
+        let view = WorkspaceDocumentView(document: try loadedDocument("server.conf", at: repo), onSave: {})
+        try assertSnapshot(render(view, size: NSSize(width: 820, height: 420), settle: 3) {
+            highlightedEditor() != nil
+        }, named: "editor-configuration")
+        try skipIfRecorded()
+    }
+
     func testDocumentEditor() throws {
         let (sandbox, repo) = try snapshotSources()
         defer { sandbox.tearDown() }

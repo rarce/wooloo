@@ -766,6 +766,7 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         let id = store.newUntitled(at: repo)
         let index = try XCTUnwrap(store.documents.firstIndex { $0.id == id })
         store.documents[index].text = "# Notes\n"
+        store.documents[index].syntaxOverride = "ini"
 
         let error = await store.saveUntitled(id, as: "docs/notes.md")
         XCTAssertNil(error)
@@ -779,6 +780,7 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertFalse(saved.isDirty)
         XCTAssertEqual(saved.version, WorkspaceFiles.gitBlobHash(Data("# Notes\n".utf8)))
         XCTAssertEqual(saved.markdownMode, .source, "The text being written stays in view")
+        XCTAssertEqual(saved.syntaxOverride, "ini")
         XCTAssertEqual(store.activeID, saved.id)
 
         // The saved file is an ordinary document from then on.

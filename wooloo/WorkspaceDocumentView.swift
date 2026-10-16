@@ -54,6 +54,8 @@ struct WorkspaceDocument: Identifiable {
     /// Where the editor was scrolled, as text; a new editor goes back to it rather than to
     /// `scrollPosition` when there is one.
     var scrollAnchor: EditorScrollAnchor?
+    /// nil uses automatic detection and file associations.
+    var syntaxOverride: String?
 
     /// One change, so one update of the document store.
     mutating func recordScroll(_ position: CGPoint, anchor: EditorScrollAnchor?) {
@@ -178,13 +180,19 @@ struct WorkspaceDocumentView: View {
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
     @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
 
-    private var language: CodeLanguage {
-        if NotebookDocument.supports(document.path) { return .json }
-        return CodeLanguage.detectLanguageFrom(
-            url: URL(fileURLWithPath: document.path),
-            prefixBuffer: String(document.text.prefix(512)),
-            suffixBuffer: String(document.text.suffix(512))
-        )
+    @AppStorage(SyntaxAssociation.storageKey) private var syntaxAssociationsJSON = "[]"
+    @State private var diffDetectedSyntax: EditorSyntax?
+    @State private var diffDetectedSource: DiffSource?
+    @State private var diffDetectedAssociations: [SyntaxAssociation] = []
+
+    private var syntaxAssociations: [SyntaxAssociation] { SyntaxAssociation.decode(syntaxAssociationsJSON) }
+    private var detectedSyntax: EditorSyntax {
+        if document.kind != .file, diffDetectedSource == document.diffSource,
+           diffDetectedAssociations == syntaxAssociations, let diffDetectedSyntax { return diffDetectedSyntax }
+        return EditorSyntax.resolve(path: document.path, text: document.text, associations: syntaxAssociations)
+    }
+    private var syntax: EditorSyntax {
+        EditorSyntax.named(document.syntaxOverride) ?? detectedSyntax
     }
 
     private var editorTheme: EditorTheme { theme.editorTheme }
@@ -208,6 +216,13 @@ struct WorkspaceDocumentView: View {
                         .help(commit)
                 }
                 Spacer()
+                if !document.isReadOnly {
+                    EditorSyntaxPicker(detected: detectedSyntax, path: document.path,
+                                       selection: Binding(get: { document.syntaxOverride }, set: {
+                                           document.syntaxOverride = $0
+                                           document.isPreview = false
+                                       }), associationsJSON: $syntaxAssociationsJSON)
+                }
                 Text("\(document.location.machineLabel) · \(document.location.workspaceLabel)")
                     .lineLimit(1)
                     .foregroundStyle(.secondary)
@@ -313,7 +328,13 @@ struct WorkspaceDocumentView: View {
                     }
                 }
             } else {
-                WorkspaceDiffView(text: document.patch, source: document.diffSource, mode: diffMode)
+                WorkspaceDiffView(text: document.patch, source: document.diffSource, mode: diffMode,
+                                  syntaxOverride: document.syntaxOverride, associations: syntaxAssociations,
+                                  onDetectedSyntax: {
+                                      diffDetectedSyntax = $0
+                                      diffDetectedSource = document.diffSource
+                                      diffDetectedAssociations = syntaxAssociations
+                                  })
             }
             Divider()
             HStack {
@@ -410,13 +431,15 @@ struct WorkspaceDocumentView: View {
     private var editor: some View {
         CodeEditSourceEditor(
             $document.text,
-            language: language,
+            language: syntax.language,
             theme: editorTheme,
             font: typography.codeFont,
             tabWidth: 4,
             lineHeight: 1.15,
             wrapLines: wrapsLines,
             cursorPositions: $document.cursorPositions,
+            highlightProviders: syntax.isConfiguration ? [ConfigurationHighlightProvider()] : [TreeSitterClient()],
+            highlightingID: syntax.isConfiguration ? "configuration" : nil,
             coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator]
         )
         .onAppear {

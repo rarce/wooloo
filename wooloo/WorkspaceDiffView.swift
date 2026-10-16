@@ -114,9 +114,10 @@ struct ParsedDiff {
     }
 
     /// This diff with syntax colors from the whole files, without parsing the patch again.
-    func withSides(old: String?, new: String?) -> ParsedDiff {
+    func withSides(old: String?, new: String?, syntaxOverride: String? = nil,
+                   associations: [SyntaxAssociation] = []) -> ParsedDiff {
         var diff = self
-        if files.count == 1 { diff.attachSides(old: old, new: new) }
+        if files.count == 1 { diff.attachSides(old: old, new: new, syntaxOverride: syntaxOverride, associations: associations) }
         return diff
     }
 
@@ -365,7 +366,7 @@ struct ParsedDiff {
 
     /// Highlights each line from its whole file and keeps the new file for expanding unchanged
     /// lines. A side that no longer matches the patch (e.g. edited since) is ignored.
-    private mutating func attachSides(old: String?, new: String?) {
+    private mutating func attachSides(old: String?, new: String?, syntaxOverride: String?, associations: [SyntaxAssociation]) {
         let oldLines = old.map(Self.lines), newLines = new.map(Self.lines)
         let lines = files[0].hunks.flatMap(\.lines)
         func matches(_ side: [String]?, _ number: (DiffLine) -> Int?) -> Bool {
@@ -378,14 +379,18 @@ struct ParsedDiff {
         let oldMatches = matches(oldLines) { $0.kind == .added ? nil : $0.oldNumber }
         let newMatches = matches(newLines) { $0.kind == .removed ? nil : $0.newNumber }
         guard oldMatches || newMatches, let sample = newMatches ? new : old else { return }
-        let language = CodeLanguage.detectLanguageFrom(url: URL(fileURLWithPath: files[0].path),
-                                                       prefixBuffer: String(sample.prefix(512)),
-                                                       suffixBuffer: String(sample.suffix(512)))
+        let syntax = EditorSyntax.resolve(path: files[0].path, text: sample, override: syntaxOverride,
+                                          associations: associations)
+        let language = syntax.language
         var newDocument: DiffHighlighter.Document?
         var newSyntax: [[DiffSyntaxSpan]] = [], oldSyntax: [[DiffSyntaxSpan]] = []
         if newMatches, let new {
-            newDocument = DiffHighlighter.Document(new, language: language)
-            newSyntax = newDocument?.syntax() ?? []
+            if syntax.isConfiguration {
+                newSyntax = DiffHighlighter.highlight(new, syntax: syntax)
+            } else {
+                newDocument = DiffHighlighter.Document(new, language: language)
+                newSyntax = newDocument?.syntax() ?? []
+            }
         }
         // Only removed lines take colors from the old file: it is skipped without any, parsed by
         // editing the new file's tree where the patch changed it, and queried only around them.
@@ -393,7 +398,8 @@ struct ParsedDiff {
         let removed = changes.filter { $0.removed > 0 }.map { $0.old..<($0.old + $0.removed) }
         if oldMatches, let old, !removed.isEmpty {
             let document = newDocument?.reparsed(as: old, changes: changes) ?? DiffHighlighter.Document(old, language: language)
-            oldSyntax = document?.syntax(lines: removed) ?? []
+            oldSyntax = syntax.isConfiguration ? DiffHighlighter.highlight(old, syntax: syntax)
+                : (document?.syntax(lines: removed) ?? [])
         }
         for hunk in files[0].hunks.indices {
             for index in files[0].hunks[hunk].lines.indices {
@@ -468,6 +474,16 @@ enum DiffHighlighter {
         let length: Int
         let index: Int
         let name: CaptureName
+    }
+
+    static func highlight(_ text: String, syntax: EditorSyntax) -> [[DiffSyntaxSpan]] {
+        guard syntax.isConfiguration else { return highlight(text, language: syntax.language) }
+        return ParsedDiff.lines(text).map { line in
+            ConfigurationSyntax.highlights(line).compactMap { span in
+                guard let capture = span.capture else { return nil }
+                return DiffSyntaxSpan(range: span.range.location..<NSMaxRange(span.range), capture: capture)
+            }
+        }
     }
 
     static func highlight(_ text: String, language: CodeLanguage) -> [[DiffSyntaxSpan]] {
@@ -649,6 +665,8 @@ struct WorkspaceDiffView: View {
     private struct LoadKey: Equatable {
         let text: String
         let source: DiffSource
+        let syntaxOverride: String?
+        let associations: [SyntaxAssociation]
     }
 
     @Environment(\.woolooTypography) private var typography
@@ -656,13 +674,16 @@ struct WorkspaceDiffView: View {
     let text: String
     let source: DiffSource
     let mode: DiffDisplayMode
+    var syntaxOverride: String? = nil
+    var associations: [SyntaxAssociation] = []
+    var onDetectedSyntax: (EditorSyntax) -> Void = { _ in }
     @State private var parsed: ParsedDiff?
     @State private var parsedKey: LoadKey?
     @State private var expanded: Set<DiffGap> = []
 
     var body: some View {
         Group {
-            if let parsed, parsedKey == LoadKey(text: text, source: source) {
+            if let parsed, parsedKey == LoadKey(text: text, source: source, syntaxOverride: syntaxOverride, associations: associations) {
                 if parsed.files.isEmpty {
                     Text(text.trimmingCharacters(in: .whitespacesAndNewlines))
                         .font(.system(size: typography.emphasis))
@@ -685,8 +706,8 @@ struct WorkspaceDiffView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: LoadKey(text: text, source: source)) {
-            let key = LoadKey(text: text, source: source)
+        .task(id: LoadKey(text: text, source: source, syntaxOverride: syntaxOverride, associations: associations)) {
+            let key = LoadKey(text: text, source: source, syntaxOverride: syntaxOverride, associations: associations)
             let start = TerminalPipelineMetrics.now()
             let detail = key.source.location.isLocal ? "local" : "ssh"
             // Show the patch first, then again with syntax colors once the whole files arrive.
@@ -697,14 +718,18 @@ struct WorkspaceDiffView: View {
             parsedKey = key
             TerminalPipelineMetrics.spanShown("diff-patch", start: start, detail: detail)
             guard !plain.files.isEmpty else { return }
-            guard let full = try? await WorkspaceFiles.blocking(at: key.source.location, priority: .utility, { () -> ParsedDiff in
+            guard let loaded = try? await WorkspaceFiles.blocking(at: key.source.location, priority: .utility, { () -> (ParsedDiff, EditorSyntax) in
                 let source = key.source
                 let sides = WorkspaceFiles.diffSides(source.path, originalPath: source.originalPath, commit: source.commit,
                                                      scope: source.scope, at: source.location)
-                return plain.withSides(old: sides.old, new: sides.new)
+                let detected = EditorSyntax.resolve(path: source.path, text: sides.new ?? sides.old ?? "",
+                                                    associations: key.associations)
+                return (plain.withSides(old: sides.old, new: sides.new, syntaxOverride: key.syntaxOverride,
+                                        associations: key.associations), detected)
             }) else { return }
             guard !Task.isCancelled else { return }
-            parsed = full
+            parsed = loaded.0
+            onDetectedSyntax(loaded.1)
             TerminalPipelineMetrics.spanShown("diff-highlighted", start: start, detail: detail)
         }
     }
