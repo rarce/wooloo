@@ -294,6 +294,8 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
             controller.highlightProviders = highlightProviders
             controller.treeSitterClient = highlightProviders.compactMap { $0 as? TreeSitterClient }.first
             controller.setUpHighlighter()
+            // Editing filters capture the parser client; rebuild them after replacing it.
+            controller.setUpTextFormation()
         } else if controller.language.id != language.id {
             controller.language = language
         }

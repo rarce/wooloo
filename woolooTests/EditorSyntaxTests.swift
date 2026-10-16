@@ -107,6 +107,45 @@ final class EditorSyntaxTests: XCTestCase {
     }
 
     @MainActor
+    func testSwitchingFromConfigurationToTagSyntaxRestoresClosingTagsAndNewlines() async throws {
+        for id in ["html", "jsx", "tsx"] {
+            let spy = Spy()
+            let storage = NSTextStorage(string: "<div>")
+            func editor(_ syntax: EditorSyntax) -> CodeEditSourceEditor {
+                CodeEditSourceEditor(storage, language: syntax.language, theme: WoolooTheme.all[0].editorTheme,
+                                     font: .monospacedSystemFont(ofSize: 13, weight: .regular),
+                                     tabWidth: 4, lineHeight: 1.15, wrapLines: false,
+                                     cursorPositions: .constant([]),
+                                     highlightProviders: syntax.isConfiguration ? [ConfigurationHighlightProvider()] : [TreeSitterClient()],
+                                     highlightingID: syntax.isConfiguration ? "configuration" : nil,
+                                     coordinators: [spy])
+            }
+            let host = NSHostingView(rootView: editor(.properties))
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 300)
+            let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            defer { window.close() }
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 150_000_000)
+            let controller = try XCTUnwrap(spy.controller)
+            let textView = try XCTUnwrap(controller.textView)
+            host.rootView = editor(try XCTUnwrap(EditorSyntax.named(id)))
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 150_000_000)
+            XCTAssertTrue(spy.controller === controller, id)
+            textView.insertText("\n", replacementRange: NSRange(location: 5, length: 0))
+            let lines = textView.string.components(separatedBy: "\n")
+            XCTAssertEqual(lines.count, 3, "\(id): insert an indented line and a closing-tag line")
+            XCTAssertEqual(lines.last, "</div>", "\(id): close the opening tag without reopening the editor")
+            if lines.count == 3 {
+                XCTAssertFalse(lines[1].isEmpty, id)
+                XCTAssertTrue(lines[1].allSatisfy { $0 == " " || $0 == "\t" }, id)
+            }
+        }
+    }
+
+    @MainActor
     func testChangingConfigurationSyntaxRetainsTextViewSelectionAndUndoHistory() async throws {
         let spy = Spy()
         let storage = NSTextStorage(string: "port=80\n")
