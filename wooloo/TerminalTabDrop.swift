@@ -175,6 +175,7 @@ final class TerminalDropOverlayView: NSView {
 
 /// A small native drag source; dragging this control never sends mouse input to the shell.
 final class TerminalMoveHandle: NSView, NSDraggingSource {
+    static weak var activeHandle: TerminalMoveHandle?
     var paneID = ""
     var makeMenu: ((String) -> NSMenu)?
     override var isFlipped: Bool { true }
@@ -205,7 +206,12 @@ final class TerminalMoveHandle: NSView, NSDraggingSource {
         item.setString(paneID, forType: TerminalTabDrop.panePasteboardType)
         let drag = NSDraggingItem(pasteboardWriter: item)
         drag.setDraggingFrame(bounds, contents: NSImage(systemSymbolName: "terminal", accessibilityDescription: nil))
+        Self.activeHandle = self
         beginDraggingSession(with: [drag], event: next, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        Self.activeHandle = nil
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
@@ -213,27 +219,87 @@ final class TerminalMoveHandle: NSView, NSDraggingSource {
     }
 }
 
-/// Explicitly proposes a move so SwiftUI accepts the native handle's move-only drag.
-struct TerminalPaneToTabDrop: DropDelegate {
-    @Binding var isTargeted: Bool
-    let detach: (String) -> Void
+/// A native destination avoids converting the handle's private pasteboard type through
+/// SwiftUI's item-provider bridge. It only takes pointer events during this window's pane drag.
+struct TerminalPaneTabDropView: NSViewRepresentable {
+    let accent: NSColor
+    let canDetach: (String) -> Bool
+    let detach: (String) -> Bool
 
-    func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [TerminalTabDrop.panePasteboardType.rawValue])
+    func makeNSView(context: Context) -> TerminalPaneTabDropTargetView {
+        let view = TerminalPaneTabDropTargetView(frame: .zero)
+        updateNSView(view, context: context)
+        return view
     }
 
-    func dropEntered(info: DropInfo) { isTargeted = true }
-    func dropExited(info: DropInfo) { isTargeted = false }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-
-    func performDrop(info: DropInfo) -> Bool {
-        isTargeted = false
-        let type = TerminalTabDrop.panePasteboardType.rawValue
-        guard let provider = info.itemProviders(for: [type]).first else { return false }
-        provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
-            guard let data, let pane = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in detach(pane) }
-        }
-        return true
+    func updateNSView(_ view: TerminalPaneTabDropTargetView, context: Context) {
+        view.accent = accent
+        view.canDetach = canDetach
+        view.detach = detach
     }
+}
+
+final class TerminalPaneTabDropTargetView: NSView {
+    var accent = NSColor.controlAccentColor
+    var canDetach: (String) -> Bool = { _ in false }
+    var detach: (String) -> Bool = { _ in false }
+    private let label = NSTextField(labelWithString: "Move to Own Tab")
+    private(set) var isTargeted = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([TerminalTabDrop.panePasteboardType])
+        wantsLayer = true
+        label.font = .systemFont(ofSize: 12)
+        label.drawsBackground = true
+        label.backgroundColor = .windowBackgroundColor
+        label.isHidden = true
+        addSubview(label)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func layout() {
+        super.layout()
+        label.sizeToFit()
+        label.frame.origin = CGPoint(x: max(8, bounds.width - label.frame.width - 12),
+                                     y: (bounds.height - label.frame.height) / 2)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let source = TerminalMoveHandle.activeHandle, source.window === window,
+              bounds.contains(convert(point, from: superview)) else { return nil }
+        return self
+    }
+
+    private func source(_ sender: NSDraggingInfo) -> String? {
+        guard let pane = sender.draggingPasteboard.string(forType: TerminalTabDrop.panePasteboardType),
+              canDetach(pane) else { return nil }
+        return pane
+    }
+
+    private func highlight(_ targeted: Bool) {
+        isTargeted = targeted
+        label.isHidden = !targeted
+        layer?.borderColor = accent.cgColor
+        layer?.borderWidth = targeted ? 2 : 0
+        layer?.backgroundColor = targeted ? accent.withAlphaComponent(0.12).cgColor : nil
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let accepted = source(sender) != nil
+        highlight(accepted)
+        return accepted ? .move : []
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    override func draggingExited(_ sender: NSDraggingInfo?) { highlight(false) }
+    override func draggingEnded(_ sender: NSDraggingInfo) { highlight(false) }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { source(sender) != nil }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        highlight(false)
+        guard let pane = source(sender) else { return false }
+        return detach(pane)
+    }
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) { highlight(false) }
 }

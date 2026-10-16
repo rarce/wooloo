@@ -9,7 +9,6 @@ struct ContentView: View {
     @StateObject private var window = ContentWindowModel()
     @State private var shortcutMap = HerdrShortcutMap.load()
     @State private var shortcutPrefixActive = false
-    @State private var paneOverTabBar = false
     @State private var availableSessions: [String] = []
     @State private var machines: [HerdrMachineProfile] = []
     /// The SSH machine whose files and repository the explorer shows; nil is this Mac.
@@ -942,23 +941,15 @@ struct ContentView: View {
             }
         }
         .overlay {
-            if paneOverTabBar {
-                RoundedRectangle(cornerRadius: 4).stroke(theme.accent, lineWidth: 2)
-                    .overlay(alignment: .trailing) {
-                        Label("Move to Own Tab", systemImage: "rectangle.portrait.and.arrow.forward")
-                            .font(.system(size: typography.body))
-                            .padding(.horizontal, 10)
-                            .background(barBackground)
-                    }
-                    .allowsHitTesting(false)
-            }
+            TerminalPaneTabDropView(accent: NSColor(theme.accent), canDetach: { pane in
+                herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.paneID == pane }
+            }, detach: { pane in
+                guard herdr.detachPane(pane) else { return false }
+                activeDocumentID = nil
+                commands.focusPanel(.main)
+                return true
+            })
         }
-        .onDrop(of: [TerminalTabDrop.panePasteboardType.rawValue],
-                delegate: TerminalPaneToTabDrop(isTargeted: $paneOverTabBar) { [session = herdr.sessionName] pane in
-                    guard herdr.sessionName == session, herdr.detachPane(pane) else { return }
-                    activeDocumentID = nil
-                    commands.focusPanel(.main)
-                })
     }
 
     private var terminalTabsEnd: TabDropEnd {

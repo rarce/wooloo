@@ -205,6 +205,39 @@ final class TerminalTabDropViewTests: XCTestCase {
         XCTAssertNil(highlight, "The highlight goes with the drop")
     }
 
+    func testNativeTabBarReceivesPaneDragAndDetachesIt() {
+        let target = TerminalPaneTabDropTargetView(frame: CGRect(x: 0, y: 0, width: 400, height: 30))
+        var detached: String?
+        target.canDetach = { $0 == "w1:p1" }
+        target.detach = { detached = $0; return true }
+        pasteboard.clearContents()
+        pasteboard.setString("w1:p1", forType: TerminalTabDrop.panePasteboardType)
+        let info = drag(column: 2, row: 1)
+        XCTAssertEqual(target.draggingEntered(info), .move)
+        XCTAssertTrue(target.isTargeted)
+        XCTAssertTrue(target.prepareForDragOperation(info))
+        XCTAssertTrue(target.performDragOperation(info))
+        XCTAssertEqual(detached, "w1:p1")
+        XCTAssertFalse(target.isTargeted)
+        target.canDetach = { _ in false }
+        XCTAssertEqual(target.draggingUpdated(info), [])
+        XCTAssertFalse(target.performDragOperation(info))
+    }
+
+    func testNativeTabBarOnlyInterceptsPointerDuringThisWindowsPaneDrag() {
+        let target = TerminalPaneTabDropTargetView(frame: CGRect(x: 0, y: 0, width: 400, height: 30))
+        window.contentView!.addSubview(target)
+        let point = CGPoint(x: 20, y: 15)
+        XCTAssertNil(target.hitTest(point), "Normal tab controls keep their events")
+        let handle = TerminalMoveHandle(frame: .zero)
+        window.contentView!.addSubview(handle)
+        TerminalMoveHandle.activeHandle = handle
+        defer { TerminalMoveHandle.activeHandle = nil }
+        XCTAssertTrue(target.hitTest(point) === target)
+        handle.removeFromSuperview()
+        XCTAssertNil(target.hitTest(point), "A different window cannot detach the wrong session's pane")
+    }
+
     func testPaneDragMovesOntoAnotherPaneWithoutPasting() {
         pasteboard.clearContents()
         pasteboard.setString("w1:p1", forType: TerminalTabDrop.panePasteboardType)
