@@ -205,6 +205,39 @@ final class TerminalTabDropViewTests: XCTestCase {
         XCTAssertNil(highlight, "The highlight goes with the drop")
     }
 
+    func testPaneDragMovesOntoAnotherPaneWithoutPasting() {
+        pasteboard.clearContents()
+        pasteboard.setString("w1:p1", forType: TerminalTabDrop.panePasteboardType)
+        view.tabDrop?.targets = { source in source == "w1:p1" ? [(id: "w1:p2", title: "2")] : [] }
+        view.tabDrop?.movePane = { [unowned self] source, target, edge in
+            drops.append("\(source) \(target) \(edge)")
+            return true
+        }
+        XCTAssertEqual(view.draggingEntered(drag(column: 1, row: 2)), [], "Cannot drop on itself")
+        XCTAssertNil(highlight)
+        XCTAssertEqual(view.draggingUpdated(drag(column: 18.5, row: 2)), .move)
+        XCTAssertNotNil(highlight)
+        XCTAssertTrue(view.performDragOperation(drag(column: 18.5, row: 2)))
+        XCTAssertEqual(drops, ["w1:p1 w1:p2 right"])
+        XCTAssertTrue(pastes.isEmpty)
+        XCTAssertNil(highlight)
+    }
+
+    func testMoveMenuUsesClickedPaneAndOffersOwnTab() {
+        view.tabDrop?.targets = { _ in [(id: "w1:p2", title: "2")] }
+        view.tabDrop?.canDetach = { $0 == "w1:p1" }
+        var detached: String?
+        view.tabDrop?.detach = { detached = $0 }
+        let menu = view.paneMoveMenu("w1:p1")
+        XCTAssertEqual(menu.items.first?.submenu?.items.map(\.title), ["Left", "Right", "Top", "Bottom"])
+        let item = menu.items.last!
+        XCTAssertEqual(item.title, "Move to Own Tab")
+        XCTAssertTrue(item.isEnabled)
+        NSApp.sendAction(item.action!, to: item.target, from: item)
+        XCTAssertEqual(detached, "w1:p1")
+        XCTAssertFalse(view.paneMoveMenu("w1:p2").items.last!.isEnabled)
+    }
+
     func testRefusedTabDragsShowNothingAndDropNothing() {
         putTab()
         accepts = false

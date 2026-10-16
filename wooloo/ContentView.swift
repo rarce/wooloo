@@ -9,6 +9,7 @@ struct ContentView: View {
     @StateObject private var window = ContentWindowModel()
     @State private var shortcutMap = HerdrShortcutMap.load()
     @State private var shortcutPrefixActive = false
+    @State private var paneOverTabBar = false
     @State private var availableSessions: [String] = []
     @State private var machines: [HerdrMachineProfile] = []
     /// The SSH machine whose files and repository the explorer shows; nil is this Mac.
@@ -940,6 +941,24 @@ struct ContentView: View {
                 .frame(minWidth: proxy.size.width, minHeight: proxy.size.height, alignment: .leading)
             }
         }
+        .overlay {
+            if paneOverTabBar {
+                RoundedRectangle(cornerRadius: 4).stroke(theme.accent, lineWidth: 2)
+                    .overlay(alignment: .trailing) {
+                        Label("Move to Own Tab", systemImage: "rectangle.portrait.and.arrow.forward")
+                            .font(.system(size: typography.body))
+                            .padding(.horizontal, 10)
+                            .background(barBackground)
+                    }
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [TerminalTabDrop.panePasteboardType.rawValue],
+                delegate: TerminalPaneToTabDrop(isTargeted: $paneOverTabBar) { [session = herdr.sessionName] pane in
+                    guard herdr.sessionName == session, herdr.detachPane(pane) else { return }
+                    activeDocumentID = nil
+                    commands.focusPanel(.main)
+                })
     }
 
     private var terminalTabsEnd: TabDropEnd {
@@ -995,7 +1014,16 @@ struct ContentView: View {
             drop: { [herdr, drag = window.tabDrag] paneID, edge in
                 guard let tabID = drag.dropTerminalTab() else { return false }
                 return herdr.splitTab(tabID, nextTo: paneID, edge: edge)
-            })
+            },
+            targets: { [herdr] source in
+                herdr.selectedPanes.filter { herdr.canMovePane(source, nextTo: $0.paneID) }
+                    .map { (id: $0.paneID, title: $0.paneID) }
+            },
+            movePane: { [herdr] in herdr.movePane($0, nextTo: $1, edge: $2) },
+            canDetach: { [herdr] source in
+                herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.paneID == source }
+            },
+            detach: { [herdr] in herdr.detachPane($0) })
     }
 
     /// Asks before closing a terminal tab; the last tab of a Space stays.

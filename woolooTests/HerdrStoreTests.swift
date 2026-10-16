@@ -104,10 +104,19 @@ final class HerdrStoreTests: XCTestCase {
                 // otherwise it joins the tab, takes the focus, and its emptied tab closes.
                 guard let id = params["pane_id"] as? String,
                       let destination = params["destination"] as? [String: Any],
-                      let tabID = destination["tab_id"] as? String,
                       let index = state.panes.firstIndex(where: { $0["pane_id"] as? String == id }),
                       let source = state.panes[index]["tab_id"] as? String else {
                     return ["error": ["message": "pane not found"]]
+                }
+                let tabID: String
+                if destination["type"] as? String == "new_tab" {
+                    tabID = "w1:t-new"
+                    state.tabs.append(["tab_id": tabID, "workspace_id": "w1", "label": "detached"])
+                } else if let id = destination["tab_id"] as? String {
+                    tabID = id
+                } else { return ["error": ["message": "missing destination"]] }
+                if source == tabID {
+                    return ["result": ["move_result": ["changed": false, "reason": "same_tab"]]]
                 }
                 if state.zoomedTabs.contains(tabID) {
                     return ["result": ["move_result": ["changed": false, "reason": "zoomed_tab"]]]
@@ -358,6 +367,53 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(swap?.params["target_pane_id"] as? String, "w1:p1")
         XCTAssertEqual(swap?.params.count, 2)
         XCTAssertNil(store.actionError)
+    }
+
+    func testMovingWithinLayoutDetachesThenReinsertsAndSwaps() async {
+        await connect()
+        XCTAssertTrue(store.movePane("w1:p1", nextTo: "w1:p2", edge: .left))
+        await waitUntil("swap completed") { server.requests.contains { $0.method == "pane.swap" } }
+        await waitUntil("selected moved pane") { store.selectedPaneID == "w1:p1" && store.snapshot?.tabs.count == 2 }
+        let moves = server.requests.filter { $0.method == "pane.move" }
+        XCTAssertEqual(moves.count, 2)
+        XCTAssertEqual((moves.first?.params["destination"] as? [String: Any])?["type"] as? String, "new_tab")
+        XCTAssertEqual((moves.last?.params["destination"] as? [String: Any])?["target_pane_id"] as? String, "w1:p2")
+        XCTAssertEqual(store.selectedTabID, "w1:t1")
+        XCTAssertNil(store.actionError)
+    }
+
+    func testDetachingPaneSelectsItsOwnTabAndKeepsOtherPanes() async {
+        await connect()
+        XCTAssertTrue(store.detachPane("w1:p2"))
+        await waitUntil("detached tab selected") { store.selectedTabID == "w1:t-new" }
+        XCTAssertEqual(store.selectedPaneID, "w1:p2")
+        XCTAssertEqual(store.snapshot?.panes.first { $0.paneID == "w1:p1" }?.tabID, "w1:t1")
+        XCTAssertFalse(store.detachPane("w1:p2"), "Already has its own tab")
+        XCTAssertNil(store.actionError)
+    }
+
+    func testFailedReinsertionKeepsDetachedTerminalReachable() async {
+        await connect()
+        // Simulate the destination becoming zoomed after the client's last snapshot.
+        state.update { $0.zoomedTabs = ["w1:t1"] }
+        XCTAssertTrue(store.movePane("w1:p1", nextTo: "w1:p2", edge: .top))
+        await waitUntil("reinsertion refused") { store.actionError == "Herdr could not move the pane: zoomed tab" }
+        XCTAssertEqual(store.selectedTabID, "w1:t-new")
+        XCTAssertEqual(store.selectedPaneID, "w1:p1")
+        XCTAssertEqual(store.snapshot?.panes.count, 3, "No terminal is lost after a partial move")
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.swap" })
+    }
+
+    func testRepositionRejectsSelfMissingAndZoomedTargets() async {
+        await connect()
+        XCTAssertFalse(store.movePane("w1:p1", nextTo: "w1:p1", edge: .right))
+        XCTAssertFalse(store.movePane("missing", nextTo: "w1:p1", edge: .right))
+        state.update { $0.layouts = [["tab_id": "w1:t1", "zoomed": true, "panes": [],
+                                      "area": ["x": 0, "y": 0, "width": 80, "height": 24]]] }
+        server.emit(["event": "layout.updated"])
+        await waitUntil("zoom snapshot") { store.snapshot?.layouts.first?.zoomed == true }
+        XCTAssertFalse(store.movePane("w1:p1", nextTo: "w1:p2", edge: .bottom))
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.move" })
     }
 
     func testDropsThatCannotMoveSendNothing() async {

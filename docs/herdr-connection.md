@@ -91,3 +91,19 @@ With `surface_scroll`, Herdr 0.9.3 sends scrolling output as `endpoint.surface-s
 1. Add optional remote sessions after local behavior is stable.
 
 Validate against a running Herdr server with `herdr status`, `herdr api schema --json`, and `herdr api snapshot`. These commands should be used as local diagnostics; no server state needs to be changed for the initial connection.
+
+### Rearranging terminal panes
+
+Right-click a terminal and use **Move Terminal** to place it on any side of another pane,
+or choose **Move to Own Tab** to detach it. Hovering a pane reveals a move handle in its
+upper-right corner: drag it onto another pane's highlighted edge to reinsert it there,
+or onto the tab bar to create its own tab. Clicking the handle also opens the move menu.
+The handle does not send terminal mouse input; Option-right-click retains the existing
+mouse-aware program behavior, and popup terminals do not offer layout moves.
+
+Herdr refuses `pane.move` within the same tab (`same_tab`). Wooloo first moves that pane to
+an intermediate `new_tab`, then moves it back beside the target. Left/top placements add
+`pane.swap` after the right/down split. The pane and terminal identities survive these
+moves. A failed intermediate step refreshes the snapshot and reports Herdr's reason;
+if reinsertion fails, the terminal remains reachable in the detached tab. Zoomed targets
+and self-drops are rejected. Local and SSH connections use the same socket requests.

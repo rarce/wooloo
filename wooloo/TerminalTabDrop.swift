@@ -1,11 +1,14 @@
 import AppKit
 import QuartzCore
+import SwiftUI
 
 // MARK: Dropping a terminal tab on the panes
 
 /// The side of a pane a dropped terminal tab splits onto.
 enum TerminalDropEdge: Equatable, CaseIterable {
     case left, right, top, bottom
+
+    var title: String { String(describing: self).capitalized }
 
     /// The direction `pane.move` splits the target in, which Herdr allows only right and down.
     var split: String {
@@ -33,14 +36,21 @@ struct TerminalTabDropHandler {
     let accepts: () -> Bool
     /// Moves the dragged tab's pane next to a pane; false when the drop is refused.
     let drop: (_ paneID: String, _ edge: TerminalDropEdge) -> Bool
+    var targets: (_ source: String) -> [(id: String, title: String)] = { _ in [] }
+    var movePane: (_ source: String, _ target: String, _ edge: TerminalDropEdge) -> Bool = { _, _, _ in false }
+    var canDetach: (_ source: String) -> Bool = { _ in false }
+    var detach: (_ source: String) -> Void = { _ in }
 }
 
 enum TerminalTabDrop {
+    /// Pane handles use a separate type so a layout drag cannot become terminal input.
+    static let panePasteboardType = NSPasteboard.PasteboardType("com.wooloo.terminal-pane")
+
     /// The pasteboard type of tab drags, `TabDragModel.type`.
     static let pasteboardType = NSPasteboard.PasteboardType(TabDragModel.type.identifier)
 
     static func carriesTab(_ pasteboard: NSPasteboard) -> Bool {
-        pasteboard.types?.contains(pasteboardType) == true
+        pasteboard.types?.contains(pasteboardType) == true || pasteboard.types?.contains(panePasteboardType) == true
     }
 
     /// The side of `rect` nearest to `point`, measured relative to the pane's size, so the
@@ -93,10 +103,34 @@ enum TerminalTabDrop {
     }
 }
 
-/// Draws the drop highlight over a terminal view. It never takes mouse events or drags, so
-/// clicks, selection, scrolling and split drags reach the terminal under it.
+/// Draws the drop highlight and hover handle over a terminal view. Only the handle takes
+/// mouse events; selection, scrolling and split resizing reach the terminal underneath.
 final class TerminalDropOverlayView: NSView {
     private let highlight = CALayer()
+    let moveHandle = TerminalMoveHandle(frame: .zero)
+    var pointerMoved: ((NSPoint) -> Void)?
+    private var pointerTracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerTracking { removeTrackingArea(pointerTracking) }
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        pointerTracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) { pointerMoved?(event.locationInWindow) }
+    override func mouseEntered(with event: NSEvent) { pointerMoved?(event.locationInWindow) }
+    override func mouseExited(with event: NSEvent) { showHandle(for: nil, rect: nil) }
+
+    func showHandle(for pane: String?, rect: CGRect?) {
+        guard let pane, let rect else { moveHandle.isHidden = true; return }
+        moveHandle.paneID = pane
+        moveHandle.frame = CGRect(x: max(rect.minX, rect.maxX - 36), y: rect.minY + 4, width: 28, height: 26)
+        moveHandle.isHidden = false
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -105,6 +139,8 @@ final class TerminalDropOverlayView: NSView {
         highlight.borderWidth = 1.5
         highlight.cornerRadius = 3
         layer?.addSublayer(highlight)
+        moveHandle.isHidden = true
+        addSubview(moveHandle)
     }
 
     @available(*, unavailable)
@@ -112,7 +148,10 @@ final class TerminalDropOverlayView: NSView {
 
     override var isFlipped: Bool { true }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        return !moveHandle.isHidden && moveHandle.frame.contains(local) ? moveHandle : nil
+    }
 
     /// Highlights `rect` (in this view's coordinates) in the theme's accent, or hides it for nil.
     /// The highlight slides between halves; it appears in place.
@@ -131,5 +170,70 @@ final class TerminalDropOverlayView: NSView {
         highlight.borderColor = WoolooTheme.nsColor(accent, alpha: 0.85).cgColor
         highlight.frame = rect.insetBy(dx: 1, dy: 1)
         highlight.isHidden = false
+    }
+}
+
+/// A small native drag source; dragging this control never sends mouse input to the shell.
+final class TerminalMoveHandle: NSView, NSDraggingSource {
+    var paneID = ""
+    var makeMenu: ((String) -> NSMenu)?
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        toolTip = "Drag to move terminal; click for layout options"
+        setAccessibilityLabel("Move Terminal")
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.95).cgColor
+        layer?.cornerRadius = 5
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSImage(systemSymbolName: "arrow.up.and.down.and.arrow.left.and.right", accessibilityDescription: nil)?
+            .draw(in: bounds.insetBy(dx: 5, dy: 4))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { return }
+        guard next.type == .leftMouseDragged else {
+            if let menu = makeMenu?(paneID) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+            return
+        }
+        let item = NSPasteboardItem()
+        item.setString(paneID, forType: TerminalTabDrop.panePasteboardType)
+        let drag = NSDraggingItem(pasteboardWriter: item)
+        drag.setDraggingFrame(bounds, contents: NSImage(systemSymbolName: "terminal", accessibilityDescription: nil))
+        beginDraggingSession(with: [drag], event: next, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+}
+
+/// Explicitly proposes a move so SwiftUI accepts the native handle's move-only drag.
+struct TerminalPaneToTabDrop: DropDelegate {
+    @Binding var isTargeted: Bool
+    let detach: (String) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [TerminalTabDrop.panePasteboardType.rawValue])
+    }
+
+    func dropEntered(info: DropInfo) { isTargeted = true }
+    func dropExited(info: DropInfo) { isTargeted = false }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        isTargeted = false
+        let type = TerminalTabDrop.panePasteboardType.rawValue
+        guard let provider = info.itemProviders(for: [type]).first else { return false }
+        provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+            guard let data, let pane = String(data: data, encoding: .utf8) else { return }
+            Task { @MainActor in detach(pane) }
+        }
+        return true
     }
 }
