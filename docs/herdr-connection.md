@@ -117,6 +117,37 @@ The focused terminal text view handles Herdr's prefix sequence and direct chords
 
 Bindings come from the same local `[keys]` table as the Herdr TUI, including multiline arrays of alternatives. The settings section writes the Herdr syntax and validates through `herdr config check` before saving. Custom bindings become active in wooloo after saving. The remaining Herdr TUI actions are preserved in config.toml but are not intercepted by wooloo. Shortcut handling currently applies while the terminal has keyboard focus; settings fields and other native controls keep their usual keyboard behavior.
 
+## Native keyboard input
+
+`TerminalKeyInput` maps native key-down events before pane/popup routing. Enter, Tab, Escape, Backspace, Delete, arrows, Home/End and Page Up/Down retain every combination of Control, Option (Alt) and Shift. Control/Option character chords use AppKit's `charactersIgnoringModifiers`, which retains the active layout's Shift-produced symbol, rather than a US key-code table or Option's text glyph. All active modifiers are included in the existing key-name format, including literal `+` characters. Both routes use the unchanged generation-1 key encoder.
+
+Plain and Shift-only text still pass through AppKit's input method. Empty dead-key events and multi-scalar text are not converted to character keys. While marked text is active, navigation and editing keys stay with the input method; forwarding an IME commit also clears the marked range so subsequent keys resume terminal input. Text commits and clipboard paste remain separate operations. Herdr shortcuts run first, and native Command shortcuts keep their existing AppKit path. Chords reserved by macOS may never arrive at the view.
+
+The semantic model remains synthetic Press events: each native repeat produces one additional Press with `repeat_count = 1`; no key-up events or physical key identity are fabricated. The existing `tracks_release` wire field is unchanged and does not demonstrate actual release delivery. The model preserves the layout-produced symbol, but does not carry an alternate unshifted physical symbol, hardware identity or the full Kitty event lifecycle. This fix therefore does not claim support for release reporting or all Kitty enhancement flags.
+
+`TerminalKeyInputTests` exercises native events through the view, both routes and an independent wire decoder, including modifier combinations, non-US symbols, repeat delivery, focus changes, composition and paste. The opt-in live test uses a raw PTY child under Herdr 0.9.5, with Kitty disambiguation (`CSI > 1 u`) off and on. Representative expected bytes are:
+
+| Input | Normal mode | Kitty disambiguation |
+| --- | --- | --- |
+| Option+Left | `ESC [ 1 ; 3 D` | `ESC [ 1 ; 3 D` |
+| Option+Backspace | `ESC DEL` | `ESC [ 127 ; 3 u` |
+| Shift+Enter | `CR` | `ESC [ 13 ; 2 u` |
+| Control+Shift+A | `SOH` | `ESC [ 97 ; 6 u` |
+| Control+Option+Shift+A | `ESC SOH` | `ESC [ 97 ; 8 u` |
+
+Legacy terminal encoding cannot distinguish every combination; for example Control+A and Control+Shift+A both become SOH. The distinction reaches Herdr and is visible when the child enables Kitty disambiguation. The probe passed all 66 pane/popup captures on macOS 26.6.2 with Herdr 0.9.5, including repeated keys, Unicode commits and bracketed multiline paste. Interactive checks against the isolated session also confirmed Option+Backspace word deletion, Command+A/Command+C copied into an untitled document, focus returning to the terminal, and multiline Unicode paste followed by Enter. Layout-symbol cases use synthetic NSEvents, not an automated system-wide layout switch; IME candidate windows and real hardware/layout switching were not exercised.
+
+To reproduce, first build the Debug test bundle (the live test skips without a fixture):
+
+```sh
+xcodebuild -project wooloo.xcodeproj -scheme wooloo -configuration Debug \
+  -destination 'platform=macOS' -derivedDataPath build/DerivedData \
+  -disableAutomaticPackageResolution -only-testing:woolooTests/TerminalKeyInputTests test
+WOOLOO_HERDR=/path/to/herdr-0.9.5 python3 scripts/terminal-key-probe.py
+```
+
+`WOOLOO_DERIVED_DATA` selects a different matching build directory. The script creates disposable XDG directories, starts only its own `wooloo-ui-test` server, runs 33 cases each against a pane and plugin popup, checks captured PTY bytes, and stops that server. Logs and JSON results go to `build/perf/keyboard-input/`. This targeted runtime validation supplements the source-only release review above; it does not change the bundled Herdr version or validate SSH transport.
+
 ## Links
 
 Holding Command underlines the link under the pointer and shows a pointing hand; Command-click opens it with the default browser, as in iTerm2. A complete surface carries the OSC 8 hyperlink URIs and each cell their index; Herdr sends a complete surface instead of a patch whenever changed cells touch a hyperlink, so patches keep the indices valid. Cells with the same destination form one link, across rows. Without OSC 8, `http` and `https` URLs are found in the text, dropping trailing punctuation and unbalanced closers, and a row whose last cell is filled continues on the next one so wrapped URLs open whole. Only web links open, like Herdr's own client: a `file:` hyperlink could otherwise launch an application.
