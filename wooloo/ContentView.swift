@@ -265,11 +265,13 @@ struct ContentView: View {
                                      onOpenDiff: { location, path, preview in
                                          openDocument(.change, path: path, at: location, preview: preview)
                                      },
-                                     onNewTab: { cwd in
+                                     onNewTab: { [contextID = herdr.contextID] cwd in
+                                         guard herdr.contextID == contextID else { return }
                                          activeDocumentID = nil
                                          herdr.createTab(cwd: cwd)
                                      },
-                                     onNewSpace: { cwd, label in
+                                     onNewSpace: { [contextID = herdr.contextID] cwd, label in
+                                         guard herdr.contextID == contextID else { return }
                                          activeDocumentID = nil
                                          herdr.createWorkspace(cwd: cwd, label: label)
                                      },
@@ -283,7 +285,10 @@ struct ContentView: View {
                                          search.showsFilters = !path.isEmpty
                                          openSearch(replace: false)
                                      },
-                                     onOpenWorktree: openWorktree,
+                                     onOpenWorktree: { [contextID = herdr.contextID] path, repository in
+                                         guard herdr.contextID == contextID else { return }
+                                         openWorktree(path: path, repository: repository)
+                                     },
                                      onOpenCommitFile: { location, commit, file in
                                          openDocument(.commit, path: file.path, at: location,
                                                       commit: commit.id, originalPath: file.originalPath)
