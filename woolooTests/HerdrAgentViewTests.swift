@@ -192,6 +192,42 @@ final class HerdrAgentViewTests: XCTestCase {
     }
 
     @MainActor
+    func testWorkspaceGitCountersFollowShellSnapshotsAndClearOnDisconnect() throws {
+        let store = HerdrStore()
+        var decoder = HerdrAgentProjectionDecoder()
+        func receive(_ workspaces: [[String: Any]], revision: UInt64) throws {
+            var snapshot = AgentViewFixture.snapshot([], revision: revision, label: nil)
+            snapshot["workspaces"] = workspaces
+            let projection = try XCTUnwrap(decoder.receive(kind: "shell.snapshot.v1",
+                                                           data: AgentViewFixture.data(snapshot)))
+            store.receiveAgentProjection(projection)
+        }
+        var published = 0
+        let subscription = store.$workspaceGitStatuses.dropFirst().sink { _ in published += 1 }
+        let spaces: [[String: Any]] = [
+            ["workspace_id": "w1", "git_ahead_behind": [3, 2]],
+            ["workspace_id": "w2", "git_ahead_behind": [0, 0]],
+            ["workspace_id": "w3", "git_ahead_behind": NSNull()],
+            ["workspace_id": "w4"]
+        ]
+        try receive(spaces, revision: 1)
+        XCTAssertEqual(store.workspaceGitStatuses["w1"]?.ahead, 3)
+        XCTAssertEqual(store.workspaceGitStatuses["w1"]?.behind, 2)
+        XCTAssertEqual(store.workspaceGitStatuses["w2"]?.ahead, 0)
+        XCTAssertNil(store.workspaceGitStatuses["w3"])
+        XCTAssertNil(store.workspaceGitStatuses["w4"])
+        XCTAssertNil(store.agentViewState, "Git counters work without a custom agent view")
+        try receive(spaces, revision: 2)
+        XCTAssertEqual(published, 1, "Revision-only changes do not redraw the sidebar")
+        try receive([["workspace_id": "w1", "git_ahead_behind": NSNull()]], revision: 3)
+        XCTAssertTrue(store.workspaceGitStatuses.isEmpty, "Unset upstream and removed Spaces clear old counts")
+        try receive(spaces, revision: 4)
+        store.stop()
+        XCTAssertTrue(store.workspaceGitStatuses.isEmpty)
+        withExtendedLifetime(subscription) {}
+    }
+
+    @MainActor
     func testStoreKeepsSelectionAndDoesNotPublishRevisionOnlyChanges() throws {
         let store = HerdrStore()
         store.selectedWorkspaceID = "w1"

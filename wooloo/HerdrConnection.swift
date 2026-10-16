@@ -620,6 +620,7 @@ final class HerdrStore: ObservableObject {
     @Published private(set) var inputError: String?
     @Published private(set) var actionError: String?
     @Published private(set) var sessionSelectionError: String?
+    @Published private(set) var workspaceGitStatuses: [String: HerdrGitStatus] = [:]
     @Published private(set) var agentViewState: HerdrAgentViewState?
     @Published private var agentPrioritySort = false
     private var agentPresentation = HerdrAgentPresentation()
@@ -992,6 +993,10 @@ final class HerdrStore: ObservableObject {
     }
 
     func receiveAgentProjection(_ projection: HerdrAgentProjection) {
+        let statuses = Dictionary(uniqueKeysWithValues: projection.snapshot.workspaces.compactMap { workspace in
+            workspace.gitStatus.map { (workspace.workspaceID, $0) }
+        })
+        if workspaceGitStatuses != statuses { workspaceGitStatuses = statuses }
         publishAgentView(agentPresentation.receive(projection))
     }
 
@@ -1008,6 +1013,7 @@ final class HerdrStore: ObservableObject {
     }
 
     private func resetAgentView() {
+        if !workspaceGitStatuses.isEmpty { workspaceGitStatuses = [:] }
         agentPresentation = HerdrAgentPresentation()
         if agentViewState != nil { agentViewState = nil }
     }

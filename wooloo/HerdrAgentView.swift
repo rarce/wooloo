@@ -241,12 +241,31 @@ struct HerdrAgentViewRow {
     }
 }
 
-/// Only the agent facts needed from shell.snapshot.v1. The other snapshot fields remain
+/// Herdr encodes upstream divergence as an [ahead, behind] pair.
+struct HerdrGitStatus: Decodable, Equatable, Sendable {
+    let ahead: UInt64
+    let behind: UInt64
+
+    init(from decoder: Decoder) throws {
+        var values = try decoder.unkeyedContainer()
+        ahead = try values.decode(UInt64.self)
+        behind = try values.decode(UInt64.self)
+        guard values.isAtEnd else {
+            throw DecodingError.dataCorruptedError(in: values, debugDescription: "Expected an ahead/behind pair")
+        }
+    }
+}
+
+/// Agent and Git facts needed from shell.snapshot.v1. The other snapshot fields remain
 /// owned by the JSON connection. Endpoint metadata is encoded as arrays of string pairs.
 struct HerdrAgentSnapshot: Decodable, Equatable, Sendable {
     struct Workspace: Decodable, Equatable, Sendable {
         let workspaceID: String
-        enum CodingKeys: String, CodingKey { case workspaceID = "workspace_id" }
+        var gitStatus: HerdrGitStatus? = nil
+        enum CodingKeys: String, CodingKey {
+            case workspaceID = "workspace_id"
+            case gitStatus = "git_ahead_behind"
+        }
     }
     struct Tab: Decodable, Equatable, Sendable {
         let tabID: String
