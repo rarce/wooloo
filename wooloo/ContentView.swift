@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var shortcutMap = HerdrShortcutMap.load()
     @State private var shortcutPrefixActive = false
     @State private var availableSessions: [String] = []
+    @State private var showsMachineManager = false
     @State private var machines: [HerdrMachineProfile] = []
     /// The SSH machine whose files and repository the explorer shows; nil is this Mac.
     @State private var explorerMachine: HerdrMachineProfile?
@@ -152,6 +153,9 @@ struct ContentView: View {
             documentStore.checkDisk()
         }
         .onReceive(Self.diskChanges) { checkDisk(after: $0) }
+        .sheet(isPresented: $showsMachineManager, onDismiss: loadMachines) {
+            HerdrMachineManagerView()
+        }
         .sheet(isPresented: $window.showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               showShortcuts: window.settingsShowShortcuts,
@@ -583,6 +587,11 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         machineRow(nil)
                         ForEach(machines) { machineRow($0) }
+                        Button("Manage Remote Hosts…", systemImage: "plus.circle") {
+                            window.showsSessionPicker = false
+                            showsMachineManager = true
+                        }
+                        .padding(.top, 6)
                     }
                 }
                 .padding(14)
@@ -625,8 +634,8 @@ struct ContentView: View {
             guard case .success(let profiles) = result else { return }
             machines = profiles
             // A machine removed from Herdr's list falls back to this Mac.
-            if let current = explorerMachine, !profiles.contains(where: { $0.id == current.id }) {
-                explorerMachine = nil
+            if let current = explorerMachine {
+                explorerMachine = profiles.first { $0.id == current.id }
             }
         }
     }

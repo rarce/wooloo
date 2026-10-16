@@ -374,10 +374,17 @@ enum WorkspaceFiles {
     }
 
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
-    static func machines() throws -> [HerdrMachineProfile] {
+    static func machines(includeDisabled: Bool = false) throws -> [HerdrMachineProfile] {
         let executable = try herdrExecutable()
         let data = try run(executable, ["machine", "list", "--json"], limit: 200_000)
-        return try JSONDecoder().decode([HerdrMachineProfile].self, from: data).filter(\.enabled)
+        return try JSONDecoder().decode([HerdrMachineProfile].self, from: data).filter { includeDisabled || $0.enabled }
+    }
+
+    /// Delegate persistence and remote preparation to Herdr, which owns machine profiles.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    static func manageMachine(_ arguments: [String]) throws {
+        _ = try run(herdrExecutable(), ["machine"] + arguments, input: Data(),
+                    limit: 200_000, timeout: 120, label: "herdr-machine")
     }
 
     /// Runs `herdr --machine` here, which reaches the machine on a connection of its own rather
