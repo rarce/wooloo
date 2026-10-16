@@ -12,8 +12,8 @@ struct ContentView: View {
     @State private var availableSessions: [String] = []
     @State private var showsMachineManager = false
     @State private var machines: [HerdrMachineProfile] = []
-    /// The SSH machine whose files and repository the explorer shows; nil is this Mac.
-    @State private var explorerMachine: HerdrMachineProfile?
+    /// All panels use the store’s active host; nil is this Mac.
+    private var explorerMachine: HerdrMachineProfile? { herdr.machine }
     @StateObject private var documentStore = WorkspaceDocumentStore()
     private var documents: [WorkspaceDocument] { documentStore.visibleDocuments }
     private var activeDocumentID: String? {
@@ -32,6 +32,7 @@ struct ContentView: View {
     @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
     @AppStorage("AgentsInSelectedSpaceOnly") private var agentsInSelectedSpaceOnly = false
     @State private var followsHerdrAgentView = true
+    @State private var connectionRequest = UUID()
     @State private var popupDocument: (session: String, space: String?, tab: String?, document: String)?
 
     @StateObject private var themes = ThemeStore()
@@ -55,14 +56,14 @@ struct ContentView: View {
     private func presentPopup(_ terminalID: String?) {
         if terminalID != nil {
             if let activeDocumentID {
-                popupDocument = (herdr.sessionName, herdr.selectedWorkspaceID, herdr.selectedTabID, activeDocumentID)
+                popupDocument = (herdr.contextID, herdr.selectedWorkspaceID, herdr.selectedTabID, activeDocumentID)
                 self.activeDocumentID = nil
             }
             window.quickOpen.dismiss()
             window.commandPalette.dismiss()
         } else if let previous = popupDocument {
             popupDocument = nil
-            guard activeDocumentID == nil, herdr.sessionName == previous.session,
+            guard activeDocumentID == nil, herdr.contextID == previous.session,
                   herdr.selectedWorkspaceID == previous.space, herdr.selectedTabID == previous.tab,
                   documentStore.document(previous.document) != nil || previous.document == WorkspaceSearchModel.tabID else { return }
             activeDocumentID = previous.document
@@ -97,7 +98,7 @@ struct ContentView: View {
             herdr.start()
         }
         .onChange(of: runtime.showsSetup) { _, showsSetup in
-            guard managesRuntime else { return }
+            guard managesRuntime, herdr.machine == nil else { return }
             if showsSetup {
                 herdr.stop()
             } else {
@@ -135,12 +136,16 @@ struct ContentView: View {
         }
         .onChange(of: herdr.selectedPaneID) { _, paneID in notifier.acknowledge(paneID: paneID) }
         .onChange(of: herdr.surfaceLayout?.popupTerminalID) { _, terminalID in presentPopup(terminalID) }
-        .onChange(of: herdr.sessionName) { _, _ in
+        .onChange(of: herdr.contextID) { _, _ in
             notifier.reset()
             followsHerdrAgentView = true
+            explorerLocation = nil
+            search.setLocation(nil)
+            window.quickOpen.dismiss()
+            window.commandPalette.dismiss()
         }
         // Documents belong to the Space they were opened in.
-        .onChange(of: herdr.selectedWorkspaceID.map { "\(herdr.sessionName)|\($0)" }, initial: true) { _, space in
+        .onChange(of: herdr.selectedWorkspaceID.map { "\(herdr.contextID)|\($0)" }, initial: true) { _, space in
             documentStore.showSpace(space)
             window.focusedPanel = .main
         }
@@ -158,6 +163,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $window.showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
+                              remoteHost: herdr.machine?.label,
                               showShortcuts: window.settingsShowShortcuts,
                               showRemoteAccess: window.settingsShowRemoteAccess) {
                 shortcutMap = HerdrShortcutMap.load()
@@ -248,9 +254,9 @@ struct ContentView: View {
             if window.showsFilesSidebar {
                 SidebarResizeHandle(width: $filesSidebarWidth, defaultWidth: 244, edge: .trailing,
                                     range: 200...max(200, min(560, totalWidth - left - mainMinimum)))
-                WorkspaceBrowserView(localSnapshot: herdr.snapshot,
-                                     localWorkspaceID: herdr.selectedWorkspaceID,
-                                     localSession: herdr.sessionName,
+                WorkspaceBrowserView(snapshot: herdr.snapshot,
+                                     workspaceID: herdr.selectedWorkspaceID,
+                                     session: herdr.sessionName,
                                      machine: explorerMachine,
                                      refreshVersion: window.fileRefreshVersion,
                                      onOpenFile: { location, path, preview in
@@ -259,11 +265,13 @@ struct ContentView: View {
                                      onOpenDiff: { location, path, preview in
                                          openDocument(.change, path: path, at: location, preview: preview)
                                      },
-                                     onNewTab: { cwd in
+                                     onNewTab: { [contextID = herdr.contextID] cwd in
+                                         guard herdr.contextID == contextID else { return }
                                          activeDocumentID = nil
                                          herdr.createTab(cwd: cwd)
                                      },
-                                     onNewSpace: { cwd, label in
+                                     onNewSpace: { [contextID = herdr.contextID] cwd, label in
+                                         guard herdr.contextID == contextID else { return }
                                          activeDocumentID = nil
                                          herdr.createWorkspace(cwd: cwd, label: label)
                                      },
@@ -277,7 +285,10 @@ struct ContentView: View {
                                          search.showsFilters = !path.isEmpty
                                          openSearch(replace: false)
                                      },
-                                     onOpenWorktree: openWorktree,
+                                     onOpenWorktree: { [contextID = herdr.contextID] path, repository in
+                                         guard herdr.contextID == contextID else { return }
+                                         openWorktree(path: path, repository: repository)
+                                     },
                                      onOpenCommitFile: { location, commit, file in
                                          openDocument(.commit, path: file.path, at: location,
                                                       commit: commit.id, originalPath: file.originalPath)
@@ -507,7 +518,8 @@ struct ContentView: View {
             Divider()
             HStack(spacing: 0) {
                 Button {
-                    window.requestedSessionName = herdr.sessionName
+                    window.requestedSessionName = herdr.machine == nil ? herdr.sessionName
+                        : UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName
                     window.showsSessionPicker = true
                 } label: {
                     HStack(spacing: 6) {
@@ -543,7 +555,7 @@ struct ContentView: View {
             }
             .popover(isPresented: $window.showsSessionPicker) {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("Connect to a Herdr session")
+                    Text("Local sessions")
                         .font(.subheadline.weight(.semibold))
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(availableSessions, id: \.self) { name in
@@ -552,8 +564,8 @@ struct ContentView: View {
                                 connect()
                             } label: {
                                 HStack(spacing: 6) {
-                                    Image(systemName: name == herdr.sessionName ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(name == herdr.sessionName ? theme.accent : Color.secondary)
+                                    Image(systemName: herdr.machine == nil && name == herdr.sessionName ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(herdr.machine == nil && name == herdr.sessionName ? theme.accent : Color.secondary)
                                     Text(name).font(.system(size: typography.emphasis, design: .monospaced))
                                     if name == HerdrStore.defaultSessionName {
                                         Text("primary").font(.caption).foregroundStyle(.secondary)
@@ -567,7 +579,7 @@ struct ContentView: View {
                         }
                     }
                     HStack {
-                        TextField("Session name", text: $window.requestedSessionName)
+                        TextField("Local session name", text: $window.requestedSessionName)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit(connect)
                         Button("Connect", action: connect)
@@ -576,13 +588,13 @@ struct ContentView: View {
                         Text(error).font(.caption).foregroundStyle(theme.warning)
                     }
                     if managesRuntime {
-                        Button("Set Up Herdr…") {
+                        Button("Set Up Local Herdr…") {
                             window.showsSessionPicker = false
                             runtime.showsSetup = true
                         }
                     }
                     Divider()
-                    Text("Files and changes")
+                    Text("Hosts")
                         .font(.subheadline.weight(.semibold))
                     VStack(alignment: .leading, spacing: 2) {
                         machineRow(nil)
@@ -608,7 +620,15 @@ struct ContentView: View {
     private func machineRow(_ profile: HerdrMachineProfile?) -> some View {
         let selected = profile?.id == explorerMachine?.id
         return Button {
-            explorerMachine = profile
+            connectionRequest = UUID()
+            if let profile {
+                herdr.connect(to: profile)
+            } else {
+                window.requestedSessionName = UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName
+                connect()
+            }
+            explorerLocation = nil
+            search.setLocation(nil)
             window.showsSessionPicker = false
         } label: {
             HStack(spacing: 6) {
@@ -633,9 +653,11 @@ struct ContentView: View {
             let result = await BlockingWork.run { Result { try WorkspaceFiles.machines() } }
             guard case .success(let profiles) = result else { return }
             machines = profiles
-            // A machine removed from Herdr's list falls back to this Mac.
-            if let current = explorerMachine {
-                explorerMachine = profiles.first { $0.id == current.id }
+            // Keep an unavailable host selected until the user explicitly chooses another.
+            // Never silently route actions back to the local server.
+            if let current = explorerMachine,
+               let updated = profiles.first(where: { $0.id == current.id }), updated != current {
+                herdr.connect(to: updated)
             }
         }
     }
@@ -643,6 +665,7 @@ struct ContentView: View {
     private var mainArea: some View {
         VStack(spacing: 0) {
             mainContent
+                .id(herdr.contextID)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             statusBar
@@ -1184,10 +1207,13 @@ struct ContentView: View {
     private func connect() {
         let name = window.requestedSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
         runtime.clearServerStartError()
+        let request = UUID()
+        connectionRequest = request
         Task {
             if managesRuntime {
                 guard await runtime.prepare(session: name) else { return }
             }
+            guard connectionRequest == request else { return }
             herdr.connect(to: name)
             if herdr.sessionSelectionError == nil { window.showsSessionPicker = false }
         }
@@ -1266,7 +1292,7 @@ struct ContentView: View {
     private func spaceActions(_ workspace: HerdrWorkspace) -> some View {
         let root = herdr.snapshot.flatMap {
             WorkspaceFiles.location(snapshot: $0, workspaceID: workspace.workspaceID,
-                                    session: herdr.sessionName, machine: nil)?.root
+                                    session: herdr.sessionName, machine: herdr.machine)?.root
         }
         Button("New Tab in Space", systemImage: "plus") {
             herdr.select(workspaceID: workspace.workspaceID)
@@ -1383,7 +1409,7 @@ struct ContentView: View {
     /// Shown until the session connects. A stopped server can be started from here.
     @ViewBuilder
     private var connectionState: some View {
-        if managesRuntime && herdr.isServerStopped {
+        if managesRuntime && herdr.machine == nil && herdr.isServerStopped {
             VStack(spacing: 8) {
                 Image(systemName: "power")
                     .font(.system(size: 24, weight: .light))

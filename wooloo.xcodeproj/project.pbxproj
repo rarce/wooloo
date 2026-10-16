@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B90000000000000000000001 /* HerdrRemoteBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000002 /* HerdrRemoteBridge.swift */; };
 		D40000000000000000000003 /* NotebookPreviewBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */; };
 		D40000000000000000000001 /* MarkdownTableBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000002 /* MarkdownTableBenchmarks.swift */; };
 		C3000000000000000000B101 /* HerdrRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000B102 /* HerdrRuntimeTests.swift */; };
@@ -147,6 +148,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B90000000000000000000002 /* HerdrRemoteBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRemoteBridge.swift; sourceTree = "<group>"; };
 		D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookPreviewBenchmarks.swift; sourceTree = "<group>"; };
 		D40000000000000000000002 /* MarkdownTableBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownTableBenchmarks.swift; sourceTree = "<group>"; };
 		C3000000000000000000B102 /* HerdrRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRuntimeTests.swift; sourceTree = "<group>"; };
@@ -298,6 +300,7 @@
 				C40000000000000000000002 /* WorkspaceFileWatcher.swift */,
 				C30000000000000000000071 /* HerdrSettingsModel.swift */,
 				A10000000000000000000015 /* HerdrConnection.swift */,
+				B90000000000000000000002 /* HerdrRemoteBridge.swift */,
 				A10000000000000000000017 /* TerminalPaneView.swift */,
 				A10000000000000000000019 /* HerdrSurface.swift */,
 				A1D200000000000000000101 /* DisplayColumns.swift */,
@@ -570,6 +573,7 @@
 				C40000000000000000000001 /* WorkspaceFileWatcher.swift in Sources */,
 				C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */,
 				A10000000000000000000014 /* HerdrConnection.swift in Sources */,
+				B90000000000000000000001 /* HerdrRemoteBridge.swift in Sources */,
 				A10000000000000000000016 /* TerminalPaneView.swift in Sources */,
 				A10000000000000000000018 /* HerdrSurface.swift in Sources */,
 				A1D200000000000000000100 /* DisplayColumns.swift in Sources */,

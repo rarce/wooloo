@@ -291,7 +291,7 @@ final class ViewSnapshotTests: XCTestCase {
             let identity = model.treeIdentity(location)
             for folder in folders { model.tree.expand(folder, in: identity) }
             model.tree.selected = identity + "|" + selected
-            let view = WorkspaceBrowserView(localSnapshot: snapshot, localWorkspaceID: "repo", localSession: "test",
+            let view = WorkspaceBrowserView(snapshot: snapshot, workspaceID: "repo", session: "test",
                                             machine: nil, refreshVersion: 0,
                                             onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in }, onNewTab: { _ in },
                                             onNewSpace: { _, _ in }, onLocationChange: { _ in },
@@ -325,7 +325,7 @@ final class ViewSnapshotTests: XCTestCase {
         let model = WorkspaceExplorerModel()
         let identity = model.treeIdentity(location)
         for folder in ["build", "docs", "Sources", "Sources/App", "Sources/Core"] { model.tree.expand(folder, in: identity) }
-        let view = WorkspaceBrowserView(localSnapshot: snapshot, localWorkspaceID: "repo", localSession: "test",
+        let view = WorkspaceBrowserView(snapshot: snapshot, workspaceID: "repo", session: "test",
                                         machine: nil, refreshVersion: 0,
                                         onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in }, onNewTab: { _ in },
                                         onNewSpace: { _, _ in }, onLocationChange: { _ in },

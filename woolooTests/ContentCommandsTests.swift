@@ -29,6 +29,23 @@ final class ContentCommandsTests: XCTestCase {
         }
     }
 
+    func testSessionPickerFromRemoteUsesTheLastLocalSession() {
+        let previousSSH = WorkspaceFiles.sshExecutable
+        let previousSession = UserDefaults.standard.string(forKey: "HerdrLastSession")
+        defer {
+            WorkspaceFiles.sshExecutable = previousSSH
+            UserDefaults.standard.set(previousSession, forKey: "HerdrLastSession")
+        }
+        WorkspaceFiles.sshExecutable = "/usr/bin/false"
+        UserDefaults.standard.set("wooloo-ui-test", forKey: "HerdrLastSession")
+        herdr.connect(to: HerdrMachineProfile(id: "remote", label: "Remote", target: "absent",
+                                             session: "agents", enabled: true))
+        commands.perform("switch_session")
+        XCTAssertEqual(window.requestedSessionName, "wooloo-ui-test")
+        XCTAssertEqual(herdr.sessionName, "agents")
+        XCTAssertTrue(window.showsSessionPicker)
+    }
+
     private let state = State()
     private var root: URL!
     private var savedRoot: URL!
