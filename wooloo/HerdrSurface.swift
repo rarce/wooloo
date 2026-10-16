@@ -318,6 +318,8 @@ private enum SurfaceProtocolError: Error {
     case invalidFrame
     case unexpectedEnd
     case incompatible(String)
+    case timedOut(String)
+    case outboundQueueFull
 }
 
 private struct SurfaceReader {
@@ -898,11 +900,31 @@ struct HerdrMouseEvent {
     let lines: UInt16
 }
 
-final class HerdrSurfaceStream {
+/// Deadlines use a monotonic clock, including sleep, so wake can recover a stalled connection.
+struct HerdrEndpointTimeouts: Sendable {
+    var handshake: Duration = .seconds(5)
+    var frame: Duration = .seconds(10)
+    var write: Duration = .seconds(5)
+    var healthInterval: Duration = .seconds(5)
+    var healthReply: Duration = .seconds(10)
+}
+
+/// One connection per instance. Shared descriptor, failure and queue state are lock-protected;
+/// the reader owns decoding/liveness state and the serial writer owns socket writes.
+final class HerdrSurfaceStream: @unchecked Sendable {
+    private let timeouts: HerdrEndpointTimeouts
+    private let writer = DispatchQueue(label: "dev.wooloo.endpoint-writer", qos: .userInteractive)
+    private var pendingBytes = 0
+    private var pendingFrames = 0
+    private var failure: Error?
     private let lock = NSLock()
     private var fd: Int32 = -1
     private var cancelled = false
     private var bootID: String?
+
+    init(timeouts: HerdrEndpointTimeouts = HerdrEndpointTimeouts()) {
+        self.timeouts = timeouts
+    }
 
     func cancel() {
         lock.lock()
@@ -912,14 +934,14 @@ final class HerdrSurfaceStream {
     }
 
     func resize(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) {
-        guard cols > 0, rows > 0, cols <= 1000, rows <= 1000 else { return }
+        guard isReady, cols > 0, rows > 0, cols <= 1000, rows <= 1000 else { return }
         var payload = SurfaceWriter.number(12) // ClientShellResize
         payload += SurfaceWriter.number(UInt64(cellWidth))
         payload += SurfaceWriter.number(UInt64(cellHeight))
         payload += SurfaceWriter.number(UInt64(cols))
         payload += SurfaceWriter.number(UInt64(rows))
         payload.append(0) // pixel mouse
-        if send(payload) { TerminalPipelineMetrics.shared?.resizeSent(cols: cols, rows: rows) }
+        send(payload) { TerminalPipelineMetrics.shared?.resizeSent(cols: cols, rows: rows) }
     }
 
     func focus(tabID: String) {
@@ -962,9 +984,7 @@ final class HerdrSurfaceStream {
 
     func sendInput(_ event: HerdrInputEvent, to paneID: String) -> Bool {
         guard isReady, let payload = SurfaceWriter.paneInput(paneID: paneID, event: event) else { return false }
-        let sent = send(payload)
-        if sent { TerminalPipelineMetrics.shared?.inputSent(bytes: payload.count) }
-        return sent
+        return send(payload) { TerminalPipelineMetrics.shared?.inputSent(bytes: payload.count) }
     }
 
     func sendPopupInput(_ event: HerdrInputEvent, terminalID: String) -> Bool {
@@ -974,45 +994,104 @@ final class HerdrSurfaceStream {
 
     func closePopup() -> Bool { request(method: "popup.close", params: [:]) }
 
+    /// Enqueue in call order without blocking the main thread on socket I/O. A stalled peer
+    /// cannot grow the queue indefinitely; accepted frames are never replayed after reconnect.
     @discardableResult
-    private func send(_ payload: Data) -> Bool {
+    private func send(_ payload: Data, didSend: (@Sendable () -> Void)? = nil) -> Bool {
+        guard !payload.isEmpty, payload.count <= 32 * 1024 * 1024 else { return false }
+        let length = UInt32(payload.count)
+        var frame = Data((0..<4).map { UInt8((length >> ($0 * 8)) & 0xff) })
+        frame += payload
+        let deadline = ContinuousClock.now + timeouts.write
         lock.lock()
         defer { lock.unlock() }
         guard fd >= 0, !cancelled else { return false }
-        var frame = Data()
-        let length = UInt32(payload.count)
-        for shift in stride(from: 0, to: 32, by: 8) { frame.append(UInt8((length >> shift) & 0xff)) }
-        frame += payload
-        let completed = frame.withUnsafeBytes { bytes -> Bool in
-            guard let base = bytes.baseAddress else { return false }
-            var sent = 0
-            while sent < bytes.count {
-                let count = Darwin.write(fd, base.advanced(by: sent), bytes.count - sent)
-                if count < 0 && errno == EINTR { continue }
-                if count <= 0 { return false }
-                sent += count
-            }
-            return true
-        }
-        if !completed {
+        guard pendingBytes + frame.count <= 64 * 1024 * 1024, pendingFrames < 1024 else {
+            failure = SurfaceProtocolError.outboundQueueFull
             cancelled = true
             _ = shutdown(fd, SHUT_RDWR)
+            return false
         }
-        return completed
+        pendingBytes += frame.count
+        pendingFrames += 1
+        writer.async { [self, frame] in
+            defer { lock.withLock { pendingBytes -= frame.count; pendingFrames -= 1 } }
+            do {
+                try write(frame, deadline: deadline)
+                didSend?()
+            } catch { fail(error) }
+        }
+        return true
+    }
+
+    private func fail(_ error: Error) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { return }
+        failure = error
+        cancelled = true
+        if fd >= 0 { _ = shutdown(fd, SHUT_RDWR) }
+    }
+
+    private func checkConnection() throws {
+        try lock.withLock {
+            if let failure { throw failure }
+            if cancelled { throw SurfaceProtocolError.unexpectedEnd }
+        }
+    }
+
+    private func write(_ frame: Data, deadline: ContinuousClock.Instant) throws {
+        // A duplicate owns the descriptor while run() can finish on the reader thread.
+        // shutdown() interrupts both descriptors; no I/O holds the cancellation lock.
+        let output = lock.withLock { !cancelled && fd >= 0 ? dup(fd) : -1 }
+        guard output >= 0 else {
+            try checkConnection()
+            throw SurfaceProtocolError.unexpectedEnd
+        }
+        defer { close(output) }
+        try frame.withUnsafeBytes { bytes in
+            var sent = 0
+            while sent < bytes.count {
+                try checkConnection()
+                guard ContinuousClock.now < deadline else { throw SurfaceProtocolError.timedOut("write") }
+                let count = Darwin.write(output, bytes.baseAddress!.advanced(by: sent), bytes.count - sent)
+                if count > 0 { sent += count; continue }
+                if count < 0 && errno == EINTR { continue }
+                guard count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) else {
+                    throw SurfaceProtocolError.unexpectedEnd
+                }
+                try wait(fd: output, events: Int16(POLLOUT), until: deadline)
+            }
+        }
+    }
+
+    /// A short bounded poll keeps cancellation and health checks independent of peer progress.
+    private func wait(fd: Int32, events: Int16, until deadline: ContinuousClock.Instant?) throws {
+        try checkConnection()
+        let remaining = deadline.map { ContinuousClock.now.duration(to: $0) } ?? .milliseconds(250)
+        guard remaining > .zero else { return }
+        let parts = remaining.components
+        let millis = min(250, max(1, parts.seconds > 0 ? 250 : parts.attoseconds / 1_000_000_000_000_000))
+        var descriptor = pollfd(fd: fd, events: events, revents: 0)
+        let result = poll(&descriptor, 1, Int32(millis))
+        if result < 0 && errno != EINTR { throw SurfaceProtocolError.unexpectedEnd }
+        if descriptor.revents & Int16(POLLNVAL) != 0 { throw SurfaceProtocolError.unexpectedEnd }
     }
 
     func run(path: String, cols: Int, rows: Int, cellWidth: Int, cellHeight: Int,
              onReady: () -> Void, onSurface: (HerdrSurface) -> Void,
              onAgents: ((HerdrAgentProjection) -> Void)? = nil) throws {
-        let connected = try HerdrSocket.open(path: path)
+        let connected = try HerdrSocket.open(path: path, nonBlocking: true)
         lock.lock()
         fd = connected
         let wasCancelled = cancelled
         lock.unlock()
         defer {
             lock.lock()
+            cancelled = true
             fd = -1
             bootID = nil
+            _ = shutdown(connected, SHUT_RDWR)
             lock.unlock()
             close(connected)
         }
@@ -1037,10 +1116,30 @@ final class HerdrSurfaceStream {
         var agents = HerdrAgentProjectionDecoder()
         var welcomed = false
         var supportsAgentView = false
+        var supportsHealth = false
+        var startupComplete = false
+        let handshakeDeadline = ContinuousClock.now + timeouts.handshake
+        var nextPing = ContinuousClock.now + timeouts.healthInterval
+        var probe: (token: String, deadline: ContinuousClock.Instant)?
+        func checkHealth() throws {
+            try checkConnection()
+            let now = ContinuousClock.now
+            if !startupComplete && now >= handshakeDeadline { throw SurfaceProtocolError.timedOut("handshake") }
+            guard welcomed && supportsHealth else { return }
+            if let probe {
+                if now >= probe.deadline { throw SurfaceProtocolError.timedOut("health reply") }
+            } else if now >= nextPing {
+                let token = UUID().uuidString
+                guard send(SurfaceWriter.control(kind: "endpoint.health.ping.v1", data: token)) else {
+                    throw SurfaceProtocolError.unexpectedEnd
+                }
+                probe = (token, now + timeouts.healthReply)
+            }
+        }
         let metrics = TerminalPipelineMetrics.shared
         let recorder = TerminalSurfaceTraceRecorder.shared
-        while !isCancelled {
-            let frame = try readFrame(fd: connected)
+        while true {
+            let frame = try readFrame(fd: connected, checkHealth: checkHealth)
             let receivedAt = TerminalPipelineMetrics.now()
             var reader = SurfaceReader(bytes: frame)
             let tag = try reader.number()
@@ -1060,7 +1159,15 @@ final class HerdrSurfaceStream {
                         throw SurfaceProtocolError.incompatible("Herdr rejected surface endpoint")
                     }
                     welcomed = true
-                    supportsAgentView = (welcome["capabilities"] as? [String] ?? []).contains("agent_view_projection")
+                    let capabilities = welcome["capabilities"] as? [String] ?? []
+                    supportsAgentView = capabilities.contains("agent_view_projection")
+                    supportsHealth = capabilities.contains("health_check")
+                    nextPing = ContinuousClock.now + timeouts.healthInterval
+                } else if welcomed, supportsHealth, kind == "endpoint.health.pong.v1" {
+                    if data == probe?.token {
+                        probe = nil
+                        nextPing = ContinuousClock.now + timeouts.healthInterval
+                    }
                 } else if welcomed, kind == HerdrSurfaceDecoder.scrollKind {
                     recorder?.record(Data(frame), at: receivedAt)
                     let decodeStart = TerminalPipelineMetrics.now()
@@ -1079,6 +1186,7 @@ final class HerdrSurfaceStream {
                     let changedBoot = bootID != boot
                     bootID = boot
                     lock.unlock()
+                    startupComplete = true
                     if changedBoot { onReady() }
                 }
                 if welcomed, supportsAgentView, let onAgents {
@@ -1098,27 +1206,34 @@ final class HerdrSurfaceStream {
         }
     }
 
-    private var isCancelled: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return cancelled
-    }
-
-    /// Reads one frame straight into the bytes the decoder reads, without an intermediate copy.
-    private func readFrame(fd: Int32) throws -> [UInt8] {
-        let header = try readExactly(fd: fd, count: 4)
+    /// Reads directly into the decoder's buffer. The first byte starts one deadline for the
+    /// entire frame, so a trickling header or payload cannot postpone recovery indefinitely.
+    private func readFrame(fd: Int32, checkHealth: () throws -> Void) throws -> [UInt8] {
+        var deadline: ContinuousClock.Instant?
+        let header = try readExactly(fd: fd, count: 4, deadline: &deadline, checkHealth: checkHealth)
         let length = header.enumerated().reduce(UInt32(0)) { $0 | (UInt32($1.element) << ($1.offset * 8)) }
         guard length > 0, length <= 32 * 1024 * 1024 else { throw SurfaceProtocolError.invalidFrame }
-        return try readExactly(fd: fd, count: Int(length))
+        return try readExactly(fd: fd, count: Int(length), deadline: &deadline, checkHealth: checkHealth)
     }
 
-    private func readExactly(fd: Int32, count: Int) throws -> [UInt8] {
+    private func readExactly(fd: Int32, count: Int, deadline: inout ContinuousClock.Instant?,
+                             checkHealth: () throws -> Void) throws -> [UInt8] {
         try [UInt8](unsafeUninitializedCapacity: count) { bytes, initialized in
             guard let base = bytes.baseAddress else { return }
             while initialized < count {
+                try checkHealth()
+                if let deadline, ContinuousClock.now >= deadline { throw SurfaceProtocolError.timedOut("frame") }
                 let amount = Darwin.read(fd, base.advanced(by: initialized), count - initialized)
-                if amount <= 0 { throw SurfaceProtocolError.unexpectedEnd }
-                initialized += amount
+                if amount > 0 {
+                    if deadline == nil { deadline = ContinuousClock.now + timeouts.frame }
+                    initialized += amount
+                    continue
+                }
+                if amount < 0 && errno == EINTR { continue }
+                guard amount < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) else {
+                    throw SurfaceProtocolError.unexpectedEnd
+                }
+                try wait(fd: fd, events: Int16(POLLIN), until: deadline)
             }
         }
     }

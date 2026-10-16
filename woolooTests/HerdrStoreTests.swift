@@ -898,6 +898,125 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertFalse(requests.contains { $0.method == "tab.focus" || $0.method == "pane.focus" })
     }
 
+    func testEventLossEOFResubscribesBeforeTakingAnAuthoritativeSnapshot() async {
+        await connect()
+        XCTAssertEqual(store.snapshot?.workspaces.first?.label, "project")
+        state.update { $0.workspaces[0]["label"] = "changed during the gap" }
+        server.loseEvents()
+        // No workspace event announces this change: only the post-ack snapshot can recover it.
+        await waitUntil("resubscribed and caught up") {
+            store.snapshot?.workspaces.first?.label == "changed during the gap" && store.errorMessage == nil
+        }
+        XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 2)
+        let methods = server.requests.map(\.method)
+        let secondSubscription = methods.lastIndex(of: "events.subscribe")!
+        XCTAssertTrue(methods.dropFirst(secondSubscription + 1).contains("session.snapshot"))
+        XCTAssertTrue(store.isConnected)
+    }
+
+    func testStalledSurfaceClearsProjectionFallsBackAndRestoresLatestFocusAndSize() async throws {
+        store = HerdrStore(endpointTimeouts: HerdrEndpointTimeouts(frame: .milliseconds(400)))
+        var snapshot = AgentViewFixture.snapshot([AgentViewFixture.agent("w1:p1")])
+        snapshot["workspaces"] = [["workspace_id": "w1", "git_ahead_behind": [2, 1]]]
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               welcome: ["capabilities": ["agent_view_projection"]], afterHello: [
+            FakeSurfaceEndpoint.control("shell.snapshot.v1", String(decoding: try AgentViewFixture.data(snapshot), as: UTF8.self)),
+            SurfaceModel(width: 4, height: 2).surfaceFrame()
+        ])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface and projection") { store.surface != nil && store.agentViewState != nil }
+        XCTAssertEqual(store.workspaceGitStatuses["w1"]?.ahead, 2)
+        store.select(tabID: "w1:t2")
+        store.resizeSurface(cols: 100, rows: 30, cellWidth: 9, cellHeight: 18)
+        endpoint.sendPartialHeader()
+        await waitUntil("stale state cleared") {
+            store.surface == nil && store.agentViewState == nil && store.workspaceGitStatuses.isEmpty
+                && store.surfaceError != nil
+        }
+        await waitUntil("text fallback resumed") { store.paneText["w1:p3"] != nil }
+        endpoint.stop()
+        var next = SurfaceModel(width: 100, height: 30)
+        next.paneID = "w1:p3"
+        let replacement = try FakeSurfaceEndpoint(path: store.clientSocketPath, afterHello: [next.surfaceFrame()])
+        defer { replacement.stop() }
+        await waitUntil("fresh surface") { store.surface?.paneIDs == ["w1:p3"] && store.surfaceError == nil }
+        await waitUntil("selection restored") { Self.requests(in: replacement).contains { $0.method == "pane.focus" } }
+        XCTAssertEqual(store.selectedTabID, "w1:t2")
+        XCTAssertEqual(store.selectedPaneID, "w1:p3")
+        let requests = Self.requests(in: replacement)
+        XCTAssertTrue(requests.contains { $0.method == "tab.focus" && $0.params["tab_id"] as? String == "w1:t2" })
+        XCTAssertTrue(requests.contains { $0.method == "pane.focus" && $0.params["pane_id"] as? String == "w1:p3" })
+        var hello = SurfaceReaderProbe(try XCTUnwrap(replacement.received.first))
+        _ = hello.number(); _ = hello.string()
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(hello.string().utf8)) as? [String: Any])
+        XCTAssertEqual(json["surface_size"] as? [String: Int], ["cols": 100, "rows": 30])
+        XCTAssertEqual(json["cell_width_px"] as? Int, 9)
+        XCTAssertEqual(json["cell_height_px"] as? Int, 18)
+    }
+
+    func testResizeDuringStartupIsSentAfterTheFirstSnapshot() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath, afterHello: [], sendsSnapshot: false)
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("hello received") { !endpoint.received.isEmpty }
+        store.resizeSurface(cols: 111, rows: 33, cellWidth: 9, cellHeight: 18)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(endpoint.received.contains { $0.first == 12 }, "Resize waits for a ready endpoint")
+        endpoint.send(FakeSurfaceEndpoint.control("shell.snapshot.v1", #"{"boot_id":"boot-test"}"#))
+        await waitUntil("latest viewport sent") { endpoint.received.contains { $0.first == 12 } }
+        XCTAssertEqual(endpoint.received.filter { $0.first == 12 }.map(Array.init), [[12, 9, 18, 111, 33, 0]])
+    }
+
+    func testWelcomeStallUsesRetryLoopWithoutRestartingTheStore() async throws {
+        store = HerdrStore(endpointTimeouts: HerdrEndpointTimeouts(handshake: .milliseconds(300)))
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath, afterHello: [],
+                                               sendsWelcome: false, sendsSnapshot: false)
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("handshake timeout") { store.surfaceError?.contains("handshake") == true }
+        endpoint.stop()
+        let replacement = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                                  afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { replacement.stop() }
+        await waitUntil("retry recovered") { store.surface != nil && store.surfaceError == nil }
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+    }
+
+    func testSessionSwitchInterruptsStalledWriterAndRejectsOldCallbacks() async throws {
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               welcome: ["capabilities": ["agent_view_projection"]],
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()], readsClient: false)
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surface != nil }
+        store.sendPaste(String(repeating: "x", count: 8 * 1024 * 1024), to: "w1:p1")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let previousSession = store.sessionName
+        defer { UserDefaults.standard.set(previousSession, forKey: "HerdrLastSession") }
+        let nextSession = "recovery-" + UUID().uuidString.prefix(8)
+        let nextPath = root.appendingPathComponent("sessions/\(nextSession)/herdr.sock").path
+        let nextServer = try FakeHerdrServer(path: nextPath) { method, _ in
+            method == "session.snapshot" ? fakeSnapshot(label: "new session", paneIDs: ["w1:p9"]) : ["result": [:]]
+        }
+        defer { nextServer.stop() }
+        let nextEndpoint = try FakeSurfaceEndpoint(path: root.appendingPathComponent("sessions/\(nextSession)/herdr-client.sock").path,
+                                                   afterHello: [])
+        defer { nextEndpoint.stop() }
+        let before = ContinuousClock.now
+        store.connect(to: nextSession)
+        XCTAssertLessThan(before.duration(to: .now), .seconds(1))
+        await waitUntil("new session") { store.snapshot?.workspaces.first?.label == "new session" }
+        // The old peer is still alive; any buffered old-generation state must stay excluded.
+        endpoint.send(SurfaceModel(width: 4, height: 2).surfaceFrame())
+        endpoint.send(FakeSurfaceEndpoint.control("shell.snapshot.v1", String(decoding: try AgentViewFixture.data(AgentViewFixture.snapshot([])), as: UTF8.self)))
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertNil(store.surface)
+        XCTAssertNil(store.agentViewState)
+        XCTAssertTrue(store.workspaceGitStatuses.isEmpty)
+        XCTAssertEqual(store.selectedPaneID, "w1:p9")
+    }
+
     /// An event line over the size limit drops the subscription with an error, and the store reconnects.
     func testOversizedEventReconnects() async {
         await connect()

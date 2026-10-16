@@ -55,6 +55,19 @@ final class FakeHerdrServer {
         for fd in targets { write(object, to: fd) }
     }
 
+    /// Models Herdr's events_lost contract: report the gap and close the subscription.
+    func loseEvents() {
+        let targets = lock.withLock { subscribers.compactMap { fd -> Int32? in
+            let copy = dup(fd)
+            return copy >= 0 ? copy : nil
+        } }
+        for fd in targets {
+            write(["error": ["code": "events_lost", "message": "subscriber fell behind"]], to: fd)
+            shutdown(fd, SHUT_RDWR)
+            close(fd)
+        }
+    }
+
     func stop() {
         lock.lock()
         stopped = true
@@ -87,7 +100,13 @@ final class FakeHerdrServer {
     }
 
     private func serve(_ fd: Int32) {
-        defer { close(fd) }
+        defer {
+            lock.withLock {
+                connections.removeAll { $0 == fd }
+                subscribers.removeAll { $0 == fd }
+            }
+            close(fd)
+        }
         var buffer = Data()
         var byte: UInt8 = 0
         while read(fd, &byte, 1) == 1 {

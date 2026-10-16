@@ -252,7 +252,7 @@ enum HerdrSocketError: LocalizedError {
 
 enum HerdrSocket {
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
-    static func open(path: String) throws -> Int32 {
+    static func open(path: String, nonBlocking: Bool = false) throws -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw HerdrSocketError.message(String(cString: strerror(errno))) }
         var noSignal: Int32 = 1
@@ -260,6 +260,11 @@ enum HerdrSocket {
             _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, pointer, socklen_t(MemoryLayout<Int32>.size))
         }
 
+        if nonBlocking, fcntl(fd, F_SETFL, O_NONBLOCK) == -1 {
+            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            close(fd)
+            throw error
+        }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(path.utf8) + [0]
@@ -276,7 +281,7 @@ enum HerdrSocket {
                 connect(fd, $0, addressLength)
             }
         }
-        guard connectionResult == 0 else {
+        guard connectionResult == 0 || (nonBlocking && errno == EINPROGRESS) else {
             let code = errno
             let message = String(cString: strerror(code))
             close(fd)
@@ -716,7 +721,10 @@ final class HerdrStore: ObservableObject {
     /// updates the window per event.
     private var publishRecorder: AnyCancellable?
 
-    init() {
+    private let endpointTimeouts: HerdrEndpointTimeouts
+
+    init(endpointTimeouts: HerdrEndpointTimeouts = HerdrEndpointTimeouts()) {
+        self.endpointTimeouts = endpointTimeouts
         snapshotPublisher = publishedSnapshots.eraseToAnyPublisher()
         reloadAgentViewSettings()
         if let metrics = TerminalPipelineMetrics.shared {
@@ -851,10 +859,11 @@ final class HerdrStore: ObservableObject {
             }
         }
         let surfacePath = clientSocketPath
+        let endpointTimeouts = self.endpointTimeouts
         surfaceTask = Task.detached(priority: .utility) { [weak self] in
             guard let store = self else { return }
             while !Task.isCancelled {
-                let stream = HerdrSurfaceStream()
+                let stream = HerdrSurfaceStream(timeouts: endpointTimeouts)
                 let mailbox = HerdrSurfaceMailbox()
                 let size = await MainActor.run { () -> (Int, Int, Int, Int)? in
                     guard store.generation == currentGeneration else { return nil }
@@ -875,6 +884,12 @@ final class HerdrStore: ObservableObject {
                                        cellWidth: size.2, cellHeight: size.3) {
                             Task { @MainActor in
                                 guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
+                                // Resizes during startup were retained locally while the endpoint
+                                // was not ready. Reconcile them with the provisional hello size.
+                                if (store.surfaceCols, store.surfaceRows, store.cellWidth, store.cellHeight) != size {
+                                    stream.resize(cols: store.surfaceCols, rows: store.surfaceRows,
+                                                  cellWidth: store.cellWidth, cellHeight: store.cellHeight)
+                                }
                                 if let tabID = store.selectedTabID {
                                     stream.focus(tabID: tabID)
                                 } else if let workspaceID = store.selectedWorkspaceID {
@@ -906,7 +921,9 @@ final class HerdrStore: ObservableObject {
                     }
                 } catch {
                     await MainActor.run {
-                        guard store.generation == currentGeneration else { return }
+                        guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
+                        // Invalidate queued callbacks before clearing the last surface and projection.
+                        store.surfaceStream = nil
                         store.setSurface(nil)
                         store.resetAgentView()
                         // Retried every second while the endpoint is missing.
