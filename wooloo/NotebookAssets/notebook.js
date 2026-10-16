@@ -213,23 +213,42 @@
         const text = groups.map(element => leaves(element).map(leaf => leaf.textContent).join(""));
         post({kind:"search", revision, text});
     };
-    const rangeFor = (element, lower, upper) => {
-        const range = document.createRange();let position = 0, started = false;
-        for (const leaf of leaves(element)) {
-            const end = position + leaf.length;
-            if (!started && lower < end) {range.setStart(leaf, Math.max(0, lower - position));started = true;}
-            if (started && upper <= end) {range.setEnd(leaf, Math.max(0, upper - position));return range;}
-            position = end;
+    const rangeFor = (element, lower, upper, cache) => {
+        let index = cache.get(element);
+        if (!index) {
+            let position = 0;
+            index = leaves(element).map(node => {
+                const start = position;position += node.length;
+                return {node, start, end: position};
+            });
+            cache.set(element, index);
         }
-        return null;
+        // DOM ranges and native Find both use UTF-16 offsets. At a node boundary,
+        // start in the next nonempty leaf, but end in the preceding leaf.
+        const locate = (offset, isEnd) => {
+            let low = 0, high = index.length;
+            while (low < high) {
+                const mid = (low + high) >>> 1;
+                if (index[mid].end < offset || (!isEnd && index[mid].end === offset)) low = mid + 1;
+                else high = mid;
+            }
+            return index[low];
+        };
+        const first = locate(lower, false), last = locate(upper, true);
+        if (!first || !last || lower < 0 || upper <= lower) return null;
+        const range = document.createRange();
+        range.setStart(first.node, lower - first.start);range.setEnd(last.node, upper - last.start);
+        return range;
     };
     const setFind = (next, selected, reveal) => {
         CSS.highlights?.delete("notebook-find");CSS.highlights?.delete("notebook-current");
         root.querySelectorAll(".find-active").forEach(element => element.classList.remove("find-active"));
-        const ranges = [], active = [];
+        // Index each matched group once per call, rather than walking a large output
+        // for every match. Keeping the cache local also handles replaced MIME nodes.
+        const ranges = [], active = [], cache = new Map();
         for (const match of next) {
             const element = groups[match.block];if (!element) continue;
-            const range = rangeFor(element, match.lower, match.upper);if (!range) continue;
+            const range = rangeFor(element, match.lower, match.upper, cache);if (!range) continue;
             ranges.push(range);
             if (match.index === selected) {
                 active.push(range);element.classList.add("find-active");
