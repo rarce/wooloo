@@ -24,6 +24,7 @@ struct WorkspaceDocumentSnapshot: Codable {
     var scrollPosition: CGPoint
     /// Missing in sessions saved before line wrapping.
     var scrollAnchor: EditorScrollAnchor?
+    var syntaxOverride: String?
     var hasBackup: Bool
     var text: String?
     var savedText: String?
@@ -47,6 +48,7 @@ struct WorkspaceDocumentSnapshot: Codable {
         cursorPositions = document.cursorPositions
         scrollPosition = document.scrollPosition
         scrollAnchor = document.scrollAnchor
+        syntaxOverride = document.syntaxOverride
         // A tab whose file was deleted keeps the only copy of its text.
         hasBackup = document.isDirty || document.isUntitled || document.isDeletedOnDisk
         text = hasBackup ? document.text : nil
@@ -103,6 +105,7 @@ struct WorkspaceDocumentSnapshot: Codable {
             result.scrollPosition = CGPoint(x: max(0, scrollPosition.x), y: max(0, scrollPosition.y))
         }
         result.scrollAnchor = scrollAnchor
+        result.syntaxOverride = EditorSyntax.named(syntaxOverride)?.id
         return result
     }
 }

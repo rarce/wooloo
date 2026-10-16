@@ -58,6 +58,7 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
         cursorPositions: Binding<[CursorPosition]>,
         useThemeBackground: Bool = true,
         highlightProviders: [HighlightProviding] = [TreeSitterClient()],
+        highlightingID: String? = nil,
         contentInsets: NSEdgeInsets? = nil,
         isEditable: Bool = true,
         isSelectable: Bool = true,
@@ -79,6 +80,7 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
         self.editorOverscroll = editorOverscroll
         self.cursorPositions = cursorPositions
         self.highlightProviders = highlightProviders
+        self.highlightingID = highlightingID
         self.contentInsets = contentInsets
         self.isEditable = isEditable
         self.isSelectable = isSelectable
@@ -133,6 +135,7 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
         cursorPositions: Binding<[CursorPosition]>,
         useThemeBackground: Bool = true,
         highlightProviders: [HighlightProviding] = [TreeSitterClient()],
+        highlightingID: String? = nil,
         contentInsets: NSEdgeInsets? = nil,
         isEditable: Bool = true,
         isSelectable: Bool = true,
@@ -154,6 +157,7 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
         self.editorOverscroll = editorOverscroll
         self.cursorPositions = cursorPositions
         self.highlightProviders = highlightProviders
+        self.highlightingID = highlightingID
         self.contentInsets = contentInsets
         self.isEditable = isEditable
         self.isSelectable = isSelectable
@@ -180,6 +184,8 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
     package var cursorPositions: Binding<[CursorPosition]>
     private var useThemeBackground: Bool
     private var highlightProviders: [HighlightProviding]
+    /// wooloo patch: custom providers can change without replacing the editor and its undo stack.
+    private var highlightingID: String?
     private var contentInsets: NSEdgeInsets?
     private var isEditable: Bool
     private var isSelectable: Bool
@@ -214,6 +220,7 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
             undoManager: undoManager,
             coordinators: coordinators
         )
+        controller.highlightingID = highlightingID
         switch text {
         case .binding(let binding):
             controller.textView.setText(binding.wrappedValue)
@@ -281,7 +288,13 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
             controller.isSelectable = isSelectable
         }
 
-        if controller.language.id != language.id {
+        if controller.highlightingID != highlightingID {
+            controller.language = language
+            controller.highlightingID = highlightingID
+            controller.highlightProviders = highlightProviders
+            controller.treeSitterClient = highlightProviders.compactMap { $0 as? TreeSitterClient }.first
+            controller.setUpHighlighter()
+        } else if controller.language.id != language.id {
             controller.language = language
         }
 
@@ -321,6 +334,7 @@ public struct CodeEditSourceEditor: NSViewControllerRepresentable {
         controller.editorOverscroll == editorOverscroll &&
         controller.contentInsets == contentInsets &&
         controller.language.id == language.id &&
+        controller.highlightingID == highlightingID &&
         controller.theme == theme &&
         controller.indentOption == indentOption &&
         controller.tabWidth == tabWidth &&

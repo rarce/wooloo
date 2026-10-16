@@ -114,6 +114,8 @@ public class TextViewController: NSViewController {
     public var useThemeBackground: Bool
 
     /// The provided highlight provider.
+    // wooloo patch: identifies custom highlighting independent of the Tree-sitter language.
+    var highlightingID: String?
     public var highlightProviders: [HighlightProviding]
 
     /// Optional insets to offset the text view in the scroll view by.
