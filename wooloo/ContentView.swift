@@ -344,6 +344,22 @@ struct ContentView: View {
                                     Text(workspace.label)
                                         .lineLimit(1)
                                     Spacer(minLength: 0)
+                                    if let git = herdr.workspaceGitStatuses[workspace.workspaceID] {
+                                        HStack(spacing: 4) {
+                                            if git.ahead > 0 {
+                                                Text("↑\(git.ahead)")
+                                                    .help("\(git.ahead) commits to push")
+                                            }
+                                            if git.behind > 0 {
+                                                Text("↓\(git.behind)")
+                                                    .help("\(git.behind) commits to pull")
+                                            }
+                                        }
+                                        .font(.system(size: typography.secondary))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize()
+                                    }
                                     let marks = notifier.attentionCount(inWorkspace: workspace.workspaceID,
                                                                         snapshot: herdr.snapshot)
                                     HerdrAttentionBadge(requests: marks.requests, done: marks.done)
