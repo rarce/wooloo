@@ -190,6 +190,8 @@ struct HerdrShortcutMap {
         case consumed
     }
 
+    static let defaultPrefix = "cmd+ctrl+b"
+
     let prefixLabel: String
     let labels: [String: [String]]
     private let prefix: HerdrKeyChord
@@ -197,9 +199,10 @@ struct HerdrShortcutMap {
     private let prefixed: [HerdrKeyChord: String]
 
     init(document: HerdrConfigDocument) {
-        let requestedPrefix = document.string(section: "keys", key: "prefix", default: "ctrl+b")
-        prefixLabel = requestedPrefix
-        prefix = HerdrKeyChord(requestedPrefix) ?? HerdrKeyChord("ctrl+b")!
+        let requestedPrefix = document.string(section: "keys", key: "prefix", default: Self.defaultPrefix)
+        let resolvedPrefix = HerdrKeyChord(requestedPrefix)
+        prefixLabel = resolvedPrefix == nil ? Self.defaultPrefix : requestedPrefix
+        prefix = resolvedPrefix ?? HerdrKeyChord(Self.defaultPrefix)!
         var direct: [HerdrKeyChord: String] = [:]
         var prefixed: [HerdrKeyChord: String] = [:]
         var labels: [String: [String]] = [:]
@@ -263,6 +266,9 @@ struct HerdrShortcutMap {
     func match(_ event: NSEvent, prefixPending: Bool) -> Match {
         let candidates = HerdrKeyChord.candidates(for: event)
         if prefixPending {
+            // Like tmux: repeat a terminal prefix to send it. Command prefixes only cancel;
+            // passing them through AppKit would match the prefix again in keyDown.
+            if candidates.contains(prefix) { return prefix.modifiers & 8 == 0 ? .pass : .consumed }
             if candidates.contains(where: { $0.key == "esc" }) { return .consumed }
             for chord in candidates {
                 if let action = prefixed[chord] { return .action(action) }

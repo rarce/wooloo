@@ -59,7 +59,7 @@ final class CommandPaletteTests: XCTestCase {
         oneTab.tabCount = 1
         XCTAssertTrue(WoolooCommandItem.named("rename_tab")!.isAvailable(oneTab))
         XCTAssertFalse(WoolooCommandItem.named("next_tab")!.isAvailable(oneTab), "Cycling needs two tabs")
-        XCTAssertFalse(WoolooCommandItem.named("close_tab")!.isAvailable(oneTab), "The last tab is not closed")
+        XCTAssertTrue(WoolooCommandItem.named("close_tab")!.isAvailable(oneTab), "The last tab asks about closing its Space")
     }
 
     func testEditorCommandsNeedAnOpenFileAndCursorsItsSource() {

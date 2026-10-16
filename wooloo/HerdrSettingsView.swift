@@ -246,10 +246,11 @@ struct HerdrSettingsView: View {
                 }
             }
         case .shortcuts:
-            description("Press the prefix, release it, then press the action key. These bindings follow Herdr's [keys] format and apply in the wooloo terminal. Separate alternatives with commas.")
+            description("Press the prefix, release it, then press the action key. These bindings follow Herdr's [keys] format and apply in the wooloo terminal. Separate alternatives with commas. Wooloo defaults to ⌃⌘B to leave agent Control shortcuts available. Press a non-Command prefix twice to send it to the terminal.")
             settingsGroup("Key bindings") {
-                field("Prefix", hint: "Default: ctrl+b. One direct chord, such as ctrl+a.") {
-                    TextField("ctrl+b", text: string("keys", "prefix", default: "ctrl+b"))
+                field("Prefix", hint: "Wooloo default: cmd+ctrl+b. Explicit Herdr prefixes are preserved.") {
+                    TextField(HerdrShortcutMap.defaultPrefix,
+                              text: string("keys", "prefix", default: HerdrShortcutMap.defaultPrefix))
                         .textFieldStyle(.roundedBorder)
                 }
                 ForEach(HerdrShortcutDefinition.supported) { definition in

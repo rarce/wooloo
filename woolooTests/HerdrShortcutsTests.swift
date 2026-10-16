@@ -20,12 +20,40 @@ final class HerdrShortcutsTests: XCTestCase {
     }
 
     func testDefaultPrefixThenKeyRunsTheAction() {
-        guard case .prefix = defaults.match(key("\u{2}", ignoringModifiers: "b", code: 11, .control), prefixPending: false) else {
-            return XCTFail("ctrl+b should start the prefix")
+        guard case .prefix = defaults.match(key("\u{2}", ignoringModifiers: "b", code: 11, [.control, .command]), prefixPending: false) else {
+            return XCTFail("ctrl+cmd+b should start the prefix")
         }
         XCTAssertEqual(action(defaults.match(key("c"), prefixPending: true)), "new_tab")
         XCTAssertEqual(action(defaults.match(key("-"), prefixPending: true)), "split_horizontal")
         XCTAssertEqual(action(defaults.match(key("N", ignoringModifiers: "N", .shift), prefixPending: true)), "new_workspace")
+    }
+
+    func testAgentControlAndOptionShortcutsPassWithoutPrefix() {
+        for letter in ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"] {
+            for flags: NSEvent.ModifierFlags in [.control, .option] {
+                guard case .pass = defaults.match(key(letter, flags), prefixPending: false) else {
+                    return XCTFail("Agent shortcut intercepted: \(flags) + \(letter)")
+                }
+            }
+        }
+        for event in [key("\t", code: 48, .shift), key("\r", code: 36, .shift), key("\u{1b}", code: 53)] {
+            guard case .pass = defaults.match(event, prefixPending: false) else {
+                return XCTFail("Agent navigation key intercepted")
+            }
+        }
+    }
+
+    func testRepeatingConfiguredPrefixPassesItToTerminal() {
+        let map = HerdrShortcutMap(document: HerdrConfigDocument(text: "[keys]\nprefix = \"ctrl+b\""))
+        guard case .pass = map.match(key("\u{2}", ignoringModifiers: "b", .control), prefixPending: true) else {
+            return XCTFail("A repeated prefix belongs to the program")
+        }
+    }
+
+    func testRepeatingCommandPrefixCancelsWithoutRoutingItThroughAppKitAgain() {
+        guard case .consumed = defaults.match(key("b", [.control, .command]), prefixPending: true) else {
+            return XCTFail("Repeating a native Command prefix should cancel it")
+        }
     }
 
     func testTabNumbersSwitchTabs() {
@@ -73,16 +101,16 @@ final class HerdrShortcutsTests: XCTestCase {
         XCTAssertNil(action(map.match(key("c"), prefixPending: true)))
     }
 
-    func testInvalidPrefixFallsBackToCtrlB() {
+    func testInvalidPrefixFallsBackToCommandControlB() {
         let map = HerdrShortcutMap(document: HerdrConfigDocument(text: "[keys]\nprefix = \"hyper+x\"\n"))
-        guard case .prefix = map.match(key("\u{2}", ignoringModifiers: "b", code: 11, .control), prefixPending: false) else {
-            return XCTFail("An unreadable prefix should fall back to ctrl+b")
+        guard case .prefix = map.match(key("\u{2}", ignoringModifiers: "b", code: 11, [.control, .command]), prefixPending: false) else {
+            return XCTFail("An unreadable prefix should fall back to ctrl+cmd+b")
         }
     }
 
     func testDisplayLabelsUseMacSymbols() {
-        XCTAssertEqual(defaults.displayLabel(for: "split_horizontal"), "⌃B -")
-        XCTAssertEqual(defaults.displayLabel(for: "new_workspace"), "⌃B ⇧N")
+        XCTAssertEqual(defaults.displayLabel(for: "split_horizontal"), "⌃⌘B -")
+        XCTAssertEqual(defaults.displayLabel(for: "new_workspace"), "⌃⌘B ⇧N")
         let map = HerdrShortcutMap(document: HerdrConfigDocument(text: "[keys]\nzoom = \"cmd+option+enter\"\n"))
         XCTAssertEqual(map.displayLabel(for: "zoom"), "⌥⌘↩")
         XCTAssertNil(map.displayLabel(for: "unknown"))

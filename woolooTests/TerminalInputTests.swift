@@ -592,6 +592,25 @@ final class TerminalKeyInputTests: XCTestCase {
         }
     }
 
+    func testAgentCtrlBAndRepeatedCustomPrefixReachTheTerminal() throws {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        var keys: [String] = []
+        var prefixes: [Bool] = []
+        view.sendKey = { key, _ in keys.append(key) }
+        view.onPrefixChanged = { prefixes.append($0) }
+        let ctrlB = try event(11, "\u{2}", ignoring: "b", flags: .control)
+        view.keyDown(with: ctrlB)
+        XCTAssertEqual(keys, ["ctrl+b"])
+        view.shortcutMap = HerdrShortcutMap(document: HerdrConfigDocument(text: "[keys]\nprefix = \"ctrl+b\""))
+        view.keyDown(with: ctrlB)
+        XCTAssertEqual(keys, ["ctrl+b"])
+        view.keyDown(with: ctrlB)
+        XCTAssertEqual(keys, ["ctrl+b", "ctrl+b"])
+        XCTAssertEqual(prefixes, [true, false])
+        view.keyDown(with: try event(8, "\u{3}", ignoring: "c", flags: .control))
+        XCTAssertEqual(keys.last, "ctrl+c", "The repeated prefix must clear the pending state")
+    }
+
     func testPlainTypingDeadKeysAndCompositionStayWithAppKit() throws {
         XCTAssertNil(TerminalKeyInput.name(for: try event(0, "a")))
         XCTAssertNil(TerminalKeyInput.name(for: try event(0, "A", flags: .shift)))
