@@ -1215,6 +1215,21 @@ final class WorkspaceHerdrCommandTests: XCTestCase {
         XCTAssertEqual(try loggedArguments(), "machine list --json")
     }
 
+    func testAdministrationIncludesDisabledProfiles() throws {
+        XCTAssertEqual(try WorkspaceFiles.machines(includeDisabled: true).map(\.id), ["dev", "old"])
+    }
+
+    func testMachineAdministrationDelegatesToHerdr() throws {
+        try WorkspaceFiles.manageMachine(["add", "dev@example.test", "--remote-session", "project", "--label", "Dev box"])
+        XCTAssertEqual(try loggedArguments(), "machine add dev@example.test --remote-session project --label Dev box")
+        try WorkspaceFiles.manageMachine(["disable", "dev"])
+        XCTAssertEqual(try loggedArguments(), "machine disable dev")
+        try WorkspaceFiles.manageMachine(["rename", "dev", "--label", "Build host"])
+        XCTAssertEqual(try loggedArguments(), "machine rename dev --label Build host")
+        try WorkspaceFiles.manageMachine(["remove", "dev"])
+        XCTAssertEqual(try loggedArguments(), "machine remove dev")
+    }
+
     func testRemoteSnapshotAsksTheMachinesHerdr() throws {
         let machine = HerdrMachineProfile(id: "dev", label: "Dev box", target: "dev@example.test",
                                           session: "default", enabled: true)
