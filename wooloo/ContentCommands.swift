@@ -191,7 +191,8 @@ struct ContentCommands {
             window.fileRefreshVersion += 1
         case .switchSession:
             window.showsSidebar = true
-            window.requestedSessionName = herdr.sessionName
+            window.requestedSessionName = herdr.machine == nil ? herdr.sessionName
+                : UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName
             window.showsSessionPicker = true
         case .renameWorkspace:
             guard let workspace = herdr.selectedWorkspace else { return }
