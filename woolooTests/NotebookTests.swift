@@ -83,6 +83,34 @@ final class NotebookParsingTests: XCTestCase {
         XCTAssertThrowsError(try NotebookDocument.parse(Self.source(cells: Array(repeating: Self.cell("raw"), count: NotebookDocument.maximumCells + 1))))
     }
 
+    func testTruncationPreservesGraphemesAndWarnsOnlyAboveTheLimit() throws {
+        let limit = NotebookDocument.maximumTextCharacters
+        let suffix = "\n… Preview truncated; full data remains in Source view."
+        for value in [String(repeating: "a", count: limit - 1), String(repeating: "a", count: limit),
+                      String(repeating: "a", count: limit + 1),
+                      String(repeating: "a", count: limit - 1) + "👩🏽‍💻Z",
+                      String(repeating: "e\u{301}", count: limit + 1)] {
+            let truncated = value.count > limit
+            let expected = truncated ? String(value.prefix(limit)) + suffix : value
+            var cell = Self.cell("code", source: value, outputs: [
+                ["output_type": "stream", "text": value],
+                ["output_type": "error", "traceback": [value]],
+                ["output_type": "display_data", "data": ["text/plain": value]]])
+            cell["attachments"] = ["evidence.txt": ["text/plain": value]]
+            let original = try Self.source(cells: [cell])
+            let notebook = try NotebookDocument.parse(original)
+            let parsed = notebook.cells[0]
+            XCTAssertTrue(parsed.source == expected)
+            XCTAssertTrue(parsed.outputs[0].text == expected)
+            XCTAssertTrue(parsed.outputs[1].text == expected)
+            XCTAssertTrue(parsed.outputs[2].representations[0].text == expected)
+            XCTAssertTrue(parsed.attachments["evidence.txt"]?[0].text == expected)
+            XCTAssertEqual(notebook.warnings.contains { $0.contains("source is truncated") }, truncated)
+            let decoded = try JSONSerialization.jsonObject(with: Data(original.utf8)) as? [String: Any]
+            XCTAssertTrue((decoded?["cells"] as? [[String: Any]])?[0]["source"] as? String == value)
+        }
+    }
+
     func testNotebookReadAndSaveUseTheSameLargerLimitAndKeepConflictChecks() throws {
         let sandbox = try WorkspaceGitSandbox(); defer { sandbox.tearDown() }
         let original = try Self.source(cells: [Self.cell("code", source: String(repeating: "a", count: 1_100_000))])

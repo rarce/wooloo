@@ -86,9 +86,12 @@ struct NotebookDocument: Encodable, Sendable {
         var identifiers = Set<String>()
         var outputCount = 0
 
-        func bounded(_ value: String) -> String {
-            guard value.count > maximumTextCharacters else { return value }
-            return String(value.prefix(maximumTextCharacters)) + "\n… Preview truncated; full data remains in Source view."
+        func bounded(_ value: String) -> (text: String, truncated: Bool) {
+            // Walk only the displayed prefix. Counting the whole string first is expensive
+            // for multi-megabyte saved output, and the limit is in graphemes, not bytes.
+            guard let end = value.index(value.startIndex, offsetBy: maximumTextCharacters, limitedBy: value.endIndex),
+                  end != value.endIndex else { return (value, false) }
+            return (String(value[..<end]) + "\n… Preview truncated; full data remains in Source view.", true)
         }
 
         func representations(_ data: [String: Any]) -> [Representation] {
@@ -107,7 +110,7 @@ struct NotebookDocument: Encodable, Sendable {
                        let string = String(data: bytes, encoding: .utf8) { result = string }
                     else { result = "Invalid JSON output" }
                 } else { result = multiline(value) ?? "Unsupported output encoding" }
-                return Representation(mime: mime, text: bounded(result), imageID: nil)
+                return Representation(mime: mime, text: bounded(result).text, imageID: nil)
             }
         }
 
@@ -130,7 +133,8 @@ struct NotebookDocument: Encodable, Sendable {
             if !["markdown", "code", "raw"].contains(kind) {
                 warnings.append("Cell \(index + 1) has unsupported type \(kind); its source is shown.")
             }
-            if source.count > maximumTextCharacters { warnings.append("Cell \(index + 1) source is truncated in the preview.") }
+            let previewSource = bounded(source)
+            if previewSource.truncated { warnings.append("Cell \(index + 1) source is truncated in the preview.") }
             let rawOutputs = raw["outputs"] as? [[String: Any]] ?? []
             if kind == "code", raw["outputs"] as? [[String: Any]] == nil {
                 warnings.append("Cell \(index + 1) has invalid outputs; its source is shown.")
@@ -142,12 +146,12 @@ struct NotebookDocument: Encodable, Sendable {
                 switch type {
                 case "stream":
                     return Output(kind: output["name"] as? String == "stderr" ? "stderr" : "stdout",
-                                  text: bounded(multiline(output["text"]) ?? "Invalid stream output"),
+                                  text: bounded(multiline(output["text"]) ?? "Invalid stream output").text,
                                   executionCount: nil, representations: [])
                 case "error":
                     let traceback = (output["traceback"] as? [String])?.joined(separator: "\n") ?? ""
                     let label = [output["ename"] as? String, output["evalue"] as? String].compactMap { $0 }.joined(separator: ": ")
-                    return Output(kind: "error", text: bounded(traceback.isEmpty ? label : traceback),
+                    return Output(kind: "error", text: bounded(traceback.isEmpty ? label : traceback).text,
                                   executionCount: nil, representations: [])
                 case "display_data", "execute_result":
                     return Output(kind: type, text: "", executionCount: integer(output["execution_count"]),
@@ -161,7 +165,7 @@ struct NotebookDocument: Encodable, Sendable {
             for (name, data) in raw["attachments"] as? [String: Any] ?? [:] {
                 if let bundle = data as? [String: Any] { attachments[name] = representations(bundle) }
             }
-            return Cell(id: id, kind: kind, source: bounded(source), executionCount: integer(raw["execution_count"]),
+            return Cell(id: id, kind: kind, source: previewSource.text, executionCount: integer(raw["execution_count"]),
                         outputs: outputs, attachments: attachments)
         }
         var document = NotebookDocument(cells: cells, language: String(language.prefix(100)),

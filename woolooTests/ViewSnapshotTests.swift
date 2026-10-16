@@ -573,6 +573,24 @@ final class ViewSnapshotTests: XCTestCase {
         try markdownTables(style: .document, name: "markdown-tables-document")
     }
 
+    func testNotebookPreview() async throws {
+        try await notebookPreview(style: .theme, name: "notebook-preview")
+    }
+
+    func testNotebookPreviewDocument() async throws {
+        try await notebookPreview(style: .document, name: "notebook-preview-document")
+    }
+
+    private func notebookPreview(style: MarkdownPreviewStyle, name: String) async throws {
+        let harness = NotebookPreviewHarness(try NotebookPreviewFixtures.snapshot, style: style)
+        defer { harness.close() }
+        let web = try await harness.ready()
+        let image = try await harness.capture(web)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+        try assertSnapshot(bitmap, named: name)
+        try skipIfRecorded()
+    }
+
     private func markdownTables(style: MarkdownPreviewStyle, name: String) throws {
         let location = WorkspaceFileLocation(machine: nil, session: "work", workspaceID: "tables",
                                              workspaceLabel: "Tables", root: "/private/tmp")

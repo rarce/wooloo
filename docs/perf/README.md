@@ -516,3 +516,56 @@ Measured on 2026-10-15, Mac16,5, macOS 26.6.2, three repetitions, Document style
 | 12-column table | 2219 → 426 ms | 1324 → 47 ms | 1381 → 95 ms |
 
 `markdown-before.jsonl` holds the pre-change measurements and `markdown-baseline.jsonl` the optimized reference, with SHA-256 fingerprints of the renderer sources. The style comparison also avoids expired unsafe buffer pointers, so changing a heading or table color correctly invalidates the environment. The original single-document Markdown snapshots remain unchanged; the new multi-table snapshots verify consistent alternating row colors and independent table geometry.
+
+
+## Jupyter notebook preview
+
+`scripts/notebook-bench.sh` measures the actual `NotebookPreviewView` in Release, including its 150 ms edit debounce, off-main-thread JSON parsing, WebKit startup, bundled assets, rendered text indexing and the first viewport capture. The source JSON is already in memory; file I/O and Source-editor setup are excluded. A separate `parse` phase measures parsing/projection without WebKit. The other phases match the Markdown suite: resize from 1000×800 to 780×800, cached viewport capture, and scroll to the end of both the page and nested output areas (including horizontal dataframe overflow). Lazy image height changes are included until the final page bottom is reached. WebKit renders in another process, so captures use `WKWebView.takeSnapshot` after layout, fonts and visible image decoding, using its `afterScreenUpdates` paint barrier; AppKit's `cacheDisplay` would not measure the final web content. Capture phases include this synchronization and image-transfer overhead, and are not frame-rate or pure JavaScript timings.
+
+The deterministic format-4.5 fixtures cover 20 Markdown cells, ten Markdown tables, a 100-row HTML dataframe, a 12-column HTML dataframe, 100 mixed math/code/output cells, a multi-megabyte saved stream (display truncation remains active), and twelve saved PNG plots. Every workload runs in both Theme and Document styles, seven times by default to reduce WebKit image-loading variance. The timing test holds a user-initiated, latency-critical activity to avoid App Nap and timer coalescing between windows. The test verifies cell/table/image counts, actual viewport resizing and reaching the bottom, and records input/source SHA-256, cell/DOM-node counts, typography, machine, OS and load. Package resolution stays pinned to the versions in `main`, which are also recorded in the results. It requires neither Python nor a live kernel and does not read private notebooks.
+
+```sh
+scripts/notebook-bench.sh
+scripts/notebook-bench.sh --check
+scripts/notebook-bench.sh --baseline /path/to/reference.jsonl
+scripts/notebook-bench.sh --save-baseline
+WOOLOO_BENCH_REPEAT=5 scripts/notebook-bench.sh --check
+```
+
+The shared preview comparator (`scripts/markdown-perf.py --kind Notebook`) fails `--check` for median increases over both 25% and 10 ms in parsing or synchronous JavaScript range construction. Notebook viewport captures (first render, resize, cached draw, scroll and Find paint) use 25% and 50 ms: unchanged-code controls varied by up to 34 ms in those cross-process captures. Missing/changed workloads or incompatible viewport, typography, renderer or capture protocols also fail. Markdown retains its original 25% / 10 ms gate. Run on the same machine/OS without competing CPU-heavy work. `WOOLOO_DERIVED_DATA` selects the build directory. Notebook rendering/parser/resource tests and the two notebook snapshots run alongside the benchmark; ordinary tests skip timing measurements. A normal interaction test verifies that native Find reaches and expands a collapsed table beyond the first viewport after resizing, then checks the MIME selector.
+
+The stress cases add a compact 5,000-row HTML table with 100, 1,000 and 5,001 Find matches, and a multi-megabyte source cell. Find timings separate synchronous JavaScript range construction (`find-*-ranges`) from the WebKit call through a completed viewport capture (`find-*-paint`). The native `DocumentFindModel` supplies UTF-16 offsets and every resulting highlight is checked against the expected text. This isolates the DOM bottleneck; it excludes the Find-bar event, native regex scan and SwiftUI/coordinator update. The normal interaction tests cover that native update path, collapsed offscreen output, inline-node boundaries, emoji/combining marks and replacement of MIME nodes.
+
+`notebook-before.jsonl` preserves the pre-optimization measurements; `notebook-baseline.jsonl` is the optimized reference. Both use the same fixtures, capture protocol, pinned dependencies and seven repetitions. `notebook-validation.jsonl` repeats the optimized renderer without code changes. The first optimized run raised four image-capture alerts under the initial 10 ms rule; these did not recur. The repeat also moved the 5,001-match Document capture from 21 to 55 ms while synchronous range construction stayed at 6 ms. These controls set the 50 ms capture noise floor; all three runs remain available, including the outliers. The notebook and Markdown suites use different capture paths and must not be compared as equivalent rendering costs. Process memory and CPU usage across WebKit's child processes are not measured here.
+
+Find now indexes each matched group's text leaves once per call and locates match boundaries by binary search. It previously rebuilt and traversed the entire list for every match in a large output. The index remains local to the call so a MIME switch or document render cannot leave stale nodes. MathML accessibility duplicates remain excluded from search.
+
+Text truncation walks only the permitted prefix and reuses the result for the source warning, rather than counting the entire string first (twice for source cells). The 500,000-grapheme limit, suffix and original Source document remain unchanged. Parser tests check below/exact/above-limit inputs, emoji and combining sequences across source, streams, errors, rich output and attachments.
+
+The 150 ms edit debounce, eager cell creation and full rerender on palette changes remain opportunities for separate work. These measurements focus on the verified Find and truncation bottlenecks. Manual local testing also showed that the existing Find reveal logic centers the searchable output group, so an individual selected row in a very tall table can remain offscreen; locating that row is a separate correctness follow-up.
+
+<!-- notebook-measurements -->
+Measured on 2026-10-16, Mac16,5 / macOS 26.6.2, seven repetitions (median). Document style unless specified; timings include the activity and synchronization described above. These local wall-clock values remain sensitive to competing host work.
+
+| Operation | Before → optimized |
+| --- | ---: |
+| Find 100 matches, through capture | 307.4 → 6.4 ms |
+| Find 1,000 matches, through capture | 3027.7 → 8.6 ms |
+| Find 5,001 matches, through capture | 15100.6 → 21.1 ms |
+| Find 5,001 matches, Theme capture | 14874.6 → 64.1 ms |
+| Find 5,001 matches, synchronous JS | 14998.0 → 6.0 ms |
+| Parse 3.2 MB source cell | 416.0 → 44.7 ms |
+| Parse 3.2 MB saved stream | 209.5 → 42.1 ms |
+
+First viewport includes the debounce and parsing; parse is also measured separately and must not be added to it. The following table uses the first optimized run, including its noisier image capture values.
+
+| Workload | First viewport before → after | Parse before → after | Resize after | Cached capture after | Scroll after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 20 Markdown cells | 329.5 → 337.6 ms | 2.5 → 2.8 ms | 4.7 ms | 1.5 ms | 3.3 ms |
+| 10 Markdown tables | 349.6 → 394.4 ms | 2.6 → 3.0 ms | 9.2 ms | 1.8 ms | 2.9 ms |
+| 100-row HTML table | 336.3 → 393.7 ms | 2.6 → 3.6 ms | 12.9 ms | 3.0 ms | 3.7 ms |
+| 12-column HTML table | 336.1 → 362.6 ms | 3.1 → 3.2 ms | 18.1 ms | 2.1 ms | 2.7 ms |
+| 100 mixed cells | 448.6 → 467.2 ms | 3.0 → 2.9 ms | 13.7 ms | 2.3 ms | 5.1 ms |
+| 3.2 MB saved stream | 667.1 → 525.1 ms | 209.5 → 42.1 ms | 12.8 ms | 1.9 ms | 2.7 ms |
+| 12 saved PNG plots | 327.2 → 348.3 ms | 3.1 → 3.9 ms | 19.7 ms | 3.7 ms | 32.7 ms |
+<!-- /notebook-measurements -->
