@@ -2071,7 +2071,12 @@ final class HerdrTerminalTextView: NSTextView {
         super.draggingEnded(sender)
     }
 
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if sender.draggingPasteboard.types?.contains(TerminalTabDrop.panePasteboardType) == true {
+            return tabDropTarget(sender) != nil
+        }
+        return true
+    }
 
     /// NSTextView registers these again whenever it updates its drag types; keep tab drags in.
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
@@ -2117,6 +2122,12 @@ final class HerdrTerminalTextView: NSTextView {
     private func tabDropTarget(_ sender: NSDraggingInfo) -> TerminalTabDropTarget? {
         guard let tabDrop else { return nil }
         let source = sender.draggingPasteboard.string(forType: TerminalTabDrop.panePasteboardType)
+        if source != nil {
+            // Pane IDs are only unique inside a Herdr session. A foreign window may
+            // have the same IDs while referring to entirely different terminals.
+            guard let handle = sender.draggingSource as? TerminalMoveHandle,
+                  let window, handle.window === window else { return nil }
+        }
         guard source != nil || tabDrop.accepts() else { return nil }
         let point = convert(sender.draggingLocation, from: nil)
         let panes = surface.map {
