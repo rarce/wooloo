@@ -35,8 +35,8 @@ enum MarkdownPreviewStyle: String, CaseIterable, Identifiable {
 /// Renders a Markdown document from the Space with MarkdownView, drawing ```mermaid blocks
 /// natively with BeautifulMermaid. Images and links resolve against the Space, locally or over SSH.
 ///
-/// MarkdownView parses and builds the whole document each time its body runs, which takes
-/// hundreds of milliseconds for a long file. Shown with `.equatable()`, the preview runs again
+/// MarkdownView parses the document when its body runs, then builds visible blocks lazily.
+/// Shown with `.equatable()`, the preview runs again
 /// only when what it renders changes, not whenever a parent does; callers then pass callbacks
 /// that stay valid while the preview keeps an earlier copy of them (see `MarkdownPreviewActions`).
 struct MarkdownPreviewView: View, Equatable {
@@ -85,6 +85,13 @@ struct MarkdownPreviewView: View, Equatable {
     private var themed: some View {
         ScrollView {
             markdown(theme: theme)
+                // Keep the original system heading color when lazy blocks inherit the theme foreground.
+                .markdownHeadingStyle(Color(nsColor: .labelColor), for: .h1)
+                .markdownHeadingStyle(Color(nsColor: .labelColor), for: .h2)
+                .markdownHeadingStyle(Color(nsColor: .labelColor), for: .h3)
+                .markdownHeadingStyle(Color(nsColor: .labelColor), for: .h4)
+                .markdownHeadingStyle(Color(nsColor: .labelColor), for: .h5)
+                .markdownHeadingStyle(Color(nsColor: .labelColor), for: .h6)
                 // Block spacing plus heading padding approximates GitHub's 16pt block margins.
                 .markdownBlockSpacing(14)
                 .padding(.top, 12, for: .h1, .h2, .h3)
@@ -137,6 +144,7 @@ struct MarkdownPreviewView: View, Equatable {
 
     private func markdown(theme: WoolooTheme) -> some View {
         MarkdownView(MarkdownSpaceLinks.rewritingImages(in: text, documentPath: path))
+            .markdownLazyBlocks()
             .markdownCodeBlockStyle(WoolooCodeBlockStyle(theme: theme))
             .markdownElementRenderer(.image(SpaceImageRenderer(location: location),
                                             urlScheme: MarkdownSpaceLinks.scheme))

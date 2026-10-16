@@ -37,13 +37,61 @@ public struct MarkdownView: View {
             )
         )
         
-        MarkdownViewRenderer(
-            configuration: configuration,
-            mathContext: parseResult.mathContext,
-            elementRenderers: elementRenderers
-        )
-        .makeBody(for: parseResult.document)
+        Group {
+            if configuration.lazyBlocks {
+                MarkdownDocumentBlocks(document: parseResult.document, configuration: configuration,
+                                       mathContext: parseResult.mathContext, elementRenderers: elementRenderers)
+            } else {
+                MarkdownViewRenderer(configuration: configuration, mathContext: parseResult.mathContext,
+                                     elementRenderers: elementRenderers)
+                    .makeBody(for: parseResult.document)
+            }
+        }
         .font(fonts.body._swiftUIFont)
+    }
+}
+
+// wooloo patch: do not wrap the lazy stack in MarkdownNodeView's fixedSize modifier,
+// which asks for the whole document's ideal height and defeats deferred block layout.
+private struct MarkdownDocumentBlocks: View {
+    let document: Markdown.Document
+    let configuration: MarkdownRendererConfiguration
+    let mathContext: MarkdownMathContext?
+    let elementRenderers: [MarkdownElementRendererRegistration]
+
+    private struct Block: Identifiable {
+        let markup: any Markup
+        var id: MarkdownBlockAnchor { MarkdownBlockAnchor(index: markup.indexInParent) }
+    }
+
+    var body: some View {
+        AnyView(LazyVStack(alignment: .leading, spacing: configuration.blockSpacing) {
+            ForEach(document.children.map { Block(markup: $0) }) { block in
+                content(for: block)
+            }
+        })
+        .environment(\.markdownMathContext, mathContext)
+        .environment(\.markdownElementRenderers, elementRenderers)
+    }
+
+    private func content(for block: Block) -> some View {
+        var renderer = MarkdownViewRenderer(configuration: configuration, mathContext: mathContext,
+                                            elementRenderers: elementRenderers)
+        let node = renderer.visit(block.markup)
+        // Keep the same per-block erasure and modifiers as visitDocument; only the stack is lazy.
+        return MarkdownNodeView {
+            node.modifier(MarkdownRevealSourceGesture(line: block.markup.range?.lowerBound.line))
+                .id(block.id)
+        }.body
+    }
+
+}
+
+extension View {
+    /// Defers top-level block construction until it is needed by a containing ScrollView.
+    /// Blocks retain their source and find anchors; individual tables still lay out every row.
+    nonisolated public func markdownLazyBlocks(_ enabled: Bool = true) -> some View {
+        transformEnvironment(\.markdownRendererConfiguration) { $0.lazyBlocks = enabled }
     }
 }
 
