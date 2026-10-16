@@ -281,9 +281,9 @@ struct WorkspaceBrowserView: View {
                                 onChange: {
                                     loadListing(quietly: true)
                                 },
-                                onOpenWorktree: location.isLocal ? onOpenWorktree : nil,
+                                onOpenWorktree: onOpenWorktree,
                                 onError: { model.operationError = $0 },
-                                spaces: location.isLocal ? snapshot?.workspaces ?? [] : [])
+                                spaces: snapshot?.workspaces ?? [])
             }
         }
         .background(theme.sidebarBackground)
