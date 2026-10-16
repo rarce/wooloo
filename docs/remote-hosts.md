@@ -14,4 +14,6 @@ Open documents, including unsaved edits, are scoped by host, session and Space. 
 
 Preparation runs without a terminal and has a two-minute timeout. If SSH needs a password, host-key confirmation or other interactive authentication, first connect using SSH in Terminal, then retry. Herdr errors are displayed in the manager.
 
-Validation uses a fake Herdr executable in `WorkspaceHerdrCommandTests`; it does not modify the user's saved machines.
+Validation uses a fake Herdr executable in `WorkspaceHerdrCommandTests`, plus isolated API and binary endpoint servers connected through a duplex subprocess bridge in `HerdrStoreTests`. The latter exercises executable discovery, session routing, Spaces, agents, terminal input, tab creation, failed connections and attachment cleanup. `WorkspaceDocumentStoreTests` covers unsaved documents across identically numbered Spaces on different hosts. Tests do not modify the user's saved machines.
+
+The transport follows Herdr 0.9.3’s [saved SSH API and client bridges](https://github.com/herdrdev/herdr/blob/v0.9.3/src/remote/saved.rs).

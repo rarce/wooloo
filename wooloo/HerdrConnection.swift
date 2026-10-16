@@ -793,6 +793,7 @@ final class HerdrStore: ObservableObject {
         snapshot = nil
         paneText = [:]
         lastPaneByTab = [:]
+        openingWorktrees = []
         workspaceGitStatuses = [:]
         setSurface(nil)
         surfaceError = nil
@@ -1149,8 +1150,8 @@ final class HerdrStore: ObservableObject {
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
             }
-            finished()
             guard generation == currentGeneration else { return }
+            finished()
             switch result {
             case .success(let (id, fresh)):
                 snapshot = fresh

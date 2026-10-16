@@ -513,7 +513,8 @@ struct ContentView: View {
             Divider()
             HStack(spacing: 0) {
                 Button {
-                    window.requestedSessionName = herdr.sessionName
+                    window.requestedSessionName = herdr.machine == nil ? herdr.sessionName
+                        : UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName
                     window.showsSessionPicker = true
                 } label: {
                     HStack(spacing: 6) {
@@ -549,7 +550,7 @@ struct ContentView: View {
             }
             .popover(isPresented: $window.showsSessionPicker) {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("Connect to a Herdr session")
+                    Text("Local sessions")
                         .font(.subheadline.weight(.semibold))
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(availableSessions, id: \.self) { name in
@@ -573,7 +574,7 @@ struct ContentView: View {
                         }
                     }
                     HStack {
-                        TextField("Session name", text: $window.requestedSessionName)
+                        TextField("Local session name", text: $window.requestedSessionName)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit(connect)
                         Button("Connect", action: connect)
@@ -582,7 +583,7 @@ struct ContentView: View {
                         Text(error).font(.caption).foregroundStyle(theme.warning)
                     }
                     if managesRuntime {
-                        Button("Set Up Herdr…") {
+                        Button("Set Up Local Herdr…") {
                             window.showsSessionPicker = false
                             runtime.showsSetup = true
                         }

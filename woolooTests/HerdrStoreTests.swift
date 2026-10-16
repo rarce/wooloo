@@ -1225,6 +1225,24 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertTrue(store.errorMessage?.contains("Missing") == true)
     }
 
+    func testAbandonedRemoteConnectionCannotReplaceTheLocalContext() async throws {
+        let localSession = store.sessionName
+        let originalSSH = WorkspaceFiles.sshExecutable
+        WorkspaceFiles.sshExecutable = "/usr/bin/false"
+        defer { WorkspaceFiles.sshExecutable = originalSSH }
+        await connect()
+        store.connect(to: HerdrMachineProfile(id: "abandoned", label: "Abandoned", target: "absent", session: "agents", enabled: true))
+        let remoteSocket = store.socketPath
+        store.connect(to: localSession)
+        await waitUntil("local reconnect") { store.isConnected }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertNil(store.machine)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertNil(store.surface)
+        XCTAssertEqual(store.snapshot?.workspaces.first?.label, "project")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: remoteSocket))
+    }
+
     func testBridgePreservesSSHPortAndQuotesSession() throws {
         let machine = HerdrMachineProfile(id: "a", label: "A", target: "ssh://user@example.test:2222", session: "agents", enabled: true)
         let arguments = HerdrRemoteBridge.arguments(machine, command: "remote-api-bridge")
