@@ -896,6 +896,41 @@ struct TerminalScrollAccumulator {
     }
 }
 
+/// The key-name subset supported by Herdr's semantic input codec. Command shortcuts and
+/// text/IME commits stay with AppKit; Ctrl/Option chords retain every supported modifier.
+enum TerminalKeyInput {
+    private static let special: [UInt16: String] = [
+        36: "enter", 76: "enter", 48: "tab", 53: "esc", 51: "backspace",
+        117: "delete", 123: "left", 124: "right", 125: "down", 126: "up",
+        115: "home", 119: "end", 116: "pageup", 121: "pagedown"
+    ]
+
+    static func name(for event: NSEvent) -> String? {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !modifiers.contains(.command) else { return nil }
+        let key: String
+        if let special = special[event.keyCode] {
+            key = special
+        } else {
+            guard !modifiers.intersection([.control, .option]).isEmpty,
+                  event.characters?.isEmpty == false,
+                  let characters = event.charactersIgnoringModifiers?.lowercased(),
+                  characters.unicodeScalars.count == 1,
+                  let scalar = characters.unicodeScalars.first,
+                  !CharacterSet.controlCharacters.contains(scalar),
+                  !(0xF700...0xF8FF).contains(scalar.value) else { return nil }
+            // AppKit's ignoring-modifiers text retains the layout's Shift-produced symbol
+            // (e.g. ? or +). Do not replace it with a US key-code lookup or Option's glyph.
+            key = characters
+        }
+        var parts: [String] = []
+        if modifiers.contains(.control) { parts.append("ctrl") }
+        if modifiers.contains(.option) { parts.append("alt") }
+        if modifiers.contains(.shift) { parts.append("shift") }
+        return (parts + [key]).joined(separator: "+")
+    }
+}
+
 final class HerdrTerminalTextView: NSTextView {
     var surfaceRevision: UInt64?
     var themeID: String?
@@ -1998,27 +2033,9 @@ final class HerdrTerminalTextView: NSTextView {
             return
         }
 
-        let special: [UInt16: String] = [
-            36: "enter", 76: "enter", 48: "tab", 53: "esc", 51: "backspace",
-            117: "delete", 123: "left", 124: "right", 125: "down", 126: "up",
-            115: "home", 119: "end", 116: "pageup", 121: "pagedown"
-        ]
-        if let key = special[event.keyCode] {
-            // Shift reaches Herdr so programs can tell Shift-Enter from Enter, as Claude Code does.
-            let prefix = modifiers.contains(.shift) ? "shift+" : ""
-            if !popupInput(.key(prefix + key)) { sendKey?(prefix + key, paneID) }
-            return
-        }
-        if modifiers.contains(.control),
-           let character = event.charactersIgnoringModifiers?.lowercased(),
-           character.count == 1 {
-            if !popupInput(.key("ctrl+\(character)")) { sendKey?("ctrl+\(character)", paneID) }
-            return
-        }
-        if modifiers.contains(.option),
-           let character = event.charactersIgnoringModifiers?.lowercased(),
-           character.count == 1 {
-            if !popupInput(.key("alt+\(character)")) { sendKey?("alt+\(character)", paneID) }
+        // During composition, arrows, Enter and Backspace belong to the input method.
+        if !hasMarkedText(), let key = TerminalKeyInput.name(for: event) {
+            if !popupInput(.key(key)) { sendKey?(key, paneID) }
             return
         }
         interpretKeyEvents([event])
@@ -2031,6 +2048,9 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let value = (insertString as? NSAttributedString)?.string ?? (insertString as? String) ?? ""
+        // This view forwards commits instead of calling NSTextView.insertText, so clear the
+        // inherited composition state explicitly before routing the next physical key.
+        if hasMarkedText() { super.unmarkText() }
         if !value.isEmpty, !popupInput(.text(value)) { sendText?(value, paneID) }
     }
 

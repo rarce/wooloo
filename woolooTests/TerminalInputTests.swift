@@ -536,3 +536,292 @@ final class TerminalMouseTests: XCTestCase {
         XCTAssertTrue(mouse.isEmpty)
     }
 }
+
+/// Native NSEvents travel through keyDown, the pane/popup route and an independent decoder.
+@MainActor
+final class TerminalKeyInputTests: XCTestCase {
+    private func event(_ code: UInt16, _ characters: String, ignoring: String? = nil,
+                       flags: NSEvent.ModifierFlags = [], repeatKey: Bool = false) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                      timestamp: 0, windowNumber: 0, context: nil, characters: characters,
+                                      charactersIgnoringModifiers: ignoring ?? characters,
+                                      isARepeat: repeatKey, keyCode: code))
+    }
+
+    func testEverySupportedModifierCombinationReachesPaneAndPopupSpecialKeys() throws {
+        let keys: [(UInt16, String, UInt64)] = [(36, "\r", 1), (76, "\r", 1), (48, "\t", 10),
+            (53, "\u{1b}", 14), (51, "\u{7f}", 0), (117, "\u{f728}", 12),
+            (123, "\u{f702}", 2), (124, "\u{f703}", 3), (125, "\u{f701}", 5),
+            (126, "\u{f700}", 4), (115, "\u{f729}", 6), (119, "\u{f72b}", 7),
+            (116, "\u{f72c}", 8), (121, "\u{f72d}", 9)]
+        for (code, text, wireCode) in keys {
+            for mask in 0..<8 {
+                var flags: NSEvent.ModifierFlags = []
+                if mask & 1 != 0 { flags.insert(.shift) }
+                if mask & 2 != 0 { flags.insert(.control) }
+                if mask & 4 != 0 { flags.insert(.option) }
+                for popup in [false, true] {
+                    let input = try route(event(code, text, flags: flags), popup: popup)
+                    XCTAssertEqual(input.code, wireCode == 10 && mask & 1 != 0 ? 11 : wireCode)
+                    XCTAssertEqual(input.modifiers, UInt8(mask), "keyCode \(code), popup \(popup)")
+                }
+            }
+        }
+    }
+
+    func testCombinedCharacterModifiersPreserveShiftAndLayoutSymbols() throws {
+        let cases: [(UInt16, String, String, NSEvent.ModifierFlags, String, UInt8)] = [
+            (0, "\u{1}", "A", [.control, .shift], "a", 3),
+            (0, "\u{1}", "a", [.control, .option], "a", 6),
+            (0, "\u{1}", "A", [.control, .option, .shift], "a", 7),
+            (0, "Å", "A", [.option, .shift], "a", 5),
+            (24, "+", "+", [.control, .shift], "+", 3),
+            (24, "+", "+", [.control, .option, .shift], "+", 7),
+            (44, "?", "?", [.control, .option, .shift], "?", 7),
+            (41, "Ö", "Ö", [.option, .shift], "ö", 5),
+            (0, "\u{0}", " ", [.control, .option], " ", 6)
+        ]
+        for (code, text, ignoring, flags, character, modifiers) in cases {
+            for popup in [false, true] {
+                let input = try route(event(code, text, ignoring: ignoring, flags: flags), popup: popup)
+                XCTAssertEqual(input.character, character)
+                XCTAssertEqual(input.modifiers, modifiers)
+                XCTAssertEqual(input.kind, 0, "The existing semantic model sends each native repeat as a Press")
+                XCTAssertEqual(input.repeatCount, 1)
+            }
+        }
+    }
+
+    func testPlainTypingDeadKeysAndCompositionStayWithAppKit() throws {
+        XCTAssertNil(TerminalKeyInput.name(for: try event(0, "a")))
+        XCTAssertNil(TerminalKeyInput.name(for: try event(0, "A", flags: .shift)))
+        XCTAssertNil(TerminalKeyInput.name(for: try event(14, "", ignoring: "e", flags: .option)))
+        XCTAssertNil(TerminalKeyInput.name(for: try event(0, "你好", flags: .control)))
+        XCTAssertNil(TerminalKeyInput.name(for: try event(122, "\u{f704}", flags: .control)))
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        var keys: [String] = [], text: [String] = [], pastes: [String] = []
+        view.sendKey = { key, _ in keys.append(key) }
+        view.sendText = { value, _ in text.append(value) }
+        view.sendPaste = { value, _ in pastes.append(value) }
+        view.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0),
+                           replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(view.hasMarkedText())
+        view.keyDown(with: try event(123, "\u{f702}"))
+        XCTAssertTrue(keys.isEmpty, "Composition navigation must not reach the pane")
+        view.unmarkText()
+        view.insertText("日本語 é 😀", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(text.last, "日本語 é 😀", "AppKit may commit the marked text when navigating")
+        view.setMarkedText("よ", selectedRange: NSRange(location: 1, length: 0),
+                           replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.insertText("予", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertFalse(view.hasMarkedText(), "Forwarding an IME commit must end composition")
+        view.keyDown(with: try event(124, "\u{f703}", flags: .control))
+        XCTAssertEqual(keys, ["ctrl+right"], "Physical input resumes after a commit")
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("first\nsecond", forType: .string)
+        view.pasteboard = pasteboard
+        view.paste(nil)
+        XCTAssertEqual(pastes, ["first\nsecond"])
+    }
+
+    func testNativeCommandAndHerdrShortcutsRunBeforeTerminalMapping() throws {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        var sent: [String] = [], actions: [String] = []
+        view.sendKey = { key, _ in sent.append(key) }
+        view.sendText = { text, _ in sent.append(text) }
+        view.shortcutMap = HerdrShortcutMap(document: HerdrConfigDocument(text: "[keys]\nzoom = \"ctrl+alt+z\"\n"))
+        view.onShortcut = { actions.append($0) }
+        view.keyDown(with: try event(6, "z", flags: [.control, .option]))
+        XCTAssertEqual(actions, ["zoom"])
+        XCTAssertNil(TerminalKeyInput.name(for: try event(8, "c", flags: .command)))
+        XCTAssertNil(TerminalKeyInput.name(for: try event(0, "a", flags: [.command, .shift, .option])))
+        XCTAssertTrue(sent.isEmpty)
+    }
+
+    func testRepeatedNativeEventsAreDeliveredOnceEachAndFocusTargetsTheCurrentPane() throws {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        var sent: [String] = []
+        view.sendKey = { key, pane in sent.append("\(pane) \(key)") }
+        view.paneID = "w1:p1"
+        view.keyDown(with: try event(123, "\u{f702}", flags: [.control, .option]))
+        view.paneID = "w1:p2"
+        view.keyDown(with: try event(123, "\u{f702}", flags: [.control, .option], repeatKey: true))
+        view.keyDown(with: try event(123, "\u{f702}", flags: [.control, .option], repeatKey: true))
+        XCTAssertEqual(sent, ["w1:p1 ctrl+alt+left", "w1:p2 ctrl+alt+left", "w1:p2 ctrl+alt+left"])
+    }
+
+    /// Opt-in end-to-end probe: a test-only Herdr session runs a raw PTY collector. The
+    /// fixture describes native events and independently expected bytes for the child mode.
+    func testLiveHerdrKeyboardProbe() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WOOLOO_LIVE_KEY_PROBE"] else {
+            throw XCTSkip("Set WOOLOO_LIVE_KEY_PROBE to an isolated PTY probe fixture")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let config = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let socket = try XCTUnwrap(config["socket"] as? String)
+        let pane = try XCTUnwrap(config["pane"] as? String)
+        let cases = try XCTUnwrap(config["cases"] as? [[String: Any]])
+        let directory = URL(fileURLWithPath: try XCTUnwrap(config["directory"] as? String))
+        let stream = HerdrSurfaceStream()
+        let state = LiveKeyProbeState()
+        let ready = expectation(description: "live endpoint ready")
+        let finished = expectation(description: "live endpoint finished")
+        Thread.detachNewThread {
+            defer { finished.fulfill() }
+            do {
+                try stream.run(path: socket, cols: 80, rows: 24, cellWidth: 8, cellHeight: 16,
+                               onReady: { ready.fulfill() }, onSurface: { surface in
+                    state.lock.withLock { state.surface = surface }
+                })
+            } catch { state.lock.withLock { state.failure = error } }
+        }
+        defer { stream.cancel() }
+        await fulfillment(of: [ready], timeout: 5)
+        let view = TerminalRenderHarness.makeView(width: 80, height: 24)
+        view.paneID = pane
+        view.sendKey = { key, id in XCTAssertTrue(stream.sendInput(.key(key), to: id)) }
+        view.sendText = { text, id in XCTAssertTrue(stream.sendInput(.text(text), to: id)) }
+        view.sendPaste = { text, id in XCTAssertTrue(stream.sendInput(.paste(text), to: id)) }
+        view.sendPopupInput = { input, id, _ in XCTAssertTrue(stream.sendPopupInput(input, terminalID: id)) }
+        for (index, item) in cases.enumerated() {
+            let readyPath = directory.appendingPathComponent("ready-\(index)")
+            for _ in 0..<500 where !FileManager.default.fileExists(atPath: readyPath.path) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: readyPath.path), "PTY collector not ready: \(index)")
+            for _ in 0..<500 where state.lock.withLock({ state.surface == nil }) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let surface = try XCTUnwrap(state.lock.withLock { state.surface })
+            view.show(surface)
+            XCTAssertEqual(surface.popup != nil, config["popup"] as? Bool ?? false)
+            switch item["kind"] as? String ?? "key" {
+            case "text": view.insertText(item["text"] as? String ?? "", replacementRange: NSRange(location: NSNotFound, length: 0))
+            case "paste":
+                let pasteboard = NSPasteboard.withUniqueName()
+                pasteboard.setString(item["text"] as? String ?? "", forType: .string)
+                view.pasteboard = pasteboard
+                view.paste(nil)
+                pasteboard.releaseGlobally()
+            default:
+                let mask = item["modifiers"] as? Int ?? 0
+                var flags: NSEvent.ModifierFlags = []
+                if mask & 1 != 0 { flags.insert(.shift) }
+                if mask & 2 != 0 { flags.insert(.control) }
+                if mask & 4 != 0 { flags.insert(.option) }
+                let count = item["count"] as? Int ?? 1
+                for repeatIndex in 0..<count {
+                    view.keyDown(with: try event(UInt16(item["code"] as? Int ?? 0), item["characters"] as? String ?? "",
+                                                ignoring: item["ignoring"] as? String, flags: flags, repeatKey: repeatIndex > 0))
+                }
+            }
+            let result = directory.appendingPathComponent("result-\(index).json")
+            for _ in 0..<500 where !FileManager.default.fileExists(atPath: result.path) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let resultData = try Data(contentsOf: result)
+            let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: resultData) as? [String: Any])
+            XCTAssertEqual(decoded["hex"] as? String, item["expected"] as? String, "\(item["name"] ?? index)")
+        }
+        stream.cancel()
+        await fulfillment(of: [finished], timeout: 3)
+    }
+
+    private func route(_ event: NSEvent, popup: Bool) throws -> ReferenceKeyInput {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        view.paneID = "w1:p1"
+        var received: [Data] = []
+        view.sendKey = { key, pane in
+            if let frame = SurfaceWriter.paneInput(paneID: pane, event: .key(key)) { received.append(frame) }
+        }
+        view.sendPopupInput = { input, terminal, _ in
+            if let frame = SurfaceWriter.popupInput(terminalID: terminal, event: input) { received.append(frame) }
+        }
+        if popup {
+            var surface = SurfaceModel(width: 20, height: 4).surface
+            surface.popup = HerdrPopup(terminalID: "popup-test", title: "Test", width: nil, height: nil,
+                                       cols: 1, rows: 1, cells: [SurfaceModel.blank], cursor: nil, hyperlinks: [],
+                                       mouseReporting: false, pixelMouse: false, pixelWidth: 0, pixelHeight: 0)
+            view.show(surface)
+        }
+        view.keyDown(with: event)
+        XCTAssertEqual(received.count, 1)
+        let decoded = try ReferenceKeyInput(try XCTUnwrap(received.first))
+        XCTAssertEqual(decoded.tag, popup ? 14 : 13)
+        XCTAssertEqual(decoded.id, popup ? "popup-test" : "w1:p1")
+        return decoded
+    }
+}
+
+/// Independent reader of the generation-1 ClientPaneInputEvent::Key wire contract. It does
+/// not call SurfaceWriter or reuse its key-name parser/modifier mapping.
+struct ReferenceKeyInput {
+    let tag: UInt64
+    let id: String
+    let code: UInt64
+    let character: String?
+    let modifiers: UInt8
+    let kind: UInt64
+    let repeatCount: UInt64
+
+    init(_ data: Data) throws {
+        let bytes = Array(data)
+        var offset = 0
+        func byte() throws -> UInt8 {
+            guard offset < bytes.count else { throw CocoaError(.coderReadCorrupt) }
+            defer { offset += 1 }
+            return bytes[offset]
+        }
+        func number() throws -> UInt64 {
+            let first = try byte()
+            guard first >= 251 else { return UInt64(first) }
+            let width: Int
+            switch first {
+            case 251: width = 2
+            case 252: width = 4
+            case 253: width = 8
+            default: throw CocoaError(.coderReadCorrupt)
+            }
+            var value: UInt64 = 0
+            for index in 0..<width { value |= UInt64(try byte()) << (index * 8) }
+            return value
+        }
+        func string() throws -> String {
+            let length = Int(try number())
+            guard length <= bytes.count - offset else { throw CocoaError(.coderReadCorrupt) }
+            defer { offset += length }
+            guard let value = String(bytes: bytes[offset..<(offset + length)], encoding: .utf8) else {
+                throw CocoaError(.coderReadCorrupt)
+            }
+            return value
+        }
+        tag = try number()
+        id = try string()
+        guard try number() == 1, try number() == 0 else { throw CocoaError(.coderReadCorrupt) }
+        code = try number()
+        if code == 15 {
+            let first = try byte()
+            let count = first < 0x80 ? 1 : first < 0xE0 ? 2 : first < 0xF0 ? 3 : 4
+            var utf8 = [first]
+            for _ in 1..<count { utf8.append(try byte()) }
+            guard let value = String(bytes: utf8, encoding: .utf8), value.unicodeScalars.count == 1 else {
+                throw CocoaError(.coderReadCorrupt)
+            }
+            character = value
+        } else { character = nil }
+        modifiers = try byte()
+        kind = try number()
+        repeatCount = try number()
+        // shifted_codepoint=None, generated_text=None, tracks_release=true,
+        // physical_key_id=None, windows_record=None (the existing synthetic key model).
+        guard try byte() == 0, try byte() == 0, try byte() == 1, try byte() == 0,
+              try byte() == 0, offset == bytes.count else { throw CocoaError(.coderReadCorrupt) }
+    }
+}
+
+private final class LiveKeyProbeState: @unchecked Sendable {
+    let lock = NSLock()
+    var surface: HerdrSurface?
+    var failure: Error?
+}
