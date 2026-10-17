@@ -9,6 +9,22 @@ final class TerminalRenderingTests: XCTestCase {
     private static let snapshotDirectory = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().appendingPathComponent("Snapshots")
 
+    func testScrollbarBlocksCoverTheFullRowHeight() {
+        var model = SurfaceModel(width: 2, height: 2)
+        model.cursor = nil
+        for row in 0..<2 {
+            model.cells[row * 2] = HerdrCell(symbol: "▕", foreground: 0, background: 0, modifier: 0, skip: false)
+            model.cells[row * 2 + 1] = HerdrCell(symbol: "▐", foreground: 0, background: 0, modifier: 0, skip: false)
+        }
+        let grid = TerminalPaneView.layoutGrid(model.surface, theme: TerminalRenderHarness.theme)
+        for row in grid.rows {
+            XCTAssertTrue(row.runs.isEmpty)
+            XCTAssertEqual(row.underlines.count, 2)
+            XCTAssertEqual(row.underlines.map(\.rect.height), Array(repeating: TerminalPaneView.cellHeight, count: 2))
+            XCTAssertEqual(row.underlines.map(\.rect.width), [TerminalPaneView.cellWidth / 8, TerminalPaneView.cellWidth / 2])
+        }
+    }
+
     func testGridKeepsEveryCell() throws {
         for workload in TerminalWorkload.all(width: 100, height: 30, frames: 12) {
             try assertGridMatches(workload.final.surface, workload.name)

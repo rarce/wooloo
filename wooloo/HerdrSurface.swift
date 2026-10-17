@@ -768,6 +768,19 @@ struct HerdrSurfaceDecoder {
 }
 
 enum SurfaceWriter {
+    static func hostTheme(_ theme: WoolooTheme) -> [Data] {
+        func rgb(_ color: UInt32) -> Data {
+            Data([UInt8((color >> 16) & 255), UInt8((color >> 8) & 255), UInt8(color & 255)])
+        }
+        let tag = number(17) // ClientShellHostTheme
+        let defaults = [theme.foreground, theme.background].enumerated().map { kind, color in
+            tag + number(0) + number(UInt64(kind)) + rgb(color)
+        }
+        var palette = tag + number(1) + number(UInt64(theme.ansi.count))
+        for (index, color) in theme.ansi.enumerated() { palette += Data([UInt8(index)]) + rgb(color) }
+        return defaults + [palette, tag + number(2) + number(theme.isDark ? 0 : 1)]
+    }
+
     static func number(_ value: UInt64) -> Data {
         if value < 251 { return Data([UInt8(value)]) }
         if value <= UInt16.max {
@@ -942,6 +955,14 @@ final class HerdrSurfaceStream: @unchecked Sendable {
         payload += SurfaceWriter.number(UInt64(rows))
         payload.append(0) // pixel mouse
         send(payload) { TerminalPipelineMetrics.shared?.resizeSent(cols: cols, rows: rows) }
+    }
+
+    /// Publish this native host's colors, just as the terminal client reports OSC colors.
+    /// All messages are serialized with input, so focus selects a fully populated host theme.
+    func updateHost(theme: WoolooTheme, focused: Bool) {
+        guard isReady else { return }
+        for payload in SurfaceWriter.hostTheme(theme) { send(payload) }
+        send(SurfaceWriter.number(18) + [focused ? 1 : 0]) // ClientShellFocus
     }
 
     func focus(tabID: String) {

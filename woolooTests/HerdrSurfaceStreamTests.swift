@@ -154,6 +154,18 @@ final class HerdrInputEncodingTests: XCTestCase {
     /// Key payloads end with Press, one repeat, three empty options, tracks_release and two more.
     private let keyTail: [UInt8] = [0, 1, 0, 0, 1, 0, 0]
 
+    func testHostThemeMatchesHerdrWireFormat() throws {
+        let theme = try XCTUnwrap(WoolooTheme.named("catppuccin"))
+        let messages = SurfaceWriter.hostTheme(theme).map(Array.init)
+        XCTAssertEqual(messages[0], [17, 0, 0, 0xCD, 0xD6, 0xF4])
+        XCTAssertEqual(messages[1], [17, 0, 1, 0x1E, 0x1E, 0x2E])
+        XCTAssertEqual(Array(messages[2].prefix(7)), [17, 1, 16, 0, 0x45, 0x47, 0x5A])
+        XCTAssertEqual(messages[2].count, 3 + 16 * 4)
+        XCTAssertEqual(messages[3], [17, 2, 0])
+        XCTAssertEqual(SurfaceWriter.hostTheme(try XCTUnwrap(WoolooTheme.named("catppuccin-latte"))).last,
+                       Data([17, 2, 1]))
+    }
+
     func testNumbersUseVariableLength() {
         XCTAssertEqual(Array(SurfaceWriter.number(250)), [250])
         XCTAssertEqual(Array(SurfaceWriter.number(251)), [251, 251, 0])
@@ -412,6 +424,25 @@ final class HerdrSurfaceStreamTests: XCTestCase {
         stream.cancel()
         wait(for: [run.finished], timeout: 3)
         XCTAssertFalse(stream.sendInput(.text("late"), to: "w1:p1"))
+    }
+
+    func testHostColorsPrecedeFocusAndFocusCanBeRestored() throws {
+        let endpoint = try FakeSurfaceEndpoint(path: directory + "/host.sock", afterHello: [])
+        defer { endpoint.stop() }
+        let stream = HerdrSurfaceStream()
+        let run = start(stream, path: endpoint.path)
+        wait(for: [run.ready], timeout: 5)
+        let theme = try XCTUnwrap(WoolooTheme.named("catppuccin"))
+        stream.updateHost(theme: theme, focused: false)
+        stream.updateHost(theme: theme, focused: true)
+        waitUntil { endpoint.received.count == 11 }
+        let frames = endpoint.received
+        XCTAssertEqual(Array(frames[1...4]), SurfaceWriter.hostTheme(theme))
+        XCTAssertEqual(frames[5], Data([18, 0]))
+        XCTAssertEqual(Array(frames[6...9]), SurfaceWriter.hostTheme(theme))
+        XCTAssertEqual(frames[10], Data([18, 1]), "Returning from another terminal restores child focus")
+        stream.cancel()
+        wait(for: [run.finished], timeout: 3)
     }
 
     func testPatchesUpdateTheSurface() throws {
