@@ -211,13 +211,15 @@ enum MobileSSHAccess {
         trap 'exit 1' HUP INT TERM
         chmod 700 "$task_directory"
         if [ -f "$task_file" ]; then chmod 600 "$task_file"; fi
-        if [ -f "$task_file" ] && awk -v kind="$task_type" -v blob="$task_blob" '
+        if [ -f "$task_file" ]; then
+            # Read bytes independently of the host locale, including existing non-UTF-8 options.
+            task_scan=$(LC_ALL=C awk -v kind="$task_type" -v blob="$task_blob" '
             function token(   value, c, quoted, escaped) {
                 value = ""
-                while (position <= length($0) && substr($0, position, 1) ~ /[ \t]/) position++
+                while (position <= length($0) && substr($0, position, 1) ~ /[ \t\r]/) position++
                 for (; position <= length($0); position++) {
                     c = substr($0, position, 1)
-                    if (!quoted && !escaped && c ~ /[ \t]/) { position++; break }
+                    if (!quoted && !escaped && c ~ /[ \t\r]/) { position++; break }
                     value = value c
                     if (escaped) escaped = 0
                     else if (c == "\\") escaped = 1
@@ -233,10 +235,13 @@ enum MobileSSHAccess {
                 candidate_blob = token()
                 if (candidate == kind && candidate_blob == blob) found = 1
             }
-            END { exit !found }
-        ' "$task_file"; then
-            printf 'exists\n'
-            exit 0
+            END { print (found ? "exists" : "missing") }
+            ' "$task_file") || task_fail 'Could not inspect existing authorized_keys; no key was added.'
+            case "$task_scan" in
+                exists) printf 'exists\n'; exit 0;;
+                missing) ;;
+                *) task_fail 'Could not inspect existing authorized_keys; no key was added.';;
+            esac
         fi
         task_temp=$(mktemp "$task_directory/.authorized_keys.XXXXXXXX")
         if [ -f "$task_file" ]; then cat "$task_file" > "$task_temp"; printf '\n' >> "$task_temp"; fi

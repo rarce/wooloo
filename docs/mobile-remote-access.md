@@ -91,3 +91,20 @@ The new macOS layout is captured in
 Logs and the interoperable fixture QR are in the worktree's ignored `build/`
 directory. A full phone-to-public-server SSH connection was not exercised;
 authorization tests use disposable directories and a controlled SSH adapter.
+
+## Review corrections
+
+Both reported duplicate-key cases were reproduced before the correction: a
+restricted key without a comment ending in CRLF, and a restricted entry with a
+non-UTF-8 option under a UTF-8 locale. Both originally appended an unrestricted
+copy of the key.
+
+The existing-key scan now recognizes carriage returns as whitespace and runs in
+the C locale, comparing bytes independently of the server's text encoding. It
+returns an explicit match/no-match result only after a successful scan. A failed
+scanner or an unexpected result aborts authorization before any key is appended.
+
+All 18 mobile SSH tests pass, including four new regression tests for CRLF
+restrictions without comments, non-UTF-8 options, scanner failures (exit statuses
+1, 2 and 127) and unexpected scanner output. These checks preserve the existing
+file byte for byte and verify cleanup of the authorization lock on errors.

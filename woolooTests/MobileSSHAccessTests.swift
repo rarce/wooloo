@@ -146,6 +146,47 @@ final class MobileSSHAccessTests: XCTestCase {
         XCTAssertTrue(try String(contentsOfFile: localConnection().authorizedKeysPath, encoding: .utf8).hasSuffix(publicLine + "\n"))
     }
 
+    func testCRLFTerminatedRestrictedKeysWithoutCommentsAreNotDuplicated() throws {
+        let fields = publicLine.split(separator: " ").prefix(2).joined(separator: " ")
+        for options in ["from=\"192.0.2.1\"", "expiry-time=\"20300101\"", "restrict"] {
+            let existing = Data((options + " " + fields + "\r\n").utf8)
+            try makeAuthorizedKeys(existing)
+            XCTAssertFalse(try MobileSSHAccess.authorize(MobileSSHPublicKey(publicLine), on: localConnection()))
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: localConnection().authorizedKeysPath)), existing)
+        }
+    }
+
+    func testNonUTF8RestrictedKeysAreRecognizedUnderAUTF8Locale() throws {
+        let fields = publicLine.split(separator: " ").prefix(2).joined(separator: " ")
+        var existing = Data("command=\"echo ".utf8)
+        existing.append(0xFF)
+        existing.append(Data(("\" " + fields + "\r\n").utf8))
+        try makeAuthorizedKeys(existing)
+        XCTAssertEqual(try runInstaller(environment: ["LC_ALL": "en_US.UTF-8"]), "exists")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: localConnection().authorizedKeysPath)), existing)
+    }
+
+    func testScannerErrorsAbortWithoutAppendingOrLeavingAnAuthorizationLock() throws {
+        let existing = Data(("from=\"192.0.2.1\" " + publicLine + "\n").utf8)
+        for status in [1, 2, 127] {
+            try makeAuthorizedKeys(existing)
+            let environment = try scannerEnvironment(script: "printf 'missing\\n'\nexit \(status)\n")
+            XCTAssertThrowsError(try runInstaller(environment: environment)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("Could not inspect existing authorized_keys"))
+            }
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: localConnection().authorizedKeysPath)), existing)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(".ssh/.wooloo-authorized-keys.lock").path))
+        }
+    }
+
+    func testUnexpectedScannerOutputDoesNotAuthorizeAKey() throws {
+        let existing = Data(("restrict " + publicLine + "\n").utf8)
+        try makeAuthorizedKeys(existing)
+        let environment = try scannerEnvironment(script: "printf 'undecidable\\n'\n")
+        XCTAssertThrowsError(try runInstaller(environment: environment))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: localConnection().authorizedKeysPath)), existing)
+    }
+
     func testRefusesSymlinksAndAnAccountChangeWithoutOverwritingExistingFiles() throws {
         let key = try MobileSSHPublicKey(publicLine)
         let target = directory.appendingPathComponent("untouched")
@@ -230,9 +271,29 @@ final class MobileSSHAccessTests: XCTestCase {
     }
 
     private func makeAuthorizedKeys(_ text: String) throws {
+        try makeAuthorizedKeys(Data(text.utf8))
+    }
+
+    private func makeAuthorizedKeys(_ data: Data) throws {
         let ssh = directory.appendingPathComponent(".ssh")
         try FileManager.default.createDirectory(at: ssh, withIntermediateDirectories: true)
-        try text.write(to: ssh.appendingPathComponent("authorized_keys"), atomically: true, encoding: .utf8)
+        try data.write(to: ssh.appendingPathComponent("authorized_keys"), options: .atomic)
+    }
+
+    private func scannerEnvironment(script: String) throws -> [String: String] {
+        let bin = directory.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let awk = bin.appendingPathComponent("awk")
+        try ("#!/bin/sh\n" + script).write(to: awk, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: awk.path)
+        return ["PATH": bin.path + ":/usr/bin:/bin:/usr/sbin:/sbin"]
+    }
+
+    private func runInstaller(environment: [String: String]) throws -> String {
+        let script = MobileSSHAccess.installationScript(homeDirectory: directory.path, user: NSUserName())
+        let output = try WorkspaceFiles.run("/bin/sh", ["-c", script], environment: environment,
+                                             input: Data((publicLine + "\n").utf8), limit: 4096)
+        return String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func permissions(_ path: String) throws -> Int {
