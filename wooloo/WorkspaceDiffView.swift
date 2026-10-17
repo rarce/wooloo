@@ -798,8 +798,8 @@ struct WorkspaceDiffView: View {
 
     private func fileHeader(_ file: DiffFile) -> some View {
         HStack(spacing: 8) {
-            Text(file.path).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
-            if let status = file.status {
+            Text(source.snapshots == nil ? file.path : source.path).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
+            if source.snapshots == nil, let status = file.status {
                 Text(status).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
