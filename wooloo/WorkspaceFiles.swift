@@ -489,10 +489,13 @@ enum WorkspaceFiles {
     /// there is truncated, and the empty record, `wooloo-partial` and `wooloo-end` that can
     /// follow; names beyond `maximumFiles` are cut by `finished`.
     static var folderWalkMaximumFileRecords: Int { maximumFiles + 3 }
+    /// Byte budget of the entire SSH walk, including link metadata; tests replace it.
+    /// A result that fills this budget is conservatively considered truncated.
+    static var folderWalkMaximumBytes = maximumListingBytes
     /// Records the SSH walk prints at most before its link metadata: its files, then its linked
     /// and skipped folders, which have room for 1,000 records when the files take theirs. As when
-    /// they shared one budget with the files, the output of `maximumFiles` long names stays under
-    /// `maximumListingBytes`; skipped folders past it are left out.
+    /// they shared one budget with the files, skipped folders past it are left out.
+    /// `folderWalkMaximumBytes` separately bounds long paths and link metadata.
     static var folderWalkMaximumRecords: Int { folderWalkMaximumFileRecords + 1_000 }
     /// Links the SSH walk describes in full at most, the first it finds: each costs a `readlink`,
     /// about 0.6 ms on one CPU, so 5,000 take about 3 s.
@@ -542,18 +545,33 @@ enum WorkspaceFiles {
 
     /// A walk from the output of `folderWalkScript` without links.
     static func folderWalk(scriptOutput data: Data, readingSkipped: Bool) -> WorkspaceFolderWalk {
-        finished(folderWalk(records: folderWalkRecords(data)), readingSkipped: readingSkipped)
+        let output = boundedFolderWalkOutput(data)
+        var walk = finished(folderWalk(records: folderWalkRecords(output.data)),
+                            readingSkipped: readingSkipped)
+        walk.truncated = walk.truncated || output.truncated
+        return walk
     }
 
     /// A walk from the output of `folderWalkScript` with links: those it lists, described in
     /// full, and the linked folders past them, without their targets.
     static func folderWalk(linkedScriptOutput data: Data) -> WorkspaceFolderWalk {
-        let sections = folderWalkSections(data)
+        let output = boundedFolderWalkOutput(data)
+        let sections = folderWalkSections(output.data)
         var walk = finished(folderWalk(records: sections.records), readingSkipped: false)
+        walk.truncated = walk.truncated || output.truncated
         let listed = Set(walk.files)
         walk.symbolicLinks = walk.symbolicLinks.merging(parseSymbolicLinks(sections.linkMetadata)) { _, full in full }
             .filter { listed.contains($0.key) }
         return walk
+    }
+
+    /// `head -c` can stop anywhere, including in UTF-8 or a section marker. Only the
+    /// NUL-terminated prefix is usable. An unfinished section still drops its last record:
+    /// the NUL might belong to a time-limit marker whose remaining bytes were cut off.
+    private static func boundedFolderWalkOutput(_ data: Data) -> (data: Data, truncated: Bool) {
+        guard data.count >= folderWalkMaximumBytes else { return (data, false) }
+        guard let lastNUL = data.lastIndex(of: 0) else { return (Data(), true) }
+        return (Data(data[...lastNUL]), true)
     }
 
     /// Seconds on a clock that only moves forward, for the walk's time limit; tests replace it.
@@ -885,12 +903,13 @@ enum WorkspaceFiles {
         if !skipped.isEmpty {
             records += #"printf 'wooloo-skipped\n'; "# + swap + #" < "$t/skipped"; printf '\nwooloo-files\n'; "#
         }
-        script += "{ " + records + "} | head -n " + String(folderWalkMaximumRecords) + " | " + swap + "; "
+        // Bound every section together, including metadata, before SSH's strict output limit.
+        script += "{ { " + records + "} | head -n " + String(folderWalkMaximumRecords) + " | " + swap + "; "
         if links {
             script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && "# + swap + #" < "$t/links" | head -n "#
                 + String(maximumLinks) + " | " + swap + " | xargs -0 sh -c " + quote(symbolicLinkMetadataScript) + " sh; "
         }
-        return script + "exit 0"
+        return script + "} | head -c " + String(folderWalkMaximumBytes) + "; exit 0"
     }
 
     /// What is directly inside `folder` ("" is the root), for an ignored folder being expanded.
