@@ -1192,6 +1192,28 @@ enum WorkspaceFiles {
         return [.all: "No text diff available. Open the file to view its contents."]
     }
 
+    /// Compare captured text on this Mac, including text read over SSH. Exit 1 means a
+    /// difference, not a command failure. Inputs stay in a private temporary directory.
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func comparisonPatch(disk: String, buffer: String, path: String,
+                                temporaryRoot: URL = FileManager.default.temporaryDirectory) throws -> String {
+        let root = temporaryRoot.appendingPathComponent("wooloo-compare-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let name = (path as NSString).lastPathComponent
+        try validateName(name)
+        for (folder, text) in [("Disk", disk), ("Buffer", buffer)] {
+            let directory = root.appendingPathComponent(folder)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            try Data(text.utf8).write(to: directory.appendingPathComponent(name))
+        }
+        let script = #"/usr/bin/git --no-pager -C "$1" diff --no-index --no-color --no-ext-diff --no-textconv --text -- "$2" "$3"; status=$?; [ "$status" -eq 0 ] || [ "$status" -eq 1 ]"#
+        let bytes = try run("/bin/sh", ["-c", script, "sh", root.path, "Disk/" + name, "Buffer/" + name],
+                            limit: maximumDiffBytes, label: "compare disk")
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
     /// A patch that adds every line of an untracked file, as `git diff --no-index /dev/null` would.
     static func untrackedPatch(_ text: String, path: String) -> String {
         let header = "--- /dev/null\n+++ b/\(path)\n"

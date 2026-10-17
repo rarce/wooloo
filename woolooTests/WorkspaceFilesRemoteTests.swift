@@ -122,6 +122,32 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(WorkspaceFiles.diskVersions(["a.txt"], at: remote("missing-space")), [:])
     }
 
+    @MainActor
+    func testRemoteComparisonCapturesDiskAndRejectsEscapingLinks() async throws {
+        try sandbox.repository("compare-repo", files: ["a.txt": "original\n"])
+        let store = WorkspaceDocumentStore()
+        store.open(.file, path: "a.txt", at: remote("compare-repo"))
+        for _ in 0..<500 where store.documents.first?.isLoading == true { try await Task.sleep(nanoseconds: 10_000_000) }
+        let document = try XCTUnwrap(store.documents.first)
+        store.documents[0].text = "my buffer\n"
+        try sandbox.write(["a.txt": "remote disk\n"], in: "compare-repo")
+        store.compareWithDisk(document.id)
+        for _ in 0..<500 where store.diskComparison?.isLoading == true { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(store.diskComparison?.isLoading == true)
+        XCTAssertNil(store.diskComparison?.error)
+        XCTAssertEqual(store.diskComparison?.disk, "remote disk\n")
+        XCTAssertEqual(store.diskComparison?.buffer, "my buffer\n")
+        XCTAssertEqual(store.document(document.id)?.version, document.version)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "compare-repo"), "remote disk\n")
+        try sandbox.write(["outside.txt": "private\n"], in: ".")
+        try sandbox.sh("rm a.txt && ln -s ../outside.txt a.txt", in: "compare-repo")
+        store.compareWithDisk(document.id)
+        for _ in 0..<500 where store.diskComparison?.isLoading == true { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertNotNil(store.diskComparison?.error)
+        XCTAssertNil(store.diskComparison?.disk)
+        XCTAssertEqual(store.document(document.id)?.text, "my buffer\n")
+    }
+
     /// A document of an SSH Space reloads when its file changes there, and is marked when it was
     /// edited or deleted.
     @MainActor

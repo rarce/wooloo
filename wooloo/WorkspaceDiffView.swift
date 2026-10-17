@@ -652,10 +652,11 @@ struct DiffSource: Equatable {
     let originalPath: String?
     let commit: String?
     let scope: WorkspaceDiffScope
+    var snapshots: DiffSnapshotSides? = nil
 
     static func == (lhs: DiffSource, rhs: DiffSource) -> Bool {
         lhs.location.identity == rhs.location.identity && lhs.path == rhs.path && lhs.originalPath == rhs.originalPath
-            && lhs.commit == rhs.commit && lhs.scope == rhs.scope
+            && lhs.commit == rhs.commit && lhs.scope == rhs.scope && lhs.snapshots == rhs.snapshots
     }
 }
 
@@ -720,8 +721,13 @@ struct WorkspaceDiffView: View {
             guard !plain.files.isEmpty else { return }
             guard let loaded = try? await WorkspaceFiles.blocking(at: key.source.location, priority: .utility, { () -> (ParsedDiff, EditorSyntax) in
                 let source = key.source
-                let sides = WorkspaceFiles.diffSides(source.path, originalPath: source.originalPath, commit: source.commit,
-                                                     scope: source.scope, at: source.location)
+                let sides: (old: String?, new: String?)
+                if let snapshots = source.snapshots {
+                    sides = (snapshots.old, snapshots.new)
+                } else {
+                    sides = WorkspaceFiles.diffSides(source.path, originalPath: source.originalPath, commit: source.commit,
+                                                    scope: source.scope, at: source.location)
+                }
                 let detected = EditorSyntax.resolve(path: source.path, text: sides.new ?? sides.old ?? "",
                                                     associations: key.associations)
                 return (plain.withSides(old: sides.old, new: sides.new, syntaxOverride: key.syntaxOverride,
@@ -792,8 +798,8 @@ struct WorkspaceDiffView: View {
 
     private func fileHeader(_ file: DiffFile) -> some View {
         HStack(spacing: 8) {
-            Text(file.path).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
-            if let status = file.status {
+            Text(source.snapshots == nil ? file.path : source.path).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
+            if source.snapshots == nil, let status = file.status {
                 Text(status).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)

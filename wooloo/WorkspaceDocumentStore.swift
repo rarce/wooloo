@@ -35,6 +35,35 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// The Space whose documents are shown and where new ones open.
     @Published private(set) var space: String?
 
+    @Published var diskComparison: WorkspaceDiskComparison?
+
+    /// Capture the buffer now; a late read or a refreshed comparison cannot replace edits or
+    /// change the version that Save/Overwrite protects.
+    func compareWithDisk(_ id: String) {
+        guard let document = document(id), document.isEditable, !document.isUntitled, !document.isLoading else { return }
+        let comparison = WorkspaceDiskComparison(documentID: id, location: document.location, path: document.path,
+                                                  buffer: document.text, syntaxOverride: document.syntaxOverride)
+        diskComparison = comparison
+        Task {
+            let result = await WorkspaceFiles.blocking(at: document.location, priority: .userInitiated) {
+                Result { () throws -> (WorkspaceFileContents, String) in
+                    let disk = try WorkspaceFiles.read(document.path, at: document.location)
+                    let patch = try WorkspaceFiles.comparisonPatch(disk: disk.text, buffer: comparison.buffer, path: document.path)
+                    return (disk, patch)
+                }
+            }
+            guard diskComparison?.id == comparison.id else { return }
+            diskComparison?.isLoading = false
+            switch result {
+            case .success(let (disk, patch)):
+                diskComparison?.disk = disk.text
+                diskComparison?.diskVersion = disk.version
+                diskComparison?.patch = patch
+            case .failure(let error): diskComparison?.error = error.localizedDescription
+            }
+        }
+    }
+
     @Published var persistenceError: String?
     var backsUpSessions: Bool { persistence != nil }
     private let persistence: WorkspaceSessionPersistence?
@@ -216,6 +245,7 @@ final class WorkspaceDocumentStore: ObservableObject {
     func showSpace(_ space: String?) {
         restoreSpace(space)
         guard space != self.space else { return }
+        diskComparison = nil
         switchingSpace = true
         defer { switchingSpace = false; schedulePersistence() }
         if self.space == nil, space != nil {
@@ -637,6 +667,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         discardedBySpace[key, default: []].insert(documents[index].backupID)
         closedBeforeRestoration.insert(id)
         documents.remove(at: index)
+        if diskComparison?.documentID == id { diskComparison = nil }
         if activeID == id { activeID = nil }
         schedulePersistence(immediately: true)
         return true

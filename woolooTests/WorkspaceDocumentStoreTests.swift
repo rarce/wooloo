@@ -64,6 +64,87 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertNil(store.document(b.id)?.scrollAnchor)
     }
 
+    private func settleComparison() async {
+        for _ in 0..<500 where store.diskComparison?.isLoading == true {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(store.diskComparison?.isLoading == true)
+    }
+
+    func testComparisonCapturesBothSidesWithoutChangingSaveProtection() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "my buffer\n")
+        try sandbox.write(["a.txt": "external disk\n"], in: "repo")
+        store.compareWithDisk(document.id)
+        await settleComparison()
+        let comparison = try XCTUnwrap(store.diskComparison)
+        XCTAssertNil(comparison.error)
+        XCTAssertEqual(comparison.disk, "external disk\n")
+        XCTAssertEqual(comparison.buffer, "my buffer\n")
+        XCTAssertTrue(comparison.patch.contains("-external disk"))
+        XCTAssertTrue(comparison.patch.contains("+my buffer"))
+        XCTAssertEqual(store.document(document.id)?.version, document.version)
+        XCTAssertEqual(store.document(document.id)?.savedText, "one\n")
+        XCTAssertEqual(store.document(document.id)?.text, "my buffer\n")
+        try sandbox.write(["a.txt": "changed again\n"], in: "repo")
+        edit("a.txt", "newer edits\n")
+        XCTAssertEqual(comparison.source.snapshots?.old, "external disk\n")
+        XCTAssertEqual(comparison.source.snapshots?.new, "my buffer\n")
+        store.save(document.id)
+        await settle()
+        XCTAssertTrue(store.document(document.id)?.asksToOverwrite == true, "Compare cannot authorize an overwrite")
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "changed again\n")
+        store.compareWithDisk(document.id)
+        await settleComparison()
+        XCTAssertEqual(store.diskComparison?.disk, "changed again\n")
+        XCTAssertEqual(store.diskComparison?.buffer, "newer edits\n")
+    }
+
+    func testDismissedOrReplacedComparisonIgnoresLateResults() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        store.compareWithDisk(document.id)
+        store.diskComparison = nil
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertNil(store.diskComparison)
+        store.compareWithDisk(document.id)
+        edit("a.txt", "latest\n")
+        store.compareWithDisk(document.id)
+        await settleComparison()
+        XCTAssertEqual(store.diskComparison?.buffer, "latest\n")
+        XCTAssertTrue(store.close(document.id, force: true))
+        XCTAssertNil(store.diskComparison)
+    }
+
+    func testComparisonFailureKeepsBufferAndUnsavedVersion() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "my buffer\n")
+        try sandbox.sh("rm a.txt", in: "repo")
+        store.compareWithDisk(document.id)
+        await settleComparison()
+        XCTAssertNotNil(store.diskComparison?.error)
+        XCTAssertEqual(store.document(document.id)?.text, "my buffer\n")
+        XCTAssertEqual(store.document(document.id)?.version, document.version)
+        let untitled = store.newUntitled(at: repo)
+        store.diskComparison = nil
+        store.compareWithDisk(untitled)
+        XCTAssertNil(store.diskComparison)
+    }
+
+    func testComparisonPatchHandlesUnicodeNewlinesAndCleansTemporaryFiles() throws {
+        let temp = URL(fileURLWithPath: sandbox.path("compare-tmp"))
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let patch = try WorkspaceFiles.comparisonPatch(disk: "é\r\nold", buffer: "é\r\nnew\n", path: "weird ' name.swift", temporaryRoot: temp)
+        XCTAssertTrue(patch.contains("-old"))
+        XCTAssertTrue(patch.contains("+new"))
+        XCTAssertTrue(patch.contains("No newline at end of file"))
+        XCTAssertEqual(try WorkspaceFiles.comparisonPatch(disk: "same", buffer: "same", path: "a.txt", temporaryRoot: temp), "")
+        XCTAssertThrowsError(try WorkspaceFiles.comparisonPatch(disk: "a", buffer: "b", path: "../", temporaryRoot: temp))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: temp.path), [])
+    }
+
     func testOpeningLoadsTheFileAndActivatesIt() async throws {
         let documentOpened = await open("a.txt")
         let document = try XCTUnwrap(documentOpened)

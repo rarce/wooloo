@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B63000000000000000000001 /* WorkspaceDiskComparisonView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */; };
 		B90000000000000000000001 /* HerdrRemoteBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000002 /* HerdrRemoteBridge.swift */; };
 		D40000000000000000000003 /* NotebookPreviewBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */; };
 		D40000000000000000000001 /* MarkdownTableBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000002 /* MarkdownTableBenchmarks.swift */; };
@@ -148,6 +149,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiskComparisonView.swift; sourceTree = "<group>"; };
 		B90000000000000000000002 /* HerdrRemoteBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRemoteBridge.swift; sourceTree = "<group>"; };
 		D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookPreviewBenchmarks.swift; sourceTree = "<group>"; };
 		D40000000000000000000002 /* MarkdownTableBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownTableBenchmarks.swift; sourceTree = "<group>"; };
@@ -335,6 +337,7 @@
 				A10000000000000000000055 /* HerdrNotifications.swift */,
 				A10000000000000000000057 /* WoolooTypography.swift */,
 				A10000000000000000000059 /* WorkspaceDiffView.swift */,
+				B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */,
 				A1000000000000000000005B /* DocumentFind.swift */,
 				A100000000000000000000E1 /* EditorLineChanges.swift */,
 				A100000000000000000000F1 /* EditorMultiCursor.swift */,
@@ -607,6 +610,7 @@
 				A10000000000000000000054 /* HerdrNotifications.swift in Sources */,
 				A10000000000000000000056 /* WoolooTypography.swift in Sources */,
 				A10000000000000000000058 /* WorkspaceDiffView.swift in Sources */,
+				B63000000000000000000001 /* WorkspaceDiskComparisonView.swift in Sources */,
 				A1000000000000000000005A /* DocumentFind.swift in Sources */,
 				A100000000000000000000E0 /* EditorLineChanges.swift in Sources */,
 				A100000000000000000000F0 /* EditorMultiCursor.swift in Sources */,
