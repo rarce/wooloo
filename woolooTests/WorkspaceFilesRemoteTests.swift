@@ -559,6 +559,83 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    func testRemoteWalkByteLimitKeepsCompleteFilesForExplorerAndQuickOpen() throws {
+        let limit = WorkspaceFiles.folderWalkMaximumBytes
+        defer { WorkspaceFiles.folderWalkMaximumBytes = limit }
+        WorkspaceFiles.folderWalkMaximumBytes = 400
+        let names = (0..<30).map { "file-\($0)-" + String(repeating: "é", count: 30) + ".txt" }
+        try sandbox.write(Dictionary(uniqueKeysWithValues: names.map { ($0, "x") }), in: "byte-limit")
+        for ignored in [false, true] {
+            let listing = try WorkspaceFiles.quickOpenFiles(at: remote("byte-limit"), includeIgnored: ignored)
+            XCTAssertTrue(listing.truncated)
+            XCTAssertFalse(listing.files.isEmpty)
+            XCTAssertTrue(Set(listing.files).isSubset(of: Set(names)))
+        }
+        let explorer = try WorkspaceFiles.listing(at: remote("byte-limit"))
+        XCTAssertTrue(explorer.truncated)
+        XCTAssertFalse(explorer.files.isEmpty)
+        XCTAssertTrue(Set(explorer.files).isSubset(of: Set(names)))
+    }
+
+    func testByteCutKeepsCompleteRecordsInEveryWalkSection() {
+        let limit = WorkspaceFiles.folderWalkMaximumBytes
+        defer { WorkspaceFiles.folderWalkMaximumBytes = limit }
+        let files = "./é.txt\0./with\nnewline\0"
+        let skipped = files + "wooloo-end\0wooloo-skipped\0./node_modules\0"
+        let metadata = skipped + "\0wooloo-files\0wooloo-symbolic-links\0é.txt\0target\0f\0"
+        let output = Data((metadata + "second\0other-target\0d\0").utf8)
+        for count in 1...output.count {
+            WorkspaceFiles.folderWalkMaximumBytes = count
+            let prefix = Data(output.prefix(count))
+            let walk = WorkspaceFiles.folderWalk(linkedScriptOutput: prefix)
+            XCTAssertTrue(walk.truncated)
+            let expected = ["é.txt", "with\nnewline"].filter { name in
+                prefix.range(of: Data(("./" + name + "\0").utf8)) != nil
+            }
+            let filesEnded = prefix.range(of: Data("wooloo-end\0".utf8)) != nil
+            XCTAssertEqual(walk.files, (filesEnded ? expected : Array(expected.dropLast())).sorted(), "Cut at byte \(count)")
+            let skippedEnded = prefix.range(of: Data("wooloo-files\0".utf8)) != nil
+            XCTAssertEqual(walk.skippedFolders, skippedEnded ? ["node_modules"] : [])
+            if count >= metadata.utf8.count {
+                XCTAssertEqual(walk.symbolicLinks["é.txt"]?.target, "target")
+            } else {
+                XCTAssertTrue(walk.symbolicLinks.isEmpty, "Incomplete metadata must not become a link")
+            }
+        }
+        WorkspaceFiles.folderWalkMaximumBytes = output.count + 1
+        XCTAssertFalse(WorkspaceFiles.folderWalk(linkedScriptOutput: output).truncated)
+    }
+
+    func testByteCutCannotTurnATimeLimitedNameIntoAFile() {
+        let limit = WorkspaceFiles.folderWalkMaximumBytes
+        defer { WorkspaceFiles.folderWalkMaximumBytes = limit }
+        for suffix in ["", "wooloo-p", "wooloo-partial\0"] {
+            let prefix = Data(("./valid\0./incomplete\0" + suffix).utf8)
+            WorkspaceFiles.folderWalkMaximumBytes = prefix.count
+            XCTAssertEqual(WorkspaceFiles.folderWalk(scriptOutput: prefix, readingSkipped: false).files, ["valid"])
+        }
+    }
+
+    func testRemoteWalkBoundsLinkMetadataAndCleansItsTemporaryDirectory() throws {
+        let limit = WorkspaceFiles.folderWalkMaximumBytes
+        defer { WorkspaceFiles.folderWalkMaximumBytes = limit }
+        try sandbox.write(["f": "x"], in: "byte-links")
+        try sandbox.sh("for i in $(seq 1 30); do ln -s f link$i; done", in: "byte-links")
+        try FileManager.default.createDirectory(atPath: sandbox.path("walk-tmp"), withIntermediateDirectories: true)
+        // Files fit; link metadata makes the combined output exceed this budget.
+        WorkspaceFiles.folderWalkMaximumBytes = 450
+        let words = ["sh", "-c", WorkspaceFiles.folderWalkScript(readingSkipped: false, links: true), "sh", sandbox.path("byte-links")]
+        let output = try WorkspaceFiles.remoteOutput(machine,
+            script: "TMPDIR=" + WorkspaceFiles.quote(sandbox.path("walk-tmp")) + " " + words.map(WorkspaceFiles.quote).joined(separator: " "),
+            label: "walk", limit: 450)
+        XCTAssertEqual(output.count, 450)
+        let walk = WorkspaceFiles.folderWalk(linkedScriptOutput: output)
+        XCTAssertEqual(walk.files.count, 31)
+        XCTAssertTrue(walk.truncated)
+        XCTAssertTrue(walk.symbolicLinks.count < 30)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("walk-tmp")), [])
+    }
+
     func testWalkRecordsDropOnlyANameCutShortByTheTimeLimit() {
         func records(_ text: String) -> [String] { WorkspaceFiles.folderWalkRecords(Data(text.utf8)) }
         XCTAssertEqual(records("./a\0./b\0\0wooloo-partial\0"), ["./a", "./b", "wooloo-partial"])
