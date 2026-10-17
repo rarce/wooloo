@@ -116,7 +116,7 @@ The wooloo app has no analytics or telemetry. (The website, wooloo.dev, counts v
 
 ## Requirements
 
-- **To run:** macOS 14 or later, Apple silicon or Intel. Herdr 0.9.3 is included in the app; an existing Herdr 0.9 or later installation can also be used. Git is optional, for the Git features.
+- **To run:** macOS 14 or later, Apple silicon or Intel. Herdr 0.9.5 is included in the app; an existing Herdr 0.9 or later installation can also be used. Git is optional, for the Git features.
 - **Coding agents are separate.** wooloo runs whatever agent CLI you have installed (Claude Code, Codex and others) inside Herdr's terminals; it does not include them. Each agent's CLI, account and subscription are your own and are set up with that agent.
 - **To build:** macOS 15.6 or later with Xcode 26 (one vendored package needs Swift 6.2).
 
@@ -152,9 +152,9 @@ xcodebuild -project wooloo.xcodeproj -scheme wooloo -configuration Debug -destin
 
 The project signs ad hoc ("Sign to Run Locally"), so no developer account is needed. Keep a signature: macOS refuses notification permission to an unsigned app. You can also open `wooloo.xcodeproj` in Xcode and run the `wooloo` scheme on **My Mac**.
 
-The first build downloads the pinned Intel and Apple Silicon Herdr binaries and verifies their SHA-256 hashes. They are cached under `build/herdr/0.9.3` and bundled as a signed universal helper. You can prepare this cache in advance with `sh scripts/bundle-herdr.sh --prepare`; subsequent builds work offline with the package and runtime caches present.
+The first build downloads the pinned Intel and Apple Silicon Herdr binaries and verifies their SHA-256 hashes. They are cached under `build/herdr/0.9.5` and bundled as a signed universal helper. You can prepare this cache in advance with `sh scripts/bundle-herdr.sh --prepare`; subsequent builds work offline with the package and runtime caches present.
 
-On a fresh install, a setup wizard lets you choose a folder and creates the first Space in an app-managed `wooloo` session. It installs the included Herdr under `~/Library/Application Support/wooloo/runtime/herdr/0.9.3`, so no download, Homebrew, developer tools, or administrator password is needed at runtime. A user launchd job starts the server when wooloo opens and keeps it running when the app quits. It is not registered to start at login. Herdr's normal `config.toml` and named-session storage are used; existing configuration is preserved.
+On a fresh install, a setup wizard lets you choose a folder and creates the first Space in an app-managed `wooloo` session. It installs the included Herdr under `~/Library/Application Support/wooloo/runtime/herdr/0.9.5`, so no download, Homebrew, developer tools, or administrator password is needed at runtime. A user launchd job starts the server when wooloo opens and keeps it running when the app quits. It is not registered to start at login. Herdr's normal `config.toml` and named-session storage are used; existing configuration is preserved.
 
 You can instead choose an existing Herdr executable and connect to a running session. **Set Up Herdr…** in the sidebar session picker opens the wizard again. Runtime updates ship with wooloo; a compatible server already running is reused, and setup never stops its panes.
 
