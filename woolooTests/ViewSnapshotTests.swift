@@ -146,6 +146,32 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    func testDiskComparison() throws {
+        let location = WorkspaceFileLocation(machine: nil, session: "test", workspaceID: "w", workspaceLabel: "w",
+                                             root: "/private/tmp/wooloo-no-such-comparison-repo")
+        let disk = #"let value = "external change""# + "\n"
+        let buffer = #"let value = "my edits""# + "\n"
+        var comparison = WorkspaceDiskComparison(documentID: "snapshot", location: location, path: "compare.swift",
+                                                  buffer: buffer, syntaxOverride: nil)
+        comparison.disk = disk
+        comparison.diskVersion = "snapshot"
+        comparison.patch = try WorkspaceFiles.comparisonPatch(disk: disk, buffer: buffer, path: "compare.swift")
+        comparison.isLoading = false
+        let store = WorkspaceDocumentStore()
+        store.diskComparison = comparison
+        let previous = UserDefaults.standard.object(forKey: DiffDisplayMode.storageKey)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: DiffDisplayMode.storageKey) }
+            else { UserDefaults.standard.removeObject(forKey: DiffDisplayMode.storageKey) }
+        }
+        for mode in DiffDisplayMode.allCases {
+            UserDefaults.standard.set(mode.rawValue, forKey: DiffDisplayMode.storageKey)
+            try assertSnapshot(render(WorkspaceDiskComparisonView(store: store), size: NSSize(width: 1000, height: 420), settle: 3),
+                               named: "compare-disk-\(mode.rawValue.lowercased())")
+        }
+        try skipIfRecorded()
+    }
+
     func testDiff() throws {
         let patch = """
             diff --git a/src/greeting.swift b/src/greeting.swift

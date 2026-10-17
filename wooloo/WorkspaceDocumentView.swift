@@ -148,6 +148,7 @@ struct WorkspaceDocumentView: View {
     var onReload: () -> Void = {}
     /// The file changed on disk under unsaved edits: keep them, so the next save overwrites it.
     var onKeepEdits: () -> Void = {}
+    var onCompareDisk: () -> Void = {}
     var onOpenFile: (String) -> Void = { _ in }
     /// Records where the editor is scrolled. The document store looks the document up by id:
     /// `document`, a binding to its index, can outlive that index when a tab before it closes.
@@ -541,6 +542,8 @@ struct WorkspaceDocumentView: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if case .changed = document.diskState {
+                Button("Compare", action: onCompareDisk)
+                    .help("Compare a snapshot of your buffer with the file on disk")
                 Button("Reload", action: onReload)
                     .help("Read the file again, discarding your unsaved edits")
                 Button("Keep Mine", action: onKeepEdits)

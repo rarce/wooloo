@@ -123,6 +123,7 @@ struct ContentView: View {
         .overlay { HerdrToastStack(notifier: notifier) }
         .overlay { InactiveWindowOverlay(background: theme.contentBackground) }
         .background { TerminalHostObserver(store: herdr, theme: theme).frame(width: 0, height: 0) }
+        .background { WorkspaceDiskComparisonPresenter(store: documentStore).frame(width: 0, height: 0) }
         .background { WorkspaceSessionWindowGuard(store: documentStore).frame(width: 0, height: 0) }
     }
 
@@ -845,6 +846,8 @@ struct ContentView: View {
             documentStore.revert(id)
         }, onKeepEdits: {
             documentStore.keepEdits(id)
+        }, onCompareDisk: {
+            documentStore.compareWithDisk(id)
         }, onOpenFile: { [location = documentStore.documents[index].location] path in
             openDocument(.file, path: path, at: location)
         }, onScroll: { position, anchor in
