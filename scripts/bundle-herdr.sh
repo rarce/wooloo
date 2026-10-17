@@ -4,7 +4,7 @@
 set -eu
 
 task_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-task_cache="$task_root/build/herdr/0.9.3"
+task_cache="$task_root/build/herdr/0.9.5"
 mkdir -p "$task_cache"
 
 fetch() {
@@ -15,7 +15,7 @@ fetch() {
         task_download=$(mktemp "$task_cache/download.XXXXXX")
         trap 'rm -f "$task_download"' EXIT HUP INT TERM
         curl --fail --location --retry 3 --connect-timeout 15 --max-time 180 \
-            "https://github.com/herdrdev/herdr/releases/download/v0.9.3/$task_asset" -o "$task_download"
+            "https://github.com/herdrdev/herdr/releases/download/v0.9.5/$task_asset" -o "$task_download"
         if [ "$(shasum -a 256 "$task_download" | awk '{print $1}')" != "$task_hash" ]; then
             echo "error: Herdr checksum mismatch for $task_asset" >&2
             exit 1
@@ -25,8 +25,8 @@ fetch() {
     fi
 }
 
-fetch herdr-macos-aarch64 5173a3e0ae42d5d1ab7ebfa5d5e6329f7c3d23f8e1a3677c7ce3231da2884157
-fetch herdr-macos-x86_64 db62d548ff3e832b087a96b1894a08d26be3905f1830309cd556783f215d4054
+fetch herdr-macos-aarch64 fb77c2232a05a8035421382c894392f4174e4e38a18e48af3dd0290157c3a7e2
+fetch herdr-macos-x86_64 5fb0a908ec7f6745e3e245738b06bfad56c46391c391ab3c0955fbead01f1369
 
 if [ "${1:-}" = "--prepare" ]; then exit 0; fi
 : "${TARGET_BUILD_DIR:?Run from Xcode, or use --prepare to cache the release assets}"

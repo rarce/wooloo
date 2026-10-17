@@ -4,7 +4,7 @@ import Foundation
 import SwiftUI
 
 enum HerdrRuntimePaths {
-    static let version = "0.9.3"
+    static let version = "0.9.5"
     static let completedKey = "HerdrSetupCompleted"
     static let executableKey = "HerdrSetupExecutable"
     static let managedSessionKey = "HerdrManagedSession"
