@@ -59,9 +59,11 @@
 		A1000000000000000000C201 /* BlockingWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000C202 /* BlockingWork.swift */; };
 		A1000000000000000000005E /* HostStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005F /* HostStatsView.swift */; };
 		A1D000000000000000000101 /* RemoteAccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000101 /* RemoteAccessView.swift */; };
+		A1D000000000000000000103 /* MobileSSHAccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000103 /* MobileSSHAccessView.swift */; };
 		A1000000000000000000C001 /* AppUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000C002 /* AppUpdater.swift */; };
 		A1000000000000000000C003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000C005 /* Sparkle */; };
 		A1D000000000000000000100 /* RemoteAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000100 /* RemoteAccess.swift */; };
+		A1D000000000000000000102 /* MobileSSHAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000102 /* MobileSSHAccess.swift */; };
 		A10000000000000000000F01 /* AgentQuota.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F02 /* AgentQuota.swift */; };
 		A10000000000000000000F03 /* AgentQuotaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F04 /* AgentQuotaView.swift */; };
 		C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F06 /* AgentQuotaTests.swift */; };
@@ -77,6 +79,7 @@
 		C30000000000000000000F0F /* CommandPaletteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F10 /* CommandPaletteTests.swift */; };
 		C30000000000000000000060 /* HostStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000061 /* HostStatsTests.swift */; };
 		C3D000000000000000000100 /* RemoteAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D100000000000000000100 /* RemoteAccessTests.swift */; };
+		C3D000000000000000000102 /* MobileSSHAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D100000000000000000102 /* MobileSSHAccessTests.swift */; };
 		C30000000000000000000064 /* ContentCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000065 /* ContentCommandsTests.swift */; };
 		C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */; };
 		C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000073 /* HerdrSettingsModelTests.swift */; };
@@ -201,9 +204,11 @@
 		A1000000000000000000C202 /* BlockingWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingWork.swift; sourceTree = "<group>"; };
 		A1000000000000000000005F /* HostStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsView.swift; sourceTree = "<group>"; };
 		A1D100000000000000000101 /* RemoteAccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessView.swift; sourceTree = "<group>"; };
+		A1D100000000000000000103 /* MobileSSHAccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSSHAccessView.swift; sourceTree = "<group>"; };
 		A1000000000000000000C002 /* AppUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdater.swift; sourceTree = "<group>"; };
 		A1000000000000000000C006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1D100000000000000000100 /* RemoteAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccess.swift; sourceTree = "<group>"; };
+		A1D100000000000000000102 /* MobileSSHAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSSHAccess.swift; sourceTree = "<group>"; };
 		A10000000000000000000F02 /* AgentQuota.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuota.swift; sourceTree = "<group>"; };
 		A10000000000000000000F04 /* AgentQuotaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaView.swift; sourceTree = "<group>"; };
 		C30000000000000000000F06 /* AgentQuotaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaTests.swift; sourceTree = "<group>"; };
@@ -219,6 +224,7 @@
 		C30000000000000000000F10 /* CommandPaletteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000061 /* HostStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsTests.swift; sourceTree = "<group>"; };
 		C3D100000000000000000100 /* RemoteAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessTests.swift; sourceTree = "<group>"; };
+		C3D100000000000000000102 /* MobileSSHAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSSHAccessTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000065 /* ContentCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCommandsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerModelTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000073 /* HerdrSettingsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModelTests.swift; sourceTree = "<group>"; };
@@ -346,7 +352,9 @@
 				A1000000000000000000C202 /* BlockingWork.swift */,
 				A1000000000000000000005F /* HostStatsView.swift */,
 				A1D100000000000000000101 /* RemoteAccessView.swift */,
+				A1D100000000000000000103 /* MobileSSHAccessView.swift */,
 				A1D100000000000000000100 /* RemoteAccess.swift */,
+				A1D100000000000000000102 /* MobileSSHAccess.swift */,
 				A1000000000000000000C002 /* AppUpdater.swift */,
 				A1000000000000000000C006 /* Info.plist */,
 				A10000000000000000000F02 /* AgentQuota.swift */,
@@ -400,6 +408,7 @@
 				C30000000000000000000035 /* WorkspaceFilesRemoteTests.swift */,
 				C30000000000000000000061 /* HostStatsTests.swift */,
 				C3D100000000000000000100 /* RemoteAccessTests.swift */,
+				C3D100000000000000000102 /* MobileSSHAccessTests.swift */,
 				C30000000000000000000F06 /* AgentQuotaTests.swift */,
 				C30000000000000000000F0A /* QuickOpenTests.swift */,
 				C3000000000000000000B202 /* BlockingWorkTests.swift */,
@@ -619,7 +628,9 @@
 				A1000000000000000000C201 /* BlockingWork.swift in Sources */,
 				A1000000000000000000005E /* HostStatsView.swift in Sources */,
 				A1D000000000000000000101 /* RemoteAccessView.swift in Sources */,
+				A1D000000000000000000103 /* MobileSSHAccessView.swift in Sources */,
 				A1D000000000000000000100 /* RemoteAccess.swift in Sources */,
+				A1D000000000000000000102 /* MobileSSHAccess.swift in Sources */,
 				A1000000000000000000C001 /* AppUpdater.swift in Sources */,
 				A10000000000000000000F01 /* AgentQuota.swift in Sources */,
 				A10000000000000000000F03 /* AgentQuotaView.swift in Sources */,
@@ -662,6 +673,7 @@
 				C30000000000000000000034 /* WorkspaceFilesRemoteTests.swift in Sources */,
 				C30000000000000000000060 /* HostStatsTests.swift in Sources */,
 				C3D000000000000000000100 /* RemoteAccessTests.swift in Sources */,
+				C3D000000000000000000102 /* MobileSSHAccessTests.swift in Sources */,
 				C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */,
 				C30000000000000000000F09 /* QuickOpenTests.swift in Sources */,
 				C3000000000000000000B201 /* BlockingWorkTests.swift in Sources */,

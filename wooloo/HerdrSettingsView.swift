@@ -6,7 +6,8 @@ struct HerdrSettingsView: View {
     @Environment(\.woolooTheme) private var theme
     let socketPath: String
     let sessionName: String
-    let remoteHost: String?
+    let machine: HerdrMachineProfile?
+    private var remoteHost: String? { machine?.label }
     let onSaved: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -14,6 +15,7 @@ struct HerdrSettingsView: View {
     @StateObject private var model = HerdrSettingsModel()
     @ObservedObject private var remoteAccess = RemoteAccessModel.shared
     @State private var tunnelToken = ""
+    @State private var authorizingMobile = false
     @AppStorage(HerdrNotifier.dockBadgeKey) private var showsDockBadge = true
     @AppStorage(HerdrNotifier.bounceDockKey) private var bouncesDock = true
     @AppStorage(WoolooTypography.baseKey) private var interfaceTextSize = WoolooTypography.defaultBase
@@ -39,7 +41,7 @@ struct HerdrSettingsView: View {
             case .notifications: "Sounds, alerts, and Dock activity"
             case .appearance: "Text sizes, previews, and color themes"
             case .server: "Terminal dimensions when no client is attached"
-            case .remoteAccess: "Reach this Mac's Herdr from your phone through Cloudflare"
+            case .remoteAccess: "Connect your phone and authorize its SSH public key"
             case .advanced: "Edit the complete Herdr configuration"
             }
         }
@@ -58,11 +60,11 @@ struct HerdrSettingsView: View {
         }
     }
 
-    init(socketPath: String, sessionName: String, remoteHost: String? = nil, showShortcuts: Bool = false,
+    init(socketPath: String, sessionName: String, machine: HerdrMachineProfile? = nil, showShortcuts: Bool = false,
          showRemoteAccess: Bool = false, onSaved: @escaping () -> Void = {}) {
         self.socketPath = socketPath
         self.sessionName = sessionName
-        self.remoteHost = remoteHost
+        self.machine = machine
         self.onSaved = onSaved
         _category = State(initialValue: showShortcuts ? .shortcuts : showRemoteAccess ? .remoteAccess : .terminal)
     }
@@ -70,6 +72,7 @@ struct HerdrSettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
+                .disabled(authorizingMobile)
             Divider()
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -108,7 +111,8 @@ struct HerdrSettingsView: View {
         .tint(theme.accent)
         .preferredColorScheme(theme.colorScheme)
         // Like Done, which is disabled while the configuration is written.
-        .allowsQuitWhileShown(!model.isSaving)
+        .allowsQuitWhileShown(!model.isSaving && !authorizingMobile)
+        .interactiveDismissDisabled(authorizingMobile)
         .onAppear(perform: model.load)
     }
 
@@ -184,7 +188,7 @@ struct HerdrSettingsView: View {
             Spacer(minLength: 0)
             Button("Done") { dismiss() }
                 .keyboardShortcut(.cancelAction)
-                .disabled(model.isSaving)
+                .disabled(model.isSaving || authorizingMobile)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
@@ -406,8 +410,22 @@ struct HerdrSettingsView: View {
 
     @ViewBuilder
     private var remoteAccessFields: some View {
+        if machine == nil { localTunnelFields }
+        MobileSSHAccessView(machine: machine, session: sessionName, tunnelHostname: remoteAccess.runningHostname,
+                            authorizing: $authorizingMobile)
+            .id("\(machine?.id ?? "local")|\(sessionName)")
+        if machine != nil && remoteAccess.isActive {
+            HStack {
+                description("This Mac also has a local tunnel active, separate from the selected remote server.")
+                Button("Stop Local Tunnel") { remoteAccess.stop() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var localTunnelFields: some View {
         description("Publishes this Mac's SSH server (Remote Login, localhost:22) through a Cloudflare Tunnel. Anyone who reaches the tunnel's address can try to sign in to any account allowed to use SSH, not only Herdr. No port opens on your network, and clients still sign in with SSH, then run Herdr's own commands.")
-        description("Before starting, wooloo asks sshd which sign-in methods it offers and starts at once only when that is keys alone. It does not change SSH, firewall or Keychain settings. Turn passwords off yourself, as the README explains.")
+        description("Before starting, wooloo asks sshd which sign-in methods it offers and starts at once only when that is keys alone. It does not change sshd's sign-in methods, firewall or sharing settings. Turn passwords off yourself, as the README explains.")
         if remoteAccess.cloudflaredPath == nil {
             warning("cloudflared is not installed. Install it with `brew install cloudflared`, then come back here.")
         }
@@ -431,10 +449,6 @@ struct HerdrSettingsView: View {
         }
         settingsGroup("Tunnel", subtitle: "wooloo only · applies immediately · stops when wooloo quits") {
             RemoteAccessStatusView(model: remoteAccess)
-            if case .running(let hostname) = remoteAccess.state {
-                RemoteAccessConnectionView(hostname: hostname, sessionName: remoteHost == nil ? sessionName
-                    : UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName)
-            }
             field("Type", hint: remoteAccess.mode == .quick
                   ? "No Cloudflare account needed. The address changes every time the tunnel starts, so scan the new QR code each time. Anyone who learns it can reach your SSH login: use key authentication."
                   : "A tunnel you created in Cloudflare, with a hostname of your own that stays the same. Protect it with Cloudflare Access to stop others from reaching your SSH login; wooloo cannot check whether Access is set up.") {
