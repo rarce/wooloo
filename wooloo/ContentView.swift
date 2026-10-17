@@ -122,6 +122,7 @@ struct ContentView: View {
         .overlay { pickers }
         .overlay { HerdrToastStack(notifier: notifier) }
         .overlay { InactiveWindowOverlay(background: theme.contentBackground) }
+        .background { TerminalHostObserver(store: herdr, theme: theme).frame(width: 0, height: 0) }
         .background { WorkspaceSessionWindowGuard(store: documentStore).frame(width: 0, height: 0) }
     }
 
@@ -1695,5 +1696,22 @@ struct AgentStatusDot: View {
             }
         }
         .frame(width: 6, height: 6)
+    }
+}
+
+/// Keep window-focus observation outside the terminal hierarchy, like the inactive overlay.
+private struct TerminalHostObserver: View {
+    @Environment(\.controlActiveState) private var activeState
+    let store: HerdrStore
+    let theme: WoolooTheme
+
+    var body: some View {
+        Color.clear
+            .onChange(of: theme, initial: true) { _, theme in
+                store.updateTerminalHost(theme: theme, focused: activeState == .key)
+            }
+            .onChange(of: activeState) { _, state in
+                store.updateTerminalHost(theme: theme, focused: state == .key)
+            }
     }
 }

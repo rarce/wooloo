@@ -492,7 +492,15 @@ struct TerminalPaneView: NSViewRepresentable {
             }
             let symbol = cell.symbol.isEmpty ? " " : cell.symbol
             rowSymbols.append(symbol)
-            if symbol != " " {
+            // Herdr's scrollbar uses right-side block elements. Draw them to the cell's
+            // full height; font glyphs leave gaps between rows at our line spacing.
+            let blockWidth: CGFloat? = symbol == "▕" ? cellWidth / 8 : symbol == "▐" ? cellWidth / 2 : nil
+            if let blockWidth {
+                underlines.append(TerminalGrid.Fill(
+                    rect: CGRect(x: CGFloat(x + 1) * cellWidth - blockWidth, y: 0,
+                                 width: blockWidth, height: cellHeight), color: textColor))
+            }
+            if symbol != " " && blockWidth == nil {
                 if let last = segments.last, x - lastText <= shapingContext {
                     segments[segments.count - 1] = last.lowerBound..<(x + 1)
                 } else {
@@ -515,7 +523,7 @@ struct TerminalPaneView: NSViewRepresentable {
                     fontRanges.append((NSRange(location: columnAt.count, length: length), styledFont))
                 }
             }
-            units.append(contentsOf: symbol.utf16)
+            units.append(contentsOf: (blockWidth == nil ? symbol : " ").utf16)
             columnAt.append(contentsOf: repeatElement(x, count: length))
             // Underlines and strikethroughs share the row's line fills.
             for (flag, lineY) in [(UInt16(8), baseline + underlineY), (256, cellHeight / 2)] where modifier & flag != 0 {
@@ -1935,13 +1943,13 @@ final class HerdrTerminalTextView: NSTextView {
         }
     }
 
-    /// Sends a wheel event to the pane under `location` (in the window) when its program
-    /// reports the mouse; false when it does not. The mouse probe calls it too, since AppKit
+    /// Sends a wheel event to the pane under `location` (in the window). Herdr decides
+    /// whether the program receives it or its scrollback moves. The mouse probe calls it too, since AppKit
     /// cannot make a scroll `NSEvent` at a window location.
     func scrollPane(at location: NSPoint, deltaX: CGFloat, deltaY: CGFloat, precise: Bool,
                     modifiers: NSEvent.ModifierFlags) -> Bool {
         guard let surface else { return false }
-        guard let (id, column, row) = mouseHit(at: location, in: surface), reportsMouse(id, in: surface) else {
+        guard let (id, column, row) = mouseHit(at: location, in: surface) else {
             return surface.popup != nil
         }
         let vertical = abs(deltaY) >= abs(deltaX)

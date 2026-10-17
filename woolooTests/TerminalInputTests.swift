@@ -40,6 +40,21 @@ private func splitTextSurface(mouseReporting: Set<String> = []) -> HerdrSurface 
 
 /// Where the pointer lands on a surface: panes, splits, words and scroll lines.
 final class TerminalPointerTests: XCTestCase {
+    @MainActor
+    func testWheelReachesScrollbackWithoutMouseReporting() {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        view.show(twoPaneSurface())
+        var events: [(HerdrMouseEvent, String)] = []
+        view.sendMouse = { events.append(($0, $1)) }
+        let point = NSPoint(x: view.textContainerInset.width + 13 * TerminalPaneView.cellWidth,
+                            y: view.textContainerInset.height + 2 * TerminalPaneView.cellHeight)
+        XCTAssertTrue(view.scrollPane(at: point, deltaX: 0, deltaY: 3, precise: false, modifiers: []))
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.1, "w1:p2")
+        if case .scrollUp = events.first?.0.kind {} else { XCTFail("Wheel direction was not forwarded") }
+        XCTAssertEqual(events.first?.0.lines, 3)
+    }
+
     func testCellsMapToPanesAndTheirContent() throws {
         let surface = twoPaneSurface()
         XCTAssertEqual(TerminalPointer.paneID(atColumn: 3, row: 2, in: surface), "w1:p1")

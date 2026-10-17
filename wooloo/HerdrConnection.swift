@@ -686,6 +686,15 @@ final class HerdrStore: ObservableObject {
     private var surfaceSwitchTabID: String?
     /// The pane last sent a pane.focus, until a surface shows it focused (see `select(paneID:)`).
     private var requestedFocusPaneID: String?
+    private var terminalTheme = WoolooTheme.named(WoolooTheme.fallbackID)!
+    private var terminalFocused = false
+
+    func updateTerminalHost(theme: WoolooTheme, focused: Bool) {
+        terminalTheme = theme
+        terminalFocused = focused
+        surfaceStream?.updateHost(theme: theme, focused: focused)
+    }
+
     private var surfaceSwitchTimeout: Task<Void, Never>?
     /// How long a switch keeps the previous tab's surface if Herdr sends none for the new tab.
     static var surfaceSwitchGrace: Duration = .milliseconds(500)
@@ -915,6 +924,7 @@ final class HerdrStore: ObservableObject {
                                     stream.resize(cols: store.surfaceCols, rows: store.surfaceRows,
                                                   cellWidth: store.cellWidth, cellHeight: store.cellHeight)
                                 }
+                                stream.updateHost(theme: store.terminalTheme, focused: store.terminalFocused)
                                 if let tabID = store.selectedTabID {
                                     stream.focus(tabID: tabID)
                                 } else if let workspaceID = store.selectedWorkspaceID {
