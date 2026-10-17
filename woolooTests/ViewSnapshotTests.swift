@@ -146,6 +146,37 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    func testRemoteAccessSettings() throws {
+        let sandbox = try WorkspaceGitSandbox(name: "view-remote-access")
+        let previousSSH = WorkspaceFiles.sshExecutable
+        defer { WorkspaceFiles.sshExecutable = previousSSH; sandbox.tearDown() }
+        let ready = sandbox.path("ready")
+        let hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPL0n3RNg08SCe1ezkGWADmJUd0dqkjBMG/0hF2rKRlT server"
+        try sandbox.write(["ssh": """
+            #!/bin/sh
+            if [ "$1" = '-G' ]; then
+                printf 'hostname server.example.test\\nport 2222\\n'
+            else
+                printf '%s\\0' 'mobile-user' '/home/mobile-user' '/home/mobile-user/.local/bin/herdr'
+                printf '%s\\n' \(WorkspaceFiles.quote(hostKey))
+                : > \(WorkspaceFiles.quote(ready))
+            fi
+            """], in: ".")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sandbox.path("ssh"))
+        WorkspaceFiles.sshExecutable = sandbox.path("ssh")
+        let machine = HerdrMachineProfile(id: "remote", label: "Development server", target: "work-alias",
+                                          session: "remote-work", enabled: true)
+        let view = HerdrSettingsView(socketPath: "/nonexistent.sock", sessionName: machine.session,
+                                    machine: machine, showRemoteAccess: true)
+        let image = render(view, size: NSSize(width: 880, height: 620), settle: 2,
+                           ready: { FileManager.default.fileExists(atPath: ready) })
+        let output = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("build/mobile-remote-settings.png")
+        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: output)
+        try assertSnapshot(image, named: "settings-remote-access")
+        try skipIfRecorded()
+    }
+
     func testDiskComparison() throws {
         let location = WorkspaceFileLocation(machine: nil, session: "test", workspaceID: "w", workspaceLabel: "w",
                                              root: "/private/tmp/wooloo-no-such-comparison-repo")

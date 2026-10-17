@@ -2148,11 +2148,11 @@ enum WorkspaceFiles {
         return try run(sshExecutable, args, input: input, limit: limit, timeout: timeout, label: label, remote: true)
     }
 
-    /// Output of a short read-only script on an SSH machine, e.g. the sidebar's host stats probe.
+    /// Runs a short script on an SSH machine. Input stays on stdin, separate from the command.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func remoteOutput(_ machine: HerdrMachineProfile, script: String, label: String,
-                             limit: Int = 64_000) throws -> Data {
-        try ssh(machine, script, limit: limit, timeout: 10, label: label)
+                             limit: Int = 64_000, input: Data? = nil) throws -> Data {
+        try ssh(machine, script, input: input, limit: limit, timeout: 10, label: label)
     }
 
     /// Tests replace it with a script that runs the remote command locally.

@@ -27,7 +27,7 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 - The connected host's CPU, memory, disk and uptime, local or over SSH.
 - Optional Claude Code and Codex plan usage in the sidebar (see [Agent quotas](#agent-quotas)).
 - A session picker for any Herdr session on the machine.
-- Remote access to the Herdr session over SSH, through a Cloudflare Tunnel (see [Remote access](#remote-access)).
+- Mobile access to local sessions through a Cloudflare Tunnel or to remote servers over direct SSH, with public-key authorization (see [Remote access](#remote-access)).
 
 ### Terminal
 
@@ -74,9 +74,17 @@ While wooloo is signed ad hoc, macOS ties an "Always Allow" on Claude Code's Key
 
 ## Remote access
 
-> **This puts your Mac's SSH login on the internet.** What is published is this Mac's SSH server (Remote Login, `localhost:22`), not only Herdr: anyone who reaches the tunnel's address can try to sign in to any account allowed to use SSH. Before turning it on, allow only key authentication: add a file such as `/etc/ssh/sshd_config.d/100-keys-only.conf` with `PasswordAuthentication no` and `KbdInteractiveAuthentication no`, then turn Remote Login off and on again. wooloo never changes SSH, firewall, Keychain or sharing settings for you.
+Settings → Remote Access follows the selected session. For a **remote host**, it shows a direct SSH QR for wooloo mobile, using that server's account, session, Herdr executable and SSH host fingerprints. No Cloudflare tunnel or local Remote Login is needed. Review the hostname and port: they must be reachable from the phone. SSH aliases, jump hosts and private routes configured on the Mac do not transfer to the phone; use the server's reachable address or a VPN.
 
-Settings → Remote Access (also in the command palette) publishes this Mac's SSH server through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), so an SSH client elsewhere can reach the Herdr session without opening a port. Clients still sign in with SSH, then run Herdr's own commands (`remote-api-bridge`, `terminal session control`).
+Generate or select a key in wooloo mobile, copy/share its **public key**, and paste that line in Remote Access. **Review Authorization…** shows its fingerprint, destination account and `authorized_keys` path before **Authorize Key** writes anything. On a remote session, wooloo sends the public key through the saved SSH connection to the remote account; on a local session, it writes on this Mac. This grants SSH access to that account across its sessions. Existing keys and restrictions are kept, duplicate keys are skipped, and symbolic links are refused. The private key stays on the phone. This uses `~/.ssh/authorized_keys`; servers configured with another authorization location need their administrator's usual setup.
+
+Scan the connection QR in wooloo mobile, select that authorized key and connect. The QR carries connection details and server identity; key authorization is a separate, explicit action. If server host keys cannot be read, verify the fingerprint on the phone when connecting.
+
+For a **local session**, Remote Access publishes this Mac's SSH server through a Cloudflare Tunnel:
+
+> **Starting the local tunnel puts your Mac's SSH login on the internet.** What is published is this Mac's SSH server (Remote Login, `localhost:22`), not only Herdr: anyone who reaches the tunnel's address can try to sign in to any account allowed to use SSH. Before turning it on, allow only key authentication: add a file such as `/etc/ssh/sshd_config.d/100-keys-only.conf` with `PasswordAuthentication no` and `KbdInteractiveAuthentication no`, then turn Remote Login off and on again. wooloo never changes SSH server, firewall, Keychain or sharing settings for you.
+
+The [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) lets an SSH client elsewhere reach the local Herdr session without opening a port. Clients still sign in with SSH, then run Herdr's own commands (`remote-api-bridge`, `terminal session control`).
 
 What wooloo checks before starting the tunnel, and what it does not:
 

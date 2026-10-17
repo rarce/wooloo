@@ -42,19 +42,25 @@ enum RemoteAccessTunnelLog {
     }
 }
 
-/// The addresses another device uses to reach this Mac's Herdr through the tunnel.
+/// Connection links shared with another device, over direct SSH or the local Mac's tunnel.
 enum RemoteAccessLink {
+    enum Transport: String {
+        case ssh, cloudflare
+    }
+
     /// Opens the Android app's host editor prefilled; the Android camera opens it from the QR code.
     static func herdroid(hostname: String, user: String, session: String, label: String,
-                         herdrPath: String?, fingerprints: [String]) -> URL? {
+                         herdrPath: String?, fingerprints: [String],
+                         transport: Transport = .cloudflare, port: Int = 22) -> URL? {
         var components = URLComponents()
         components.scheme = "herdroid"
         components.host = "add-host"
-        var items = [URLQueryItem(name: "transport", value: "cloudflare"),
+        var items = [URLQueryItem(name: "transport", value: transport.rawValue),
                      URLQueryItem(name: "host", value: hostname),
                      URLQueryItem(name: "user", value: user),
                      URLQueryItem(name: "session", value: session),
                      URLQueryItem(name: "label", value: label)]
+        if transport == .ssh { items.append(URLQueryItem(name: "port", value: String(port))) }
         if let herdrPath { items.append(URLQueryItem(name: "herdr", value: herdrPath)) }
         items += fingerprints.map { URLQueryItem(name: "fp", value: $0) }
         components.queryItems = items
@@ -352,6 +358,10 @@ final class RemoteAccessModel: ObservableObject {
     }
 
     var cloudflaredPath: String? { executable() }
+
+    var runningHostname: String? {
+        if case .running(let hostname) = state { hostname } else { nil }
+    }
 
     func setToken(_ token: String) {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)

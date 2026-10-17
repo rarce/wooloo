@@ -1,19 +1,19 @@
 import AppKit
 import SwiftUI
 
-/// The running tunnel's address, as a QR code for the Android app and as text for other clients.
+/// Connection details shared with the phone; host identity always comes from the selected machine.
 struct RemoteAccessConnectionView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     let hostname: String
-    let sessionName: String
+    let connection: MobileSSHConnection
+    var transport: RemoteAccessLink.Transport = .cloudflare
+    var port: Int = 22
 
-    private var user: String { NSUserName() }
-    private var fingerprints: [String] { RemoteAccessHostKeys.fingerprints() }
     private var link: URL? {
-        RemoteAccessLink.herdroid(hostname: hostname, user: user, session: sessionName,
-                                  label: RemoteAccessSystem.machineName,
-                                  herdrPath: RemoteAccessSystem.herdrExecutable, fingerprints: fingerprints)
+        RemoteAccessLink.herdroid(hostname: hostname, user: connection.user, session: connection.session,
+                                  label: connection.label, herdrPath: connection.herdrPath,
+                                  fingerprints: connection.fingerprints, transport: transport, port: port)
     }
 
     var body: some View {
@@ -28,13 +28,15 @@ struct RemoteAccessConnectionView: View {
                     .accessibilityLabel("QR code for the Android app")
             }
             VStack(alignment: .leading, spacing: 12) {
-                Text("Scan with the phone's camera to add this Mac to the Android app, then choose its SSH key.")
+                Text("Scan in wooloo mobile to add \(connection.label) and session \(connection.session), then select the phone's SSH key authorized below.")
                     .font(.system(size: typography.secondary))
                     .foregroundStyle(theme.subtext)
                     .fixedSize(horizontal: false, vertical: true)
-                copyRow("Hostname", hostname)
-                copyRow("SSH user · Herdr session", "\(user) · \(sessionName)", copies: user)
-                copyRow("From another computer", RemoteAccessLink.sshCommand(hostname: hostname, user: user))
+                copyRow("Hostname", transport == .ssh ? "\(hostname):\(port)" : hostname)
+                copyRow("SSH user · Herdr session", "\(connection.user) · \(connection.session)", copies: connection.user)
+                copyRow("From another computer", transport == .cloudflare
+                        ? RemoteAccessLink.sshCommand(hostname: hostname, user: connection.user)
+                        : "ssh -p \(port) \(WorkspaceFiles.quote(connection.user + "@" + hostname))")
                 if let link {
                     Button("Copy App Link", systemImage: "link") { AppActions.copy(link.absoluteString) }
                 }
@@ -92,7 +94,7 @@ struct RemoteAccessStatusView: View {
                 }
             }
             if case .needsConfirmation = model.state {
-                Text("wooloo does not change SSH settings. Start anyway only if you accept that risk; "
+                Text("wooloo does not change sshd's sign-in methods. Start anyway only if you accept that risk; "
                      + "your confirmation is not a check, and the status will say the tunnel runs unverified.")
                     .font(.system(size: typography.secondary))
                     .foregroundStyle(theme.subtext)

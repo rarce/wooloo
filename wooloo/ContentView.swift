@@ -165,7 +165,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $window.showsSettings) {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
-                              remoteHost: herdr.machine?.label,
+                              machine: herdr.machine,
                               showShortcuts: window.settingsShowShortcuts,
                               showRemoteAccess: window.settingsShowRemoteAccess) {
                 shortcutMap = HerdrShortcutMap.load()
