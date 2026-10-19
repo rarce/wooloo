@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import wooloo
 
@@ -187,6 +188,37 @@ final class TerminalTabDropViewTests: XCTestCase {
         _ = drag.begin(.document, id: "doc")
         XCTAssertNil(drag.draggedTerminalTab, "Document tabs never split the panes")
         XCTAssertNil(drag.dropTerminalTab())
+    }
+
+    /// A runtime-only UTType is insufficient: SwiftUI's AppKit destinations need the
+    /// private drag types exported by the application bundle as data types.
+    func testTabDragTypesAreDeclaredByTheAppBundle() throws {
+        let declarations = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "UTExportedTypeDeclarations") as? [[String: Any]])
+        for type in [TabDragModel.type, TabDragModel.panelType] {
+            let declaration = try XCTUnwrap(declarations.first { $0["UTTypeIdentifier"] as? String == type.identifier })
+            let parents = try XCTUnwrap(declaration["UTTypeConformsTo"] as? [String])
+            XCTAssertTrue(parents.contains(UTType.data.identifier))
+            XCTAssertTrue(type.conforms(to: .data))
+        }
+    }
+
+    func testTabProvidersLoadTheirIDsWithoutOfferingTextOrFiles() async throws {
+        let drag = TabDragModel()
+        for (group, id) in [(TabDragGroup.terminal, "w1:t2"), (.document, "document-ä"), (.search, "search")] {
+            let provider = drag.begin(group, id: id)
+            let type = TabDragModel.type(of: group)
+            XCTAssertEqual(provider.registeredTypeIdentifiers, [type.identifier])
+            XCTAssertFalse(provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier))
+            XCTAssertFalse(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+            let data = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, error in
+                    if let error { continuation.resume(throwing: error) }
+                    else if let data { continuation.resume(returning: data) }
+                    else { continuation.resume(throwing: CocoaError(.fileReadCorruptFile)) }
+                }
+            }
+            XCTAssertEqual(String(decoding: data, as: UTF8.self), id)
+        }
     }
 
     func testTabDragsHighlightTheNearestHalfAndSplitThere() throws {

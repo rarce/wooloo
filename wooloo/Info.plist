@@ -2,6 +2,29 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.wooloo.tab</string>
+			<key>UTTypeDescription</key>
+			<string>Wooloo Terminal Tab</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.wooloo.panel-tab</string>
+			<key>UTTypeDescription</key>
+			<string>Wooloo Document or Search Tab</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
 	<key>SUFeedURL</key>
 	<string>https://github.com/rarce/wooloo/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
