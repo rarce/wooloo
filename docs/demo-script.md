@@ -1,6 +1,6 @@
 # Demo script
 
-The recording is `docs/images/demo.mp4` (and `demo.gif` for the README), made from this plan in one take of a real session: wooloo 0.3.1 with the Codex CLI on an isolated Herdr session and a throwaway repository. Clicks and typing were played by a script through macOS Accessibility, at a human pace. The wait for the agent is sped up 8×, typing the task 2× and the steps after it 1.5×; the video marks each sped-up stretch. It runs about a minute. Nothing else is edited to look faster than it is.
+The recording is `docs/images/demo.mp4` (and `demo.gif` for the README), made from this plan in a real session: wooloo 0.3.1 with the Codex CLI on an isolated Herdr session and a throwaway repository. Clicks and typing were played by a script through macOS Accessibility, at a human pace. The wait for the agent is sped up 8×, typing the task 2× and the steps after it 1.5×; the video marks each sped-up stretch. It runs about 56 seconds. A 5.2-second interruption from an unrelated performance-test window was removed (19.0–24.2 seconds in the original 61-second export). The remaining footage keeps its original timing and captions.
 
 Use an isolated Herdr session and a throwaway repository, never real credentials, and keep QUOTAS and Remote Access off on screen. The plan it started from:
 
