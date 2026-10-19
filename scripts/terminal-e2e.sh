@@ -46,11 +46,21 @@ metrics=$run/metrics.jsonl
 trace=$run/surface.trace
 phases=$run/phases.jsonl
 : > $phases
+python3 $root/scripts/perf_support.py $root scripts/terminal-perf.py scripts/terminal-e2e.sh > $run/metadata.json
+python3 - "$run/metadata.json" "${WOOLOO_E2E_WINDOW:-1600x1000}" "${WOOLOO_E2E_LOAD:-0}" "${(j:,:)workloads}" <<'PYMETA'
+import json, subprocess, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+record = json.loads(path.read_text())
+record.update(window=sys.argv[2], load_processes=int(sys.argv[3]), workloads=sys.argv[4],
+              herdr_version=subprocess.check_output(["herdr", "--version"], text=True).strip())
+path.write_text(json.dumps(record) + "\n")
+PYMETA
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
 echo "Building wooloo (Release) — run directory: $run"
-if ! xcodebuild build-for-testing -project $root/wooloo.xcodeproj -scheme wooloo -configuration Release \
-        -destination 'platform=macOS,arch=arm64' -derivedDataPath $derived \
+if ! xcodebuild build-for-testing -disableAutomaticPackageResolution -skipPackageUpdates -project $root/wooloo.xcodeproj -scheme wooloo -configuration Release \
+        -destination 'platform=macOS,arch=arm64' -derivedDataPath $derived ONLY_ACTIVE_ARCH=YES \
         CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= ENABLE_TESTABILITY=YES \
         SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) WOOLOO_PROBES' \
         > $run/build.log 2>&1; then
@@ -223,6 +233,7 @@ elif [[ $save_baseline == 1 ]]; then
     python3 $root/scripts/terminal-perf.py e2e $metrics $phases --json $run/summary.json
     mkdir -p ${baseline:h}
     cp $run/summary.json $baseline
+    cp $run/metadata.json ${baseline:r}.metadata.json
     echo "Saved baseline: $baseline"
 elif [[ -f $baseline ]]; then
     python3 $root/scripts/terminal-perf.py e2e $metrics $phases --json $run/summary.json --baseline $baseline
@@ -234,7 +245,7 @@ echo
 echo "Replaying the trace ($(du -h $trace | cut -f1)) against the reference decoder"
 if TEST_RUNNER_WOOLOO_REPLAY_TRACE=$trace TEST_RUNNER_WOOLOO_REPLAY_METRICS=$metrics \
     xcodebuild test-without-building -project $root/wooloo.xcodeproj -scheme wooloo -configuration Release \
-        -destination 'platform=macOS,arch=arm64' -derivedDataPath $derived \
+        -destination 'platform=macOS,arch=arm64' -derivedDataPath $derived ONLY_ACTIVE_ARCH=YES \
         -only-testing:woolooTests/SurfaceTraceReplayTests > $run/replay.log 2>&1; then
     echo "Replay: every drawn revision matches what Herdr sent"
 else

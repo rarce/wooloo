@@ -18,6 +18,7 @@ import json
 import random
 import sys
 from pathlib import Path
+from perf_support import compatible
 
 
 def percentile(values, p):
@@ -164,7 +165,9 @@ def read_bench(path):
 
 def bench_report(path, baseline_path):
     config, results = read_bench(path)
-    base = read_bench(baseline_path)[1] if baseline_path else {}
+    old_config, base = read_bench(baseline_path) if baseline_path else ({}, {})
+    if baseline_path:
+        compatible(config, old_config, ("cols", "rows", "frames", "font"), results, base)
     print(f"Benchmark {path}  config: {json.dumps(config)}")
     if baseline_path:
         print(f"Baseline  {baseline_path}  (n× = speedup vs baseline)")
@@ -201,7 +204,9 @@ def read_files(path):
 
 def files_report(path, baseline_path):
     config, results = read_files(path)
-    base = read_files(baseline_path)[1] if baseline_path else {}
+    old_config, base = read_files(baseline_path) if baseline_path else ({}, {})
+    if baseline_path:
+        compatible(config, old_config, ("ssh_target",), results, base)
     print(f"Workspace benchmark {path}  config: {json.dumps(config)}")
     if baseline_path:
         print(f"Baseline {baseline_path}  (n× = speedup vs baseline)")
@@ -460,6 +465,13 @@ def e2e_report(metrics_path, phases_path, baseline_path, json_path):
     base = {}
     if baseline_path:
         base = {s["phase"]: s for s in json.loads(Path(baseline_path).read_text())}
+        metadata = json.loads(Path(metrics_path).with_name("metadata.json").read_text())
+        old_metadata = json.loads(Path(baseline_path).with_suffix(".metadata.json").read_text())
+        compatible(metadata, old_metadata, ("window", "workloads", "load_processes", "herdr_version"),
+                   [s["phase"] for s in summaries], base)
+        for summary in summaries:
+            if summary["grid"] != base[summary["phase"]]["grid"]:
+                raise ValueError(f"incompatible grid for {summary['phase']}")
         print(f"Baseline {baseline_path}  (n× = improvement vs baseline)")
     columns = [("frames", "frames", None), ("fps_in", "fps in", False), ("fps_drawn", "fps drawn", False),
                ("revisions_skipped", "skipped", None), ("deliver_p95_ms", "deliver p95 ms", True),
@@ -569,4 +581,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (ValueError, FileNotFoundError) as error:
+        print(f"Cannot compare measurements: {error}", file=sys.stderr)
+        sys.exit(2)

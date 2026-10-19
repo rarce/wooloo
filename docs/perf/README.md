@@ -569,3 +569,24 @@ First viewport includes the debounce and parsing; parse is also measured separat
 | 3.2 MB saved stream | 667.1 → 525.1 ms | 209.5 → 42.1 ms | 12.8 ms | 1.9 ms | 2.7 ms |
 | 12 saved PNG plots | 327.2 → 348.3 ms | 3.1 → 3.9 ms | 19.7 ms | 3.7 ms | 32.7 ms |
 <!-- /notebook-measurements -->
+
+## Comparing experiments
+
+All suites now record a protocol version, model, macOS version, architecture, logical CPU count,
+Xcode version, pinned package revisions, commit, tracked-dirty flag, load and fixture fingerprint.
+Comparisons reject missing metadata, different environments/fixtures and added or missing cases
+before printing ratios. Terminal stage comparisons also require the same grid/frame count/font;
+workspace comparisons require the same SSH target; previews require the same viewport, fonts,
+theme, renderer and capture protocol. Repetition counts and application source revisions may
+change. A host load above 75% of logical CPUs prints a warning for either run; repeat idle before
+attributing a timing difference to code. Load average is context, not measured application CPU.
+
+Older references are intentionally incompatible: preserve any historical data needed for research,
+then run the appropriate `--save-baseline` on the measurement machine. Do not add invented metadata
+to an old run. E2E references have a sibling `e2e-baseline.metadata.json`; keep both files together.
+A partial E2E workload run needs its own matching reference rather than a comparison against a full
+run. Package updates are disabled in benchmark scripts so moving a checkout does not silently
+upgrade its dependencies. Preview `--check` retains its timing thresholds; this change does not
+add performance timing gates to CI.
+
+Run comparator contract tests with `python3 -m unittest discover -s scripts/tests -v`.

@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+from perf_support import compatible
 
 
 def read(path):
@@ -31,9 +32,13 @@ def main():
     old_config, old = read(args.baseline) if args.baseline else ({}, {})
     if args.baseline and not old:
         parser.error(f"no {args.kind} benchmark results in baseline")
-    for field in ("width", "height", "resize_width", "base_font", "code_font", "theme", "renderer", "capture"):
-        if old and config.get(field) != old_config.get(field):
-            parser.error(f"incompatible {field}: {config.get(field)} vs {old_config.get(field)}")
+    if args.baseline:
+        try:
+            compatible(config, old_config,
+                       ("width", "height", "resize_width", "base_font", "code_font", "theme", "renderer", "capture"),
+                       results, old)
+        except ValueError as error:
+            parser.error(str(error))
     print("Config:", json.dumps(config, sort_keys=True))
     if args.baseline:
         print("Baseline:", args.baseline, "(speedup = baseline / current)")

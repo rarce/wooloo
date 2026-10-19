@@ -29,6 +29,8 @@ log=$root/build/perf/notebook-$stamp.log
 python3 - "$results" "$root" <<'PY'
 import hashlib, json, platform, subprocess, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[2]) / "scripts"))
+from perf_support import capture
 repo = Path(sys.argv[2])
 record = {"machine": subprocess.check_output(["sysctl", "-n", "hw.model"], text=True).strip(),
           "os": platform.mac_ver()[0],
@@ -43,6 +45,7 @@ for source in sorted(path for path in sources if path.is_file()):
     digest.update(source.relative_to(repo).as_posix().encode() + b"\0")
     digest.update(source.read_bytes())
 record["source_sha256"] = digest.hexdigest()
+record.update(capture(Path(sys.argv[2]), ["woolooTests/NotebookPreviewBenchmarks.swift"]))
 Path(sys.argv[1]).write_text(json.dumps(record) + "\n")
 PY
 export TEST_RUNNER_WOOLOO_BENCH_NOTEBOOK=1 TEST_RUNNER_WOOLOO_BENCH_OUT=$results

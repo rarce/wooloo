@@ -22,6 +22,8 @@ log=$root/build/perf/markdown-$stamp.log
 python3 - "$results" "$root" <<'PY'
 import hashlib, json, platform, subprocess, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[2]) / "scripts"))
+from perf_support import capture
 record = {"machine": subprocess.check_output(["sysctl", "-n", "hw.model"], text=True).strip(),
           "os": platform.mac_ver()[0],
           "commit": subprocess.check_output(["git", "-C", sys.argv[2], "rev-parse", "--short", "HEAD"], text=True).strip(),
@@ -33,13 +35,14 @@ for source in sorted(sources):
     digest.update(source.relative_to(repo).as_posix().encode() + b"\0")
     digest.update(source.read_bytes())
 record["source_sha256"] = digest.hexdigest()
+record.update(capture(Path(sys.argv[2]), ["woolooTests/MarkdownTableBenchmarks.swift"]))
 Path(sys.argv[1]).write_text(json.dumps(record) + "\n")
 PY
 export TEST_RUNNER_WOOLOO_BENCH_MARKDOWN=1 TEST_RUNNER_WOOLOO_BENCH_OUT=$results
 export TEST_RUNNER_WOOLOO_BENCH_REPEAT=${WOOLOO_BENCH_REPEAT:-3}
 export TEST_RUNNER_WOOLOO_BENCH_MARKDOWN_FILE=${WOOLOO_BENCH_MARKDOWN_FILE:-}
 echo "Markdown benchmarks (Release) — log: $log"
-if ! xcodebuild test -project $root/wooloo.xcodeproj -scheme wooloo -configuration Release \
+if ! xcodebuild test -disableAutomaticPackageResolution -skipPackageUpdates -project $root/wooloo.xcodeproj -scheme wooloo -configuration Release \
         -destination 'platform=macOS,arch=arm64' -derivedDataPath $derived ONLY_ACTIVE_ARCH=YES \
         -only-testing:woolooTests/MarkdownTableBenchmarks \
         -only-testing:woolooTests/MarkdownPreviewRenderingTests \
