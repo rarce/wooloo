@@ -93,8 +93,10 @@ enum TabDragGroup {
 /// tabs `panelType`, which the main area's panels take.
 @MainActor
 final class TabDragModel: ObservableObject {
-    static let type = UTType(exportedAs: "dev.wooloo.tab")
-    static let panelType = UTType(exportedAs: "dev.wooloo.panel-tab")
+    // Keep these data types exported in Info.plist: runtime-only types do not reach
+    // SwiftUI drop destinations on macOS.
+    static let type = UTType(exportedAs: "dev.wooloo.tab", conformingTo: .data)
+    static let panelType = UTType(exportedAs: "dev.wooloo.panel-tab", conformingTo: .data)
     static let types = [type, panelType]
 
     static func type(of group: TabDragGroup) -> UTType {
