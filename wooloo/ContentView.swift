@@ -1537,11 +1537,12 @@ private struct SidebarRowModifier: ViewModifier {
 private struct InactiveWindowOverlay: View {
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("DimInactiveWindows") private var dimsInactiveWindows = true
     let background: Color
 
     var body: some View {
         background
-            .opacity(activeState == .inactive ? 0.35 : 0)
+            .opacity(dimsInactiveWindows && activeState == .inactive ? 0.35 : 0)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: activeState)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
