@@ -20,6 +20,7 @@ struct HerdrSettingsView: View {
     @AppStorage(HerdrNotifier.bounceDockKey) private var bouncesDock = true
     @AppStorage(WoolooTypography.baseKey) private var interfaceTextSize = WoolooTypography.defaultBase
     @AppStorage(WoolooTypography.codeKey) private var codeTextSize = WoolooTypography.defaultCode
+    @AppStorage("DimInactiveWindows") private var dimsInactiveWindows = true
     @AppStorage(MarkdownPreviewStyle.storageKey) private var markdownPreviewStyle = MarkdownPreviewStyle.theme
 
     private enum Category: String, CaseIterable, Identifiable {
@@ -349,6 +350,11 @@ struct HerdrSettingsView: View {
             .disabled(remoteHost != nil)
         case .appearance:
             settingsGroup("wooloo", subtitle: "This app only · applies immediately") {
+                field("Window focus", hint: "Reduce the brightness of inactive windows when another window or app has focus.") {
+                    Toggle("Dim inactive windows", isOn: $dimsInactiveWindows)
+                        .toggleStyle(.switch)
+                        .accessibilityIdentifier("dim-inactive-windows")
+                }
                 field("Interface text size", hint: "Sidebar, tabs, History, Files, and settings. Default: \(Int(WoolooTypography.defaultBase)) pt") {
                     textSizeControl($interfaceTextSize, range: WoolooTypography.baseRange,
                                     default: WoolooTypography.defaultBase)
