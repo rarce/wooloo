@@ -920,7 +920,10 @@ enum TerminalKeyInput {
         if let special = special[event.keyCode] {
             key = special
         } else {
-            guard !modifiers.intersection([.control, .option]).isEmpty,
+            // Option participates in the keyboard layout's text input (accents,
+            // dead keys and symbols). Only Control turns printable keys into
+            // terminal chords; Option still modifies special keys above.
+            guard modifiers.contains(.control),
                   event.characters?.isEmpty == false,
                   let characters = event.charactersIgnoringModifiers?.lowercased(),
                   characters.unicodeScalars.count == 1,

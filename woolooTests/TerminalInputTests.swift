@@ -589,11 +589,9 @@ final class TerminalKeyInputTests: XCTestCase {
             (0, "\u{1}", "A", [.control, .shift], "a", 3),
             (0, "\u{1}", "a", [.control, .option], "a", 6),
             (0, "\u{1}", "A", [.control, .option, .shift], "a", 7),
-            (0, "Å", "A", [.option, .shift], "a", 5),
             (24, "+", "+", [.control, .shift], "+", 3),
             (24, "+", "+", [.control, .option, .shift], "+", 7),
             (44, "?", "?", [.control, .option, .shift], "?", 7),
-            (41, "Ö", "Ö", [.option, .shift], "ö", 5),
             (0, "\u{0}", " ", [.control, .option], " ", 6)
         ]
         for (code, text, ignoring, flags, character, modifiers) in cases {
@@ -657,6 +655,31 @@ final class TerminalKeyInputTests: XCTestCase {
         view.pasteboard = pasteboard
         view.paste(nil)
         XCTAssertEqual(pastes, ["first\nsecond"])
+    }
+
+    func testOptionTextAndDeadKeysUseTheInputMethodInsteadOfAltChords() throws {
+        for (code, characters, ignoring, flags) in [
+            (UInt16(14), "", "e", NSEvent.ModifierFlags.option),
+            (14, "´", "e", .option),
+            (32, "¨", "u", .option),
+            (45, "˜", "n", .option),
+            (0, "å", "a", .option),
+            (0, "Å", "A", [.option, .shift])
+        ] {
+            XCTAssertNil(TerminalKeyInput.name(for: try event(code, characters, ignoring: ignoring, flags: flags)))
+        }
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        var text: [String] = [], keys: [String] = []
+        view.sendText = { value, _ in text.append(value) }
+        view.sendKey = { value, _ in keys.append(value) }
+        // AppKit supplies the composed characters in the next native event.
+        for character in ["á", "é", "í", "ó", "ú", "ü", "ñ", "Á"] {
+            view.keyDown(with: try event(0, character))
+        }
+        XCTAssertEqual(text, ["á", "é", "í", "ó", "ú", "ü", "ñ", "Á"])
+        XCTAssertTrue(keys.isEmpty)
+        view.keyDown(with: try event(123, "\u{f702}", flags: .option))
+        XCTAssertEqual(keys, ["alt+left"], "Option navigation remains a terminal chord")
     }
 
     func testNativeCommandAndHerdrShortcutsRunBeforeTerminalMapping() throws {
