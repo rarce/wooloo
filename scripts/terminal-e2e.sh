@@ -35,7 +35,26 @@ derived=${WOOLOO_DERIVED_DATA:-$root/build/DerivedData}
 baseline=$root/docs/perf/e2e-baseline.json
 herdr=(herdr --session $session)
 save_baseline=0
-if [[ ${1:-} == --save-baseline ]]; then save_baseline=1; shift; fi
+while (( $# )); do
+    case $1 in
+        --save-baseline) save_baseline=1; shift ;;
+        --baseline) baseline=$2; shift 2 ;;
+        --no-baseline) baseline=; shift ;;
+        --*) echo "Unknown option $1" >&2; exit 2 ;;
+        *) break ;;
+    esac
+done
+[[ $save_baseline == 1 && -z $baseline ]] && { echo "Choose save or no baseline" >&2; exit 2; }
+stream_seconds=${WOOLOO_E2E_SECONDS:-5}
+[[ $stream_seconds == <-> && $stream_seconds -gt 0 ]] || { echo "WOOLOO_E2E_SECONDS must be a positive integer" >&2; exit 2; }
+wait_timeout=$(( (stream_seconds + 180) * 1000 ))
+if [[ -n ${WOOLOO_E2E_RESOURCE_INTERVAL:-} ]]; then
+    python3 - "$WOOLOO_E2E_RESOURCE_INTERVAL" <<'PYINTERVAL'
+import math, sys
+if not math.isfinite(float(sys.argv[1])) or not float(sys.argv[1]) >= 0.2:
+    raise SystemExit("WOOLOO_E2E_RESOURCE_INTERVAL must be at least 0.2 seconds")
+PYINTERVAL
+fi
 workloads=(ascii color unicode graphics typing burst keys mouse split selection resize tabs)
 (( $# )) && workloads=($@)
 [[ $session == default ]] && { echo "Refusing to use the primary Herdr session" >&2; exit 1; }
@@ -46,13 +65,14 @@ metrics=$run/metrics.jsonl
 trace=$run/surface.trace
 phases=$run/phases.jsonl
 : > $phases
-python3 $root/scripts/perf_support.py $root scripts/terminal-perf.py scripts/terminal-e2e.sh > $run/metadata.json
-python3 - "$run/metadata.json" "${WOOLOO_E2E_WINDOW:-1600x1000}" "${WOOLOO_E2E_LOAD:-0}" "${(j:,:)workloads}" <<'PYMETA'
+python3 $root/scripts/perf_support.py $root scripts/terminal-perf.py scripts/terminal-e2e.sh scripts/perf-resources.py scripts/perf_support.py > $run/metadata.json
+python3 - "$run/metadata.json" "${WOOLOO_E2E_WINDOW:-1600x1000}" "${WOOLOO_E2E_LOAD:-0}" "${(j:,:)workloads}" "$stream_seconds" "${WOOLOO_E2E_RESOURCE_INTERVAL:-0}" <<'PYMETA'
 import json, subprocess, sys
 from pathlib import Path
 path = Path(sys.argv[1])
 record = json.loads(path.read_text())
 record.update(window=sys.argv[2], load_processes=int(sys.argv[3]), workloads=sys.argv[4],
+              stream_seconds=int(sys.argv[5]), resource_interval=float(sys.argv[6]),
               herdr_version=subprocess.check_output(["herdr", "--version"], text=True).strip())
 path.write_text(json.dumps(record) + "\n")
 PYMETA
@@ -74,10 +94,15 @@ python3 $root/scripts/terminal-perf.py workloads $run
 
 started_server=0
 app_pid=
+resource_pid=
 load_pids=()
 previous_session=$(defaults read dev.wooloo.app HerdrLastSession 2>/dev/null || true)
 cleanup() {
     (( ${#load_pids} )) && kill $load_pids 2>/dev/null || true
+    if [[ -n $resource_pid ]]; then
+        kill $resource_pid 2>/dev/null || true
+        wait $resource_pid 2>/dev/null || true
+    fi
     [[ -n $app_pid ]] && kill $app_pid 2>/dev/null || true
     # wooloo remembers the session it connected to; give the developer's own choice back.
     if [[ -n $previous_session ]]; then
@@ -107,6 +132,11 @@ WOOLOO_METRICS_FILE=$metrics WOOLOO_SURFACE_TRACE=$trace WOOLOO_TYPING_PROBE=1 W
     WOOLOO_WINDOW_SIZE=${WOOLOO_E2E_WINDOW:-1600x1000} $app -HerdrLastSession $session -ApplePersistenceIgnoreState YES \
     > $run/app.log 2>&1 &
 app_pid=$!
+if [[ -n ${WOOLOO_E2E_RESOURCE_INTERVAL:-} ]]; then
+    python3 $root/scripts/perf-resources.py --pid $app_pid --interval $WOOLOO_E2E_RESOURCE_INTERVAL \
+        --out $run/resources.jsonl > $run/resources-summary.json &
+    resource_pid=$!
+fi
 
 for _ in {1..300}; do
     grep -q '"e":"draw"' $metrics 2>/dev/null && break
@@ -204,9 +234,9 @@ for workload in $workloads; do
         continue
     fi
     case $workload in
-        ascii|color|unicode) command="$play $run/$workload.txt --lines-per-second 250 --seconds 5" ;;
-        graphics) command="$play $run/graphics.txt --lines-per-second 100 --seconds 5" ;;
-        typing) command="$play $run/ascii.txt --chars-per-second 40 --seconds 5" ;;
+        ascii|color|unicode) command="$play $run/$workload.txt --lines-per-second 250 --seconds $stream_seconds" ;;
+        graphics) command="$play $run/graphics.txt --lines-per-second 100 --seconds $stream_seconds" ;;
+        typing) command="$play $run/ascii.txt --chars-per-second 40 --seconds $stream_seconds" ;;
         burst) command="cat $run/ascii.txt" ;;
         *) echo "Unknown workload $workload" >&2; exit 1 ;;
     esac
@@ -214,7 +244,7 @@ for workload in $workloads; do
     start=$(now_ms)
     # The marker is assembled by printf, so the echoed command line never matches it.
     $herdr pane run $pane "clear; $command; printf 'WOOLOO_%s_%s\\n' DONE $workload" > /dev/null
-    $herdr pane wait-output $pane --match "WOOLOO_DONE_$workload" --timeout 180000 > /dev/null
+    $herdr pane wait-output $pane --match "WOOLOO_DONE_$workload" --timeout $wait_timeout > /dev/null
     python3 -c 'import time; time.sleep(1.5)' # let the last frames arrive and draw
     echo "{\"name\":\"$workload\",\"start_ms\":$start,\"end_ms\":$(now_ms)}" >> $phases
 done
@@ -224,6 +254,26 @@ load_pids=()
 kill $app_pid 2>/dev/null || true
 wait $app_pid 2>/dev/null || true
 app_pid=
+if [[ -n $resource_pid ]]; then
+    kill $resource_pid 2>/dev/null || true
+    wait $resource_pid
+    resource_pid=
+fi
+
+python3 - "$run/metadata.json" "$metrics" <<'PYCONFIG'
+import json, os, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+record = json.loads(path.read_text())
+configs = {json.dumps({k: v for k, v in json.loads(line).items() if k not in {"e", "t"}}, sort_keys=True)
+           for line in Path(sys.argv[2]).read_text().splitlines() if json.loads(line).get("e") == "render-config"}
+if len(configs) != 1:
+    raise SystemExit("Missing or changing terminal render configuration; discard this measurement")
+record.update(render_config=json.loads(configs.pop()), load_after=os.getloadavg()[0])
+path.write_text(json.dumps(record) + "\n")
+PYCONFIG
+
+python3 $root/scripts/perf_support.py $root scripts/terminal-perf.py scripts/terminal-e2e.sh scripts/perf-resources.py scripts/perf_support.py --verify $run/metadata.json
 
 echo
 if (( load > 0 )); then
@@ -231,10 +281,7 @@ if (( load > 0 )); then
     python3 $root/scripts/terminal-perf.py e2e $metrics $phases --json $run/summary.json
 elif [[ $save_baseline == 1 ]]; then
     python3 $root/scripts/terminal-perf.py e2e $metrics $phases --json $run/summary.json
-    mkdir -p ${baseline:h}
-    cp $run/summary.json $baseline
-    cp $run/metadata.json ${baseline:r}.metadata.json
-    echo "Saved baseline: $baseline"
+
 elif [[ -f $baseline ]]; then
     python3 $root/scripts/terminal-perf.py e2e $metrics $phases --json $run/summary.json --baseline $baseline
 else
@@ -252,5 +299,11 @@ else
     grep -E "error:|XCTAssert|failed" $run/replay.log | head -20
     echo "Replay FAILED; see $run/replay.log" >&2
     exit 1
+fi
+if [[ $save_baseline == 1 && $load == 0 ]]; then
+    mkdir -p ${baseline:h}
+    cp $run/summary.json $baseline
+    cp $run/metadata.json ${baseline:r}.metadata.json
+    echo "Saved baseline: $baseline"
 fi
 echo "Run: $run"

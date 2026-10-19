@@ -666,7 +666,10 @@ final class ViewSnapshotTests: XCTestCase {
         let web = try await harness.ready()
         let image = try await harness.capture(web)
         let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
-        try assertSnapshot(bitmap, named: name)
+        let viewport = harness.viewport
+        let suffix = viewport["width"] == 1000 && viewport["height"] == 800 ? ""
+            : "-viewport\(viewport["width"] ?? 0)x\(viewport["height"] ?? 0)"
+        try assertSnapshot(bitmap, named: name + suffix)
         try skipIfRecorded()
     }
 

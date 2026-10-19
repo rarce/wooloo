@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 import SwiftUI
 import CodeEditSourceEditor
 import CodeEditTextView
@@ -358,6 +359,109 @@ private extension NSString {
             guard found.location != NSNotFound else { return result }
             result.append(found)
             search = NSRange(location: NSMaxRange(found), length: length - NSMaxRange(found))
+        }
+    }
+}
+
+/// Opt-in Release measurements of the native source editor and its search/indexing paths.
+/// No syntax provider is installed: these timings isolate text layout, editing and Find.
+extension EditorFindHighlightTests {
+    @MainActor
+    func testEditorPerformance() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["WOOLOO_BENCH_EDITOR"] == "1" else { throw XCTSkip("Run scripts/editor-bench.sh") }
+        let output = try XCTUnwrap(environment["WOOLOO_BENCH_OUT"])
+        let repetitions = max(1, Int(environment["WOOLOO_BENCH_REPEAT"] ?? "") ?? 5)
+        func report(_ record: [String: Any]) throws {
+            let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: output))
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            handle.write(data + Data([10]))
+        }
+        try report(["config": ["width": 500, "height": 600, "resize_width": 380, "base_font": 13,
+                                "scrollbars": Int(NSScroller.preferredScrollerStyle.rawValue), "code_font": 13, "theme": WoolooTheme.fallbackID,
+                                "renderer": "CodeEditSourceEditor-plain", "capture": "AppKit-cacheDisplay-v1",
+                                "repeat": repetitions]])
+        var samples: [String: [Double]] = [:]
+        func time(_ name: String, _ body: () throws -> Void) rethrows {
+            let start = DispatchTime.now().uptimeNanoseconds
+            try body()
+            samples[name, default: []].append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+        }
+        let source = (0..<20_000).map { "let value\($0) = \($0) // café 👩🏽‍💻\n" }.joined()
+        let longLine = String(repeating: "value123 ", count: 240_000)
+        let paths = (0..<100_000).map { "src/module\($0 % 100)/ContentView\($0).swift" }
+        let index = QuickOpenIndex(paths)
+        let searchText = Data(("1000\n" + (0..<1000).map { "src/f\($0).swift\u{0}1\u{0}let value = 1\n" }.joined()).utf8)
+        let expression = try WorkspaceSearch.expression(for: .init(query: "value"))
+        let inputs = ["source-20000-lines": Data(source.utf8), "long-line-2mb": Data(longLine.utf8),
+                      "quick-open-100000": Data(paths.joined(separator: "\n").utf8), "project-search-1000": searchText]
+        let digests = inputs.mapValues { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }
+        for _ in 0..<repetitions {
+            for (name, text, wraps) in [("source-20000-lines", source, false), ("long-line-2mb", longLine, true)] {
+                let spy = ControllerSpy()
+                let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
+                var host: NSHostingView<AnyView>!
+                var window: NSWindow!
+                func draw() throws {
+                    host.layoutSubtreeIfNeeded()
+                    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                }
+                try time(name + "/first-render") {
+                    let editor = CodeEditSourceEditor(NSTextStorage(string: text), language: .default,
+                        theme: theme.editorTheme, font: .monospacedSystemFont(ofSize: 13, weight: .regular),
+                        tabWidth: 4, lineHeight: 1.15, wrapLines: wraps, cursorPositions: .constant([]),
+                        highlightProviders: [], isEditable: true, coordinators: [spy])
+                    host = NSHostingView(rootView: AnyView(editor.frame(maxWidth: .infinity, maxHeight: .infinity)))
+                    host.frame = NSRect(x: 0, y: 0, width: 500, height: 600)
+                    window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+                    window.isReleasedWhenClosed = false
+                    window.contentView = host
+                    host.layoutSubtreeIfNeeded()
+                    try waitUntil { spy.controller?.textView?.visibleTextRange != nil }
+                    try draw()
+                }
+                defer { window.close() }
+                let view = try XCTUnwrap(spy.controller?.textView)
+                XCTAssertEqual(view.string, text)
+                try time(name + "/resize") {
+                    window.setContentSize(NSSize(width: 380, height: 600))
+                    try draw()
+                }
+                XCTAssertEqual(host.bounds.width, 380, accuracy: 1)
+                try time(name + "/insert") {
+                    view.insertText("x", replacementRange: NSRange(location: 0, length: 0))
+                    try draw()
+                }
+                XCTAssertEqual(view.string, "x" + text)
+                let find = DocumentFindModel()
+                find.open(replace: false, query: "value")
+                time(name + "/find") { find.update(text: view.string, target: .source, anchor: nil) }
+                XCTAssertEqual(find.count, DocumentFindModel.maximumMatches)
+            }
+            var builtIndex: QuickOpenIndex?
+            time("quick-open-100000/index") { builtIndex = QuickOpenIndex(paths) }
+            XCTAssertEqual(builtIndex?.paths.count, paths.count)
+            time("quick-open-100000/match") {
+                let matches = QuickOpenMatcher.match(QuickOpenQuery("ContentView999"), in: index, recents: [])
+                XCTAssertFalse(matches?.isEmpty ?? true)
+                XCTAssertTrue(matches?.contains(where: { $0.path.hasSuffix("ContentView999.swift") }) ?? false)
+            }
+            time("project-search-1000/parse") {
+                let result = WorkspaceSearch.parse(searchText, expression: expression)
+                XCTAssertEqual(result.matchCount, 1000)
+                XCTAssertEqual(result.files.count, 1000)
+            }
+        }
+        for (key, times) in samples.sorted(by: { $0.key < $1.key }) {
+            let parts = key.split(separator: "/").map(String.init)
+            let sorted = times.sorted()
+            func percentile(_ p: Double) -> Double { sorted[min(sorted.count - 1, Int(ceil(Double(sorted.count) * p)) - 1)] }
+            try report(["style": "Source", "scenario": parts[0], "stage": parts[1], "n": sorted.count,
+                        "sha256": digests[parts[0]]!, "p50_ms": percentile(0.5), "p95_ms": percentile(0.95),
+                        "max_ms": sorted.last!])
         }
     }
 }

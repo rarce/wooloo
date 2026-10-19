@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results")
     parser.add_argument("--baseline")
-    parser.add_argument("--kind", choices=["Markdown", "Notebook"], default="Markdown", help="preview metrics and name in diagnostics")
+    parser.add_argument("--kind", choices=["Markdown", "Notebook", "Editor"], default="Markdown", help="preview metrics and name in diagnostics")
     parser.add_argument("--check", action="store_true", help="fail for >25%% median regressions and >10 ms (Notebook captures: >50 ms)")
     args = parser.parse_args()
     if args.check and not args.baseline:
@@ -35,7 +35,7 @@ def main():
     if args.baseline:
         try:
             compatible(config, old_config,
-                       ("width", "height", "resize_width", "base_font", "code_font", "theme", "renderer", "capture"),
+                       ("width", "height", "resize_width", "base_font", "code_font", "theme", "renderer", "capture", "scrollbars"),
                        results, old)
         except ValueError as error:
             parser.error(str(error))
@@ -49,6 +49,8 @@ def main():
     changed = []
     for key, result in sorted(results.items()):
         baseline = old.get(key)
+        if baseline and args.kind == "Notebook" and baseline.get("viewport") != result.get("viewport"):
+            parser.error("incompatible effective viewport: " + "/".join(key))
         if baseline and baseline["sha256"] != result["sha256"]:
             print("SKIP comparison for changed document:", "/".join(key))
             changed.append(key)

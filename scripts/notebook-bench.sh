@@ -11,9 +11,14 @@ while (( $# )); do
         --save-baseline) save_baseline=1; shift ;;
         --baseline) baseline=$2; shift 2 ;;
         --check) check=(--check); shift ;;
-        *) echo "Usage: $0 [--save-baseline] [--baseline FILE] [--check]" >&2; exit 2 ;;
+        --no-baseline) baseline=; shift ;;
+        *) echo "Usage: $0 [--save-baseline] [--baseline FILE] [--check] [--no-baseline]" >&2; exit 2 ;;
     esac
 done
+if [[ $save_baseline == 1 && -z $baseline ]]; then
+    echo "Choose either --save-baseline or --no-baseline." >&2
+    exit 2
+fi
 if [[ $save_baseline == 1 && ${#check} -gt 0 ]]; then
     echo "Choose either --save-baseline or --check; saving would replace the comparison reference." >&2
     exit 2
@@ -45,7 +50,7 @@ for source in sorted(path for path in sources if path.is_file()):
     digest.update(source.relative_to(repo).as_posix().encode() + b"\0")
     digest.update(source.read_bytes())
 record["source_sha256"] = digest.hexdigest()
-record.update(capture(Path(sys.argv[2]), ["woolooTests/NotebookPreviewBenchmarks.swift"]))
+record.update(capture(Path(sys.argv[2]), ["woolooTests/NotebookPreviewBenchmarks.swift", "woolooTests/MarkdownTableBenchmarks.swift"]))
 Path(sys.argv[1]).write_text(json.dumps(record) + "\n")
 PY
 export TEST_RUNNER_WOOLOO_BENCH_NOTEBOOK=1 TEST_RUNNER_WOOLOO_BENCH_OUT=$results
@@ -71,9 +76,14 @@ import json, subprocess, sys
 with open(sys.argv[1], "a") as output:
     output.write(json.dumps({"load_after": subprocess.check_output(["sysctl", "-n", "vm.loadavg"], text=True).strip()}) + "\n")
 PY
+python3 $root/scripts/perf_support.py $root woolooTests/NotebookPreviewBenchmarks.swift woolooTests/MarkdownTableBenchmarks.swift --verify $results
+
 if [[ $save_baseline == 1 ]]; then
+    python3 $root/scripts/markdown-perf.py $results --kind Notebook
     cp $results $baseline
     echo "Saved baseline: $baseline"
+    echo "Results: $results"
+    exit 0
 fi
 comparison=()
 [[ -f $baseline ]] && comparison=(--baseline $baseline)

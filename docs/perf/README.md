@@ -64,7 +64,7 @@ For each workload, the script reports:
 
 `WOOLOO_E2E_LOAD=N` keeps N busy processes (`yes > /dev/null`) running during the workloads, to see how wooloo holds up on a loaded machine. These runs are not compared with the baseline.
 
-The window's content size is fixed with `WOOLOO_E2E_WINDOW` (default 1600x1000), so runs compare the same grid whatever size your own wooloo window was saved at. The live results below before this option used a 311×80 window. `e2e-baseline.json` now uses the fixed size, a 120×48 grid on the machine below.
+The window's content size is fixed with `WOOLOO_E2E_WINDOW` (default 1600x1000), so runs compare the same grid whatever size your own wooloo window was saved at. The live results below before this option used a 311×80 window. E2E comparisons also require the same actual grid, since saved sidebar widths can change it even at the same window size.
 
 It compares them with `e2e-baseline.json`. The script then replays the recorded trace through the reference decoder. Every revision the app drew must match what Herdr sent, and the last frame received must have been drawn. The wooloo window must stay visible during the run.
 
@@ -72,7 +72,7 @@ Signposts in the `dev.wooloo.terminal` subsystem (`decode`, `layout`, `draw`) sh
 
 ## Results
 
-`bench-before.jsonl` and `e2e-before.json` hold the measurements taken before the optimizations below. `bench-baseline.jsonl` and `e2e-baseline.json` hold the current numbers, so the scripts flag regressions against them. To compare with the old numbers, run `scripts/terminal-perf.py e2e <run>/metrics.jsonl <run>/phases.jsonl --baseline docs/perf/e2e-before.json`.
+`bench-before.jsonl` and `e2e-before.json` preserve historical measurements from before the optimizations below. The baseline files are refreshed references for the current measurement protocol. Historical runs without compatibility metadata cannot be passed as current baselines; keep their original numbers for research rather than inventing missing metadata. Terminal/workspace reporters show ratios, while preview `--check` also enforces timing thresholds.
 
 The optimizations, in order:
 
@@ -100,7 +100,7 @@ Live, 311×80 window:
 | unicode | 13.6 / 38.6 → 42.7 / 42.7 | 166 → 0 | 48 → 2.4 ms | 273 → 18 ms | 56% → 9% |
 | typing | 18.2 / 30.7 → 30.5 / 30.5 | 83 → 0 | 45 → 2.7 ms | 429 → 5 ms | 56% → 5% |
 
-wooloo now draws every frame Herdr sends. The frame rate is limited by Herdr, not by the app. After a clear or a tab switch, a cold layout of the whole grid takes about 5 ms at 311×80, down from about 28 ms.
+In those streaming runs, wooloo drew every frame Herdr sent. Their frame rate was limited by Herdr. After a clear or a tab switch, a cold layout of the whole grid takes about 5 ms at 311×80, down from about 28 ms.
 
 ### Keystroke to draw
 
@@ -149,8 +149,6 @@ Measured on a 113×48 grid at 120 Hz, under machine load 5–11. The two runs ag
 - **A selection drag during output** costs nothing visible: the next draw shows it about 1 ms after the event, and Herdr's frame rate is unchanged.
 - **A resize** takes 25 ms from the window size change to the first frame Herdr sends at the new size being drawn, and 7–12 of about 300 revisions were never drawn during the run. That is mostly Herdr re-laying out and answering with a complete surface.
 - **A tab switch** takes 25–31 ms to draw and makes the store publish 3 times and the terminal view update 4 times per switch. Delivery to the main thread reaches 13–19 ms at p95, against 1–7 ms for output, so SwiftUI's updates of the window hold the main thread while the new tab's surface waits.
-
-The graphics workload is not written yet.
 
 ### Tab switches (2026-10-06)
 
@@ -500,7 +498,7 @@ scripts/markdown-bench.sh
 scripts/markdown-bench.sh --check
 scripts/markdown-bench.sh --baseline docs/perf/markdown-before.jsonl
 scripts/markdown-bench.sh --save-baseline
-WOOLOO_BENCH_MARKDOWN_FILE=/absolute/path/document.md scripts/markdown-bench.sh
+WOOLOO_BENCH_MARKDOWN_FILE=/absolute/path/document.md scripts/markdown-bench.sh --no-baseline
 ```
 
 `--check` fails for a missing or changed workload, incompatible viewport/typography, or a median increase over both 25% and 10 ms. Run without competing CPU-heavy work when checking a baseline. `WOOLOO_BENCH_REPEAT` changes the repetitions; `WOOLOO_DERIVED_DATA` changes the build directory. An optional local document stays outside the repository; its contents and path are not written to the results. The checked-in baselines cover only the synthetic fixtures.
@@ -522,6 +520,8 @@ Measured on 2026-10-15, Mac16,5, macOS 26.6.2, three repetitions, Document style
 
 `scripts/notebook-bench.sh` measures the actual `NotebookPreviewView` in Release, including its 150 ms edit debounce, off-main-thread JSON parsing, WebKit startup, bundled assets, rendered text indexing and the first viewport capture. The source JSON is already in memory; file I/O and Source-editor setup are excluded. A separate `parse` phase measures parsing/projection without WebKit. The other phases match the Markdown suite: resize from 1000×800 to 780×800, cached viewport capture, and scroll to the end of both the page and nested output areas (including horizontal dataframe overflow). Lazy image height changes are included until the final page bottom is reached. WebKit renders in another process, so captures use `WKWebView.takeSnapshot` after layout, fonts and visible image decoding, using its `afterScreenUpdates` paint barrier; AppKit's `cacheDisplay` would not measure the final web content. Capture phases include this synchronization and image-transfer overhead, and are not frame-rate or pure JavaScript timings.
 
+The v6 capture protocol records the effective CSS viewport and scrollbar gutter per rendering stage, checks it stays the same across repetitions, and rejects a different viewport during comparison. Automatic macOS scrollbar changes can narrow the content by 17 points while the nominal window still measures 1000 points. Notebook snapshots retain references for each effective viewport, including the original overlay-scroller references; the app and renderer keep the system scrollbar behavior.
+
 The deterministic format-4.5 fixtures cover 20 Markdown cells, ten Markdown tables, a 100-row HTML dataframe, a 12-column HTML dataframe, 100 mixed math/code/output cells, a multi-megabyte saved stream (display truncation remains active), and twelve saved PNG plots. Every workload runs in both Theme and Document styles, seven times by default to reduce WebKit image-loading variance. The timing test holds a user-initiated, latency-critical activity to avoid App Nap and timer coalescing between windows. The test verifies cell/table/image counts, actual viewport resizing and reaching the bottom, and records input/source SHA-256, cell/DOM-node counts, typography, machine, OS and load. Package resolution stays pinned to the versions in `main`, which are also recorded in the results. It requires neither Python nor a live kernel and does not read private notebooks.
 
 ```sh
@@ -536,7 +536,7 @@ The shared preview comparator (`scripts/markdown-perf.py --kind Notebook`) fails
 
 The stress cases add a compact 5,000-row HTML table with 100, 1,000 and 5,001 Find matches, and a multi-megabyte source cell. Find timings separate synchronous JavaScript range construction (`find-*-ranges`) from the WebKit call through a completed viewport capture (`find-*-paint`). The native `DocumentFindModel` supplies UTF-16 offsets and every resulting highlight is checked against the expected text. This isolates the DOM bottleneck; it excludes the Find-bar event, native regex scan and SwiftUI/coordinator update. The normal interaction tests cover that native update path, collapsed offscreen output, inline-node boundaries, emoji/combining marks and replacement of MIME nodes.
 
-`notebook-before.jsonl` preserves the pre-optimization measurements; `notebook-baseline.jsonl` is the optimized reference. Both use the same fixtures, capture protocol, pinned dependencies and seven repetitions. `notebook-validation.jsonl` repeats the optimized renderer without code changes. The first optimized run raised four image-capture alerts under the initial 10 ms rule; these did not recur. The repeat also moved the 5,001-match Document capture from 21 to 55 ms while synchronous range construction stayed at 6 ms. These controls set the 50 ms capture noise floor; all three runs remain available, including the outliers. The notebook and Markdown suites use different capture paths and must not be compared as equivalent rendering costs. Process memory and CPU usage across WebKit's child processes are not measured here.
+`notebook-before.jsonl` preserves the pre-optimization measurements; `notebook-baseline.jsonl` is the optimized reference. Both use the same fixtures, capture protocol, pinned dependencies and seven repetitions. `notebook-validation.jsonl` repeats the optimized renderer without code changes. The first optimized run raised four image-capture alerts under the initial 10 ms rule; these did not recur. The repeat also moved the 5,001-match Document capture from 21 to 55 ms while synchronous range construction stayed at 6 ms. These controls set the 50 ms capture noise floor; all three runs remain available, including the outliers. The notebook and Markdown suites use different capture paths and must not be compared as equivalent rendering costs. These timing samples do not include resource counters; the separate sampler below can include WebKit XPC PIDs explicitly.
 
 Find now indexes each matched group's text leaves once per call and locates match boundaries by binary search. It previously rebuilt and traversed the entire list for every match in a large output. The index remains local to the call so a MIME switch or document render cannot leave stale nodes. MathML accessibility duplicates remain excluded from search.
 
@@ -577,7 +577,7 @@ Xcode version, pinned package revisions, commit, tracked-dirty flag, load and fi
 Comparisons reject missing metadata, different environments/fixtures and added or missing cases
 before printing ratios. Terminal stage comparisons also require the same grid/frame count/font;
 workspace comparisons require the same SSH target; previews require the same viewport, fonts,
-theme, renderer and capture protocol. Repetition counts and application source revisions may
+theme, renderer and capture protocol (including notebook scrollbar policy). Repetition counts and application source revisions may
 change. A host load above 75% of logical CPUs prints a warning for either run; repeat idle before
 attributing a timing difference to code. Load average is context, not measured application CPU.
 
@@ -589,4 +589,115 @@ run. Package updates are disabled in benchmark scripts so moving a checkout does
 upgrade its dependencies. Preview `--check` retains its timing thresholds; this change does not
 add performance timing gates to CI.
 
-Run comparator contract tests with `python3 -m unittest discover -s scripts/tests -v`.
+Use `--no-baseline` for an exploratory workload or a different environment: it reports absolute timings without ratios, while retaining metadata and source verification. `--baseline FILE` selects a separate compatible reference. Saving and disabling a reference together is rejected.
+
+Run comparator/resource contract tests with `python3 -m unittest discover -s scripts/tests -v`; CI also runs these fast tests, without executing timing workloads. Every benchmark rechecks source/fixture hashes, package revisions and environment after measuring, and refuses to save results if they changed during the run.
+
+## Editor and search
+
+`scripts/editor-bench.sh` runs an opt-in Release test of the actual CodeEditSourceEditor at
+500×600, resized to 380×600. It measures initial layout/viewport capture, resize/capture,
+insertion/capture and the native document Find model over 20,000 Unicode source lines and a
+2.16 MB wrapped line. It checks the loaded/edited text, actual resize and the 10,000-match cap.
+This isolates text layout and editing: syntax providers, disk I/O, the Find-bar event and
+asynchronous highlight completion are excluded. The same run measures indexing/ranking
+100,000 Quick Open paths and parsing 1,000 project-search file results, checking the expected
+path and exact file/match counts. It does not time a project grep subprocess or network search.
+Results use the common metadata/fixture checks and the preview comparator's 25% plus 10 ms
+median gate. These are synchronous wall-clock operations, not display presentation latency.
+
+```sh
+scripts/editor-bench.sh --save-baseline
+scripts/editor-bench.sh --check
+```
+
+## Sustained runs and process resources
+
+`WOOLOO_E2E_SECONDS` extends the ascii/color/unicode/graphics/typing streaming phases (default
+5 seconds); the completion timeout grows with it. `--no-baseline` runs exploratory or sustained
+experiments without comparing unlike workloads. For example, this keeps the same terminal
+window alive for ten minutes and records resources once per second:
+
+```sh
+WOOLOO_E2E_SECONDS=600 WOOLOO_E2E_RESOURCE_INTERVAL=1 scripts/terminal-e2e.sh --no-baseline ascii
+```
+
+Resource sampling is opt-in because invoking `ps` perturbs the host. Its interval and streaming
+duration are part of E2E comparison metadata. It writes `resources.jsonl` and a summary with
+first/last/peak summed RSS, RSS growth and peak interval CPU. CPU uses cumulative CPU-time deltas
+for process identities present in consecutive samples (100% is one core); first observations
+and processes that live entirely between samples are not measured. Samples report how many
+processes lack a previous observation. RSS includes shared pages in each process, so summed RSS
+is not physical footprint, and growth alone does not establish a memory leak.
+
+The sampler also attaches to any running wooloo app, including a notebook preview. Descendants
+are followed automatically. WebKit XPC services can be owned by launchd, so identify this app's
+WebContent/GPU/network PIDs in Activity Monitor and pass each explicitly to include their CPU
+and RSS. Never aggregate every system WebKit process: other browsers and apps share those names.
+The output records the explicit PID scope; it does not claim full WebKit coverage without them.
+PID/start-time pairs prevent a reused PID from silently becoming the original process.
+
+```sh
+python3 scripts/perf-resources.py --pid APP_PID --include-pid WEB_CONTENT_PID \
+    --include-pid GPU_PID --seconds 600 --out build/perf/notebook-resources.jsonl
+```
+
+The output contains PIDs, counters and timing only, without document text, titles or process
+command lines. The Python contract tests exercise process-tree attribution, CPU deltas/PID reuse,
+compatibility checks and phase-boundary redraw accounting. E2E references are saved only after
+trace replay succeeds.
+
+## Local refresh validation (2026-10-19)
+
+On Mac16,5 / macOS 26.6.2 with the same pinned packages, disposable repositories and five
+repetitions, local Git reads now overlap in pairs between dependency gates. A gate completes
+before dependent commands start; results keep their original order and a normal read failure
+does not cancel unrelated reads. At most two processes run per local BlockingWork load (at most
+eight local loads), and SSH retains its existing batch path. Link discovery reuses a readlink
+buffer instead of constructing a Foundation error for every regular file. Unicode, broken,
+folder and long-target links retain their previous behavior.
+
+| Operation | Serial/Foundation before | Optimized repeats, p50 |
+| --- | ---: | ---: |
+| Local small refresh | 163 ms | 135–140 ms |
+| Local large refresh | 470 ms | 252–266 ms |
+| Local large file list | 351 ms | 173–179 ms |
+| SSH large refresh | 95 ms | 95–101 ms |
+
+The local refresh still starts nine Git processes; they overlap rather than increasing in
+number. The isolated before run began at load 6.4 and ended at 5.7; optimized runs began at
+6–8 and ended near 6. The before run predates the final metadata schema and remains research
+evidence rather than a valid strict-comparison baseline. The new reference records the final
+schema, including the remote kernel/architecture/CPU count/Git version. The 100 local/remote/
+shared-load functional tests passed, including a rendezvous check that requires two reads to
+run concurrently and checks gate/failure behavior.
+
+The new editor reference exposes a separate bottleneck: a 2.16 MB wrapped line takes 1.59 s to
+open and about 82–86 ms to resize/insert, versus 30 / 5 / 7 ms for 20,000 Unicode lines. Quick
+Open matches over 100,000 paths in 4.9 ms; native Find and parsing 1,000 project-search results
+stay below 2 ms. These are five-repetition medians without syntax providers. Long-line layout,
+large native Markdown tables and the server/UI parts of terminal resize remain follow-up
+performance work; this PR optimizes the measured local-refresh path.
+
+## Sustained terminal validation (2026-10-19)
+
+A 600 s ASCII workload at 250 lines/s, in a 140×48 grid, received 33,801 frames and drew all
+but one intermediate revision (56 fps over the phase, including its drain). The last frame was
+drawn, and the recorded 144 MB trace passed the reference-decoder replay. There were three
+pauses over 50 ms, with a maximum of 57 ms. Source/environment verification passed.
+
+The process sampler covered startup through teardown (607 s). Summed RSS peaked at 176.7 MiB
+and ended at 152.7 MiB; the last 120 s ranged from 152.66 to 152.73 MiB. CPU peaked at 33.4%
+of one core. This is an instrumented Release app with metrics, content digests and the surface
+trace enabled, not a production CPU reference. A Debug build overlapped the first 56 s in
+separate DerivedData; the full CI-equivalent tests ran after the soak. Shared RSS and a short
+stable interval do not establish absence of leaks. WebKit was not used by this terminal case.
+
+![CPU and RSS during the sustained terminal run](soak-20261019.png)
+
+[Profile data](soak-20261019.jsonl) retains counters and experiment metadata without PIDs or
+process command lines. The five Release suites, full terminal E2E and sustained replay passed;
+the CI-equivalent Debug suite ran 1,019 tests with 11 skipped and no failures. Thirteen fast
+Python contract tests passed. Native automation could enumerate the separate manual-review
+app but could not bind its bundle ID, so the manual Git refresh control remains unverified;
+the isolated app/server were stopped, with no controls activated in the primary session.

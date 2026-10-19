@@ -66,7 +66,7 @@ final class MarkdownTableBenchmarks: XCTestCase {
             workloads.append(("external-document", try WorkspaceFiles.read(externalPath, at: source).text))
         }
         try report(["config": ["repeat": repetitions, "width": 1000, "height": 800, "resize_width": 780,
-                                "theme": theme.id, "renderer": "MarkdownPreviewView", "capture": "AppKit-cacheDisplay-v1",
+                                "scrollbars": Int(NSScroller.preferredScrollerStyle.rawValue), "theme": theme.id, "renderer": "MarkdownPreviewView", "capture": "AppKit-cacheDisplay-v1",
                                 "base_font": WoolooTypography.defaultBase, "code_font": WoolooTypography.defaultCode]], to: output)
         for style in [MarkdownPreviewStyle.theme, .document] {
             defaults.set(style.rawValue, forKey: MarkdownPreviewStyle.storageKey)

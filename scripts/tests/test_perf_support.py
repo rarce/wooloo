@@ -1,11 +1,12 @@
 import contextlib
 import io
 import sys
+import subprocess
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from perf_support import compatible
+from perf_support import compatible, verify_sources
 
 
 class ComparisonTests(unittest.TestCase):
@@ -22,7 +23,7 @@ class ComparisonTests(unittest.TestCase):
             compatible(self.config, {'machine': 'Mac16,5'}, (), {'decode'}, {'decode'})
 
     def test_changed_environment_and_experiment_are_rejected(self):
-        for field in ('machine', 'os', 'arch', 'cpus', 'fixture_sha256', 'cols'):
+        for field in ('machine', 'os', 'arch', 'cpus', 'fixture_sha256', 'toolchain', 'package_revisions', 'cols'):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
                 compatible(dict(self.config, **{field: 'different'}), self.config, ('cols',), {'decode'}, {'decode'})
 
@@ -33,6 +34,21 @@ class ComparisonTests(unittest.TestCase):
     def test_empty_run_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'empty'):
             compatible(self.config, self.config, (), set(), set())
+
+    def test_source_verification_rejects_edits_during_a_run(self):
+        recorded = dict(self.config, checkout_sha256='before', ssh_environment='local')
+        verify_sources(recorded, recorded)
+        with self.assertRaisesRegex(ValueError, 'checkout_sha256'):
+            verify_sources(dict(recorded, checkout_sha256='after'), recorded)
+
+    def test_scripts_reject_saving_without_a_reference_before_running_workloads(self):
+        root = Path(__file__).resolve().parents[1]
+        for suite in ['terminal', 'workspace', 'markdown', 'notebook', 'editor']:
+            with self.subTest(suite=suite):
+                result = subprocess.run([str(root / (suite + '-bench.sh')), '--save-baseline', '--no-baseline'],
+                                        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn('Choose either', result.stdout)
 
     def test_loaded_host_is_marked(self):
         output = io.StringIO()

@@ -14,7 +14,18 @@ derived=${WOOLOO_DERIVED_DATA:-$root/build/DerivedData}
 out_dir=$root/build/perf
 baseline=$root/docs/perf/bench-baseline.jsonl
 save_baseline=0
-[[ ${1:-} == --save-baseline ]] && save_baseline=1
+while (( $# )); do
+    case $1 in
+        --save-baseline) save_baseline=1; shift ;;
+        --baseline) baseline=$2; shift 2 ;;
+        --no-baseline) baseline=; shift ;;
+        *) echo "Usage: $0 [--save-baseline] [--baseline FILE] [--no-baseline]" >&2; exit 2 ;;
+    esac
+done
+if [[ $save_baseline == 1 && -z $baseline ]]; then
+    echo "Choose either --save-baseline or --no-baseline." >&2
+    exit 2
+fi
 
 mkdir -p $out_dir
 stamp=$(date +%Y%m%d-%H%M%S)
@@ -22,7 +33,7 @@ log=$out_dir/bench-$stamp.log
 results=$out_dir/bench-$stamp.jsonl
 
 # The load average marks runs that shared the machine with builds or other heavy work.
-python3 $root/scripts/perf_support.py $root woolooTests/SurfaceFixtures.swift > $results
+python3 $root/scripts/perf_support.py $root woolooTests/SurfaceFixtures.swift woolooTests/TerminalPipelineBenchmarks.swift woolooTests/TerminalRenderHarness.swift > $results
 export TEST_RUNNER_WOOLOO_BENCH=1 TEST_RUNNER_WOOLOO_BENCH_OUT=$results
 for name in COLS ROWS FRAMES REPEAT; do
     value=${(P)${:-WOOLOO_BENCH_$name}:-}
@@ -42,11 +53,13 @@ fi
 
 echo "{\"load_after\":\"$(sysctl -n vm.loadavg | tr -d '{}' | awk '{print $1}')\"}" >> $results
 
+python3 $root/scripts/perf_support.py $root woolooTests/SurfaceFixtures.swift woolooTests/TerminalPipelineBenchmarks.swift woolooTests/TerminalRenderHarness.swift --verify $results
+
 if [[ $save_baseline == 1 ]]; then
     mkdir -p ${baseline:h}
+    python3 $root/scripts/terminal-perf.py bench $results
     cp $results $baseline
     echo "Saved baseline: $baseline"
-    python3 $root/scripts/terminal-perf.py bench $results
 elif [[ -f $baseline ]]; then
     python3 $root/scripts/terminal-perf.py bench $results --baseline $baseline
 else

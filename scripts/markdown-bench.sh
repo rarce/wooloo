@@ -12,9 +12,22 @@ while (( $# )); do
         --save-baseline) save_baseline=1; shift ;;
         --baseline) baseline=$2; shift 2 ;;
         --check) check=(--check); shift ;;
-        *) echo "Usage: $0 [--save-baseline] [--baseline FILE] [--check]" >&2; exit 2 ;;
+        --no-baseline) baseline=; shift ;;
+        *) echo "Usage: $0 [--save-baseline] [--baseline FILE] [--check] [--no-baseline]" >&2; exit 2 ;;
     esac
 done
+if [[ $save_baseline == 1 && -z $baseline ]]; then
+    echo "Choose either --save-baseline or --no-baseline." >&2
+    exit 2
+fi
+if [[ $save_baseline == 1 && ${#check} -gt 0 ]]; then
+    echo "Choose either --save-baseline or --check." >&2
+    exit 2
+fi
+if (( ${#check} )) && [[ ! -f $baseline ]]; then
+    echo "Markdown baseline not found: $baseline" >&2
+    exit 2
+fi
 mkdir -p $root/build/perf
 stamp=$(date +%Y%m%d-%H%M%S)
 results=$root/build/perf/markdown-$stamp.jsonl
@@ -61,9 +74,14 @@ import json, subprocess, sys
 with open(sys.argv[1], "a") as output:
     output.write(json.dumps({"load_after": subprocess.check_output(["sysctl", "-n", "vm.loadavg"], text=True).strip()}) + "\n")
 PY
+python3 $root/scripts/perf_support.py $root woolooTests/MarkdownTableBenchmarks.swift --verify $results
+
 if [[ $save_baseline == 1 ]]; then
+    python3 $root/scripts/markdown-perf.py $results
     cp $results $baseline
     echo "Saved baseline: $baseline"
+    echo "Results: $results"
+    exit 0
 fi
 comparison=()
 [[ -f $baseline ]] && comparison=(--baseline $baseline)
