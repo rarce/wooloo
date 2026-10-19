@@ -7,6 +7,10 @@ A Herdr surface travels this path before it is on screen:
 3. **Layout** (main thread, `TerminalPaneView.layoutGrid`): cells become fills, glyph runs and underlines, row by row. A row whose cells, cursor and images match a row of the previous grid reuses that row's layout, so scrolled output only lays out new lines; row fingerprints find the match. Core Text shapes a new row's text in pieces split at long runs of blanks, and `TerminalShapeCache` keeps each piece's glyphs.
 4. **Draw** (main thread, `HerdrTerminalTextView.draw`): Core Graphics draws only the rows that changed.
 
+An opt-in [serial layout worker evaluation](terminal-layout-evaluation.md) compares main-thread
+availability and render completion time without changing the app pipeline. Run it with
+`scripts/terminal-layout-eval.sh`; it uses a separate untimed pixel-equivalence pass.
+
 Three tools measure it. All of them also check that no information is lost on the way.
 
 ## Unit tests: `woolooTests`
