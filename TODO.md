@@ -62,6 +62,8 @@ Measure with `scripts/workspace-bench.sh`; see `docs/perf/README.md`.
 
 ## Editor
 
+- [ ] Reduce wrapping/layout cost for a multi-megabyte single line. The Release editor suite (`scripts/editor-bench.sh`) now checks a 2.16 MB wrapped line: 2026-10-19, Mac16,5 / macOS 26.6.2, five repetitions, plain text without syntax providers, first viewport 1.59 s, insert/capture 86 ms and resize/capture 82 ms at p50. The 20,000-line Unicode control takes 30 / 7 / 5 ms. Keep the text, viewport and fixture fingerprints fixed when profiling; native Find remains under 2 ms in both cases.
+
 - [x] Multiple cursors: ⌥⌘↑/↓ keep the goal as a display column (`DisplayColumns`), expanding tabs to the editor's tab width and counting wide characters and emoji as two columns, so they no longer shift it. ⌥⌘↓ from a selection spanning lines adds below its end, not inside it.
 - [x] Multiple cursors: ⌥⌘↑/↓ keep their goal as x positions in the editor's layout rather than display columns, so the added cursor sits under the one above after CJK and emoji, which a fallback font draws about 1.6 and 2.4 cells wide, and after tabs. Lines not laid out yet are laid out on demand (`TextLayoutManager.rectForOffset`), and the nearest character boundary to the goal is taken, clamped to the line. With line wrapping on, where a line's x positions depend on the row it wraps to, they keep display columns as before.
 - [x] Editor: tabs stop every 4 spaces, the editor's tab width, as `DisplayColumns` and Option-drag count them, rather than at AppKit's default 28 pt (about 3.5 cells with the 13 pt font). CodeEditSourceEditor built the paragraph style but never applied it; a vendor patch applies it and rebuilds it when the font or tab width changes.

@@ -12,9 +12,22 @@ while (( $# )); do
         --save-baseline) save_baseline=1; shift ;;
         --baseline) baseline=$2; shift 2 ;;
         --check) check=(--check); shift ;;
-        *) echo "Usage: $0 [--save-baseline] [--baseline FILE] [--check]" >&2; exit 2 ;;
+        --no-baseline) baseline=; shift ;;
+        *) echo "Usage: $0 [--save-baseline] [--baseline FILE] [--check] [--no-baseline]" >&2; exit 2 ;;
     esac
 done
+if [[ $save_baseline == 1 && -z $baseline ]]; then
+    echo "Choose either --save-baseline or --no-baseline." >&2
+    exit 2
+fi
+if [[ $save_baseline == 1 && ${#check} -gt 0 ]]; then
+    echo "Choose either --save-baseline or --check." >&2
+    exit 2
+fi
+if (( ${#check} )) && [[ ! -f $baseline ]]; then
+    echo "Markdown baseline not found: $baseline" >&2
+    exit 2
+fi
 mkdir -p $root/build/perf
 stamp=$(date +%Y%m%d-%H%M%S)
 results=$root/build/perf/markdown-$stamp.jsonl
@@ -22,6 +35,8 @@ log=$root/build/perf/markdown-$stamp.log
 python3 - "$results" "$root" <<'PY'
 import hashlib, json, platform, subprocess, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[2]) / "scripts"))
+from perf_support import capture
 record = {"machine": subprocess.check_output(["sysctl", "-n", "hw.model"], text=True).strip(),
           "os": platform.mac_ver()[0],
           "commit": subprocess.check_output(["git", "-C", sys.argv[2], "rev-parse", "--short", "HEAD"], text=True).strip(),
@@ -33,13 +48,14 @@ for source in sorted(sources):
     digest.update(source.relative_to(repo).as_posix().encode() + b"\0")
     digest.update(source.read_bytes())
 record["source_sha256"] = digest.hexdigest()
+record.update(capture(Path(sys.argv[2]), ["woolooTests/MarkdownTableBenchmarks.swift"]))
 Path(sys.argv[1]).write_text(json.dumps(record) + "\n")
 PY
 export TEST_RUNNER_WOOLOO_BENCH_MARKDOWN=1 TEST_RUNNER_WOOLOO_BENCH_OUT=$results
 export TEST_RUNNER_WOOLOO_BENCH_REPEAT=${WOOLOO_BENCH_REPEAT:-3}
 export TEST_RUNNER_WOOLOO_BENCH_MARKDOWN_FILE=${WOOLOO_BENCH_MARKDOWN_FILE:-}
 echo "Markdown benchmarks (Release) — log: $log"
-if ! xcodebuild test -project $root/wooloo.xcodeproj -scheme wooloo -configuration Release \
+if ! xcodebuild test -disableAutomaticPackageResolution -skipPackageUpdates -project $root/wooloo.xcodeproj -scheme wooloo -configuration Release \
         -destination 'platform=macOS,arch=arm64' -derivedDataPath $derived ONLY_ACTIVE_ARCH=YES \
         -only-testing:woolooTests/MarkdownTableBenchmarks \
         -only-testing:woolooTests/MarkdownPreviewRenderingTests \
@@ -58,9 +74,14 @@ import json, subprocess, sys
 with open(sys.argv[1], "a") as output:
     output.write(json.dumps({"load_after": subprocess.check_output(["sysctl", "-n", "vm.loadavg"], text=True).strip()}) + "\n")
 PY
+python3 $root/scripts/perf_support.py $root woolooTests/MarkdownTableBenchmarks.swift --verify $results
+
 if [[ $save_baseline == 1 ]]; then
+    python3 $root/scripts/markdown-perf.py $results
     cp $results $baseline
     echo "Saved baseline: $baseline"
+    echo "Results: $results"
+    exit 0
 fi
 comparison=()
 [[ -f $baseline ]] && comparison=(--baseline $baseline)

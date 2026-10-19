@@ -112,6 +112,7 @@ final class NotebookPreviewHarness {
     let workload: NotebookPreviewFixtures.Workload
     let style: MarkdownPreviewStyle
     private(set) weak var webView: WKWebView?
+    private(set) var viewport: [String: Int] = [:]
 
     init(_ workload: NotebookPreviewFixtures.Workload, style: MarkdownPreviewStyle) {
         self.workload = workload; self.style = style
@@ -181,6 +182,8 @@ final class NotebookPreviewHarness {
             }
         }
         XCTAssertTrue(painted)
+        viewport = (try await web.evaluateJavaScript("({width:document.documentElement.clientWidth,height:document.documentElement.clientHeight,gutter:innerWidth-document.documentElement.clientWidth})")) as? [String: Int] ?? [:]
+        XCTAssertFalse(viewport.isEmpty, "The effective CSS viewport must be recorded")
         let configuration = WKSnapshotConfiguration()
         configuration.rect = web.bounds
         configuration.afterScreenUpdates = true
@@ -217,11 +220,17 @@ final class NotebookPreviewBenchmarks: XCTestCase {
         try report(["config": ["repeat": repetitions, "width": 1000, "height": 800, "resize_width": 780,
                                 "base_font": WoolooTypography.defaultBase, "code_font": WoolooTypography.defaultCode,
                                 "theme": WoolooTheme.fallbackID, "renderer": "NotebookPreviewView",
-                                "capture": "WKSnapshot-afterScreenUpdates-layout-fonts-images-nested-scroll-active-v5"]], to: output)
+                                "scrollbars": Int(NSScroller.preferredScrollerStyle.rawValue),
+                                "capture": "WKSnapshot-afterScreenUpdates-layout-fonts-images-nested-scroll-active-viewport-v6"]], to: output)
         for style in [MarkdownPreviewStyle.theme, .document] {
             for workload in try NotebookPreviewFixtures.workloads {
                 var samples: [String: [Double]] = [:]
                 var nodeCount = 0
+                var viewports: [String: [String: Int]] = [:]
+                func rememberViewport(_ stage: String, _ viewport: [String: Int]) {
+                    if let previous = viewports[stage] { XCTAssertEqual(previous, viewport, "Viewport changed between repetitions") }
+                    viewports[stage] = viewport
+                }
                 for _ in 0..<repetitions {
                     var start = DispatchTime.now().uptimeNanoseconds
                     let source = workload.source
@@ -235,6 +244,7 @@ final class NotebookPreviewBenchmarks: XCTestCase {
                     let first = try await harness.capture(web)
                     XCTAssertEqual(first.size.width, 1000, accuracy: 1)
                     samples["first-render", default: []].append(milliseconds(since: start))
+                    rememberViewport("first-render", harness.viewport)
                     let counts = try await web.evaluateJavaScript("({cells:document.querySelectorAll('.cell').length,tables:document.querySelectorAll('table').length,images:document.images.length,nodes:document.querySelectorAll('*').length})") as? [String: Int]
                     XCTAssertEqual(counts?["cells"], workload.cells)
                     XCTAssertEqual(counts?["tables"], workload.tables)
@@ -248,9 +258,11 @@ final class NotebookPreviewBenchmarks: XCTestCase {
                     let width = try await web.evaluateJavaScript("innerWidth") as? Int
                     XCTAssertEqual(width, 780, "The web document must actually resize")
                     samples["resize", default: []].append(milliseconds(since: start))
+                    rememberViewport("resize", harness.viewport)
                     start = DispatchTime.now().uptimeNanoseconds
                     _ = try await harness.capture(web)
                     samples["cached-draw", default: []].append(milliseconds(since: start))
+                    rememberViewport("cached-draw", harness.viewport)
                     start = DispatchTime.now().uptimeNanoseconds
                     let scrollBoxes = try await web.evaluateJavaScript("""
                         Array.from(document.querySelectorAll('.long-output,.rich-output,.source')).filter(element =>
@@ -280,6 +292,7 @@ final class NotebookPreviewBenchmarks: XCTestCase {
                         """) as? Bool
                     XCTAssertEqual(outputsAtEnd, true, "Nested outputs must also reach their ends")
                     samples["scroll", default: []].append(milliseconds(since: start))
+                    rememberViewport("scroll", harness.viewport)
                 }
                 let digest = SHA256.hash(data: Data(workload.source.utf8)).map { String(format: "%02x", $0) }.joined()
                 for stage in ["parse", "first-render", "resize", "cached-draw", "scroll"] {
@@ -287,7 +300,7 @@ final class NotebookPreviewBenchmarks: XCTestCase {
                     func percentile(_ p: Double) -> Double { times[min(times.count - 1, max(0, Int(ceil(Double(times.count) * p)) - 1))] }
                     try report(["scenario": workload.name, "style": style.rawValue, "stage": stage, "n": times.count,
                                 "bytes": workload.source.utf8.count, "sha256": digest, "cells": workload.cells,
-                                "dom_nodes": nodeCount, "p50_ms": percentile(0.5), "p95_ms": percentile(0.95), "max_ms": times.last!], to: output)
+                                "dom_nodes": nodeCount, "viewport": viewports[stage] ?? [:], "p50_ms": percentile(0.5), "p95_ms": percentile(0.95), "max_ms": times.last!], to: output)
                 }
             }
         }
@@ -350,18 +363,18 @@ final class NotebookPreviewBenchmarks: XCTestCase {
                     XCTAssertEqual(actual?["current"] as? String, "Rule")
                     XCTAssertGreaterThanOrEqual(elapsed, 0)
                 }
-                try reportSamples(rangeTimes, workload: workload, style: style.rawValue, stage: "find-\(count)-ranges", to: output)
-                try reportSamples(paintTimes, workload: workload, style: style.rawValue, stage: "find-\(count)-paint", to: output)
+                try reportSamples(rangeTimes, workload: workload, style: style.rawValue, stage: "find-\(count)-ranges", to: output, viewport: harness.viewport)
+                try reportSamples(paintTimes, workload: workload, style: style.rawValue, stage: "find-\(count)-paint", to: output, viewport: harness.viewport)
             }
         }
     }
 
     private func reportSamples(_ samples: [Double], workload: NotebookPreviewFixtures.Workload,
-                               style: String, stage: String, to output: String?) throws {
+                               style: String, stage: String, to output: String?, viewport: [String: Int] = [:]) throws {
         let times = samples.sorted()
         let digest = SHA256.hash(data: Data(workload.source.utf8)).map { String(format: "%02x", $0) }.joined()
         try report(["scenario": workload.name, "style": style, "stage": stage, "n": times.count,
-                    "bytes": workload.source.utf8.count, "sha256": digest, "cells": workload.cells,
+                    "bytes": workload.source.utf8.count, "sha256": digest, "cells": workload.cells, "viewport": viewport,
                     "p50_ms": times[(times.count - 1) / 2], "p95_ms": times[min(times.count - 1, Int(ceil(Double(times.count) * 0.95)) - 1)],
                     "max_ms": times.last!], to: output)
     }

@@ -19,6 +19,33 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         }
     }
 
+    func testLocalBatchRunsIndependentReadsTogetherAndKeepsResultOrder() throws {
+        let location = sandbox.location("")
+        let first = "touch first; n=0; while [ ! -f second ] && [ $n -lt 100 ]; do sleep 0.02; n=$((n + 1)); done; [ -f second ] && printf first"
+        let second = "touch second; n=0; while [ ! -f first ] && [ $n -lt 100 ]; do sleep 0.02; n=$((n + 1)); done; [ -f first ] && printf second"
+        let results = try WorkspaceFiles.gitBatch(location, [
+            .init([], limit: 100, script: first), .init([], limit: 100, script: second),
+            .init([], limit: 100, script: "printf third")
+        ])
+        XCTAssertEqual(try results.map { String(decoding: try $0.get(), as: UTF8.self) }, ["first", "second", "third"])
+    }
+
+    func testLocalBatchGateStopsDependentCommandsButReadFailureDoesNot() throws {
+        let location = sandbox.location("")
+        let reads = try WorkspaceFiles.gitBatch(location, [
+            .init([], limit: 100, script: "exit 1"), .init([], limit: 100, script: "printf kept")
+        ])
+        XCTAssertThrowsError(try reads[0].get())
+        XCTAssertEqual(try String(decoding: reads[1].get(), as: UTF8.self), "kept")
+        let gated = try WorkspaceFiles.gitBatch(location, [
+            .init([], limit: 100, gate: true, script: "exit 1"),
+            .init([], limit: 100, script: "touch forbidden")
+        ])
+        XCTAssertEqual(gated.count, 2)
+        for result in gated { XCTAssertThrowsError(try result.get()) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("forbidden")))
+    }
+
     // MARK: Listing
 
     func testListingShowsTrackedAndUntrackedFilesWithTheirChanges() throws {
@@ -120,6 +147,15 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(listing.symbolicLinks["alias"], WorkspaceSymbolicLink(target: "sub", isDirectory: true))
         XCTAssertEqual(listing.symbolicLinks["broken"], WorkspaceSymbolicLink(target: "missing", isDirectory: false))
         XCTAssertTrue(listing.changes.isEmpty)
+    }
+
+    func testGitListingKeepsUnicodeAndLongSymbolicLinkTargets() throws {
+        let repo = try sandbox.repository("repo", files: ["café.txt": "text\n"])
+        let longTarget = String(repeating: "a", count: 900)
+        try sandbox.sh("ln -s 'café.txt' 'lien 👩🏽‍💻' && ln -s " + WorkspaceFiles.quote(longTarget) + " long-link", in: "repo")
+        let links = try WorkspaceFiles.listing(at: repo).symbolicLinks
+        XCTAssertEqual(links["lien 👩🏽‍💻"], WorkspaceSymbolicLink(target: "café.txt", isDirectory: false))
+        XCTAssertEqual(links["long-link"], WorkspaceSymbolicLink(target: longTarget, isDirectory: false))
     }
 
     func testListingIdentifiesTrackedIgnoredAndBrokenLinks() throws {

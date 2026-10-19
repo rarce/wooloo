@@ -1808,25 +1808,50 @@ enum WorkspaceFiles {
         static let root = GitSection(["rev-parse", "--show-toplevel"], limit: 4_000, gate: true)
     }
 
-    /// Runs git commands in order and returns each one's output or error. Locally each is its
-    /// own process, as `git` runs it. Over SSH they run in one remote script, which costs one
+    /// Returns git command results in order. Locally independent reads overlap in pairs,
+    /// with gates completed before dependent commands start. Over SSH they run in one remote script, which costs one
     /// round trip instead of one per command. Throws only when the batch as a whole fails, for
     /// example when SSH cannot connect.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func gitBatch(_ location: WorkspaceFileLocation, _ sections: [GitSection],
                          timeout: TimeInterval = 15) throws -> [Result<Data, Error>] {
         guard let machine = location.machine else {
-            var stopped: Error?
-            return sections.map { section in
-                if let stopped { return .failure(stopped) }
-                let result = Result {
+            func run(_ section: GitSection) -> Result<Data, Error> {
+                Result {
                     if let script = section.script { return try shell(script, at: location, limit: section.limit) }
                     // Reading status must not rewrite the index and trigger our own watcher.
                     return try git(location, section.args, limit: section.limit, timeout: timeout, optionalLocks: false)
                 }
-                if section.gate, case .failure(let error) = result { stopped = error }
-                return result
             }
+            var results: [Result<Data, Error>] = []
+            var index = 0
+            while index < sections.count {
+                // Gates run alone, before any command that depends on them.
+                if sections[index].gate {
+                    let result = run(sections[index])
+                    results.append(result)
+                    index += 1
+                    if case .failure(let error) = result {
+                        results.append(contentsOf: sections[index...].map { _ in .failure(error) })
+                        break
+                    }
+                    continue
+                }
+                let end = sections[index...].firstIndex(where: \.gate) ?? sections.endIndex
+                let batch = Array(sections[index..<end])
+                let outputs = OSAllocatedUnfairLock<[Result<Data, Error>?]>(initialState: Array(repeating: nil, count: batch.count))
+                // At most two processes per local load (and at most eight BlockingWork loads).
+                // Independent read commands overlap startup and I/O without a thread per command.
+                DispatchQueue.concurrentPerform(iterations: min(2, batch.count)) { worker in
+                    for offset in stride(from: worker, to: batch.count, by: 2) {
+                        let result = run(batch[offset])
+                        outputs.withLock { $0[offset] = result }
+                    }
+                }
+                results.append(contentsOf: outputs.withLock { $0.map { $0! } })
+                index = end
+            }
+            return results
         }
         return try remoteGitBatch(machine, location, sections, timeout: timeout).results
     }
@@ -1989,10 +2014,26 @@ enum WorkspaceFiles {
     /// one odd entry cannot fail a whole listing.
     private static func localSymbolicLinks(_ paths: [String], root: String) -> [String: WorkspaceSymbolicLink] {
         var links: [String: WorkspaceSymbolicLink] = [:]
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        let capacity = Int(PATH_MAX) + 1
+        var targetBytes = [UInt8](repeating: 0, count: capacity)
         for path in paths {
             guard (try? validateRelativePath(path)) != nil else { continue }
-            let absolute = (root as NSString).appendingPathComponent(path)
-            guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: absolute) else { continue }
+            let absolute = prefix + path
+            // Most listed files are not links. Avoid constructing a Foundation error for each
+            // one; readlink reports EINVAL directly and the scratch buffer is reused.
+            let length = targetBytes.withUnsafeMutableBytes {
+                readlink(absolute, $0.baseAddress!.assumingMemoryBound(to: CChar.self), capacity)
+            }
+            guard length >= 0 else { continue }
+            let target: String?
+            if length == capacity {
+                // Never report a truncated target if a filesystem allows a longer link.
+                target = try? FileManager.default.destinationOfSymbolicLink(atPath: absolute)
+            } else {
+                target = String(bytes: targetBytes.prefix(length), encoding: .utf8)
+            }
+            guard let target else { continue }
             var isDirectory: ObjCBool = false
             _ = FileManager.default.fileExists(atPath: absolute, isDirectory: &isDirectory)
             links[path] = WorkspaceSymbolicLink(target: target, isDirectory: isDirectory.boolValue)

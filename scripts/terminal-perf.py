@@ -18,6 +18,7 @@ import json
 import random
 import sys
 from pathlib import Path
+from perf_support import compatible
 
 
 def percentile(values, p):
@@ -135,8 +136,9 @@ def play(path, lines_per_second, chars_per_second, seconds):
         units, interval = list(text), 1 / chars_per_second
     else:
         units, interval = text.splitlines(keepends=True), 1 / lines_per_second
+    from itertools import cycle
     next_at = time.monotonic()
-    for unit in units:
+    for unit in cycle(units):
         if time.monotonic() >= deadline:
             break
         out.write(unit)
@@ -164,7 +166,11 @@ def read_bench(path):
 
 def bench_report(path, baseline_path):
     config, results = read_bench(path)
-    base = read_bench(baseline_path)[1] if baseline_path else {}
+    old_config, base = read_bench(baseline_path) if baseline_path else ({}, {})
+    if baseline_path:
+        compatible(config, old_config, ("cols", "rows", "frames", "font"), results, base)
+    if not results:
+        raise ValueError("empty terminal benchmark results")
     print(f"Benchmark {path}  config: {json.dumps(config)}")
     if baseline_path:
         print(f"Baseline  {baseline_path}  (n× = speedup vs baseline)")
@@ -201,7 +207,11 @@ def read_files(path):
 
 def files_report(path, baseline_path):
     config, results = read_files(path)
-    base = read_files(baseline_path)[1] if baseline_path else {}
+    old_config, base = read_files(baseline_path) if baseline_path else ({}, {})
+    if baseline_path:
+        compatible(config, old_config, ("ssh_target", "ssh_environment"), results, base)
+    if not results:
+        raise ValueError("empty workspace benchmark results")
     print(f"Workspace benchmark {path}  config: {json.dumps(config)}")
     if baseline_path:
         print(f"Baseline {baseline_path}  (n× = speedup vs baseline)")
@@ -274,16 +284,16 @@ def e2e_summary(metrics_path, phases_path):
         layouts = [e["layout"] for e in updates if e.get("layout") is not None]
         deliver_latency = [(e["t"] - received[k]["t"]) / 1e6 for e in delivers
                            if (k := (e["boot"], e["proj"], e["rev"])) in received]
+        received_keys = {(e["boot"], e["proj"], e["rev"]) for e in recv}
         first_draw, e2e, shown = set(), [], []
         for event in draws:
             key = (event["boot"], event["proj"], event["rev"])
-            if key in first_draw or key not in received:
+            if key in first_draw or key not in received_keys:
                 continue
             first_draw.add(key)
             e2e.append((event["t"] - received[key]["t"]) / 1e6)
             if (on_screen := screen.at(event["t"])) is not None:
                 shown.append((on_screen - received[key]["t"]) / 1e6)
-        received_keys = {(e["boot"], e["proj"], e["rev"]) for e in recv}
         busy = sum(e["dur"] for e in updates) + sum(e["dur"] for e in draws)
         last = recv[-1] if recv else None
         summaries.append({
@@ -460,6 +470,13 @@ def e2e_report(metrics_path, phases_path, baseline_path, json_path):
     base = {}
     if baseline_path:
         base = {s["phase"]: s for s in json.loads(Path(baseline_path).read_text())}
+        metadata = json.loads(Path(metrics_path).with_name("metadata.json").read_text())
+        old_metadata = json.loads(Path(baseline_path).with_suffix(".metadata.json").read_text())
+        compatible(metadata, old_metadata, ("window", "workloads", "load_processes", "herdr_version", "stream_seconds", "resource_interval", "render_config"),
+                   [s["phase"] for s in summaries], base)
+        for summary in summaries:
+            if summary["grid"] != base[summary["phase"]]["grid"]:
+                raise ValueError(f"incompatible grid for {summary['phase']}")
         print(f"Baseline {baseline_path}  (n× = improvement vs baseline)")
     columns = [("frames", "frames", None), ("fps_in", "fps in", False), ("fps_drawn", "fps drawn", False),
                ("revisions_skipped", "skipped", None), ("deliver_p95_ms", "deliver p95 ms", True),
@@ -569,4 +586,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (ValueError, FileNotFoundError) as error:
+        print(f"Cannot compare measurements: {error}", file=sys.stderr)
+        sys.exit(2)

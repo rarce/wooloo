@@ -47,6 +47,7 @@ final class TerminalPipelineMetrics {
         case delivered(boot: String, projection: UInt64, revision: UInt64, at: UInt64)
         case updated(revision: UInt64?, at: UInt64, duration: UInt64, layout: UInt64?)
         case drawn(boot: String, projection: UInt64, revision: UInt64, at: UInt64, duration: UInt64, surface: HerdrSurface?)
+        case configured(at: UInt64, font: String, size: CGFloat, theme: String, scale: CGFloat, refresh: Int)
         case committed(at: UInt64)
         case vsync(at: UInt64, target: UInt64)
     }
@@ -158,6 +159,14 @@ final class TerminalPipelineMetrics {
         append(.vsync(at: UInt64(timestamp * 1_000_000_000), target: UInt64(target * 1_000_000_000)))
     }
 
+    @MainActor
+    func renderConfiguration(for view: HerdrTerminalTextView) {
+        let font = TerminalPaneView.terminalFont
+        append(.configured(at: Self.now(), font: font.fontName, size: font.pointSize, theme: view.theme.id,
+                           scale: view.window?.backingScaleFactor ?? 1,
+                           refresh: view.window?.screen?.maximumFramesPerSecond ?? 0))
+    }
+
     private func append(_ event: Event) {
         lock.lock()
         events.append(event)
@@ -208,6 +217,8 @@ final class TerminalPipelineMetrics {
             return #"{"e":"deliver","boot":\#(quoted(boot)),"proj":\#(projection),"rev":\#(revision),"t":\#(time(at))}"#
         case let .updated(revision, at, duration, layout):
             return #"{"e":"update","rev":\#(revision.map(String.init) ?? "null"),"t":\#(time(at)),"dur":\#(duration),"layout":\#(layout.map(String.init) ?? "null")}"#
+        case let .configured(at, font, size, theme, scale, refresh):
+            return #"{"e":"render-config","t":\#(time(at)),"font":\#(quoted(font)),"size":\#(size),"theme":\#(quoted(theme)),"scale":\#(scale),"refresh":\#(refresh)}"#
         case let .committed(at):
             return #"{"e":"commit","t":\#(time(at))}"#
         case let .vsync(at, target):
@@ -230,6 +241,9 @@ final class TerminalVsyncRecorder: NSObject {
         link?.invalidate()
         link = nil
         guard TerminalPipelineMetrics.shared != nil, let view, view.window != nil else { return }
+        if let terminal = view as? HerdrTerminalTextView {
+            TerminalPipelineMetrics.shared?.renderConfiguration(for: terminal)
+        }
         let link = view.displayLink(target: self, selector: #selector(refresh(_:)))
         link.add(to: .main, forMode: .common)
         self.link = link

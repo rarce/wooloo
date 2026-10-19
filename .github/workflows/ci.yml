@@ -41,6 +41,9 @@ jobs:
           path: build/herdr
           key: herdr-${{ hashFiles('scripts/bundle-herdr.sh') }}
 
+      - name: Test performance tooling contracts
+        run: python3 -m unittest discover -s scripts/tests -v
+
       - name: Test
         run: |
           xcodebuild test \
