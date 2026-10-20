@@ -104,8 +104,8 @@ The app remains in Swift 5 language mode. CI's existing test build sets
 `SWIFT_STRICT_CONCURRENCY=complete` and saves the complete output to the
 `wooloo-concurrency-log` artifact. `scripts/concurrency_audit.py` summarizes distinct
 repository diagnostics and rejects every warning or error in the explicitly migrated
-files: `wooloo/BlockingWork.swift`, `wooloo/RemoteAccessLineBuffer.swift`, and
-`wooloo/RemoteAccess.swift`. Other files' warnings remain visible in
+files: `wooloo/BlockingWork.swift`, `wooloo/RemoteAccessLineBuffer.swift`,
+`wooloo/RemoteAccess.swift`, and `wooloo/HerdrRemoteBridge.swift`. Other files' warnings remain visible in
 the log and summary; the gate does not certify them as concurrency-safe. Ordinary
 local builds keep their existing settings so that unfinished migration warnings do
 not obscure daily development.
@@ -144,3 +144,12 @@ output before exit, trailing output without a newline, inherited pipes, token ha
 and stopping during the SSH check. These compiler checks
 do not prove all callback schedules safe; the existing ordering and generation rules
 remain necessary.
+
+`HerdrRemoteBridge` uses checked `Sendable` with a typed lock holding listener, child,
+stopped, and diagnostic state. Synchronous listener setup, accepts, process registration,
+and teardown run on its lifecycle queue. A quick process exit queues removal after
+registration; teardown atomically detaches the resource snapshot before cancelling
+listeners, shutting down child sockets, or terminating processes outside the lock.
+The listener cancellation handler retains sole ownership of its descriptor close.
+Concurrent `stop()` calls remain idempotent, and calls already on the lifecycle queue
+use the reentrant path instead of synchronously dispatching to the same queue.
