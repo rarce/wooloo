@@ -83,3 +83,17 @@ that concurrent external writes can never be overwritten.
 The regression tests inject edits after local staging and after the SSH upload finishes,
 without relying on timing. SSH tests execute the production shell command through a local
 fake SSH executable; they do not cover a live remote filesystem or network interruption.
+
+## Implementation map
+
+`WorkspaceFiles` remains the common API for callers. Its implementation is divided by responsibility:
+
+- `WorkspaceFiles.swift`: shared models, limits, document reads/saves and disk versions, path validation, and explorer mutations.
+- `WorkspaceFiles+Transport.swift`: Herdr machine commands, process execution, SSH connections, blocking-work adapters, and process logging.
+- `WorkspaceFiles+Git.swift`: repository queries and mutations, diffs, Git-backed listings, batch execution, and shared refresh caches.
+- `WorkspaceFiles+Listing.swift`: directory traversal, non-Git listings, and symbolic-link metadata.
+
+Git-backed listings stay beside repository refreshes because the explorer, Git bar, and repository
+panel share one SSH batch and its cache. File-version caches, refresh caches, and transport state
+remain private to their implementation files. Only helpers used across those boundaries have
+module visibility; callers continue to use the existing `WorkspaceFiles` methods.
