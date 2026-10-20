@@ -80,8 +80,8 @@
   .top nav a:hover { color: var(--text); background: var(--bg-raised); }
   .top nav a { white-space: nowrap; }
   @media (max-width: 400px) { .top nav a { padding: 6px 7px; } .top nav .github span { display: none; } }
-  /* On a phone the header already shows the icon, and Privacy is a section further down. */
-  @media (max-width: 480px) { .hero img.icon, .top nav .nav-privacy { display: none; } .hero h1 { margin-top: 4px; } }
+  /* On a phone the header already shows the icon, and Privacy and Android are sections further down. */
+  @media (max-width: 480px) { .hero img.icon, .top nav .nav-privacy, .top nav .nav-android { display: none; } .hero h1 { margin-top: 4px; } }
 
   .hero { text-align: center; padding: 20px 16px 24px; }
   @media (min-width: 720px) { .hero { padding: 28px 32px 28px; } }
@@ -200,6 +200,7 @@
   <nav>
     <a href="#features">Features</a>
     <a href="#start">Get started</a>
+    <a class="nav-android" href="mobile/">Android</a>
     <a class="nav-privacy" href="#privacy">Privacy</a>
     <a class="github" href="https://github.com/rarce/wooloo" aria-label="GitHub"><svg class="icon-svg" aria-hidden="true" focusable="false"><use href="#gh"/></svg><span>GitHub</span></a>
   </nav>
@@ -322,6 +323,14 @@
     </div>
   </section>
 
+  <section id="mobile">
+    <div class="wrap">
+      <h2>Your agents on your phone</h2>
+      <p class="intro">wooloo mobile follows the same Herdr sessions from Android: each agent's state, an alert when one finishes or needs you, and a live terminal to answer it. It connects to this Mac through Remote Access; scan the QR code it shows. It is in a closed test on Google Play, and you can join it.</p>
+      <a class="button" href="mobile/">Join the Android test</a>
+    </div>
+  </section>
+
   <section id="links">
     <div class="wrap">
       <h2>Read more</h2>
@@ -333,6 +342,7 @@
         <li><a href="https://github.com/rarce/wooloo#remote-access">Remote Access</a>: what is exposed and checked</li>
         <li><a href="https://github.com/rarce/wooloo/blob/main/SECURITY.md">Security</a>: reporting and supported versions</li>
         <li><a href="https://github.com/rarce/wooloo/blob/main/TODO.md">Known issues and plans</a></li>
+        <li><a href="mobile/">wooloo mobile</a>, the Android app, in testing</li>
         <li><a href="https://herdr.dev/">Herdr</a>, the session server wooloo includes</li>
       </ul>
     </div>
