@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wooloo mobile privacy</title>
+<meta name="description" content="Privacy policy of wooloo mobile, the Android app that connects to your own Herdr servers over SSH.">
+<link rel="icon" type="image/png" href="../../icon.png">
+<link rel="canonical" href="https://wooloo.dev/mobile/privacy/">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #11111b;
+    --line: #2a2a3c;
+    --bg-raised: #181824;
+    --text: #f4f4f8;
+    --text-2: #c4c4d4;
+    --text-3: #9a9ab2;
+    --accent: #8aadf4;
+    --round: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text-2);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2 { font-family: var(--round); color: var(--text); text-wrap: balance; }
+  p { text-wrap: pretty; overflow-wrap: anywhere; }
+  a { color: var(--accent); text-decoration: none; }
+  p a { text-decoration: underline; text-decoration-color: rgba(138, 173, 244, 0.45); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 16px; }
+  header.top { display: flex; align-items: center; padding-top: 18px; padding-bottom: 18px; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font: 700 19px/1 var(--round); letter-spacing: -0.01em; }
+  .brand img { width: 32px; height: 32px; border-radius: 8px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 40px 0 6px; letter-spacing: -0.02em; }
+  .updated { color: var(--text-3); margin: 0 0 32px; }
+  h2 { font-size: 21px; margin: 36px 0 8px; }
+  footer { margin-top: 72px; border-top: 1px solid var(--line); padding: 28px 0 44px; color: var(--text-3); font-size: 14px; }
+  footer a { color: var(--text-2); }
+  footer a:hover { color: var(--text); text-decoration: underline; }
+</style>
+</head>
+<body>
+<header class="wrap top">
+  <a class="brand" href="../../"><img src="../../icon.png" alt="">wooloo</a>
+</header>
+
+<main class="wrap">
+  <h1>wooloo-mobile privacy</h1>
+  <p class="updated">Updated October 20, 2026</p>
+
+  <p>wooloo-mobile (shown as “wooloo mobile” in the launcher) connects your Android device to servers you choose. The app has no developer-operated account service, advertising or analytics collection. Your servers and the external services below have their own data handling policies.</p>
+
+  <h2>On your device</h2>
+  <p>Machine profiles contain addresses, usernames, session names, paths, host fingerprints and optional Cloudflare Access client IDs. Preferences and quota consent are local. Private SSH keys, saved passwords and Access secrets are encrypted using Android Keystore. Profile metadata is not encrypted by that secret store. Android backup and device-transfer backup are disabled in the app configuration. An unlocked device can still display terminal content and saved machine details.</p>
+
+  <h2>SSH and terminal</h2>
+  <p>Commands, keyboard input, prompts and attachments go to the selected server over SSH. Terminal output comes back to your device. The server, terminal programs and agents may retain that content or send it to their own providers. Notifications can show agent information on the lock screen; adjust Android notification settings if needed. Copy/share actions send the selected text or public key to the clipboard or the app you choose. Never share private keys or credentials in a bug report.</p>
+
+  <h2>Camera, QR and images</h2>
+  <p>Camera access is requested for QR scanning. The bundled decoder reads QR data locally. You can instead select an image or paste a machine link. Review destination and fingerprints through a trusted channel before connecting. Selected attachments are copied to the app cache; images can be resized or re-encoded. Small files can be uploaded unchanged, including embedded metadata such as location: metadata removal is not guaranteed. Unsent files may remain in cache; stale attachment cleanup removes files older than 24 hours when it runs, not on a guaranteed timer. Uploaded files and prompts remain subject to server retention and are not deleted by removing the app.</p>
+  <p>Google ML Kit processes QR images and results on-device; Google states that these inputs and results are not sent to its servers. The SDK can nevertheless send performance and usage metrics to Google and contact its servers for updates and compatibility information. Bundling the decoder does not disable those SDK communications. This is separate from developer-operated analytics, which this app does not add. Google's ML Kit terms and privacy information apply: <a href="https://developers.google.com/ml-kit/terms">https://developers.google.com/ml-kit/terms</a> and <a href="https://policies.google.com/privacy">https://policies.google.com/privacy</a>.</p>
+
+  <h2>External services</h2>
+  <p>Direct SSH contacts the configured host. Cloudflare transport connects to the selected Cloudflare hostname and sends configured Access service-token headers to it; SSH runs inside that tunnel. Cloudflare can observe connection metadata. The version distributed outside Google Play can check GitHub for updates automatically; Settings lets you disable automatic checks. Manual checks and downloads contact GitHub and its asset delivery services, which receive network metadata such as your IP address. Each APK installation requires Android confirmation. The Google Play version does not check for or install updates itself; Google Play delivers its updates.</p>
+
+  <h2>Optional agent quotas (experimental)</h2>
+  <p>Quota access is opt-in for each remote sign-in identity. When enabled, the app reads agent credentials and usage information from that host over SSH, including supported credential files/Keychain entries and recent Codex usage logs. It sends the Claude token from the phone to https://api.anthropic.com/api/oauth/usage and the Codex token/account header to https://chatgpt.com/backend-api/wham/usage. These queries do not follow redirects. Tokens are held in memory for quota requests; they are not added to local profile JSON. Disable quotas on the machine's spaces screen to revoke future reads and queries; already completed requests cannot be recalled. Endpoint availability is not guaranteed. Rejected credentials, rate limits or unavailable quotas do not prevent SSH use; Codex may fall back to usage in the remote session log. This feature does not imply endorsement by the providers.</p>
+
+  <h2>Deletion and recovery</h2>
+  <p>Delete a machine to remove its profile and saved machine password/Access secret. Trusted host fingerprints are stored separately by host and port and remain when a machine is removed, because other profiles may use them. Clear Android app storage to remove all local trust records. SSH keys are managed separately: deleting a key removes its local private key and saved passphrase, but does not revoke the public key on any server. Remove it from the relevant authorized_keys files yourself. Clearing Android app storage or uninstalling removes local app data; it does not remove server files, remote credentials, provider records or shared copies. If Keystore access is lost, encrypted secrets cannot be recovered by the app: re-import a separately backed-up key or generate and authorize a new one, and re-enter credentials. Do not uninstall your only copy of a needed key without preparing another authorized access method.</p>
+
+  <h2>Contact</h2>
+  <p>Use <a href="https://github.com/rarce/wooloo-android/issues">https://github.com/rarce/wooloo-android/issues</a> for sanitized questions and reports. Issues are public; do not post terminal dumps, personal hostnames, tokens, passwords, private keys or exploitable security details. No private security contact is currently advertised. See <a href="https://github.com/rarce/wooloo-android/blob/main/SECURITY.md">SECURITY.md</a> in the repository for the reporting procedure.</p>
+</main>
+
+<footer>
+  <div class="wrap">wooloo is an independent project, not affiliated with or endorsed by Herdr, Anthropic or OpenAI. This page uses no analytics.</div>
+</footer>
+</body>
+</html>
