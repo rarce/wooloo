@@ -65,3 +65,35 @@ For SSH, reuse the **saved Herdr profile's OpenSSH target**, not a second host c
 Use a temporary local Git repository with staged, unstaged, untracked, renamed and whitespace-containing paths. Verify file save, external-change refusal, symlink escape refusal, binary/size handling and a non-Git Space. For SSH, use a saved **test** machine profile and a disposable remote repository; this environment currently has no saved SSH machines. Do not use or alter the default Herdr session.
 
 Sources: [Herdr Socket API](https://herdr.dev/docs/socket-api/), [Connecting machines](https://herdr.dev/docs/connecting-machines/), and the installed Herdr 0.9.1 schema and CLI source.
+
+## Save conflict checks
+
+Local and SSH saves check the opened content version, stage the full replacement in the
+same directory, then resolve the requested path again and check its content version before
+renaming. An edit, deletion, or symlink retarget during staging aborts the save and removes
+the temporary file. A replacement inode with identical contents at the same resolved path
+is accepted: document versions identify contents, not file identity.
+
+This is optimistic conflict detection, not atomic compare-and-swap. An uncooperative writer
+can still change the destination between the last check and rename; advisory locks cannot
+prevent that. The editor keeps an unsuccessful save dirty, with its normal recovery backups.
+No separate recovery copy of external disk contents is created by this check. Avoid claiming
+that concurrent external writes can never be overwritten.
+
+The regression tests inject edits after local staging and after the SSH upload finishes,
+without relying on timing. SSH tests execute the production shell command through a local
+fake SSH executable; they do not cover a live remote filesystem or network interruption.
+
+## Implementation map
+
+`WorkspaceFiles` remains the common API for callers. Its implementation is divided by responsibility:
+
+- `WorkspaceFiles.swift`: shared models, limits, document reads/saves and disk versions, path validation, and explorer mutations.
+- `WorkspaceFiles+Transport.swift`: Herdr machine commands, process execution, SSH connections, blocking-work adapters, and process logging.
+- `WorkspaceFiles+Git.swift`: repository queries and mutations, diffs, Git-backed listings, batch execution, and shared refresh caches.
+- `WorkspaceFiles+Listing.swift`: directory traversal, non-Git listings, and symbolic-link metadata.
+
+Git-backed listings stay beside repository refreshes because the explorer, Git bar, and repository
+panel share one SSH batch and its cache. File-version caches, refresh caches, and transport state
+remain private to their implementation files. Only helpers used across those boundaries have
+module visibility; callers continue to use the existing `WorkspaceFiles` methods.

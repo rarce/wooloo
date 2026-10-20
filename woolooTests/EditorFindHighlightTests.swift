@@ -14,6 +14,40 @@ final class EditorFindHighlightTests: XCTestCase {
         func prepareCoordinator(controller: TextViewController) { self.controller = controller }
     }
 
+    private final class EditorSettings: ObservableObject {
+        @Published var wrapLines: Bool
+        @Published var isEditable: Bool
+
+        init(wrapLines: Bool, isEditable: Bool) {
+            self.wrapLines = wrapLines
+            self.isEditable = isEditable
+        }
+    }
+
+    /// Keeps SwiftUI's configuration authoritative, as the document view does with its preferences.
+    private struct EditorHost: View {
+        @ObservedObject var settings: EditorSettings
+        let textStorage: NSTextStorage
+        let theme: EditorTheme
+        let coordinators: [TextViewCoordinator]
+
+        var body: some View {
+            CodeEditSourceEditor(
+                textStorage,
+                language: .default,
+                theme: theme,
+                font: .monospacedSystemFont(ofSize: 13, weight: .regular),
+                tabWidth: 4,
+                lineHeight: 1.15,
+                wrapLines: settings.wrapLines,
+                cursorPositions: .constant([]),
+                highlightProviders: [],
+                isEditable: settings.isEditable,
+                coordinators: coordinators
+            )
+        }
+    }
+
     private struct Highlight {
         let frame: CGRect
         let isCurrent: Bool
@@ -23,10 +57,13 @@ final class EditorFindHighlightTests: XCTestCase {
     private let currentColor = NSColor(srgbRed: 0.1, green: 0.8, blue: 0.3, alpha: 1)
     private var window: NSWindow?
     private var controller: TextViewController?
+    private var editorSettings: EditorSettings?
 
     override func tearDown() {
         window?.close()
         window = nil
+        controller = nil
+        editorSettings = nil
         super.tearDown()
     }
 
@@ -195,7 +232,16 @@ final class EditorFindHighlightTests: XCTestCase {
         coordinator.setFindMatches([beta], current: 0, color: matchColor, currentColor: currentColor)
         let unwrapped = try XCTUnwrap(highlights(in: textView).first?.frame)
 
-        try XCTUnwrap(controller).wrapLines = true
+        let controller = try XCTUnwrap(controller)
+        let settings = try XCTUnwrap(editorSettings)
+        settings.wrapLines = true
+        try waitUntil { controller.wrapLines }
+        // A subsequent representable update used to restore the host's stale `false` when this test
+        // changed only the native controller. Wait for an independent setting to prove it ran.
+        settings.isEditable = false
+        try waitUntil { !controller.isEditable }
+        XCTAssertTrue(controller.wrapLines)
+        XCTAssertTrue(controller.textView === textView)
         try waitUntil { (self.highlights(in: textView).first?.frame.minY ?? 0) > unwrapped.minY }
         // Redrawn once the lines are laid out where they now go, which can take more than one turn.
         try waitUntil {
@@ -205,7 +251,12 @@ final class EditorFindHighlightTests: XCTestCase {
         XCTAssertEqual(highlights(in: textView).map(\.frame), [expectedFrame(from: beta.location, to: NSMaxRange(beta),
                                                                             in: textView)])
 
-        try XCTUnwrap(controller).wrapLines = false
+        settings.wrapLines = false
+        try waitUntil { !controller.wrapLines }
+        settings.isEditable = true
+        try waitUntil { controller.isEditable }
+        XCTAssertFalse(controller.wrapLines)
+        XCTAssertTrue(controller.textView === textView)
         try waitUntil { self.highlights(in: textView).first?.frame.minY == unwrapped.minY }
         XCTAssertEqual(highlights(in: textView).map(\.frame), [unwrapped])
     }
@@ -271,19 +322,10 @@ final class EditorFindHighlightTests: XCTestCase {
         let coordinator = EditorRevealCoordinator()
         let spy = ControllerSpy()
         let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
-        let editor = CodeEditSourceEditor(
-            NSTextStorage(string: text),
-            language: .default,
-            theme: theme.editorTheme,
-            font: .monospacedSystemFont(ofSize: 13, weight: .regular),
-            tabWidth: 4,
-            lineHeight: 1.15,
-            wrapLines: wrapLines,
-            cursorPositions: .constant([]),
-            highlightProviders: [],
-            isEditable: isEditable,
-            coordinators: [spy, coordinator]
-        )
+        let settings = EditorSettings(wrapLines: wrapLines, isEditable: isEditable)
+        editorSettings = settings
+        let editor = EditorHost(settings: settings, textStorage: NSTextStorage(string: text),
+                                theme: theme.editorTheme, coordinators: [spy, coordinator])
         let size = NSSize(width: 500, height: height)
         let host = NSHostingView(rootView: editor.frame(width: size.width, height: size.height))
         host.frame = NSRect(origin: .zero, size: size)
