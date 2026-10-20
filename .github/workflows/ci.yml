@@ -46,6 +46,8 @@ jobs:
 
       - name: Test
         run: |
+          set -o pipefail
+          mkdir -p build
           xcodebuild test \
             -project wooloo.xcodeproj -scheme wooloo -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath build/DerivedData \
@@ -53,7 +55,22 @@ jobs:
             -skip-testing:woolooTests/ViewSnapshotTests \
             -skip-testing:woolooTests/TerminalRenderingTests/testSnapshotsMatch \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 120 \
-            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
+            SWIFT_STRICT_CONCURRENCY=complete \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+            2>&1 | tee build/concurrency.log
+
+      # Only package sources are cached: every migrated app source must compile in this log.
+      - name: Audit migrated concurrency boundaries
+        if: always() && !cancelled()
+        run: python3 scripts/concurrency_audit.py build/concurrency.log
+
+      - name: Upload compiler log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: wooloo-concurrency-log
+          path: build/concurrency.log
+          if-no-files-found: warn
 
       - name: Upload test results
         # Also when the job times out, so a hang leaves its results behind.
