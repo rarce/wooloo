@@ -15,101 +15,50 @@
 <title>wooloo mobile — your coding agents on Android</title>
 <meta name="description" content="Follow your Herdr spaces and coding agents from your Android phone: alerts when an agent finishes or needs you, and live terminals to answer it. Join the Google Play test.">
 <link rel="icon" type="image/png" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
 <link rel="canonical" href="https://wooloo.dev/mobile/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://wooloo.dev/mobile/">
 <meta property="og:title" content="wooloo mobile">
 <meta property="og:description" content="Your coding agents on Android. Join the Google Play test.">
+<meta property="og:image" content="https://wooloo.dev/mobile/icon.png">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="../style.css">
 <style>
-  :root {
-    color-scheme: dark;
-    --bg: #11111b;
-    --bg-raised: #181824;
-    --bg-hover: #202030;
-    --line: #2a2a3c;
-    --line-strong: #3a3a52;
-    --line-hover: #4a4a66;
-    --text: #f4f4f8;
-    --text-2: #c4c4d4;
-    --text-3: #9a9ab2;
-    --accent: #8aadf4;
-    --accent-hover: #a6c0f7;
-    --accent-ink: #11111b;
-    --warn: #eed49f;
-    --round: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
-    --mono: ui-monospace, "SF Mono", Menlo, monospace;
-  }
-  * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-  h1, h2, h3 { font-family: var(--round); text-wrap: balance; }
-  p, li { text-wrap: pretty; overflow-wrap: anywhere; }
-  a { color: var(--accent); text-decoration: none; }
-  p a, li a { text-decoration: underline; text-decoration-color: rgba(138, 173, 244, 0.45); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
-  p a:hover, li a:hover { text-decoration-color: currentColor; }
-  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  code { font: 0.88em var(--mono); background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px; padding: 0.1em 0.4em; }
-  .wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
-  @media (min-width: 720px) { .wrap { padding: 0 32px; } }
-
-  header.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 18px; padding-bottom: 18px; }
-  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font: 700 19px/1 var(--round); letter-spacing: -0.01em; }
-  .brand img { width: 32px; height: 32px; border-radius: 8px; }
-  .top nav a { padding: 6px 10px; border-radius: 8px; color: var(--text-2); font-size: 15px; }
-  .top nav a:hover { color: var(--text); background: var(--bg-raised); }
+  .wrap { max-width: 960px; }
+  p, li { overflow-wrap: anywhere; }
 
   .hero { text-align: center; padding-top: 20px; }
   .hero img.icon { width: 64px; height: 64px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
   .hero h1 { font-size: clamp(32px, 5vw, 48px); line-height: 1.08; letter-spacing: -0.025em; margin: 14px 0 12px; }
   .hero p.lede { font-size: clamp(17px, 2.2vw, 20px); line-height: 1.55; color: var(--text-2); max-width: 34em; margin: 0 auto; }
-  .status { display: inline-block; margin-top: 18px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(238, 212, 159, 0.45); color: var(--warn); font-size: 13px; line-height: 1.5; }
+  .hero .status { margin-top: 18px; }
   .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 22px 0 0; }
-  .button { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 22px; border-radius: 12px; font-weight: 600; font-size: 16px; line-height: 1; border: 1px solid var(--line-strong); color: var(--text); background: var(--bg-raised); }
-  .button:hover { background: var(--bg-hover); border-color: var(--line-hover); }
-  .button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-  .button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-  @media (max-width: 480px) { .actions .button { flex: 1 1 100%; } }
 
   .phones { display: flex; justify-content: center; gap: 16px; margin: 40px 0 0; padding: 0; list-style: none; }
   .phones img { display: block; width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
   .phones li { flex: 0 1 240px; }
+  /* The third screenshot is left out on phones; its <picture> serves a blank pixel there, so it isn't downloaded. */
   @media (max-width: 640px) { .phones li:nth-child(3) { display: none; } }
 
-  section { padding: 72px 0 0; }
-  section h2 { font-size: clamp(26px, 3.4vw, 34px); line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 14px; }
   section p.intro { color: var(--text-2); max-width: 38em; margin: 0 0 8px; }
   ul.features { color: var(--text-2); padding-left: 18px; max-width: 40em; margin: 18px 0 0; }
   ul.features li + li { margin-top: 8px; }
   ul.features li::marker { color: var(--text-3); }
 
-  ol.steps { list-style: none; counter-reset: step; color: var(--text-2); padding: 0; margin: 28px 0; max-width: 44em; }
-  ol.steps > li { counter-increment: step; position: relative; padding-left: 46px; min-height: 30px; }
-  ol.steps > li + li { margin-top: 22px; }
-  ol.steps > li::before { content: counter(step); position: absolute; left: 0; top: -1px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--bg-raised); border: 1px solid var(--line-strong); color: var(--text); font: 600 14px/1 var(--round); }
   ol.steps strong { color: var(--text); }
-  .note { border-left: 3px solid var(--warn); background: var(--bg-raised); padding: 14px 18px; border-radius: 0 10px 10px 0; color: var(--text-2); font-size: 15.5px; max-width: 44em; margin: 0; }
   .note + .note { margin-top: 14px; }
   .intro + .note { margin-top: 16px; }
-
-  footer { margin-top: 88px; border-top: 1px solid var(--line); padding: 28px 0 44px; color: var(--text-3); font-size: 14px; }
-  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 24px; }
-  footer a { color: var(--text-2); }
-  footer a:hover { color: var(--text); text-decoration: underline; }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <header class="wrap top">
   <a class="brand" href="../"><img src="../icon.png" alt="">wooloo</a>
   <nav><a href="#join">Join the test</a></nav>
 </header>
 
-<main>
+<main id="main" tabindex="-1">
   <div class="wrap hero">
     <img class="icon" src="icon.png" alt="The wooloo mobile icon">
     <h1>Your coding agents,<br>on your Android phone</h1>
@@ -122,7 +71,7 @@
     <ul class="phones" role="list">
       <li><img src="session.jpg" width="540" height="1212" alt="A machine with its CPU, memory and disk, and three spaces: api blocked, web done, infra idle"></li>
       <li><img src="space.jpg" width="540" height="1212" alt="The api space: Claude is blocked waiting to run a migration and Codex is working, with the tab layout below"></li>
-      <li><img src="terminal.jpg" width="540" height="1212" alt="Claude Code's terminal asking for permission, with one-tap answers 1, 2 and 3 and a key bar"></li>
+      <li><picture><source media="(max-width: 640px)" srcset="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="><img src="terminal.jpg" width="540" height="1212" alt="Claude Code's terminal asking for permission, with one-tap answers 1, 2 and 3 and a key bar"></picture></li>
     </ul>
   </div>
 
@@ -133,7 +82,7 @@
         <li>Your Herdr spaces, tabs, agents and shells, with each agent's state: working, blocked, done or idle.</li>
         <li>A notification when an agent finishes or asks for permission. Tap it to jump to that agent.</li>
         <li>The real terminal, rendered by Herdr: reply with the keyboard or one-tap answers, send prompts and images, scroll back, split panes and create spaces.</li>
-        <li>Connects straight to your computer over SSH or a Cloudflare Tunnel. Nothing is installed on the server, and there is no wooloo account or server in between. <a href="privacy/">Privacy policy</a>.</li>
+        <li>Connects straight to your computer over SSH or a Cloudflare Tunnel. Nothing besides Herdr is installed on the server, and there is no wooloo account or server in between. <a href="privacy/">Privacy policy</a>.</li>
         <li>Set up by scanning the Remote Access QR code in wooloo on your Mac, or add any machine running Herdr by hand.</li>
       </ul>
     </div>
@@ -150,7 +99,7 @@
         <li><strong>Install it</strong> from <a href="https://play.google.com/store/apps/details?id=dev.wooloo.mobile">Google Play</a> on your phone. It can take a few minutes after you opt in to show up.</li>
         <li><strong>Keep it installed for 14 days</strong> and open it now and then. Report problems or ideas on <a href="https://github.com/rarce/wooloo-android/issues">GitHub</a>.</li>
       </ol>
-      <p class="note">No Herdr server at hand? Tap <strong>Try the demo machine</strong> on the first screen: it runs a simulated session with agents, terminals and alerts on the phone itself.</p>
+      <p class="note">No Herdr server at hand? Until you add a machine, the first screen offers <strong>Try the demo machine</strong>: it runs a simulated session with agents, terminals and alerts on the phone itself.</p>
       <p class="note">Needs Android 8.0 or later and Google Play. To use it for real, you need Herdr 0.9 or later on a computer you can reach over SSH, such as a Mac running <a href="../">wooloo</a>.</p>
     </div>
   </section>
