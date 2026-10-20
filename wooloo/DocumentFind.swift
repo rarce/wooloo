@@ -147,6 +147,13 @@ private struct MarkdownFindWalker: MarkupWalker {
     let expression: NSRegularExpression
     var matches: [MarkdownFindMatch] = []
 
+    mutating func defaultVisit(_ markup: any Markup) {
+        for child in markup.children {
+            guard matches.count < DocumentFindModel.maximumMatches else { break }
+            visit(child)
+        }
+    }
+
     mutating func visitText(_ text: Markdown.Text) { add(text.plainText, of: text) }
     mutating func visitInlineCode(_ inlineCode: InlineCode) { add(inlineCode.code, of: inlineCode) }
     mutating func visitImage(_ image: Markdown.Image) {}
@@ -156,11 +163,18 @@ private struct MarkdownFindWalker: MarkupWalker {
         var block: any Markup = markup
         while let parent = block.parent, parent.parent != nil { block = parent }
         let key = MarkdownSearchHighlight.key(for: markup)
-        for match in expression.matches(in: string, range: NSRange(location: 0, length: (string as NSString).length))
-        where match.range.length > 0 {
-            matches.append(MarkdownFindMatch(key: key, range: match.range.location..<NSMaxRange(match.range),
-                                             block: block.indexInParent))
+        let blockIndex = block.indexInParent
+        // Stop within a node too: one paragraph can contain millions of matches.
+        // Collect locally because the enumeration closure escapes the mutating self borrow.
+        var found: [MarkdownFindMatch] = []
+        let remaining = DocumentFindModel.maximumMatches - matches.count
+        expression.enumerateMatches(in: string, range: NSRange(location: 0, length: (string as NSString).length)) { match, _, stop in
+            guard let match, match.range.length > 0 else { return }
+            found.append(MarkdownFindMatch(key: key, range: match.range.location..<NSMaxRange(match.range),
+                                          block: blockIndex))
+            if found.count >= remaining { stop.pointee = true }
         }
+        matches += found
     }
 }
 

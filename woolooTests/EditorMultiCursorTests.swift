@@ -1273,6 +1273,25 @@ final class EditorMultiCursorTests: XCTestCase {
         }
     }
 
+    func testRevealingAnAlreadyLaidOutWrappedLineReusesItsRows() throws {
+        let (_, textView) = try makeEditor(text: String(repeating: "word ", count: 4_000), wrapLines: true)
+        let layout = textView.layoutManager!
+        let line = try XCTUnwrap(layout.textLineForIndex(0))
+        let rows = Array(line.data.lineFragments.map { $0.data.id })
+        let height = line.data.lineFragments.height
+        layout.ensureLayoutUntil(10_000)
+        layout.ensureLayoutUntil(15_000)
+        XCTAssertEqual(Array(line.data.lineFragments.map { $0.data.id }), rows)
+        XCTAssertEqual(line.data.lineFragments.height, height)
+
+        // A changed font invalidates the cached metrics and must still rebuild the rows.
+        textView.textStorage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 18, weight: .regular),
+                                          range: NSRange(location: 0, length: textView.textStorage.length))
+        layout.ensureLayoutUntil(15_000)
+        XCTAssertNotEqual(Array(line.data.lineFragments.map { $0.data.id }), rows)
+        XCTAssertGreaterThan(line.data.lineFragments.height, height)
+    }
+
     // MARK: - Rows kept across a change of width or wrapping
 
     /// The view's top in the text view, below the top inset.

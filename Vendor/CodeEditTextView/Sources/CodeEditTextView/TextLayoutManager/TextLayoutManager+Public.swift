@@ -153,6 +153,19 @@ extension TextLayoutManager {
         )
     }
 
+    /// wooloo patch: vertical anchors need only the row tree, not Core Text's caret
+    /// offsets. A caret query can scan every cluster of a multi-megabyte unwrapped row.
+    func verticalRectForOffset(_ offset: Int) -> CGRect? {
+        guard let position = textLineForOffset(offset) else { return nil }
+        if position.range.isEmpty {
+            return CGRect(x: 0, y: position.yPos, width: 0, height: position.height)
+        }
+        if position.data.lineFragments.isEmpty { _ = ensureLayoutFor(position: position) }
+        let localOffset = min(offset - position.range.location, position.range.length - 1)
+        guard let row = position.data.lineFragments.getLine(atOffset: localOffset) else { return nil }
+        return CGRect(x: 0, y: position.yPos + row.yPos, width: 0, height: row.height)
+    }
+
     /// Finds a suitable cursor rect for the end position.
     /// - Returns: A CGRect if it could be created.
     private func rectForEndOffset() -> CGRect? {
@@ -209,8 +222,14 @@ extension TextLayoutManager {
     /// - Parameter offset: The offset to ensure layout until.
     private func ensureLayoutFor(position: TextLineStorage<TextLine>.TextLinePosition) -> CGFloat {
         guard let textStorage else { return 0 }
+        // wooloo patch: cursor/reveal requests often revisit a long wrapped line.
+        // Keep its fragments while the text, attributes and width are still current.
+        let width = maxLineLayoutWidth
+        if !needsLayout, !position.data.needsLayout(maxWidth: width) {
+            return position.data.lineFragments.height
+        }
         let displayData = TextLine.DisplayData(
-            maxWidth: maxLineLayoutWidth,
+            maxWidth: width,
             lineHeightMultiplier: lineHeightMultiplier,
             estimatedLineHeight: estimateLineHeight()
         )
@@ -221,10 +240,6 @@ extension TextLayoutManager {
             markedRanges: markedTextManager.markedRanges(in: position.range),
             breakStrategy: lineBreakStrategy
         )
-        var height: CGFloat = 0
-        for fragmentPosition in position.data.lineFragments {
-            height += fragmentPosition.data.scaledHeight
-        }
-        return height
+        return position.data.lineFragments.height
     }
 }
