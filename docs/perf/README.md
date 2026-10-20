@@ -701,3 +701,70 @@ the CI-equivalent Debug suite ran 1,019 tests with 11 skipped and no failures. T
 Python contract tests passed. Native automation could enumerate the separate manual-review
 app but could not bind its bundle ID, so the manual Git refresh control remains unverified;
 the isolated app/server were stopped, with no controls activated in the primary session.
+
+
+## Performance review follow-up (2026-10-20)
+
+The 2.16 MB wrapped-line opening delay was mostly a scroll-anchor cost, rather than glyph
+creation. A Release sample found Core Text enumerating caret offsets in the initial unwrapped
+row while `topAnchor` needed only its vertical position. Vertical anchors now read the fragment
+tree directly. Explicit cursor/reveal layout requests also reuse valid fragments and their
+aggregate height. The existing wrapping and shaping algorithms remain in place.
+
+Ordinary Markdown text now bypasses HTML conversion entirely. Previously every table cell
+started a task and published identical converted text back into SwiftUI, triggering more work.
+Inline HTML keeps the existing asynchronous conversion and stale-input checks. Tables retain
+their native Grid sizing, links, alignment, decorations and search anchors.
+
+On Mac16,5 / macOS 26.6.2 / Xcode 26.6, measured in Release with the existing synthetic fixtures:
+
+| Operation | Before, p50 | After, p50 |
+| --- | ---: | ---: |
+| 2.16 MB wrapped line, open (5 repeats) | 1606 ms | 106 ms |
+| 2.16 MB wrapped line, resize | 81 ms | 84 ms |
+| 2.16 MB wrapped line, insert | 86 ms | 88 ms |
+| 100-row table, open, Theme (3 repeats) | 749 ms | 419 ms |
+| 100-row table, open, Document | 875 ms | 503 ms |
+| 12-column table, open, Theme | 317 ms | 189 ms |
+| 12-column table, open, Document | 398 ms | 249 ms |
+
+`review-editor-{before,after}.jsonl` and `review-markdown-{before,after}.jsonl` retain the complete
+results and unchanged-source/environment verification. The table before measurement was collected
+after the optimized measurement, temporarily restoring only the original `_MarkdownText`; the
+editor and Find changes were enabled in both table runs. Both table runs use legacy scrollbars
+(value 1), unlike the older saved reference (value 0), so that older reference was rejected rather
+than compared. No existing baseline was overwritten. The compatible Markdown comparison passed
+its 25% plus 10 ms median regression gate; the existing preview interaction and pixel-snapshot
+checks passed without new references.
+
+```sh
+python3 scripts/markdown-perf.py docs/perf/review-editor-after.jsonl \
+    --kind Editor --baseline docs/perf/review-editor-before.jsonl --check
+python3 scripts/markdown-perf.py docs/perf/review-markdown-after.jsonl \
+    --baseline docs/perf/review-markdown-before.jsonl --check
+```
+
+Markdown Find now stops enumeration inside a text node at the shared 10,000-match cap and stops
+walking later blocks once full. Regression cases cover one large paragraph, multiple inline nodes
+and zero-length regex matches. Parsing and regex matching still run synchronously; the cap limits
+stored matches, not the execution time of arbitrary regular expressions.
+
+Long-line resize/editing and eager layout within a large table remain follow-up work. These
+measurements cover layout and bitmap capture, not physical display presentation or SSH file I/O.
+
+
+The 2.16 MB editor fixture is injected directly into CodeEditSourceEditor: ordinary source-file
+opening still has its existing 1,000,000-byte limit. The isolated app smoke check reached the
+`wooloo-ui-test` Space and verified the large-file rejection; native automation timed out while
+reopening a smaller 180 KB fixture, so interactive opening/Find/resize controls are not claimed
+as manually verified. The separate test app and server were stopped.
+
+The signed Debug build and all new regressions passed. The full pixel-inclusive suite ran 1,049
+tests (11 skipped) with one existing snapshot mismatch, `testDocumentChangedOnDisk`: its image
+expects the old banner wording, while `origin/main` already contains the longer wording shown
+in the actual image. An isolated rerun reproduced it. This change leaves that unrelated snapshot
+reference untouched. Markdown snapshots and interactions passed. Thirteen Python performance-tool
+contract tests passed.
+
+The CI-equivalent Debug selection (excluding environment-dependent pixel snapshots, as in
+`.github/workflows/ci.yml`) then passed: 1026 tests, 11 skipped, zero failures.

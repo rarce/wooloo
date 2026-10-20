@@ -13,6 +13,12 @@ Their source files are unchanged except for these changes in CodeEditSourceEdito
 - `GutterView.lineChanges` draws Git change bars (added, modified, deleted, staged as outlines) at the gutter's leading edge, and `TextViewController.gutterView` is public so the app can set them.
 - Tabs stop every `tabWidth` spaces: `attributesFor` includes the paragraph style upstream builds but never applies, and `applyParagraphStyle()` rebuilds it and sets it on the text when the view loads and when the font or tab width changes. Upstream draws tabs at AppKit's default 28 pt stops.
 
+For editor performance, CodeEditTextView's vertical scroll anchors use row-tree geometry instead of
+Core Text caret offsets, which can scan every cluster of a multi-megabyte unwrapped row during
+initial wrapping. Cursor/reveal layout requests reuse current fragments and the tree's aggregate
+height; text/attribute invalidation and width changes still rebuild them. The wrapping algorithm,
+glyph shaping and horizontal caret lookup are unchanged.
+
 And in CodeEditTextView, for multiple cursors (`wooloo/EditorMultiCursor.swift` adds the commands):
 
 - Option-click adds a cursor, or removes the selection under it when there are several (`TextView+Mouse.swift`).
@@ -45,6 +51,7 @@ The local `Package.swift` files keep the runtime dependencies and omit test targ
 - MarkdownView: `markdownHeadingDivider(_:)` draws a rule under headings of chosen levels (`Modifiers/Heading/HeadingDividerModifier.swift`, applied in `MarkdownHeading`), for the GitHub-style document preview.
 - MarkdownView: `markdownTaskToggle(_:)` makes task list checkboxes buttons that report the item's 1-based source line and new state, and `markdownRevealSource(_:)` reports double-clicks on top-level blocks with their first line (`Modifiers/SourceActionsModifier.swift`, applied in `MarkdownList` and `MarkdownViewRenderer.visitDocument`). The host edits the source; the renderer stays read-only.
 - MarkdownView: `markdownLazyBlocks()` lets the preview construct top-level blocks as they enter its scroll view, retaining their find anchors and source-line actions. Source-action monitors ignore hidden/clipped views and handle each event once, including when lazy layout keeps duplicate background views alive. Other package consumers keep eager rendering by default.
+- MarkdownView: `_MarkdownText` renders text without inline HTML directly, avoiding a conversion task and a second state-driven layout per ordinary paragraph or table cell. Inline HTML retains its asynchronous conversion, cancellation and input-identity checks.
 - MarkdownView: the built-in GitHub table draws its row backgrounds and grid in canvases from cell anchors, retaining native text cells and keeping each table’s geometry independent. Unstyled default tables skip cell geometry; custom table decorations retain their original preference path. `scripts/markdown-bench.sh` measures first render, resize, cached drawing and scrolling, and the view snapshots guard table layout, wrapping and row colors.
 - MarkdownView: the `AnyShapeStyle` identity comparison keeps both unsafe buffer borrows alive and compares their bytes directly; upstream returned expired buffers and compared hashes, which could treat different colors as equal and suppress style updates.
 - CodeEditSourceEditor accepts an optional `highlightingID` to replace custom highlight providers when switching between configuration syntax and Tree-sitter, while retaining the text view, selection and undo history.
