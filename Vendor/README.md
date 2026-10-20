@@ -2,6 +2,8 @@
 
 These packages are copies of the upstream `Sources/` trees, with their MIT licenses:
 
+[PATCHES.md](PATCHES.md) maps the local changes to regression tests, coverage gaps, and candidates to evaluate for upstream contribution.
+
 | Package | Version | Upstream commit |
 | --- | --- | --- |
 | [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor) | 0.9.1 | `b0688fa59fb8060840fb013afb4d6e6a96000f14` |
@@ -64,6 +66,6 @@ Remote runtime dependencies resolve through Swift Package Manager: swift-markdow
 
 # Notices
 
-Herdr 0.9.3 is bundled as a universal macOS helper. `scripts/bundle-herdr.sh` downloads the pinned official release assets, checks their SHA-256 hashes, combines the Intel and Apple Silicon binaries, and signs the helper before the app is signed. The binary cache is under the ignored `build/herdr` directory; `Vendor/Herdr/LICENSE` retains its Apache-2.0 license. Update the script's hashes and `HerdrRuntimePaths.version` together when upgrading the runtime.
+Herdr 0.9.5 is bundled as a universal macOS helper. `scripts/bundle-herdr.sh` downloads the pinned official release assets, checks their SHA-256 hashes, combines the Intel and Apple Silicon binaries, and signs the helper before the app is signed. The binary cache is under the ignored `build/herdr` directory; `Vendor/Herdr/LICENSE` retains its Apache-2.0 license. Update the script's hashes and `HerdrRuntimePaths.version` together when upgrading the runtime.
 
 `THIRD_PARTY_NOTICES.txt` at the repository root collects the licenses of every package above, their SwiftPM dependencies, and the tree-sitter grammars built into CodeEditLanguages. It is copied into the app bundle and opened from wooloo → Third-Party Notices. After changing a dependency, build wooloo and run `scripts/third-party-notices.py`.
