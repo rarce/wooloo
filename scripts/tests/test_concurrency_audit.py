@@ -5,23 +5,35 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from concurrency_audit import audit
+from concurrency_audit import MIGRATED, audit
 
 
 class ConcurrencyAuditTests(unittest.TestCase):
     root = Path("/private/tmp/audit workspace")
 
-    def log(self, *diagnostics, source="wooloo/BlockingWork.swift"):
-        return "\n".join(["    SWIFT_STRICT_CONCURRENCY = complete", f"SwiftCompile normal arm64 {source} (in target 'wooloo' from project 'wooloo')",
+    def log(self, *diagnostics, sources=None):
+        if sources is None:
+            sources = sorted(MIGRATED)
+        compiled = [f"SwiftCompile normal arm64 {source} (in target 'wooloo' from project 'wooloo')" for source in sources]
+        return "\n".join(["    SWIFT_STRICT_CONCURRENCY = complete", *compiled,
                           *diagnostics, "** TEST SUCCEEDED **"])
 
-    def test_relative_and_absolute_paths_identify_migrated_source(self):
-        for source in ["wooloo/BlockingWork.swift", str(self.root / "wooloo/BlockingWork.swift")]:
-            with self.subTest(source=source):
-                diagnostics, guarded, failures = audit(self.log(f"{source}:42:9: warning: unsafe state", source=source), self.root)
-                self.assertEqual(len(diagnostics), 1)
-                self.assertEqual(len(guarded), 1)
-                self.assertTrue(failures)
+    def test_relative_and_absolute_paths_identify_every_migrated_source(self):
+        for migrated in sorted(MIGRATED):
+            for source in [migrated, str(self.root / migrated)]:
+                with self.subTest(source=source):
+                    sources = [source if path == migrated else path for path in sorted(MIGRATED)]
+                    diagnostics, guarded, failures = audit(self.log(f"{source}:42:9: warning: unsafe state", sources=sources), self.root)
+                    self.assertEqual(len(diagnostics), 1)
+                    self.assertEqual(len(guarded), 1)
+                    self.assertTrue(failures)
+
+    def test_each_migrated_file_requires_its_own_compile_evidence(self):
+        for missing in sorted(MIGRATED):
+            with self.subTest(missing=missing):
+                _, _, failures = audit(self.log(sources=sorted(MIGRATED - {missing})), self.root)
+                self.assertTrue(any("No compilation evidence for: " + missing in failure for failure in failures))
+        self.assertFalse(audit(self.log(), self.root)[2])
 
     def test_same_basename_in_vendor_or_other_checkout_is_not_migrated(self):
         diagnostics, guarded, failures = audit(self.log(
@@ -48,15 +60,15 @@ class ConcurrencyAuditTests(unittest.TestCase):
 
     def test_empty_truncated_and_incremental_logs_cannot_pass(self):
         for text in ["", "** TEST SUCCEEDED **", self.log().replace("** TEST SUCCEEDED **", ""),
-                     self.log(source="Vendor/BlockingWork.swift"),
+                     self.log(sources=["Vendor/BlockingWork.swift"]),
                      self.log().replace("SWIFT_STRICT_CONCURRENCY = complete", "SWIFT_STRICT_CONCURRENCY = targeted"),
-                     self.log(source="/another/checkout/wooloo/BlockingWork.swift")]:
+                     self.log(sources=["/another/checkout/wooloo/BlockingWork.swift"])]:
             with self.subTest(text=text):
                 self.assertTrue(audit(text, self.root)[2])
 
     def test_escaped_absolute_compile_path_and_other_file_warning(self):
-        source = str(self.root / "wooloo/BlockingWork.swift").replace(" ", "\\ ")
-        diagnostics, guarded, failures = audit(self.log("wooloo/Other.swift:2:1: warning: not migrated", source=source), self.root)
+        sources = [str(self.root / source).replace(" ", "\\ ") for source in sorted(MIGRATED)]
+        diagnostics, guarded, failures = audit(self.log("wooloo/Other.swift:2:1: warning: not migrated", sources=sources), self.root)
         self.assertEqual(len(diagnostics), 1)
         self.assertFalse(guarded)
         self.assertFalse(failures)

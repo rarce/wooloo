@@ -589,30 +589,3 @@ final class RemoteAccessModel: ObservableObject {
         }
     }
 }
-
-/// Splits a process's output into lines across reads.
-private final class RemoteAccessLineBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var pending = Data()
-    private var finished = false
-
-    func append(_ data: Data) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        pending.append(data)
-        guard let last = pending.lastIndex(of: UInt8(ascii: "\n")) else { return [] }
-        let complete = pending[..<last]
-        pending = Data(pending[(last + 1)...])
-        return String(decoding: complete, as: UTF8.self).components(separatedBy: "\n")
-    }
-
-    /// The last line, which may lack a newline, at the end of the output; nil after the first call.
-    func finish() -> [String]? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !finished else { return nil }
-        finished = true
-        defer { pending = Data() }
-        return pending.isEmpty ? [] : [String(decoding: pending, as: UTF8.self)]
-    }
-}

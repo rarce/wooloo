@@ -104,7 +104,7 @@ The app remains in Swift 5 language mode. CI's existing test build sets
 `SWIFT_STRICT_CONCURRENCY=complete` and saves the complete output to the
 `wooloo-concurrency-log` artifact. `scripts/concurrency_audit.py` summarizes distinct
 repository diagnostics and rejects every warning or error in the explicitly migrated
-files, initially `wooloo/BlockingWork.swift`. Other files' warnings remain visible in
+files: `wooloo/BlockingWork.swift` and `wooloo/RemoteAccessLineBuffer.swift`. Other files' warnings remain visible in
 the log and summary; the gate does not certify them as concurrency-safe. Ordinary
 local builds keep their existing settings so that unfinished migration warnings do
 not obscure daily development.
@@ -125,3 +125,12 @@ FIFO, both ordered cancellation/release outcomes, concurrent cancellation/releas
 and conservation of exactly one available slot after those transitions. This does
 not change the established behavior that cancellation does not interrupt work that
 already started.
+
+`RemoteAccessLineBuffer` also uses checked `Sendable` with typed lock-protected state.
+Its EOF transition is terminal: an append concurrent with `finish()` either contributes
+before EOF or returns no lines after it. Exactly one `finish()` returns the remaining
+tail (or an empty array); later calls return nil. UTF-8 bytes stay buffered across read
+boundaries until a newline or EOF, preserving empty lines and literal carriage returns.
+Dedicated tests cover these rules and concurrent appends/EOF. This migration certifies
+the buffer's state synchronization, not the ordering of the surrounding process callbacks
+or their dispatch to the main queue; `RemoteAccess.swift` remains outside the migrated gate.
