@@ -11,7 +11,11 @@ from pathlib import Path
 import re
 import sys
 
-MIGRATED = frozenset({"wooloo/BlockingWork.swift"})
+MIGRATED = frozenset({
+    "wooloo/BlockingWork.swift",
+    "wooloo/RemoteAccessLineBuffer.swift",
+    "wooloo/RemoteAccess.swift",
+})
 DIAGNOSTIC = re.compile(r"^(.+?):(\d+)(?::(\d+))?: (warning|error): (.+)$")
 COMPILE = re.compile(r"^SwiftCompile\s+\S+\s+\S+\s+(.+?)(?: \(in target .+\))?$")
 
