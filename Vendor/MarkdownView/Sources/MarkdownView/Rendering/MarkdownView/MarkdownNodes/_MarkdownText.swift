@@ -19,6 +19,16 @@ struct _MarkdownText: View {
     }
 
     var body: some View {
+        // wooloo patch: ordinary text (including most table cells) needs no HTML
+        // conversion task or state update that makes SwiftUI lay out the cell again.
+        if text.runs.contains(where: { $0.isHTML == true }) {
+            htmlText
+        } else {
+            Text(text)
+        }
+    }
+
+    private var htmlText: some View {
         Group {
             if let attributedString {
                 Text(Self.visibleText(input: text, rendered: attributedString))
