@@ -79,6 +79,89 @@ final class WorkspaceExplorerModelTests: XCTestCase {
 
     // MARK: Listing
 
+    func testCancelledListingRequestCannotClearTheCurrentSpace() async {
+        await load()
+        let version = model.listingVersion
+        // The main actor cannot run this task until we yield, so cancellation precedes its entry.
+        let stale = Task { self.model.loadListing(at: nil) }
+        stale.cancel()
+        let requested = await stale.value
+        XCTAssertNil(requested)
+        XCTAssertEqual(model.location?.identity, repo.identity)
+        XCTAssertEqual(model.listedIdentity, repo.identity)
+        XCTAssertNotNil(model.listing)
+        XCTAssertEqual(model.listingVersion, version)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    func testCancelledMonitorCannotStopTheCurrentSpacesWatcher() async throws {
+        await load()
+        model.pausesWhileInactive = false
+        let current = Task { await self.model.monitor(at: self.repo) }
+        defer { current.cancel(); model.stopMonitoring() }
+        try await waitUntil("Current Space's watcher starts") { model.isWatchingFiles }
+        let stale = Task { await self.model.monitor(at: nil) }
+        stale.cancel()
+        await stale.value
+        XCTAssertTrue(model.isWatchingFiles, "An obsolete task must not stop the current monitor")
+        try sandbox.write(["after-stale-task.txt": "new\n"], in: "repo")
+        try await waitUntil("The current watcher still delivers file changes") {
+            model.listing?.files.contains("after-stale-task.txt") == true
+        }
+    }
+
+    func testMountedBrowserLoadsAfterEmptyStartupAndRapidSpaceChanges() async throws {
+        let other = try sandbox.repository("other", files: ["other.txt": "other\n"])
+        func snapshot(_ location: WorkspaceFileLocation) throws -> HerdrSnapshot {
+            try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: [
+                "workspaces": [["workspace_id": location.workspaceID, "label": location.workspaceLabel,
+                                "worktree": ["checkout_path": location.root]]],
+                "panes": [], "tabs": [], "agents": [], "layouts": []
+            ] as [String: Any]))
+        }
+        func browser(_ snapshot: HerdrSnapshot?, _ workspaceID: String?) -> WorkspaceBrowserView {
+            WorkspaceBrowserView(snapshot: snapshot, workspaceID: workspaceID, session: "test",
+                machine: nil, refreshVersion: 0, onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in },
+                onNewTab: { _ in }, onNewSpace: { _, _ in }, onLocationChange: { _ in },
+                onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in }, onOpenCommitFile: { _, _, _ in },
+                model: self.model)
+        }
+        model.pausesWhileInactive = false
+        let host = NSHostingView(rootView: browser(nil, nil))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 700),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.close(); model.stopMonitoring() }
+        host.layoutSubtreeIfNeeded()
+        await Task.yield()
+        let ready = try snapshot(repo)
+        host.rootView = browser(ready, repo.workspaceID)
+        try await waitUntil("Startup snapshot loads the selected Space") {
+            model.listedIdentity == repo.identity && model.isWatchingFiles
+        }
+        let alternate = try snapshot(other)
+        for _ in 0..<3 {
+            host.rootView = browser(nil, nil)
+            host.layoutSubtreeIfNeeded()
+            await Task.yield()
+            host.rootView = browser(alternate, other.workspaceID)
+            host.layoutSubtreeIfNeeded()
+            await Task.yield()
+        }
+        host.rootView = browser(ready, repo.workspaceID)
+        try await waitUntil("The final Space wins after pending tasks change") {
+            model.listedIdentity == repo.identity && model.isWatchingFiles && !model.isLoading
+        }
+        XCTAssertTrue(model.listing?.files.contains("a.txt") == true)
+        XCTAssertFalse(model.listing?.files.contains("other.txt") == true)
+        try sandbox.write(["after-switch.txt": "new\n"], in: "repo")
+        try await waitUntil("The final mounted Space continues monitoring") {
+            model.listing?.files.contains("after-switch.txt") == true
+        }
+    }
+
     func testVisibleBrowserKeepsMonitoringAfterLoadsAndChangingSegments() async throws {
         let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: [
             "workspaces": [["workspace_id": "repo", "label": "repo", "worktree": ["checkout_path": repo.root]]],

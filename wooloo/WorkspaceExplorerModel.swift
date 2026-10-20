@@ -170,6 +170,8 @@ final class WorkspaceExplorerModel: ObservableObject {
     /// as does reloading the location already shown (e.g. after a save).
     @discardableResult
     func loadListing(at location: WorkspaceFileLocation?, quietly: Bool = false) -> Task<Void, Never>? {
+        // A superseded view task can enter after cancellation with its old (possibly nil) location.
+        guard !Task.isCancelled else { return nil }
         let isReload = listing != nil && self.location?.identity == location?.identity
         if self.location?.identity != location?.identity { locationGeneration += 1 }
         self.location = location
@@ -240,6 +242,8 @@ final class WorkspaceExplorerModel: ObservableObject {
     /// Owned by the visible browser's SwiftUI task. SSH polls only while active; local Spaces
     /// use recursive events, with polling as a fallback if a stream cannot be started.
     func monitor(at location: WorkspaceFileLocation?, pollingInterval: Duration = .seconds(3)) async {
+        // Reject obsolete tasks before they can stop a newer location's watcher.
+        guard !Task.isCancelled else { return }
         stopMonitoring()
         guard let location else { return }
         let token = UUID()

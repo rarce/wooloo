@@ -93,7 +93,10 @@ struct WorkspaceBrowserView: View {
         }
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { await model.monitor(at: location) }
-        .task(id: location?.identity) { onLocationChange(location) }
+        .task(id: location?.identity) {
+            guard !Task.isCancelled else { return }
+            onLocationChange(location)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.setApplicationActive(true)
         }
