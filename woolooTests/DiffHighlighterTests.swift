@@ -40,6 +40,19 @@ final class DiffHighlighterTests: XCTestCase {
         XCTAssertEqual(DiffHighlighter.highlight("let x = 1\n", language: .default).count, 0)
     }
 
+    func testJSONKeysAndLiteralsHaveColors() {
+        let lines = highlighted("{\"name\": \"wooloo\", \"enabled\": true, \"hidden\": false, \"value\": null, \"count\": 42}", .json)
+        for key in ["name", "enabled", "hidden", "value", "count"] {
+            XCTAssertTrue(lines[0].contains("\"\(key)\":typeAlternate"), "\(lines[0])")
+        }
+        for literal in ["true", "false", "null"] {
+            XCTAssertTrue(lines[0].contains("\(literal):boolean"), "\(lines[0])")
+        }
+        XCTAssertTrue(lines[0].contains("\"wooloo\":string"))
+        XCTAssertTrue(lines[0].contains("42:number"))
+        XCTAssertEqual(CaptureName.fromString("escape"), .string)
+    }
+
     func testPaletteMapsCapturesToThemeColors() {
         let theme = WoolooTheme.all[0].editorTheme
         let palette = SyntaxPalette(theme)

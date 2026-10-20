@@ -50,6 +50,13 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
     public static func fromString(_ string: String?) -> CaptureName? { // swiftlint:disable:this cyclomatic_complexity
         guard let string else { return nil }
         switch string {
+        // wooloo patch: names emitted by the bundled JSON highlight query.
+        case "string.special.key":
+            return .typeAlternate
+        case "constant.builtin":
+            return .boolean
+        case "escape":
+            return .string
         case "include":
             return .include
         case "constructor":
