@@ -1,25 +1,31 @@
 import Foundation
 import Darwin
+import os
 
 /// Private local sockets adapt Herdr's API and terminal stdio bridges to our existing
 /// socket clients. Each accepted connection owns an SSH channel, never a remote shell pane.
 /// Closing this attachment leaves the remote server, Spaces and agents running.
-final class HerdrRemoteBridge: @unchecked Sendable {
+final class HerdrRemoteBridge: Sendable {
     let directory: URL
     var apiPath: String { directory.appendingPathComponent("api").path }
     var clientPath: String { directory.appendingPathComponent("client").path }
     private let queue = DispatchQueue(label: "dev.wooloo.remote-bridge")
-    private var listeners: [DispatchSourceRead] = []
-    private var children: [UUID: (Process, FileHandle, Pipe)] = [:]
     private let queueKey = DispatchSpecificKey<Bool>()
-    private let errorLock = NSLock()
-    private var diagnostic = ""
-    var lastError: String? {
-        errorLock.lock(); defer { errorLock.unlock() }
-        let text = diagnostic.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : String(text.suffix(2000))
+    private typealias Child = (process: Process, handle: FileHandle, errors: Pipe)
+    private struct State: Sendable {
+        var listeners: [DispatchSourceRead] = []
+        var children: [UUID: Child] = [:]
+        var stopped = false
+        var diagnostic = ""
     }
-    private var stopped = false
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    var lastError: String? {
+        state.withLock { state in
+            let text = state.diagnostic.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : String(text.suffix(2000))
+        }
+    }
     private let machine: HerdrMachineProfile
     private let executable: String
 
@@ -37,8 +43,12 @@ final class HerdrRemoteBridge: @unchecked Sendable {
                                                attributes: [.posixPermissions: 0o700])
         queue.setSpecific(key: queueKey, value: true)
         do {
-            try listen(at: apiPath, command: "remote-api-bridge")
-            try listen(at: clientPath, command: "remote-client-bridge")
+            // Listener setup, accepts and teardown share one lifecycle queue. No callback can
+            // interleave with initialization or register a child after teardown starts.
+            try queue.sync {
+                try listen(at: apiPath, command: "remote-api-bridge")
+                try listen(at: clientPath, command: "remote-client-bridge")
+            }
         } catch {
             stop()
             throw error
@@ -46,6 +56,7 @@ final class HerdrRemoteBridge: @unchecked Sendable {
     }
 
     private func listen(at path: String, command: String) throws {
+        dispatchPrecondition(condition: .onQueue(queue))
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw POSIXError(.ENFILE) }
         var address = sockaddr_un()
@@ -66,11 +77,12 @@ final class HerdrRemoteBridge: @unchecked Sendable {
             let code = errno; close(fd); throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
         }
         chmod(path, 0o600)
-        fcntl(fd, F_SETFL, O_NONBLOCK)
-        fcntl(fd, F_SETFD, FD_CLOEXEC)
+        // Preserve the existing best-effort descriptor configuration.
+        _ = fcntl(fd, F_SETFL, O_NONBLOCK)
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         source.setEventHandler { [weak self] in
-            guard let self, !self.stopped else { return }
+            guard let self, !self.state.withLock({ $0.stopped }) else { return }
             while true {
                 let accepted = accept(fd, nil, nil)
                 guard accepted >= 0 else { break }
@@ -78,12 +90,13 @@ final class HerdrRemoteBridge: @unchecked Sendable {
             }
         }
         source.setCancelHandler { close(fd) }
-        listeners.append(source)
+        state.withLock { $0.listeners.append(source) }
         source.resume()
     }
 
     private func attach(_ fd: Int32, command: String) {
-        fcntl(fd, F_SETFD, FD_CLOEXEC)
+        dispatchPrecondition(condition: .onQueue(queue))
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
         var noSignal: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -98,19 +111,31 @@ final class HerdrRemoteBridge: @unchecked Sendable {
             let data = handle.availableData
             guard let self else { return }
             if data.isEmpty { handle.readabilityHandler = nil; return }
-            self.errorLock.lock()
-            self.diagnostic = String((self.diagnostic + String(decoding: data, as: UTF8.self)).suffix(4000))
-            self.errorLock.unlock()
+            self.state.withLock { state in
+                state.diagnostic = String((state.diagnostic + String(decoding: data, as: UTF8.self)).suffix(4000))
+            }
         }
         process.standardError = errors
         let id = UUID()
         process.terminationHandler = { [weak self] _ in
             guard let self else { return }
-            self.queue.async { self.children.removeValue(forKey: id) }
+            // Even an immediate exit is removed after attach has registered the child.
+            self.queue.async { [weak self] in
+                guard let self else { return }
+                let child = self.state.withLock { $0.children.removeValue(forKey: id) }
+                // Releasing a child's resources may close handles; do that after unlocking.
+                withExtendedLifetime(child) {}
+            }
         }
         do {
             try process.run()
-            children[id] = (process, handle, errors)
+            let child: Child = (process, handle, errors)
+            let registered = state.withLock { state in
+                guard !state.stopped else { return false }
+                state.children[id] = child
+                return true
+            }
+            if !registered { Self.stopChild(child) }
         } catch {
             try? handle.close()
         }
@@ -151,17 +176,27 @@ final class HerdrRemoteBridge: @unchecked Sendable {
     }
 
     private func stopOnQueue() {
-        guard !stopped else { return }
-        stopped = true
-        listeners.forEach { $0.cancel() }
-        listeners.removeAll()
-        for (process, handle, errors) in children.values {
-            errors.fileHandleForReading.readabilityHandler = nil
-            shutdown(handle.fileDescriptor, SHUT_RDWR)
-            if process.isRunning { process.terminate() }
+        dispatchPrecondition(condition: .onQueue(queue))
+        let resources = state.withLock { state -> ([DispatchSourceRead], [UUID: Child])? in
+            guard !state.stopped else { return nil }
+            state.stopped = true
+            let resources = (state.listeners, state.children)
+            state.listeners.removeAll()
+            state.children.removeAll()
+            return resources
         }
-        children.removeAll()
+        guard let (listeners, children) = resources else { return }
+        // Cancellation, process work and filesystem operations never run while holding state.
+        // The listener's cancel handler remains the only owner that closes its descriptor.
+        listeners.forEach { $0.cancel() }
+        children.values.forEach(Self.stopChild)
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    private static func stopChild(_ child: Child) {
+        child.errors.fileHandleForReading.readabilityHandler = nil
+        shutdown(child.handle.fileDescriptor, SHUT_RDWR)
+        if child.process.isRunning { child.process.terminate() }
     }
 
     deinit { stop() }

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AFE300000000000000000000 /* HerdrRemoteBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE300000000000000000001 /* HerdrRemoteBridgeTests.swift */; };
 		B63000000000000000000001 /* WorkspaceDiskComparisonView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */; };
 		B90000000000000000000001 /* HerdrRemoteBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000002 /* HerdrRemoteBridge.swift */; };
 		D40000000000000000000003 /* NotebookPreviewBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */; };
@@ -157,6 +158,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AFE300000000000000000001 /* HerdrRemoteBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRemoteBridgeTests.swift; sourceTree = "<group>"; };
 		B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiskComparisonView.swift; sourceTree = "<group>"; };
 		B90000000000000000000002 /* HerdrRemoteBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRemoteBridge.swift; sourceTree = "<group>"; };
 		D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookPreviewBenchmarks.swift; sourceTree = "<group>"; };
@@ -440,6 +442,7 @@
 				C30000000000000000000045 /* HerdrSurfaceStreamTests.swift */,
 				C3000000000000000000AC02 /* HerdrAgentViewTests.swift */,
 				C30000000000000000000047 /* HerdrNotificationTests.swift */,
+				AFE300000000000000000001 /* HerdrRemoteBridgeTests.swift */,
 				C30000000000000000000049 /* HerdrStoreTests.swift */,
 				C300000000000000000000F1 /* TerminalTabDropTests.swift */,
 				C300000000000000000000F5 /* ContentPanelsTests.swift */,
@@ -710,6 +713,7 @@
 				C30000000000000000000044 /* HerdrSurfaceStreamTests.swift in Sources */,
 				C3000000000000000000AC01 /* HerdrAgentViewTests.swift in Sources */,
 				C30000000000000000000046 /* HerdrNotificationTests.swift in Sources */,
+				AFE300000000000000000000 /* HerdrRemoteBridgeTests.swift in Sources */,
 				C30000000000000000000048 /* HerdrStoreTests.swift in Sources */,
 				C300000000000000000000F0 /* TerminalTabDropTests.swift in Sources */,
 				C300000000000000000000F4 /* ContentPanelsTests.swift in Sources */,
