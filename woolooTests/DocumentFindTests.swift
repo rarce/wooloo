@@ -88,6 +88,31 @@ final class DocumentFindTests: XCTestCase {
         XCTAssertTrue(find.isTruncated)
     }
 
+    func testPreviewMatchesStopWithinOneLargeParagraph() {
+        let find = model("a")
+        find.update(text: String(repeating: "a", count: DocumentFindModel.maximumMatches * 4),
+                    target: .preview, anchor: nil)
+        XCTAssertEqual(find.count, DocumentFindModel.maximumMatches)
+        XCTAssertTrue(find.isTruncated)
+        XCTAssertEqual(find.previewMatches.last?.range, 9_999..<10_000)
+    }
+
+    func testPreviewMatchLimitIsSharedAcrossTextAndInlineCodeNodes() {
+        let find = model("a")
+        let first = String(repeating: "a", count: DocumentFindModel.maximumMatches - 2)
+        find.update(text: first + " `aaaa` **aaaa**\n\nMore aaaa", target: .preview, anchor: nil)
+        XCTAssertEqual(find.count, DocumentFindModel.maximumMatches)
+        XCTAssertEqual(find.previewMatches.suffix(2).map(\.range), [0..<1, 1..<2])
+        XCTAssertTrue(find.previewMatches.allSatisfy { $0.block == 0 })
+    }
+
+    func testPreviewIgnoresZeroLengthMatchesWithoutConsumingTheLimit() {
+        let find = model("(?=b)|a", regex: true)
+        find.update(text: "b a `a` **a**", target: .preview, anchor: nil)
+        XCTAssertEqual(find.count, 3)
+        XCTAssertTrue(find.previewMatches.allSatisfy { $0.range.count == 1 })
+    }
+
     /// The preview searches rendered text: headings, paragraphs and inline code, not image
     /// descriptions or code blocks. Each match records its top-level block for scrolling.
     func testPreviewSearchesRenderedText() {
