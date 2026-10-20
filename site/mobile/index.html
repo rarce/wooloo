@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-1Z0JSL8DYB"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-1Z0JSL8DYB');
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wooloo mobile — your coding agents on Android</title>
+<meta name="description" content="Follow your Herdr spaces and coding agents from your Android phone: alerts when an agent finishes or needs you, and live terminals to answer it. Join the Google Play test.">
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="canonical" href="https://wooloo.dev/mobile/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://wooloo.dev/mobile/">
+<meta property="og:title" content="wooloo mobile">
+<meta property="og:description" content="Your coding agents on Android. Join the Google Play test.">
+<meta property="og:image" content="https://wooloo.dev/mobile/icon.png">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="../style.css">
+<style>
+  .wrap { max-width: 960px; }
+  p, li { overflow-wrap: anywhere; }
+
+  .hero { text-align: center; padding-top: 20px; }
+  .hero img.icon { width: 64px; height: 64px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+  .hero h1 { font-size: clamp(32px, 5vw, 48px); line-height: 1.08; letter-spacing: -0.025em; margin: 14px 0 12px; }
+  .hero p.lede { font-size: clamp(17px, 2.2vw, 20px); line-height: 1.55; color: var(--text-2); max-width: 34em; margin: 0 auto; }
+  .hero .status { margin-top: 18px; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 22px 0 0; }
+
+  .phones { display: flex; justify-content: center; gap: 16px; margin: 40px 0 0; padding: 0; list-style: none; }
+  .phones img { display: block; width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+  .phones li { flex: 0 1 240px; }
+  /* The third screenshot is left out on phones; its <picture> serves a blank pixel there, so it isn't downloaded. */
+  @media (max-width: 640px) { .phones li:nth-child(3) { display: none; } }
+
+  section p.intro { color: var(--text-2); max-width: 38em; margin: 0 0 8px; }
+  ul.features { color: var(--text-2); padding-left: 18px; max-width: 40em; margin: 18px 0 0; }
+  ul.features li + li { margin-top: 8px; }
+  ul.features li::marker { color: var(--text-3); }
+
+  ol.steps strong { color: var(--text); }
+  .note + .note { margin-top: 14px; }
+  .intro + .note { margin-top: 16px; }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap top">
+  <a class="brand" href="../"><img src="../icon.png" alt="">wooloo</a>
+  <nav><a href="#join">Join the test</a></nav>
+</header>
+
+<main id="main" tabindex="-1">
+  <div class="wrap hero">
+    <img class="icon" src="icon.png" alt="The wooloo mobile icon">
+    <h1>Your coding agents,<br>on your Android phone</h1>
+    <p class="lede">wooloo mobile follows the Herdr sessions on your computer: see every agent's state, get alerted when one finishes or needs you, and answer it from a live terminal.</p>
+    <span class="status">Closed test on Google Play</span>
+    <div class="actions">
+      <a class="button primary" href="#join">Join the test</a>
+      <a class="button" href="https://github.com/rarce/wooloo-android">Source on GitHub</a>
+    </div>
+    <ul class="phones" role="list">
+      <li><img src="session.jpg" width="540" height="1212" alt="A machine with its CPU, memory and disk, and three spaces: api blocked, web done, infra idle"></li>
+      <li><img src="space.jpg" width="540" height="1212" alt="The api space: Claude is blocked waiting to run a migration and Codex is working, with the tab layout below"></li>
+      <li><picture><source media="(max-width: 640px)" srcset="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="><img src="terminal.jpg" width="540" height="1212" alt="Claude Code's terminal asking for permission, with one-tap answers 1, 2 and 3 and a key bar"></picture></li>
+    </ul>
+  </div>
+
+  <section id="what">
+    <div class="wrap">
+      <h2>What it does</h2>
+      <ul class="features" role="list">
+        <li>Your Herdr spaces, tabs, agents and shells, with each agent's state: working, blocked, done or idle.</li>
+        <li>A notification when an agent finishes or asks for permission. Tap it to jump to that agent.</li>
+        <li>The real terminal, rendered by Herdr: reply with the keyboard or one-tap answers, send prompts and images, scroll back, split panes and create spaces.</li>
+        <li>Connects straight to your computer over SSH or a Cloudflare Tunnel. Nothing besides Herdr is installed on the server, and there is no wooloo account or server in between. <a href="privacy/">Privacy policy</a>.</li>
+        <li>Set up by scanning the Remote Access QR code in wooloo on your Mac, or add any machine running Herdr by hand.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="join">
+    <div class="wrap">
+      <h2>Join the test</h2>
+      <p class="intro">Before wooloo mobile can be public on Google Play, at least 12 people have to test it for 14 days. Help get it there:</p>
+      <p class="note">If the Play links say the app isn't available, give Google Play a little while to add you after joining the group, then try again.</p>
+      <ol class="steps" role="list">
+        <li><strong>Join the testers group</strong> with the Google account you use on your phone: open <a href="https://groups.google.com/g/wooloo-mobile-testers">wooloo-mobile-testers</a> and choose <strong>Join group</strong>. Members can't see each other's addresses.</li>
+        <li><strong>Become a tester</strong> with that same account at <a href="https://play.google.com/apps/testing/dev.wooloo.mobile">play.google.com/apps/testing/dev.wooloo.mobile</a>.</li>
+        <li><strong>Install it</strong> from <a href="https://play.google.com/store/apps/details?id=dev.wooloo.mobile">Google Play</a> on your phone. It can take a few minutes after you opt in to show up.</li>
+        <li><strong>Keep it installed for 14 days</strong> and open it now and then. Report problems or ideas on <a href="https://github.com/rarce/wooloo-android/issues">GitHub</a>.</li>
+      </ol>
+      <p class="note">No Herdr server at hand? Until you add a machine, the first screen offers <strong>Try the demo machine</strong>: it runs a simulated session with agents, terminals and alerts on the phone itself.</p>
+      <p class="note">Needs Android 8.0 or later and Google Play. To use it for real, you need Herdr 0.9 or later on a computer you can reach over SSH, such as a Mac running <a href="../">wooloo</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>wooloo is an independent project, not affiliated with or endorsed by Herdr, Anthropic or OpenAI.</span>
+    <span><a href="https://github.com/rarce/wooloo-android">GitHub</a> · <a href="privacy/">Privacy</a> · <a href="https://github.com/rarce/wooloo-android/blob/main/LICENSE">MIT License</a></span>
+    <span>This site uses Google Analytics to count visits. The app has no analytics.</span>
+  </div>
+</footer>
+</body>
+</html>
