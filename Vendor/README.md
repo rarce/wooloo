@@ -55,6 +55,7 @@ The local `Package.swift` files keep the runtime dependencies and omit test targ
 - MarkdownView: the built-in GitHub table draws its row backgrounds and grid in canvases from cell anchors, retaining native text cells and keeping each table’s geometry independent. Unstyled default tables skip cell geometry; custom table decorations retain their original preference path. `scripts/markdown-bench.sh` measures first render, resize, cached drawing and scrolling, and the view snapshots guard table layout, wrapping and row colors.
 - MarkdownView: the `AnyShapeStyle` identity comparison keeps both unsafe buffer borrows alive and compares their bytes directly; upstream returned expired buffers and compared hashes, which could treat different colors as equal and suppress style updates.
 - CodeEditSourceEditor accepts an optional `highlightingID` to replace custom highlight providers when switching between configuration syntax and Tree-sitter, while retaining the text view, selection and undo history.
+- CodeEditSourceEditor maps the JSON query's `string.special.key`, `constant.builtin`, and `escape` captures to attribute, keyword, and string colors, shared by the editor and diffs.
 - BeautifulMermaid: the AppKit paths in `ImageRenderer.swift` flip the bitmap context before drawing; upstream renders diagrams upside down on macOS.
 
 The local `Package.swift` files drop test targets, examples, and MarkdownView's default `LaTeX` trait, so SwiftMath and its ~7 MB of math fonts are not linked and `ENABLE_MATH_RENDERING` stays undefined.
