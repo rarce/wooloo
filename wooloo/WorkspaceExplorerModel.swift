@@ -130,6 +130,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     private(set) var lastOperation: Task<Void, Never>?
     private let treeCache = WorkspaceTreeCache()
     private var listingTask: Task<Void, Never>?
+    private var listingWorkerToken: UUID?
     private var listingRequest = 0
     private var locationGeneration = 0
     /// Injectable so concurrency and SSH polling can be checked without a live server.
@@ -173,17 +174,31 @@ final class WorkspaceExplorerModel: ObservableObject {
         // A superseded view task can enter after cancellation with its old (possibly nil) location.
         guard !Task.isCancelled else { return nil }
         let isReload = listing != nil && self.location?.identity == location?.identity
-        if self.location?.identity != location?.identity { locationGeneration += 1 }
+        if self.location?.identity != location?.identity {
+            locationGeneration += 1
+            // A filesystem call can remain blocked after cancellation. A new Space must not wait
+            // for it; BlockingWork still limits running reads, and generation checks reject its result.
+            listingTask?.cancel()
+            listingTask = nil
+            listingWorkerToken = nil
+        }
         self.location = location
         listingRequest += 1
         guard location != nil else { clearListing(); isLoading = false; return nil }
         isLoading = !quietly && !isReload
         error = nil
-        // Requests made during a load share its worker, which performs a follow-up load.
+        // Requests for the same location share its worker, which performs a follow-up load.
         if let listingTask { return listingTask }
+        let token = UUID()
+        listingWorkerToken = token
         let task = Task {
-            defer { listingTask = nil }
-            while let location = self.location {
+            defer {
+                if listingWorkerToken == token {
+                    listingTask = nil
+                    listingWorkerToken = nil
+                }
+            }
+            while !Task.isCancelled, let location = self.location {
                 let request = listingRequest
                 let generation = locationGeneration
                 await readAndPublishListing(at: location, generation: generation)

@@ -343,7 +343,82 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertEqual(model.listingVersion, version)
     }
 
-    func testConcurrentRefreshRequestsRunSeriallyAndKeepTheLatestSpace() async throws {
+    func testChangingSpaceDoesNotWaitForAPreviousLocationsBlockedRead() async throws {
+        let started = expectation(description: "Previous location is blocked in a filesystem read")
+        let published = expectation(description: "New location publishes before the previous read finishes")
+        let release = DispatchSemaphore(value: 0)
+        let previous = repo!
+        let next = sandbox.location("other")
+        model.readListing = { location in
+            if location.identity == previous.identity {
+                started.fulfill()
+                release.wait()
+            }
+            return WorkspaceFileListing(files: [location.workspaceID + ".txt"], changes: [], hasGit: false, totalFiles: 1)
+        }
+        let oldTask = model.loadListing(at: previous)
+        await fulfillment(of: [started], timeout: 3)
+        let observation = model.$listedIdentity.sink { identity in
+            if identity == next.identity { published.fulfill() }
+        }
+        defer { observation.cancel() }
+        let newTask = model.loadListing(at: next)
+        await fulfillment(of: [published], timeout: 3)
+        // Always release the old read, including when the expectation above fails on the baseline.
+        // Check publication before releasing it, so the test does not merely check final ordering.
+        XCTAssertEqual(model.listedIdentity, next.identity)
+        XCTAssertEqual(model.listing?.files, ["other.txt"])
+        XCTAssertFalse(model.isLoading)
+        release.signal()
+        await oldTask?.value
+        await newTask?.value
+        XCTAssertEqual(model.listedIdentity, next.identity)
+        XCTAssertEqual(model.listingVersion, 1, "A late previous-location result must not publish")
+    }
+
+    func testFinishingAnObsoleteReadKeepsTheNewLocationsWorkerAndCoalescesRefreshes() async throws {
+        let oldStarted = expectation(description: "Old read started")
+        let newStarted = expectation(description: "New read started")
+        let oldRelease = DispatchSemaphore(value: 0)
+        let newRelease = DispatchSemaphore(value: 0)
+        let previous = repo!
+        let next = sandbox.location("other")
+        let lock = NSLock()
+        var newReads = 0
+        model.readListing = { location in
+            if location.identity == previous.identity {
+                oldStarted.fulfill()
+                oldRelease.wait()
+            } else {
+                let first = lock.withLock { newReads += 1; return newReads == 1 }
+                if first {
+                    newStarted.fulfill()
+                    newRelease.wait()
+                }
+            }
+            return WorkspaceFileListing(files: [location.workspaceID + ".txt"], changes: [], hasGit: false, totalFiles: 1)
+        }
+        let oldTask = model.loadListing(at: previous)
+        await fulfillment(of: [oldStarted], timeout: 3)
+        let newTask = model.loadListing(at: next)
+        await fulfillment(of: [newStarted], timeout: 3)
+        // A broken implementation may still serialize both locations. Release both gates in that
+        // case so the regression reports its failed expectation instead of hanging during cleanup.
+        if lock.withLock({ newReads == 0 }) { newRelease.signal() }
+        oldRelease.signal()
+        await oldTask?.value
+        let refresh = model.loadListing(at: next)
+        XCTAssertEqual(refresh, newTask, "The old worker's cleanup must not discard the new worker")
+        newRelease.signal()
+        await newTask?.value
+        await refresh?.value
+        XCTAssertEqual(model.listedIdentity, next.identity)
+        XCTAssertEqual(model.listing?.files, ["other.txt"])
+        XCTAssertEqual(lock.withLock { newReads }, 2, "One current load and one coalesced follow-up")
+        XCTAssertEqual(model.listingVersion, 2, "The obsolete result must not publish")
+    }
+
+    func testRepeatedRequestsCoalesceForTheNewlySelectedSpace() async throws {
         let started = expectation(description: "First load started")
         let release = DispatchSemaphore(value: 0)
         let firstRepo = repo!
