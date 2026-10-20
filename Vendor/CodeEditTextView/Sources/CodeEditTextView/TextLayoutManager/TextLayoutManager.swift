@@ -392,27 +392,26 @@ public class TextLayoutManager: NSObject {
         // Measured only on a line laid out, as it is now; measuring would lay it out at the new width.
         if let keptTop, keptTop.offset <= (textStorage?.length ?? 0),
            textLineForOffset(keptTop.offset)?.data.lineFragments.isEmpty == false,
-           let row = rectForOffset(keptTop.offset), abs(row.minY + keptTop.dy - top) < 1 {
+           let row = verticalRectForOffset(keptTop.offset), abs(row.minY + keptTop.dy - top) < 1 {
             return keptTop
         }
         // Just inside the top: the row above can end there. A line without layout gives its start, as
         // `EditorSessionCoordinator.anchor(in:)` does.
-        guard let offset = textOffsetAtPoint(CGPoint(x: 0, y: top + 1))
-                ?? textLineForPosition(top + 1)?.range.location,
-              let row = rectForOffset(offset) else {
-            return nil
-        }
+        guard let position = textLineForPosition(top + 1) else { return nil }
+        let fragment = position.data.lineFragments.getLine(atPosition: top + 1 - position.yPos)
+        let offset = position.range.location + (fragment?.range.location ?? 0)
+        guard let row = verticalRectForOffset(offset) else { return nil }
         return TopAnchor(offset: offset, dy: top - row.minY)
     }
 
     /// Scrolls `anchor` back to the top of the view, again while laying out the lines that come into view moves
     /// it, at most 20 times. Returns false when it could not find the anchor, without scrolling.
     private func keepTop(_ anchor: TopAnchor) -> Bool {
-        guard anchor.offset <= (textStorage?.length ?? 0), viewTop != nil, rectForOffset(anchor.offset) != nil else {
+        guard anchor.offset <= (textStorage?.length ?? 0), viewTop != nil, verticalRectForOffset(anchor.offset) != nil else {
             return false
         }
         for _ in 0..<20 {
-            guard let top = viewTop, let row = rectForOffset(anchor.offset) else { break }
+            guard let top = viewTop, let row = verticalRectForOffset(anchor.offset) else { break }
             let target = row.minY + anchor.dy
             guard abs(target - top) > 0.5 else { break }
             delegate?.layoutManagerYAdjustment(target - top)
