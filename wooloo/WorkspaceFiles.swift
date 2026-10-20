@@ -1014,9 +1014,12 @@ enum WorkspaceFiles {
         return data
     }
 
+    /// Stage the complete replacement before the final path/version check. This rejects edits
+    /// made during preparation (including a slow SSH upload). The final check and rename are
+    /// still separate operations: writers that do not coordinate with us can race that interval.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func save(_ text: String, path: String, expectedVersion: String,
-                     at location: WorkspaceFileLocation) throws -> String {
+                     at location: WorkspaceFileLocation, afterPreparingLocalReplacement: (() throws -> Void)? = nil) throws -> String {
         let data = Data(text.utf8)
         guard data.count <= fileByteLimit(for: path) else { throw WorkspaceFileError.message("File is too large") }
         if let machine = location.machine {
@@ -1028,7 +1031,13 @@ enum WorkspaceFiles {
                 + "[ \"$current\" = \(quote(expectedVersion)) ] || { echo 'File changed on disk; reload before saving' >&2; exit 77; }; "
                 + "temp=$(mktemp \"$file.wooloo.XXXXXXXX\") || exit 78; "
                 + "trap 'rm -f \"$temp\"' EXIT HUP INT TERM; "
-                + "cp -p \"$file\" \"$temp\" && cat > \"$temp\" && mv -f \"$temp\" \"$file\""
+                + "cp -p \"$file\" \"$temp\" && cat > \"$temp\" || exit 78; "
+                + "destination=$file; "
+                + (try remoteFilePrelude(path, at: location))
+                + "[ \"$file\" = \"$destination\" ] || { echo 'File changed on disk; reload before saving' >&2; exit 77; }; "
+                + "current=$(cd / && GIT_DEFAULT_HASH=sha1 git hash-object --no-filters \"$file\") || exit 76; "
+                + "[ \"$current\" = \(quote(expectedVersion)) ] || { echo 'File changed on disk; reload before saving' >&2; exit 77; }; "
+                + "mv -f \"$temp\" \"$file\""
             _ = try ssh(machine, script, input: data, limit: 1_000)
         } else {
             let url = try localFileURL(path, root: location.root)
@@ -1047,6 +1056,12 @@ enum WorkspaceFiles {
                                                         NSUnderlyingErrorKey: error])
             }
             try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: temp.path)
+            // A per-call seam lets tests reproduce external edits without sleeps or global hooks.
+            try afterPreparingLocalReplacement?()
+            guard try localFileURL(path, root: location.root) == url,
+                  gitBlobHash(try Data(contentsOf: url)) == expectedVersion else {
+                throw WorkspaceFileError.message("File changed on disk; reload before saving")
+            }
             guard rename(temp.path, url.path) == 0 else {
                 throw WorkspaceFileError.message("Could not replace file: \(String(cString: strerror(errno)))")
             }

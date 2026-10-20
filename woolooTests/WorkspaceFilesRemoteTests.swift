@@ -98,6 +98,32 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    func testRemoteSaveRejectsChangesDuringUpload() throws {
+        try sandbox.repository("repo", files: ["a.txt": "one\n", "b.txt": "one\n"])
+        let location = remote("repo")
+        let version = try WorkspaceFiles.read("a.txt", at: location).version
+        // Only stdin-only cat is the upload. Mutate after it finishes, before the final check.
+        try sandbox.write(["shims/cat": """
+            #!/bin/sh
+            /bin/cat "$@" || exit $?
+            if [ "$#" -eq 0 ]; then /bin/sh '\(sandbox.path("edit.sh"))'; fi
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/cat")
+        for edit in ["printf 'external\\n' > a.txt", "printf 'external\\n' > replacement && mv replacement a.txt", "rm a.txt",
+                     "rm a.txt && ln -s b.txt a.txt"] {
+            try sandbox.sh("rm -f a.txt", in: "repo")
+            try sandbox.write(["a.txt": "one\n"], in: "repo")
+            try sandbox.write(["edit.sh": "cd '\(sandbox.path("repo"))' && \(edit)"], in: ".")
+            XCTAssertThrowsError(try WorkspaceFiles.save("mine\n", path: "a.txt", expectedVersion: version, at: location))
+            if FileManager.default.fileExists(atPath: sandbox.path("repo/a.txt")) {
+                XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), edit.contains("ln -s") ? "one\n" : "external\n")
+            }
+            XCTAssertEqual(try sandbox.read("b.txt", in: "repo"), "one\n")
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("repo"))
+                .contains { $0.contains(".wooloo.") })
+        }
+    }
+
     /// Open documents learn what is on disk with one SSH command, in the version they keep;
     /// a file outside the Space counts as gone, and one without a readable version is left out.
     func testRemoteDiskVersionsMatchTheLocalOnes() throws {

@@ -295,6 +295,48 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.save(tooLarge, path: "a.txt", expectedVersion: current, at: repo))
     }
 
+    func testSaveRejectsChangesWhilePreparingReplacement() throws {
+        let repo = try sandbox.repository("repo")
+        let version = try WorkspaceFiles.read("a.txt", at: repo).version
+        for edit in ["printf 'external\\n' > a.txt", "printf 'external\\n' > replacement && mv replacement a.txt", "rm a.txt"] {
+            try sandbox.write(["a.txt": "one\n"], in: "repo")
+            XCTAssertThrowsError(try WorkspaceFiles.save("mine\n", path: "a.txt", expectedVersion: version,
+                                                       at: repo, afterPreparingLocalReplacement: {
+                _ = try self.sandbox.sh(edit, in: "repo")
+            }))
+            if FileManager.default.fileExists(atPath: sandbox.path("repo/a.txt")) {
+                XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "external\n")
+            }
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("repo"))
+                .contains { $0.hasPrefix(".wooloo-") })
+        }
+    }
+
+    func testSaveAcceptsReplacementWithIdenticalContents() throws {
+        let repo = try sandbox.repository("repo")
+        let version = try WorkspaceFiles.read("a.txt", at: repo).version
+        let saved = try WorkspaceFiles.save("mine\n", path: "a.txt", expectedVersion: version,
+                                            at: repo, afterPreparingLocalReplacement: {
+            _ = try self.sandbox.sh("cp a.txt replacement && mv replacement a.txt", in: "repo")
+        })
+        XCTAssertEqual(saved, WorkspaceFiles.gitBlobHash(Data("mine\n".utf8)))
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "mine\n")
+    }
+
+    func testSaveRejectsSymlinkRetargetWhilePreparingReplacement() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "one\n", "b.txt": "one\n"])
+        try sandbox.sh("ln -s a.txt link.txt", in: "repo")
+        let version = try WorkspaceFiles.read("link.txt", at: repo).version
+        XCTAssertThrowsError(try WorkspaceFiles.save("mine\n", path: "link.txt", expectedVersion: version,
+                                                   at: repo, afterPreparingLocalReplacement: {
+            _ = try self.sandbox.sh("rm link.txt && ln -s b.txt link.txt", in: "repo")
+        }))
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\n")
+        XCTAssertEqual(try sandbox.read("b.txt", in: "repo"), "one\n")
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("repo"))
+            .contains { $0.hasPrefix(".wooloo-") })
+    }
+
     func testSaveIntoAReadOnlyFolderNamesTheFile() throws {
         let repo = try sandbox.repository("repo")
         let file = try WorkspaceFiles.read("a.txt", at: repo)
