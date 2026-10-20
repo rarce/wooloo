@@ -200,9 +200,10 @@ enum RemoteAccessSSHProbe {
 
 /// The named tunnel's token in this Mac's Keychain. It is a credential for the tunnel, so it is
 /// neither stored in defaults nor passed on the command line.
-struct RemoteAccessTokenStore {
-    var load: () -> String?
-    var save: (String?) -> Void
+struct RemoteAccessTokenStore: Sendable {
+    // Token access belongs to the model's actor, including injected in-memory stores.
+    let load: @MainActor @Sendable () -> String?
+    let save: @MainActor @Sendable (String?) -> Void
 
     static let keychain = RemoteAccessTokenStore(load: {
         var result: CFTypeRef?
@@ -337,7 +338,7 @@ final class RemoteAccessModel: ObservableObject {
 
     init(defaults: UserDefaults = .standard, tokens: RemoteAccessTokenStore = .keychain,
          executable: @escaping () -> String? = RemoteAccessSystem.cloudflared,
-         isPublished: @escaping @Sendable (String) -> Bool = RemoteAccessSystem.isPublished,
+         isPublished: @escaping @Sendable (String) -> Bool = { RemoteAccessSystem.isPublished($0) },
          checkSSHSignIn: @escaping @Sendable () -> RemoteAccessSSHCheck = { RemoteAccessSSHProbe.check() }) {
         self.defaults = defaults
         self.tokens = tokens
@@ -499,7 +500,7 @@ final class RemoteAccessModel: ObservableObject {
                 complete = lines.append(data)
                 guard !complete.isEmpty else { return }
             }
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, self.generation == generation else { return }
                     complete.forEach(self.handle)
@@ -512,7 +513,7 @@ final class RemoteAccessModel: ObservableObject {
         }
         process.terminationHandler = { [weak self] process in
             let status = process.terminationStatus
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, self.generation == generation else { return }
                     self.exitStatus = status
@@ -521,7 +522,7 @@ final class RemoteAccessModel: ObservableObject {
             }
             // A child that inherited the pipe can keep it open: give up on the rest a second
             // after the exit.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, self.generation == generation, !self.outputEnded else { return }
                     self.output?.readabilityHandler = nil

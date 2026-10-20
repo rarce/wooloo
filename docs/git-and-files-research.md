@@ -104,7 +104,8 @@ The app remains in Swift 5 language mode. CI's existing test build sets
 `SWIFT_STRICT_CONCURRENCY=complete` and saves the complete output to the
 `wooloo-concurrency-log` artifact. `scripts/concurrency_audit.py` summarizes distinct
 repository diagnostics and rejects every warning or error in the explicitly migrated
-files: `wooloo/BlockingWork.swift` and `wooloo/RemoteAccessLineBuffer.swift`. Other files' warnings remain visible in
+files: `wooloo/BlockingWork.swift`, `wooloo/RemoteAccessLineBuffer.swift`, and
+`wooloo/RemoteAccess.swift`. Other files' warnings remain visible in
 the log and summary; the gate does not certify them as concurrency-safe. Ordinary
 local builds keep their existing settings so that unfinished migration warnings do
 not obscure daily development.
@@ -131,6 +132,15 @@ Its EOF transition is terminal: an append concurrent with `finish()` either cont
 before EOF or returns no lines after it. Exactly one `finish()` returns the remaining
 tail (or an empty array); later calls return nil. UTF-8 bytes stay buffered across read
 boundaries until a newline or EOF, preserving empty lines and literal carriage returns.
-Dedicated tests cover these rules and concurrent appends/EOF. This migration certifies
-the buffer's state synchronization, not the ordering of the surrounding process callbacks
-or their dispatch to the main queue; `RemoteAccess.swift` remains outside the migrated gate.
+Dedicated tests cover these rules and concurrent appends/EOF.
+
+`RemoteAccess.swift` is also checked in complete mode. Its token store is `Sendable`
+with main-actor-isolated closures, matching every existing credential access; tokens
+still stay in Keychain and the child process's environment. Process callbacks capture
+the model weakly at each dispatch boundary and continue delivering output and exit
+notifications through the main queue, with generation checks rejecting obsolete
+processes. The DNS-check default is a contextually `@Sendable` closure. Tests cover
+output before exit, trailing output without a newline, inherited pipes, token handling,
+and stopping during the SSH check. These compiler checks
+do not prove all callback schedules safe; the existing ordering and generation rules
+remain necessary.
