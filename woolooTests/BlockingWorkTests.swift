@@ -312,6 +312,129 @@ final class BlockingWorkTests: XCTestCase {
         XCTAssertLessThan(BlockingWork.machineLimit, 10, "Below sshd's default MaxSessions")
     }
 
+    func testLimiterAdmitsQueuedWaitersInArrivalOrder() {
+        let limiter = BlockingWorkLimit(0)
+        let order = Locked<[Int]>([])
+        let finished = DispatchGroup()
+        var tasks: [Task<Void, Never>] = []
+        defer { tasks.forEach { $0.cancel() } }
+        for index in 0..<3 {
+            finished.enter()
+            tasks.append(Task.detached {
+                defer { finished.leave() }
+                do {
+                    try await limiter.acquire()
+                    order.withLock { $0.append(index) }
+                    limiter.release()
+                } catch {}
+            })
+            guard waitUntil(10, { limiter.waiting == index + 1 }) else {
+                return XCTFail("Waiter did not enter the queue")
+            }
+        }
+        limiter.release()
+        XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+        XCTAssertEqual(order.value, [0, 1, 2])
+        assertOneAvailableSlot(limiter)
+    }
+
+    func testLimiterCancellationBeforeReleasePreservesCapacity() {
+        let limiter = BlockingWorkLimit(0)
+        let finished = DispatchSemaphore(value: 0)
+        let acquired = Locked(false)
+        let task = Task.detached {
+            defer { finished.signal() }
+            do {
+                try await limiter.acquire()
+                acquired.value = true
+                limiter.release()
+            } catch {}
+        }
+        defer { task.cancel() }
+        guard waitUntil(10, { limiter.waiting == 1 }) else { return XCTFail("Waiter did not queue") }
+        task.cancel()
+        XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+        XCTAssertFalse(acquired.value)
+        XCTAssertEqual(limiter.waiting, 0)
+        limiter.release()
+        assertOneAvailableSlot(limiter)
+    }
+
+    func testLimiterReleaseBeforeCancellationPreservesCapacity() {
+        let limiter = BlockingWorkLimit(0)
+        let finished = DispatchSemaphore(value: 0)
+        let acquired = Locked(false)
+        let task = Task.detached {
+            defer { finished.signal() }
+            do {
+                try await limiter.acquire()
+                acquired.value = true
+                limiter.release()
+            } catch {}
+        }
+        defer { task.cancel() }
+        guard waitUntil(10, { limiter.waiting == 1 }) else { return XCTFail("Waiter did not queue") }
+        limiter.release()
+        XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+        task.cancel()
+        XCTAssertTrue(acquired.value)
+        XCTAssertEqual(limiter.waiting, 0)
+        assertOneAvailableSlot(limiter)
+    }
+
+    func testLimiterConcurrentCancellationAndReleasePreserveCapacity() {
+        for _ in 0..<40 {
+            let limiter = BlockingWorkLimit(0)
+            let finished = DispatchSemaphore(value: 0)
+            let task = Task.detached {
+                defer { finished.signal() }
+                do {
+                    try await limiter.acquire()
+                    limiter.release()
+                } catch {}
+            }
+            defer { task.cancel() }
+            guard waitUntil(10, { limiter.waiting == 1 }) else { return XCTFail("Waiter did not queue") }
+            // Race both operations. Either may win; neither may lose or duplicate a slot.
+            DispatchQueue.concurrentPerform(iterations: 2) { index in
+                if index == 0 { task.cancel() } else { limiter.release() }
+            }
+            guard finished.wait(timeout: .now() + 10) == .success else {
+                return XCTFail("Cancellation/release left a waiter suspended")
+            }
+            XCTAssertEqual(limiter.waiting, 0)
+            assertOneAvailableSlot(limiter)
+        }
+    }
+
+    /// Acquire without releasing, then prove the next acquisition waits until that slot returns.
+    private func assertOneAvailableSlot(_ limiter: BlockingWorkLimit, file: StaticString = #filePath, line: UInt = #line) {
+        let firstFinished = DispatchSemaphore(value: 0)
+        let firstAcquired = Locked(false)
+        let first = Task.detached {
+            defer { firstFinished.signal() }
+            do { try await limiter.acquire(); firstAcquired.value = true } catch {}
+        }
+        defer { first.cancel() }
+        guard firstFinished.wait(timeout: .now() + 10) == .success, firstAcquired.value else {
+            return XCTFail("The limiter lost its available slot", file: file, line: line)
+        }
+        let secondFinished = DispatchSemaphore(value: 0)
+        let secondAcquired = Locked(false)
+        let second = Task.detached {
+            defer { secondFinished.signal() }
+            do { try await limiter.acquire(); secondAcquired.value = true } catch {}
+        }
+        defer { second.cancel() }
+        XCTAssertTrue(waitUntil(10) { limiter.waiting == 1 || secondAcquired.value }, file: file, line: line)
+        XCTAssertFalse(secondAcquired.value, "The limiter duplicated a slot", file: file, line: line)
+        XCTAssertEqual(limiter.waiting, 1, file: file, line: line)
+        limiter.release()
+        XCTAssertEqual(secondFinished.wait(timeout: .now() + 10), .success, file: file, line: line)
+        XCTAssertTrue(secondAcquired.value, file: file, line: line)
+        limiter.release()
+    }
+
     private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {

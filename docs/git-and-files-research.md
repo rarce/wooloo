@@ -97,3 +97,31 @@ Git-backed listings stay beside repository refreshes because the explorer, Git b
 panel share one SSH batch and its cache. File-version caches, refresh caches, and transport state
 remain private to their implementation files. Only helpers used across those boundaries have
 module visibility; callers continue to use the existing `WorkspaceFiles` methods.
+
+## Gradual concurrency checking
+
+The app remains in Swift 5 language mode. CI's existing test build sets
+`SWIFT_STRICT_CONCURRENCY=complete` and saves the complete output to the
+`wooloo-concurrency-log` artifact. `scripts/concurrency_audit.py` summarizes distinct
+repository diagnostics and rejects every warning or error in the explicitly migrated
+files, initially `wooloo/BlockingWork.swift`. Other files' warnings remain visible in
+the log and summary; the gate does not certify them as concurrency-safe. Ordinary
+local builds keep their existing settings so that unfinished migration warnings do
+not obscure daily development.
+
+The audit requires the complete-mode build-setting confirmation, a successful test
+completion marker, and a compile record for each migrated file. CI caches package
+sources only, not app build products. When running this audit locally, use a fresh
+DerivedData directory (or clean app build products) so an incremental no-op build
+cannot masquerade as a checked migration. A missing or truncated log fails the audit.
+The test step retains `pipefail`, so logging cannot turn an xcodebuild failure into
+success. Add paths to `MIGRATED` only after their complete-mode diagnostics are fixed.
+
+`BlockingWork` now owns its machine registry and limiter state in typed
+`OSAllocatedUnfairLock` values. The limiter uses checked `Sendable`; count, waiter
+continuations, and IDs are only accessed through its lock. Admission and cancellation
+select the continuation under the lock and resume it after unlocking. Tests cover
+FIFO, both ordered cancellation/release outcomes, concurrent cancellation/release,
+and conservation of exactly one available slot after those transitions. This does
+not change the established behavior that cancellation does not interrupt work that
+already started.

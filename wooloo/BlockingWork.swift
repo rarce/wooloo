@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Runs blocking work, such as processes, SSH commands, Herdr socket requests and file reads, on
 /// a thread of its own. Swift's cooperative pool has only a thread per core, shared by every async
@@ -45,16 +46,15 @@ enum BlockingWork {
     /// This Mac's slots.
     static let slots = BlockingWorkLimit(limit)
 
-    private static let machineSlotsLock = NSLock()
-    private static var machineSlots: [String: BlockingWorkLimit] = [:]
+    private static let machineSlots = OSAllocatedUnfairLock<[String: BlockingWorkLimit]>(initialState: [:])
 
     /// The slots of `machine`, made on first use.
     static func slots(for machine: BlockingWorkMachine) -> BlockingWorkLimit {
         guard case .ssh(let target) = machine else { return slots }
-        return machineSlotsLock.withLock {
-            if let existing = machineSlots[target] { return existing }
+        return machineSlots.withLock { slots in
+            if let existing = slots[target] { return existing }
             let created = BlockingWorkLimit(machineLimit)
-            machineSlots[target] = created
+            slots[target] = created
             return created
         }
     }
@@ -221,62 +221,62 @@ extension Optional: BlockingWorkCancellable {
 /// A counting semaphore for async callers. Waiting suspends the task instead of blocking a
 /// thread, and a cancelled task stops waiting with `CancellationError`. Waiters get slots in the
 /// order they arrived.
-final class BlockingWorkLimit: @unchecked Sendable {
-    private let lock = NSLock()
-    private var available: Int
-    private var waiters: [(id: UInt64, continuation: CheckedContinuation<Void, Error>)] = []
-    private var nextID: UInt64 = 0
+final class BlockingWorkLimit: Sendable {
+    private struct State: Sendable {
+        var available: Int
+        var waiters: [(id: UInt64, continuation: CheckedContinuation<Void, Error>)] = []
+        var nextID: UInt64 = 0
+    }
+
+    private let state: OSAllocatedUnfairLock<State>
 
     init(_ count: Int) {
-        available = count
+        state = OSAllocatedUnfairLock(initialState: State(available: count))
     }
 
     /// Tasks waiting for a slot.
-    var waiting: Int { lock.withLock { waiters.count } }
+    var waiting: Int { state.withLock { $0.waiters.count } }
 
     func acquire() async throws {
-        let id = lock.withLock { () -> UInt64 in
-            nextID += 1
-            return nextID
+        let id = state.withLock { state -> UInt64 in
+            state.nextID += 1
+            return state.nextID
         }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                lock.lock()
-                // Checked under the lock: a cancellation that came before the waiter was added
-                // found nothing to remove.
-                if Task.isCancelled {
-                    lock.unlock()
-                    continuation.resume(throwing: CancellationError())
-                } else if available > 0 {
-                    available -= 1
-                    lock.unlock()
-                    continuation.resume()
-                } else {
-                    waiters.append((id, continuation))
-                    lock.unlock()
+                let immediate: Result<Void, Error>? = state.withLock { state in
+                    // Checked under the lock: a cancellation that came before the waiter was added
+                    // found nothing to remove.
+                    if Task.isCancelled {
+                        return .failure(CancellationError())
+                    } else if state.available > 0 {
+                        state.available -= 1
+                        return .success(())
+                    } else {
+                        state.waiters.append((id, continuation))
+                        return nil
+                    }
                 }
+                // Continuations resume outside the lock, including immediate admission.
+                if let immediate { continuation.resume(with: immediate) }
             }
         } onCancel: {
-            lock.lock()
-            guard let index = waiters.firstIndex(where: { $0.id == id }) else {
-                lock.unlock()
-                return
+            let continuation = state.withLock { state -> CheckedContinuation<Void, Error>? in
+                guard let index = state.waiters.firstIndex(where: { $0.id == id }) else { return nil }
+                return state.waiters.remove(at: index).continuation
             }
-            let continuation = waiters.remove(at: index).continuation
-            lock.unlock()
-            continuation.resume(throwing: CancellationError())
+            continuation?.resume(throwing: CancellationError())
         }
     }
 
     func release() {
-        lock.lock()
-        if waiters.isEmpty {
-            available += 1
-            lock.unlock()
-        } else {
-            let continuation = waiters.removeFirst().continuation
-            lock.unlock()
-            continuation.resume()
+        let continuation = state.withLock { state -> CheckedContinuation<Void, Error>? in
+            if state.waiters.isEmpty {
+                state.available += 1
+                return nil
+            }
+            return state.waiters.removeFirst().continuation
         }
+        continuation?.resume()
     }
 }
