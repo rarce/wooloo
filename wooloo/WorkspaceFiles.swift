@@ -335,6 +335,15 @@ enum WorkspaceFileError: LocalizedError {
     }
 }
 
+/// A path a terminal printed, found on disk by `WorkspaceFiles.terminalPath`.
+struct WorkspaceTerminalPath: Equatable, Sendable {
+    /// Absolute, with symbolic links resolved.
+    let path: String
+    let isDirectory: Bool
+    /// Relative to the Space's root, when it is inside it.
+    let pathInRoot: String?
+}
+
 /// A file's state on disk, as `WorkspaceFiles.diskVersions` finds it.
 enum WorkspaceDiskVersion: Equatable, Sendable {
     /// Its Git blob hash, the version documents keep.
@@ -374,6 +383,53 @@ enum WorkspaceFiles {
         guard let root, root.hasPrefix("/") else { return nil }
         return WorkspaceFileLocation(machine: machine, session: session,
                                      workspaceID: workspaceID, workspaceLabel: workspace.label, root: root)
+    }
+
+    /// What a path printed in a terminal names on the machine running it: its real path, whether
+    /// it is a folder, and its path inside `root` when it is there; nil when nothing is there.
+    /// A relative path starts from `cwd`, and `~` is the home folder, as the shell reads them.
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func terminalPath(_ path: String, cwd: String?, root: String?,
+                             machine: HerdrMachineProfile?) throws -> WorkspaceTerminalPath? {
+        guard !path.isEmpty, !path.contains("\0"), !path.contains("\n") else { return nil }
+        let isHome = path == "~" || path.hasPrefix("~/")
+        guard isHome || path.hasPrefix("/") || cwd?.hasPrefix("/") == true else { return nil }
+        let real: String
+        let isDirectory: Bool
+        let realRoot: String?
+        if let machine {
+            let target = path == "~" ? "\"$HOME\""
+                : isHome ? "\"$HOME\"/" + quote(String(path.dropFirst(2)))
+                : quote(path.hasPrefix("/") ? path : cwd! + "/" + path)
+            let rootLine = root.map { "realpath \(quote($0)) 2>/dev/null" } ?? "true"
+            let script = "p=\(target); [ -e \"$p\" ] || exit 0; r=$(realpath \"$p\") || exit 0; "
+                + "if [ -d \"$r\" ]; then echo d; else echo f; fi; printf '%s\\n' \"$r\"; \(rootLine)"
+            let lines = String(decoding: try ssh(machine, script, limit: 16_384, timeout: 5, label: "link"), as: UTF8.self)
+                .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            guard lines.count >= 2, ["d", "f"].contains(lines[0]), lines[1].hasPrefix("/") else { return nil }
+            isDirectory = lines[0] == "d"
+            real = lines[1]
+            realRoot = lines.count > 2 && lines[2].hasPrefix("/") ? lines[2] : nil
+        } else {
+            let expanded = isHome ? NSHomeDirectory() + path.dropFirst()
+                : path.hasPrefix("/") ? path : (cwd! as NSString).appendingPathComponent(path)
+            // realpath(3), as over SSH: Foundation's resolution turns /private/tmp into /tmp.
+            func resolved(_ path: String) -> String? {
+                guard let pointer = Darwin.realpath(path, nil) else { return nil }
+                defer { free(pointer) }
+                return String(cString: pointer)
+            }
+            var directory: ObjCBool = false
+            guard let found = resolved(expanded),
+                  FileManager.default.fileExists(atPath: found, isDirectory: &directory) else { return nil }
+            real = found
+            isDirectory = directory.boolValue
+            realRoot = root.flatMap(resolved)
+        }
+        let inside = realRoot.flatMap { root in
+            real.hasPrefix(root == "/" ? "/" : root + "/") ? String(real.dropFirst(root == "/" ? 1 : root.count + 1)) : nil
+        }
+        return WorkspaceTerminalPath(path: real, isDirectory: isDirectory, pathInRoot: inside)
     }
 
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")

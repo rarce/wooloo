@@ -371,17 +371,83 @@ final class TerminalLinkTests: XCTestCase {
         var model = model([first, second], width: 10)
         model.hyperlinks = ["https://a.example", "https://b.example/path"]
         let link = try XCTUnwrap(TerminalLinks.link(atColumn: 1, row: 1, in: model.surface))
-        XCTAssertEqual(link.url.absoluteString, "https://b.example/path")
+        XCTAssertEqual(link.url?.absoluteString, "https://b.example/path")
         XCTAssertEqual(link.spans, [.init(row: 0, columns: 3..<10), .init(row: 1, columns: 0..<4)])
         XCTAssertNil(TerminalLinks.link(atColumn: 1, row: 0, in: model.surface))
     }
 
-    func testOnlyWebHyperlinksOpen() {
+    /// A `file:` hyperlink only names a path for the editor or Finder; nothing else opens.
+    func testFileHyperlinksNamePathsAndOtherSchemesNothing() throws {
         var row = RowBuilder(width: 20)
         row.put("run me", hyperlink: 0)
+        row.put(" ")
+        row.put("ssh", hyperlink: 1)
         var model = model([row], width: 20)
-        model.hyperlinks = ["file:///Applications/Calculator.app"]
-        XCTAssertNil(TerminalLinks.link(atColumn: 2, row: 0, in: model.surface))
+        model.hyperlinks = ["file:///Applications/Calculator.app", "ssh://host/x"]
+        let link = try XCTUnwrap(TerminalLinks.link(atColumn: 2, row: 0, in: model.surface))
+        XCTAssertNil(link.url)
+        XCTAssertEqual(link.file, TerminalFileReference(path: "/Applications/Calculator.app"))
+        XCTAssertNil(TerminalLinks.link(atColumn: 8, row: 0, in: model.surface))
+    }
+
+    func testPlainPathsAreFoundWithTheirLineAndColumn() throws {
+        func file(_ text: String, at column: Int) -> TerminalFileReference? {
+            var row = RowBuilder(width: 60)
+            row.put(text)
+            return TerminalLinks.link(atColumn: column, row: 0, in: model([row], width: 60).surface)?.file
+        }
+        XCTAssertEqual(file("error: src/app/main.swift:12:5: missing", at: 10),
+                       TerminalFileReference(path: "src/app/main.swift", line: 12, column: 5))
+        XCTAssertEqual(file("lib/a.ts(7,3): error TS2322", at: 2), TerminalFileReference(path: "lib/a.ts", line: 7, column: 3))
+        XCTAssertEqual(file("  File \"/tmp/my app/x.py\", line 4, in run", at: 9),
+                       TerminalFileReference(path: "/tmp/my app/x.py", line: 4))
+        XCTAssertEqual(file("see ~/notes/todo.md.", at: 8), TerminalFileReference(path: "~/notes/todo.md"))
+        XCTAssertEqual(file("open ../README.md now", at: 7), TerminalFileReference(path: "../README.md"))
+        XCTAssertEqual(file("Package.swift", at: 0), TerminalFileReference(path: "Package.swift"))
+        XCTAssertNil(file("Building version 1.2.3 now", at: 18), "Versions are not paths")
+        XCTAssertNil(file("plain words only", at: 2))
+        XCTAssertNil(file("see https://example.com/a/b.txt", at: 20)?.path.contains("example"),
+                     "A URL is not read as a path")
+    }
+
+    /// Paths under the pointer are checked one at a time, newest first, and answers are kept.
+    @MainActor
+    func testFileLinkChecksRunOneAtATimeAndAreKept() async {
+        let links = TerminalFileLinks()
+        let checked = Checked()
+        links.check = { file, _ in
+            await checked.append(file.path)
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            return file.path != "missing.txt"
+        }
+        var answered = 0
+        XCTAssertNil(links.exists(TerminalFileReference(path: "a.txt"), paneID: "p") { answered += 1 })
+        XCTAssertNil(links.exists(TerminalFileReference(path: "b.txt"), paneID: "p") { answered += 1 })
+        XCTAssertNil(links.exists(TerminalFileReference(path: "missing.txt"), paneID: "p") { answered += 1 })
+        for _ in 0..<200 where answered < 2 { try? await Task.sleep(nanoseconds: 5_000_000) }
+        let paths = await checked.paths
+        XCTAssertEqual(paths, ["a.txt", "missing.txt"], "Only the newest waiting path follows the running one")
+        XCTAssertEqual(links.known(TerminalFileReference(path: "a.txt"), paneID: "p"), true)
+        XCTAssertEqual(links.known(TerminalFileReference(path: "missing.txt"), paneID: "p"), false)
+        XCTAssertNil(links.known(TerminalFileReference(path: "b.txt"), paneID: "p"))
+        XCTAssertEqual(links.exists(TerminalFileReference(path: "a.txt"), paneID: "p") {}, true)
+    }
+
+    private actor Checked {
+        var paths: [String] = []
+        func append(_ path: String) { paths.append(path) }
+    }
+
+    func testWrappedPathsAreFoundWhole() throws {
+        var first = RowBuilder(width: 14)
+        first.put("at Sources/woo")
+        var second = RowBuilder(width: 14)
+        second.put("loo.swift:9 ok")
+        let surface = model([first, second], width: 14).surface
+        let link = try XCTUnwrap(TerminalLinks.link(atColumn: 1, row: 1, in: surface))
+        XCTAssertEqual(link.file, TerminalFileReference(path: "Sources/wooloo.swift", line: 9))
+        XCTAssertEqual(link.paneID, "w1:p1")
+        XCTAssertEqual(link.spans, [.init(row: 0, columns: 3..<14), .init(row: 1, columns: 0..<11)])
     }
 
     func testPlainURLsAreFoundWithoutTrailingPunctuation() throws {
@@ -389,7 +455,7 @@ final class TerminalLinkTests: XCTestCase {
         row.put("Read (https://en.wikipedia.org/wiki/Foo_(bar)), then.")
         let surface = model([row], width: 60).surface
         let link = try XCTUnwrap(TerminalLinks.link(atColumn: 10, row: 0, in: surface))
-        XCTAssertEqual(link.url.absoluteString, "https://en.wikipedia.org/wiki/Foo_(bar)")
+        XCTAssertEqual(link.url?.absoluteString, "https://en.wikipedia.org/wiki/Foo_(bar)")
         XCTAssertEqual(link.spans, [.init(row: 0, columns: 6..<45)])
         XCTAssertNil(TerminalLinks.link(atColumn: 2, row: 0, in: surface))
         XCTAssertNil(TerminalLinks.link(atColumn: 46, row: 0, in: surface))
@@ -402,7 +468,7 @@ final class TerminalLinkTests: XCTestCase {
         second.put("ample.com/a b")
         let surface = model([first, second], width: 12).surface
         let link = try XCTUnwrap(TerminalLinks.link(atColumn: 3, row: 1, in: surface))
-        XCTAssertEqual(link.url.absoluteString, "https://example.com/a")
+        XCTAssertEqual(link.url?.absoluteString, "https://example.com/a")
         XCTAssertEqual(link.spans, [.init(row: 0, columns: 2..<12), .init(row: 1, columns: 0..<11)])
     }
 }

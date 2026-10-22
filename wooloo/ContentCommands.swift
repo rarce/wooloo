@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 /// What the Rename alert renames.
 enum HerdrRenameTarget: Equatable {
@@ -104,6 +104,7 @@ struct ContentCommandEffects {
     var toggleLineWrapping: () -> Void = { EditorLineWrapping.toggle() }
     var copy: (String) -> Void = { AppActions.copy($0) }
     var reveal: (String) -> Void = { AppActions.reveal($0) }
+    var beep: () -> Void = { NSSound.beep() }
     var canCheckForUpdates: @MainActor () -> Bool = { AppUpdater.shared.canCheckForUpdates }
     var checkForUpdates: @MainActor () -> Void = { AppUpdater.shared.checkForUpdates() }
 }
@@ -255,6 +256,39 @@ struct ContentCommands {
         case .copyPaneDirectory, .revealPaneDirectory:
             guard let cwd = herdr.selectedPanes.first(where: { $0.paneID == herdr.selectedPaneID })?.cwd else { return }
             if command == .copyPaneDirectory { effects.copy(cwd) } else { effects.reveal(cwd) }
+        }
+    }
+
+    /// Opens a path Command-clicked in a terminal pane, found from the pane's directory now: a
+    /// file in the editor at its line, as part of the Space inside its root, else on its own
+    /// with its folder as root, editable too; a folder on this Mac in Finder.
+    @discardableResult
+    func openTerminalFile(_ file: TerminalFileReference, paneID: String) -> Task<Void, Never> {
+        let machine = herdr.machine
+        let session = herdr.sessionName
+        let space = explorerLocation
+        let workspaceID = space?.workspaceID ?? herdr.selectedWorkspaceID ?? ""
+        return Task { [herdr, documents, effects] in
+            let cwd = await herdr.paneDirectory(paneID)
+            let found = try? await WorkspaceFiles.blocking(on: machine, priority: .userInitiated) {
+                try WorkspaceFiles.terminalPath(file.path, cwd: cwd, root: space?.root, machine: machine)
+            }
+            guard let found = found ?? nil else { return effects.beep() }
+            if found.isDirectory {
+                return machine == nil ? effects.reveal(found.path) : effects.beep()
+            }
+            let reveal = file.line.map { line in
+                WorkspaceDocumentReveal(line: line, range: file.column.map { NSRange(location: max($0 - 1, 0), length: 0) })
+            }
+            if let space, let path = found.pathInRoot {
+                documents.open(.file, path: path, at: space, reveal: reveal, focus: true)
+                return
+            }
+            let folder = (found.path as NSString).deletingLastPathComponent
+            let location = WorkspaceFileLocation(machine: machine, session: session, workspaceID: workspaceID,
+                                                 workspaceLabel: machine == nil ? (folder as NSString).abbreviatingWithTildeInPath : folder,
+                                                 root: folder)
+            documents.open(.file, path: (found.path as NSString).lastPathComponent, at: location, reveal: reveal, focus: true)
         }
     }
 

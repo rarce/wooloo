@@ -238,6 +238,10 @@ struct TerminalPaneView: NSViewRepresentable {
     let setSplitRatio: ([Bool], Double) -> Void
     /// Splits a terminal tab dragged from the tab bar into these panes; nil ignores tab drags.
     var tabDrop: TerminalTabDropHandler? = nil
+    /// Checks the paths Command points at; nil leaves paths unlinked.
+    var fileLinks: TerminalFileLinks? = nil
+    /// Opens a path Command-clicked in a pane.
+    var openFileLink: ((TerminalFileReference, String) -> Void)? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -266,6 +270,8 @@ struct TerminalPaneView: NSViewRepresentable {
         view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
         view.tabDrop = tabDrop
+        view.fileLinks = fileLinks
+        view.openFileLink = openFileLink
         view.onPresentSurface = onPresentSurface
         view.sendPopupInput = sendPopupInput
         view.closePopup = closePopup
@@ -317,6 +323,8 @@ struct TerminalPaneView: NSViewRepresentable {
         view.setSplitRatio = setSplitRatio
         view.selectPane = selectPane
         view.tabDrop = tabDrop
+        view.fileLinks = fileLinks
+        view.openFileLink = openFileLink
         view.onPresentSurface = onPresentSurface
         view.sendPopupInput = sendPopupInput
         view.closePopup = closePopup
@@ -773,12 +781,38 @@ struct TerminalLink: Equatable {
         let columns: Range<Int>
     }
 
-    let url: URL
+    enum Target: Equatable {
+        case web(URL)
+        /// A path as printed, which may be relative to the pane's directory, with the line and
+        /// column after it.
+        case file(TerminalFileReference)
+    }
+
+    let target: Target
+    /// The pane showing the link, whose directory relative paths start from.
+    let paneID: String
     let spans: [Span]
+
+    var url: URL? {
+        if case .web(let url) = target { return url }
+        return nil
+    }
+
+    var file: TerminalFileReference? {
+        if case .file(let file) = target { return file }
+        return nil
+    }
+}
+
+struct TerminalFileReference: Hashable, Sendable {
+    let path: String
+    var line: Int? = nil
+    var column: Int? = nil
 }
 
 /// Finds the link under a surface cell for Command-click: an OSC 8 hyperlink, as Claude Code
-/// prints, or a URL in plain text, as iTerm2 detects. Only web links open.
+/// prints, or a URL or path in plain text, as iTerm2 and VS Code detect. Web links open in the
+/// browser; paths only name a candidate, which `TerminalFileLinks` checks on disk.
 enum TerminalLinks {
     static func link(atColumn x: Int, row y: Int, in surface: HerdrSurface) -> TerminalLink? {
         guard let id = TerminalPointer.paneID(atColumn: x, row: y, in: surface),
@@ -786,14 +820,22 @@ enum TerminalLinks {
               x >= inner.x, x < inner.x + inner.width, y >= inner.y, y < inner.y + inner.height,
               inner.x + inner.width <= surface.width, inner.y + inner.height <= surface.height else { return nil }
         let clicked = (y - inner.y) * inner.width + (x - inner.x)
-        return explicitLink(at: clicked, inside: inner, in: surface)
-            ?? plainLink(at: clicked, inside: inner, in: surface)
+        return explicitLink(at: clicked, inside: inner, in: surface, paneID: id)
+            ?? plainLink(at: clicked, inside: inner, in: surface, paneID: id)
     }
 
     static func webURL(_ text: String) -> URL? {
         guard let url = URL(string: text), let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https", url.host?.isEmpty == false else { return nil }
         return url
+    }
+
+    /// An OSC 8 destination: a web URL, or a `file:` URL's path, which never runs or opens
+    /// anything by itself.
+    static func target(_ text: String) -> TerminalLink.Target? {
+        if let url = webURL(text) { return .web(url) }
+        guard let url = URL(string: text), url.scheme?.lowercased() == "file", url.path.hasPrefix("/") else { return nil }
+        return .file(TerminalFileReference(path: url.path))
     }
 
     /// The cell at `index`, counted row by row across the pane's content.
@@ -810,21 +852,31 @@ enum TerminalLinks {
     }
 
     /// Adjacent cells with the clicked cell's OSC 8 destination, across wrapped rows too.
-    private static func explicitLink(at clicked: Int, inside inner: HerdrRect, in surface: HerdrSurface) -> TerminalLink? {
+    private static func explicitLink(at clicked: Int, inside inner: HerdrRect, in surface: HerdrSurface,
+                                     paneID: String) -> TerminalLink? {
         guard let id = hyperlink(clicked, inside: inner, in: surface), Int(id) < surface.hyperlinks.count,
-              let url = webURL(surface.hyperlinks[Int(id)]) else { return nil }
+              let target = target(surface.hyperlinks[Int(id)]) else { return nil }
         var start = clicked
         var end = clicked
         while start > 0, hyperlink(start - 1, inside: inner, in: surface) == id { start -= 1 }
         while end + 1 < inner.width * inner.height, hyperlink(end + 1, inside: inner, in: surface) == id { end += 1 }
-        return TerminalLink(url: url, spans: spans(start...end, inside: inner))
+        return TerminalLink(target: target, paneID: paneID, spans: spans(start...end, inside: inner))
     }
 
     private static let plainURL = try! NSRegularExpression(pattern: #"https?://[^\s<>"'`]+"#, options: [.caseInsensitive])
 
-    /// A URL in the text around the clicked cell. Rows whose last cell is filled continue on
-    /// the next row, so a long URL the terminal wrapped is found whole.
-    private static func plainLink(at clicked: Int, inside inner: HerdrRect, in surface: HerdrSurface) -> TerminalLink? {
+    /// Paths as compilers, test runners, `grep -n` and Python print them: `src/a.swift:12:5`,
+    /// `a.ts(12,5)`, `File "a.py", line 12`. No spaces, as in Zed; a path in quotes may have them.
+    private static let plainPath = try! NSRegularExpression(pattern:
+        #"File "(?<quoted>[^"]+)", line (?<quotedLine>\d+)"#
+        + #"|(?<path>(?:~|\.{1,2})?/?(?:[\w.@+\-]+/)*[\w@+\-][\w.@+\-]*)"#
+        + #"(?::(?<line>\d+)(?::(?<column>\d+))?|\((?<parenLine>\d+)(?:,\s*(?<parenColumn>\d+))?\))?"#)
+
+    /// The text of the rows around the clicked cell, with the pane cell of every UTF-16 unit.
+    /// Rows whose last cell is filled continue on the next row, so a long URL or path the
+    /// terminal wrapped is found whole.
+    private static func logicalLine(around clicked: Int, inside inner: HerdrRect,
+                                    in surface: HerdrSurface) -> (text: String, cellAt: [Int]) {
         let width = inner.width
         func wraps(_ row: Int) -> Bool {
             let last = cell(row * width + width - 1, inside: inner, in: surface)
@@ -835,7 +887,6 @@ enum TerminalLinks {
         while first > 0, wraps(first - 1) { first -= 1 }
         while last < inner.height - 1, wraps(last) { last += 1 }
         var text = ""
-        /// The pane cell of every UTF-16 unit in `text`.
         var cellAt: [Int] = []
         for index in (first * width)..<((last + 1) * width) {
             let current = cell(index, inside: inner, in: surface)
@@ -844,8 +895,26 @@ enum TerminalLinks {
             text += symbol
             cellAt.append(contentsOf: repeatElement(index, count: symbol.utf16.count))
         }
+        return (text, cellAt)
+    }
+
+    private static func plainLink(at clicked: Int, inside inner: HerdrRect, in surface: HerdrSurface,
+                                  paneID: String) -> TerminalLink? {
+        let (text, cellAt) = logicalLine(around: clicked, inside: inner, in: surface)
         let string = text as NSString
-        for match in plainURL.matches(in: text, range: NSRange(location: 0, length: string.length)) {
+        let all = NSRange(location: 0, length: string.length)
+        /// The link's cells when `range` of `text` covers the clicked cell.
+        func cells(_ range: NSRange) -> ClosedRange<Int>? {
+            guard range.length > 0 else { return nil }
+            let start = cellAt[range.location]
+            var end = cellAt[NSMaxRange(range) - 1]
+            // A wide last character also covers its continuation cell.
+            if end + 1 < inner.width * inner.height, end % inner.width < inner.width - 1,
+               cell(end + 1, inside: inner, in: surface).skip { end += 1 }
+            return (start...end).contains(clicked) ? start...end : nil
+        }
+        var urls: [NSRange] = []
+        for match in plainURL.matches(in: text, range: all) {
             var range = match.range
             // Punctuation after a URL ends the sentence around it, and closers belong to the
             // URL only when it opened them, as in Wikipedia links.
@@ -862,16 +931,54 @@ enum TerminalLinks {
                     break
                 }
             }
-            guard range.length > 0 else { continue }
-            let start = cellAt[range.location]
-            var end = cellAt[NSMaxRange(range) - 1]
-            // A wide last character also covers its continuation cell.
-            if end + 1 < inner.width * inner.height, end % width < width - 1,
-               cell(end + 1, inside: inner, in: surface).skip { end += 1 }
-            guard (start...end).contains(clicked), let url = webURL(string.substring(with: range)) else { continue }
-            return TerminalLink(url: url, spans: spans(start...end, inside: inner))
+            urls.append(match.range)
+            guard let indices = cells(range), let url = webURL(string.substring(with: range)) else { continue }
+            return TerminalLink(target: .web(url), paneID: paneID, spans: spans(indices, inside: inner))
+        }
+        // Only the matches around the clicked cell are looked at, and none inside a URL.
+        let clickedUnit = cellAt.firstIndex { $0 >= clicked } ?? string.length
+        let lowerBound = max(0, clickedUnit - 512)
+        let nearby = NSRange(location: lowerBound, length: min(string.length, clickedUnit + 512) - lowerBound)
+        for match in plainPath.matches(in: text, range: nearby) {
+            guard !urls.contains(where: { NSIntersectionRange($0, match.range).length > 0 }) else { continue }
+            func group(_ name: String) -> NSRange? {
+                let range = match.range(withName: name)
+                return range.location == NSNotFound ? nil : range
+            }
+            func number(_ name: String) -> Int? { group(name).flatMap { Int(string.substring(with: $0)) } }
+            if let quoted = group("quoted") {
+                guard let indices = cells(match.range) else { continue }
+                let file = TerminalFileReference(path: string.substring(with: quoted), line: number("quotedLine"))
+                return TerminalLink(target: .file(file), paneID: paneID, spans: spans(indices, inside: inner))
+            }
+            guard var pathRange = group("path") else { continue }
+            var linkRange = match.range
+            // A sentence's full stop is not part of the path before it.
+            if linkRange == pathRange {
+                while pathRange.length > 0, string.substring(with: pathRange).hasSuffix("."),
+                      !["", ".", ".."].contains(string.substring(with: pathRange).split(separator: "/").last.map(String.init) ?? "") {
+                    pathRange.length -= 1
+                }
+                linkRange = pathRange
+            }
+            let path = string.substring(with: pathRange)
+            guard isLikelyPath(path), let indices = cells(linkRange) else { continue }
+            let line = number("line") ?? number("parenLine")
+            let column = number("column") ?? number("parenColumn")
+            return TerminalLink(target: .file(TerminalFileReference(path: path, line: line, column: column)),
+                                paneID: paneID, spans: spans(indices, inside: inner))
         }
         return nil
+    }
+
+    /// Words with a folder or an extension, so ordinary words, numbers and versions such as
+    /// `1.2` are not checked on disk.
+    static func isLikelyPath(_ path: String) -> Bool {
+        if path.contains("/") { return path != "/" && path != "//" }
+        guard let dot = path.lastIndex(of: "."), dot != path.startIndex else { return false }
+        let name = path[..<dot]
+        let suffix = path[path.index(after: dot)...]
+        return !suffix.isEmpty && suffix.contains(where: \.isLetter) && name.contains(where: \.isLetter)
     }
 
     /// Surface rows and columns covering pane cells `indices`.
@@ -881,6 +988,76 @@ enum TerminalLinks {
             let lower = row == indices.lowerBound / width ? indices.lowerBound % width : 0
             let upper = row == indices.upperBound / width ? indices.upperBound % width + 1 : width
             return TerminalLink.Span(row: inner.y + row, columns: (inner.x + lower)..<(inner.x + upper))
+        }
+    }
+}
+
+/// Whether the paths under the pointer exist, so Command underlines only real files, as in
+/// VS Code. A check runs off the main thread, one at a time per window, and only while Command
+/// is held: moving along a line asks for the newest path only, and answers last a few seconds.
+@MainActor
+final class TerminalFileLinks {
+    struct Context: Sendable {
+        let cwd: String?
+        let machine: HerdrMachineProfile?
+    }
+
+    /// The pane's directory and machine; set by the store.
+    var context: (String) -> Context = { _ in Context(cwd: nil, machine: nil) }
+    /// Replaced by tests.
+    var check: @Sendable (TerminalFileReference, Context) async -> Bool = { file, context in
+        (try? await WorkspaceFiles.blocking(on: context.machine, priority: .userInitiated) {
+            try WorkspaceFiles.terminalPath(file.path, cwd: context.cwd, root: nil, machine: context.machine)
+        }) != nil
+    }
+    static let lifetime: TimeInterval = 3
+
+    private struct Key: Hashable {
+        let path: String
+        let cwd: String?
+        let machine: String?
+    }
+
+    private var answers: [Key: (exists: Bool, at: Date)] = [:]
+    private var running: Key?
+    private var waiting: (key: Key, context: Context, then: () -> Void)?
+
+    /// Whether `file` exists, when known and recent; otherwise nil, after asking for a check that
+    /// calls `then` once answered.
+    func exists(_ file: TerminalFileReference, paneID: String, then: @escaping () -> Void) -> Bool? {
+        let context = context(paneID)
+        let key = Key(path: file.path, cwd: context.cwd, machine: context.machine?.id)
+        if let known = known(key) { return known }
+        waiting = (key, context, then)
+        startWaiting()
+        return nil
+    }
+
+    /// Whether `file` exists, when known and recent, without checking.
+    func known(_ file: TerminalFileReference, paneID: String) -> Bool? {
+        let context = context(paneID)
+        return known(Key(path: file.path, cwd: context.cwd, machine: context.machine?.id))
+    }
+
+    private func known(_ key: Key) -> Bool? {
+        guard let answer = answers[key], Date().timeIntervalSince(answer.at) < Self.lifetime else { return nil }
+        return answer.exists
+    }
+
+    private func startWaiting() {
+        guard running == nil, let next = waiting else { return }
+        waiting = nil
+        guard known(next.key) == nil else { return next.then() }
+        running = next.key
+        let check = check
+        Task { [weak self] in
+            let exists = await check(TerminalFileReference(path: next.key.path), next.context)
+            guard let self else { return }
+            if answers.count > 512 { answers.removeAll() }
+            answers[next.key] = (exists, Date())
+            running = nil
+            next.then()
+            startWaiting()
         }
     }
 }
@@ -992,6 +1169,8 @@ final class HerdrTerminalTextView: NSTextView {
     var sendMouse: ((HerdrMouseEvent, String) -> Void)?
     var setSplitRatio: (([Bool], Double) -> Void)?
     var tabDrop: TerminalTabDropHandler?
+    var fileLinks: TerminalFileLinks?
+    var openFileLink: ((TerminalFileReference, String) -> Void)?
     weak var dropOverlay: TerminalDropOverlayView?
     private var heldMouse: (paneID: String, button: UInt64)?
     private var scroll = TerminalScrollAccumulator()
@@ -1629,10 +1808,29 @@ final class HerdrTerminalTextView: NSTextView {
         return TerminalLinks.link(atColumn: x, row: y, in: surface)
     }
 
-    /// Underlines the link under the pointer while Command is held, as iTerm2 does.
+    /// Underlines the link under the pointer while Command is held, as iTerm2 does; a path once
+    /// it is found on disk.
     private func updateHoveredLink(at windowPoint: NSPoint? = nil, modifiers: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
         guard modifiers.contains(.command), let window else { return setHoveredLink(nil) }
-        setHoveredLink(link(at: windowPoint ?? window.mouseLocationOutsideOfEventStream))
+        var link = link(at: windowPoint ?? window.mouseLocationOutsideOfEventStream)
+        if let found = link, let file = found.file {
+            let exists = fileLinks?.exists(file, paneID: found.paneID) { [weak self] in self?.updateHoveredLink() }
+            if exists != true { link = nil }
+        }
+        setHoveredLink(link)
+    }
+
+    /// Opens a Command-clicked link; false for a path not found on disk, which the click then
+    /// handles as any other. A path still being checked is opened, and checked again there.
+    private func open(_ link: TerminalLink) -> Bool {
+        switch link.target {
+        case .web(let url):
+            NSWorkspace.shared.open(url)
+        case .file(let file):
+            guard let openFileLink, let fileLinks, fileLinks.known(file, paneID: link.paneID) != false else { return false }
+            openFileLink(file, link.paneID)
+        }
+        return true
     }
 
     private func setHoveredLink(_ link: TerminalLink?) {
@@ -1669,16 +1867,14 @@ final class HerdrTerminalTextView: NSTextView {
                 return
             }
             guard geometry.inner.contains(column: x, row: y) else { return }
-            if event.modifierFlags.contains(.command), let link = link(at: event.locationInWindow) {
-                NSWorkspace.shared.open(link.url)
+            if event.modifierFlags.contains(.command), let link = link(at: event.locationInWindow), open(link) {
                 return
             }
             if !event.modifierFlags.contains(.shift), forwardMouse(.down(0), event: event, hold: true) { return }
             if let terminalGrid { beginCellSelection(with: event, in: terminalGrid) }
             return
         }
-        if event.modifierFlags.contains(.command), let link = link(at: event.locationInWindow) {
-            NSWorkspace.shared.open(link.url)
+        if event.modifierFlags.contains(.command), let link = link(at: event.locationInWindow), open(link) {
             return
         }
         if let surface {

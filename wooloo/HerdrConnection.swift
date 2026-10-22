@@ -223,6 +223,11 @@ private struct SnapshotResult: Decodable {
     let snapshot: HerdrSnapshot
 }
 
+private struct PaneGetResponse: Decodable {
+    struct Result: Decodable { let pane: HerdrPane }
+    let result: Result
+}
+
 private struct PaneReadResponse: Decodable {
     let result: PaneReadResult
 }
@@ -350,6 +355,13 @@ enum HerdrSocket {
     static func snapshot(path: String) throws -> HerdrSnapshot {
         let data = try request(path: path, method: "session.snapshot")
         return try JSONDecoder().decode(SnapshotResponse.self, from: data).result.snapshot
+    }
+
+    /// A pane's directory now: the snapshot's can be older, since a `cd` alone emits no event.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    static func paneDirectory(path: String, paneID: String) throws -> String? {
+        let data = try request(path: path, method: "pane.get", params: ["pane_id": paneID])
+        return try JSONDecoder().decode(PaneGetResponse.self, from: data).result.pane.cwd
     }
 
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
@@ -736,6 +748,9 @@ final class HerdrStore: ObservableObject {
         self.endpointTimeouts = endpointTimeouts
         snapshotPublisher = publishedSnapshots.eraseToAnyPublisher()
         reloadAgentViewSettings()
+        terminalFileLinks.context = { [weak self] paneID in
+            TerminalFileLinks.Context(cwd: self?.snapshot?.panes.first { $0.paneID == paneID }?.cwd, machine: self?.machine)
+        }
         if let metrics = TerminalPipelineMetrics.shared {
             publishRecorder = objectWillChange.sink { _ in metrics.published() }
         }
@@ -768,6 +783,18 @@ final class HerdrStore: ObservableObject {
     }
 
     var isConnected: Bool { snapshot != nil && errorMessage == nil }
+
+    /// Checks the paths Command points at in the terminal.
+    let terminalFileLinks = TerminalFileLinks()
+
+    /// A pane's directory, asked of Herdr, else the snapshot's.
+    func paneDirectory(_ paneID: String) async -> String? {
+        let path = socketPath
+        let current = await BlockingWork.run(priority: .userInitiated) {
+            try? HerdrSocket.paneDirectory(path: path, paneID: paneID)
+        }
+        return current ?? snapshot?.panes.first { $0.paneID == paneID }?.cwd
+    }
 
     var clientSocketPath: String {
         if machine != nil { return remoteBridge?.clientPath ?? "/dev/null" }
