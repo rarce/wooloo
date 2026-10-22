@@ -362,14 +362,14 @@ enum WorkspaceFiles {
     static func location(snapshot: HerdrSnapshot, workspaceID: String,
                          session: String, machine: HerdrMachineProfile?) -> WorkspaceFileLocation? {
         guard let workspace = snapshot.workspaces.first(where: { $0.workspaceID == workspaceID }) else { return nil }
-        // Herdr names a Space after its first tab's root pane, the first pane of that tab's layout
-        // unless panes were moved in around it. Other panes and tabs, and focus, leave it alone,
-        // so a `cd` there does not move the files.
+        // Herdr names a Space after its first tab's root pane, so reordering tabs moves the files
+        // as it renames the Space; other panes, other tabs and focus leave them alone. The snapshot
+        // omits the root pane, so this takes the first pane of the tab's layout, where Herdr
+        // promotes a new root. That differs only after a pane is swapped or moved in before it.
         let firstTab = snapshot.tabs.first(where: { $0.workspaceID == workspaceID })?.tabID
         let rootPane = snapshot.layouts.first(where: { $0.tabID == firstTab })?.panes.first?.paneID
         let root = workspace.worktree?.checkoutPath
             ?? snapshot.panes.first(where: { $0.paneID == rootPane })?.cwd
-            ?? snapshot.panes.first(where: { $0.tabID == firstTab })?.cwd
             ?? snapshot.panes.first(where: { $0.workspaceID == workspaceID })?.cwd
         guard let root, root.hasPrefix("/") else { return nil }
         return WorkspaceFileLocation(machine: machine, session: session,

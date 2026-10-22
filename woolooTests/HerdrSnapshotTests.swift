@@ -19,12 +19,15 @@ final class HerdrSnapshotTests: XCTestCase {
       {"area":{"height":40,"width":120,"x":0,"y":0},"focused_pane_id":"w2:p2",
       "panes":[{"focused":false,"pane_id":"w2:p1","rect":{"height":40,"width":60,"x":0,"y":0}},
                {"focused":true,"pane_id":"w2:p2","rect":{"height":40,"width":60,"x":60,"y":0}}],
-      "splits":[],"tab_id":"w2:t1","workspace_id":"w2","zoomed":false}],
+      "splits":[],"tab_id":"w2:t1","workspace_id":"w2","zoomed":false},
+      {"area":{"height":40,"width":120,"x":0,"y":0},"focused_pane_id":"w2:p4",
+      "panes":[{"focused":true,"pane_id":"w2:p4","rect":{"height":40,"width":120,"x":0,"y":0}}],
+      "splits":[],"tab_id":"w2:t2","workspace_id":"w2","zoomed":false}],
     "panes":[
       {"agent_status":"blocked","cwd":"/tmp/project","focused":false,"pane_id":"w1:p2","revision":0,
        "scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":38},"tab_id":"w1:t1","workspace_id":"w1"},
-      {"cwd":"/tmp/other","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"},
       {"cwd":"/tmp/other/focused","pane_id":"w2:p2","tab_id":"w2:t1","workspace_id":"w2"},
+      {"cwd":"/tmp/other","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"},
       {"cwd":"/tmp/other/later-tab","pane_id":"w2:p4","tab_id":"w2:t2","workspace_id":"w2"},
       {"cwd":"/tmp/untabbed","pane_id":"w4:p1","tab_id":"w4:t9","workspace_id":"w4"},
       {"cwd":"relative/path","pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"}
@@ -80,8 +83,8 @@ final class HerdrSnapshotTests: XCTestCase {
         XCTAssertEqual(WoolooTheme.agentStatusMark(nil), .faint)
     }
 
-    /// The Space's files come from its worktree, else the directory of its first tab's root pane,
-    /// as Herdr names it; the focused pane does not move them.
+    /// The Space's files come from its worktree, else the directory of its first tab's root pane
+    /// (first in the layout, not in `panes`), as Herdr names it; the focused pane does not move them.
     func testFileLocationFollowsWorktreeThenRootPane() throws {
         let snapshot = try snapshot()
         func root(_ id: String) -> String? {
@@ -90,6 +93,11 @@ final class HerdrSnapshotTests: XCTestCase {
         XCTAssertEqual(root("w1"), "/tmp/project-worktree")
         XCTAssertEqual(root("w2"), "/tmp/other")
         XCTAssertEqual(root("w4"), "/tmp/untabbed", "Without tabs or layouts, any pane of the Space")
+
+        // Moving another tab first moves the files to its root pane, as Herdr renames the Space.
+        let reordered = try XCTUnwrap(snapshot.movingTab("w2:t2", to: 0))
+        XCTAssertEqual(WorkspaceFiles.location(snapshot: reordered, workspaceID: "w2", session: "test", machine: nil)?.root,
+                       "/tmp/other/later-tab")
         XCTAssertNil(root("w3"), "A relative directory cannot be a Space root")
         XCTAssertNil(root("missing"))
     }
