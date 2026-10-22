@@ -15,22 +15,30 @@ final class HerdrSnapshotTests: XCTestCase {
     "focused_pane_id":"w2:p2","focused_tab_id":"w2:t1","focused_workspace_id":"w2",
     "layouts":[{"area":{"height":40,"width":120,"x":0,"y":0},"focused_pane_id":"w1:p2",
       "panes":[{"focused":true,"pane_id":"w1:p2","rect":{"height":40,"width":120,"x":0,"y":0}}],
-      "splits":[],"tab_id":"w1:t1","workspace_id":"w1","zoomed":false}],
+      "splits":[],"tab_id":"w1:t1","workspace_id":"w1","zoomed":false},
+      {"area":{"height":40,"width":120,"x":0,"y":0},"focused_pane_id":"w2:p2",
+      "panes":[{"focused":false,"pane_id":"w2:p1","rect":{"height":40,"width":60,"x":0,"y":0}},
+               {"focused":true,"pane_id":"w2:p2","rect":{"height":40,"width":60,"x":60,"y":0}}],
+      "splits":[],"tab_id":"w2:t1","workspace_id":"w2","zoomed":false}],
     "panes":[
       {"agent_status":"blocked","cwd":"/tmp/project","focused":false,"pane_id":"w1:p2","revision":0,
        "scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":38},"tab_id":"w1:t1","workspace_id":"w1"},
       {"cwd":"/tmp/other","pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"},
       {"cwd":"/tmp/other/focused","pane_id":"w2:p2","tab_id":"w2:t1","workspace_id":"w2"},
+      {"cwd":"/tmp/other/later-tab","pane_id":"w2:p4","tab_id":"w2:t2","workspace_id":"w2"},
+      {"cwd":"/tmp/untabbed","pane_id":"w4:p1","tab_id":"w4:t9","workspace_id":"w4"},
       {"cwd":"relative/path","pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"}
     ],
     "protocol":22,
-    "tabs":[{"agent_status":"unknown","focused":false,"label":"1","number":1,"pane_count":1,"tab_id":"w1:t1","workspace_id":"w1"}],
+    "tabs":[{"agent_status":"unknown","focused":false,"label":"1","number":1,"pane_count":1,"tab_id":"w1:t1","workspace_id":"w1"},
+      {"label":"1","tab_id":"w2:t1","workspace_id":"w2"},{"label":"2","tab_id":"w2:t2","workspace_id":"w2"}],
     "version":"0.9.1",
     "workspaces":[
       {"active_tab_id":"w1:t1","agent_status":"blocked","label":"project","number":1,"workspace_id":"w1",
        "worktree":{"checkout_path":"/tmp/project-worktree"}},
       {"label":"other","workspace_id":"w2"},
-      {"label":"relative","workspace_id":"w3"}
+      {"label":"relative","workspace_id":"w3"},
+      {"label":"untabbed","workspace_id":"w4"}
     ]}
     """
 
@@ -40,7 +48,7 @@ final class HerdrSnapshotTests: XCTestCase {
 
     func testDecodesServerSnapshot() throws {
         let snapshot = try snapshot()
-        XCTAssertEqual(snapshot.workspaces.map(\.id), ["w1", "w2", "w3"])
+        XCTAssertEqual(snapshot.workspaces.map(\.id), ["w1", "w2", "w3", "w4"])
         XCTAssertEqual(snapshot.workspaces[0].worktree?.checkoutPath, "/tmp/project-worktree")
         XCTAssertEqual(snapshot.focusedPaneID, "w2:p2")
         XCTAssertEqual(snapshot.layouts[0].panes[0].rect, HerdrRect(x: 0, y: 0, width: 120, height: 40))
@@ -72,14 +80,16 @@ final class HerdrSnapshotTests: XCTestCase {
         XCTAssertEqual(WoolooTheme.agentStatusMark(nil), .faint)
     }
 
-    /// The Space's files come from its worktree, else the focused pane's directory, else any pane's.
-    func testFileLocationFollowsWorktreeThenFocusedPane() throws {
+    /// The Space's files come from its worktree, else the directory of its first tab's root pane,
+    /// as Herdr names it; the focused pane does not move them.
+    func testFileLocationFollowsWorktreeThenRootPane() throws {
         let snapshot = try snapshot()
         func root(_ id: String) -> String? {
             WorkspaceFiles.location(snapshot: snapshot, workspaceID: id, session: "test", machine: nil)?.root
         }
         XCTAssertEqual(root("w1"), "/tmp/project-worktree")
-        XCTAssertEqual(root("w2"), "/tmp/other/focused")
+        XCTAssertEqual(root("w2"), "/tmp/other")
+        XCTAssertEqual(root("w4"), "/tmp/untabbed", "Without tabs or layouts, any pane of the Space")
         XCTAssertNil(root("w3"), "A relative directory cannot be a Space root")
         XCTAssertNil(root("missing"))
     }
