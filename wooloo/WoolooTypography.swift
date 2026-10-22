@@ -30,7 +30,13 @@ struct WoolooTypography: Equatable {
     /// Page titles.
     var title: CGFloat { base + 5 }
 
-    var codeFont: NSFont { .monospacedSystemFont(ofSize: code, weight: .regular) }
+    /// Keep code and terminal glyphs in the same family, including the terminal's fallback.
+    var codeFont: NSFont {
+        NSFont(descriptor: TerminalPaneView.terminalFont.fontDescriptor, size: code)
+            ?? .monospacedSystemFont(ofSize: code, weight: .regular)
+    }
+
+    var swiftUICodeFont: Font { Font(codeFont) }
 
     /// A row or bar height designed for 11 pt text, grown with the base size.
     func metric(_ value: CGFloat) -> CGFloat {

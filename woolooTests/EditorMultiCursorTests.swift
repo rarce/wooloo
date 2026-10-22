@@ -404,11 +404,13 @@ final class EditorMultiCursorTests: XCTestCase {
         let layout: TextLayoutManager = textView.layoutManager
         let x = { (offset: Int) in try XCTUnwrap(layout.rectForOffset(offset)).minX }
         XCTAssertEqual(try x(1), try x(7), accuracy: 0.01, "a tab ends where four spaces do, not at 28 pt")
-        // Text keeps its font until highlighting restyles it, so measure the new stops directly.
+        // This fixture has no highlighter; apply the new font as the app highlighter does.
         let controller = try XCTUnwrap(spy.controller)
-        let font = NSFont.monospacedSystemFont(ofSize: 20, weight: .regular)
+        let font = WoolooTypography(code: 20).codeFont
         let space = (" " as NSString).size(withAttributes: [.font: font]).width
         controller.font = font
+        textView.textStorage.addAttribute(.font, value: font,
+                                          range: NSRange(location: 0, length: textView.textStorage.length))
         try settle()
         XCTAssertEqual(try x(1) - x(0), 4 * space, accuracy: 0.01, "after the font changes")
         controller.tabWidth = 2

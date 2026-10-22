@@ -235,14 +235,12 @@ public class GutterView: NSView {
 
         context.saveGState()
 
+        // wooloo: inherit AppKit's native smoothing policy, as the terminal does.
+        // Private smoothing overrides produced a different stroke weight here.
         context.setAllowsAntialiasing(true)
         context.setShouldAntialias(true)
-        context.setAllowsFontSmoothing(false)
         context.setAllowsFontSubpixelPositioning(true)
         context.setShouldSubpixelPositionFonts(true)
-        context.setAllowsFontSubpixelQuantization(true)
-        context.setShouldSubpixelQuantizeFonts(true)
-        ContextSetHiddenSmoothingStyle(context, 16)
 
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         for linePosition in textView.layoutManager.visibleLines() {
@@ -263,7 +261,11 @@ public class GutterView: NSView {
             // Leading padding + (width - linewidth)
             let xPos = edgeInsets.leading + (maxWidth - lineNumberWidth)
 
-            context.textPosition = CGPoint(x: xPos, y: yPos).pixelAligned
+            // Match text fragments at both 1x and Retina backing scales.
+            let deviceBaseline = context.convertToDeviceSpace(CGPoint(x: xPos, y: yPos))
+            context.textPosition = context.convertToUserSpace(
+                CGPoint(x: deviceBaseline.x.rounded(), y: deviceBaseline.y.rounded())
+            )
             CTLineDraw(ctLine, context)
         }
         context.restoreGState()
