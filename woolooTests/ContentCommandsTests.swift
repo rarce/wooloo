@@ -171,6 +171,27 @@ final class ContentCommandsTests: XCTestCase {
         XCTAssertEqual(documents.documents.count, 2)
     }
 
+    func testHoverUsesCurrentDirectoryWithoutANewSnapshotAndClickReusesIt() async throws {
+        await connect()
+        try sandbox.write(["sub/a.txt": "hello"], in: "repo")
+        state.update { $0.paneDirectory = repo.root + "/sub" }
+        let file = TerminalFileReference(path: "a.txt", line: 4)
+        var answered = false
+        XCTAssertNil(herdr.terminalFileLinks.exists(file, paneID: "w1:p1") { answered = true })
+        for _ in 0..<200 where !answered { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertTrue(answered)
+        XCTAssertEqual(herdr.terminalFileLinks.known(file, paneID: "w1:p1"), true)
+        // A different server directory must not affect the already resolved click.
+        state.update { $0.paneDirectory = "/missing" }
+        var opening: Task<Void, Never>?
+        XCTAssertTrue(herdr.terminalFileLinks.open(file, paneID: "w1:p1") { resolved in
+            opening = self.commands.openTerminalFile(file, paneID: "w1:p1", resolved: resolved)
+        })
+        await opening?.value
+        XCTAssertEqual(documents.documents.last?.path, "sub/a.txt")
+        XCTAssertEqual(beeps, 0)
+    }
+
     // MARK: Tabs
 
     func testPreviousAndNextTabWrapAroundTheSpace() async {

@@ -403,10 +403,12 @@ final class TerminalLinkTests: XCTestCase {
                        TerminalFileReference(path: "/tmp/my app/x.py", line: 4))
         XCTAssertEqual(file("see ~/notes/todo.md.", at: 8), TerminalFileReference(path: "~/notes/todo.md"))
         XCTAssertEqual(file("open ../README.md now", at: 7), TerminalFileReference(path: "../README.md"))
+        XCTAssertEqual(file(".gitignore:4", at: 2), TerminalFileReference(path: ".gitignore", line: 4))
+        XCTAssertEqual(file("app/.eslintrc.json:4", at: 8), TerminalFileReference(path: "app/.eslintrc.json", line: 4))
         XCTAssertEqual(file("Package.swift", at: 0), TerminalFileReference(path: "Package.swift"))
         XCTAssertNil(file("Building version 1.2.3 now", at: 18), "Versions are not paths")
         XCTAssertNil(file("plain words only", at: 2))
-        XCTAssertNil(file("see https://example.com/a/b.txt", at: 20)?.path.contains("example"),
+        XCTAssertNil(file("https://example.com/a.txt(12)", at: 28),
                      "A URL is not read as a path")
     }
 
@@ -418,7 +420,7 @@ final class TerminalLinkTests: XCTestCase {
         links.check = { file, _ in
             await checked.append(file.path)
             try? await Task.sleep(nanoseconds: 20_000_000)
-            return file.path != "missing.txt"
+            return file.path == "missing.txt" ? nil : WorkspaceTerminalPath(path: "/" + file.path, isDirectory: false, pathInRoot: nil)
         }
         var answered = 0
         XCTAssertNil(links.exists(TerminalFileReference(path: "a.txt"), paneID: "p") { answered += 1 })
@@ -431,6 +433,77 @@ final class TerminalLinkTests: XCTestCase {
         XCTAssertEqual(links.known(TerminalFileReference(path: "missing.txt"), paneID: "p"), false)
         XCTAssertNil(links.known(TerminalFileReference(path: "b.txt"), paneID: "p"))
         XCTAssertEqual(links.exists(TerminalFileReference(path: "a.txt"), paneID: "p") {}, true)
+    }
+
+    @MainActor
+    func testExpiredFileLinkStaysVisibleAndErrorsAreNotCached() async throws {
+        let links = TerminalFileLinks()
+        let file = TerminalFileReference(path: "a.txt")
+        var time = Date()
+        links.now = { time }
+        let path = WorkspaceTerminalPath(path: "/sub/a.txt", isDirectory: false, pathInRoot: nil)
+        links.check = { _, _ in path }
+        var answered = false
+        _ = links.exists(file, paneID: "p") { answered = true }
+        for _ in 0..<200 where !answered { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertTrue(answered)
+        time = time.addingTimeInterval(4)
+        links.check = { _, _ in throw CancellationError() }
+        XCTAssertEqual(links.exists(file, paneID: "p") {}, true)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(links.known(file, paneID: "p"), true)
+        let missing = TerminalFileReference(path: "other.txt")
+        _ = links.exists(missing, paneID: "p") {}
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertNil(links.known(missing, paneID: "p"))
+        var opened: WorkspaceTerminalPath?
+        XCTAssertTrue(links.open(file, paneID: "p") { opened = $0 })
+        XCTAssertEqual(opened, path)
+    }
+
+    @MainActor
+    func testPendingClickSharesHoverCheckAndOnlyOpensConfirmedPaths() async throws {
+        let links = TerminalFileLinks()
+        let checked = Checked()
+        let path = WorkspaceTerminalPath(path: "/sub/a.txt", isDirectory: false, pathInRoot: nil)
+        links.check = { file, _ in
+            await checked.append(file.path)
+            try await Task.sleep(nanoseconds: 20_000_000)
+            return file.path == "a.txt" ? path : nil
+        }
+        let file = TerminalFileReference(path: "a.txt")
+        var opened: WorkspaceTerminalPath?
+        _ = links.exists(file, paneID: "p") {}
+        XCTAssertTrue(links.open(file, paneID: "p") { opened = $0 })
+        XCTAssertNil(opened)
+        for _ in 0..<200 where opened == nil { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(opened, path)
+        let paths = await checked.paths
+        XCTAssertEqual(paths, ["a.txt"])
+        let word = TerminalFileReference(path: "Node.js")
+        XCTAssertTrue(links.open(word, paneID: "p") { _ in XCTFail("Missing paths must not open") })
+        for _ in 0..<200 where links.known(word, paneID: "p") == nil {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(links.known(word, paneID: "p"), false)
+        XCTAssertFalse(links.open(word, paneID: "p") { _ in XCTFail("Missing paths must not open") })
+    }
+
+    @MainActor
+    func testReleasingCommandCancelsWaitingFileCheck() async throws {
+        let links = TerminalFileLinks()
+        let checked = Checked()
+        links.check = { file, _ in
+            await checked.append(file.path)
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return nil
+        }
+        _ = links.exists(TerminalFileReference(path: "first.txt"), paneID: "p") {}
+        _ = links.exists(TerminalFileReference(path: "queued.txt"), paneID: "p") {}
+        links.cancelPending()
+        try await Task.sleep(nanoseconds: 80_000_000)
+        let paths = await checked.paths
+        XCTAssertEqual(paths, ["first.txt"])
     }
 
     private actor Checked {

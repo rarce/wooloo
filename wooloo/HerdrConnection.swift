@@ -749,7 +749,20 @@ final class HerdrStore: ObservableObject {
         snapshotPublisher = publishedSnapshots.eraseToAnyPublisher()
         reloadAgentViewSettings()
         terminalFileLinks.context = { [weak self] paneID in
-            TerminalFileLinks.Context(cwd: self?.snapshot?.panes.first { $0.paneID == paneID }?.cwd, machine: self?.machine)
+            guard let self else { return TerminalFileLinks.Context(cwd: nil, machine: nil) }
+            let pane = snapshot?.panes.first { $0.paneID == paneID }
+            let location = snapshot.flatMap { snapshot in
+                pane.flatMap { WorkspaceFiles.location(snapshot: snapshot, workspaceID: $0.workspaceID,
+                                                        session: self.sessionName, machine: self.machine) }
+            }
+            return TerminalFileLinks.Context(cwd: pane?.cwd, machine: machine, root: location?.root)
+        }
+        terminalFileLinks.directory = { [weak self] paneID in
+            guard let self else { throw CancellationError() }
+            let path = self.socketPath
+            return try await BlockingWork.run(priority: .userInitiated) {
+                try HerdrSocket.paneDirectory(path: path, paneID: paneID)
+            }
         }
         if let metrics = TerminalPipelineMetrics.shared {
             publishRecorder = objectWillChange.sink { _ in metrics.published() }

@@ -241,7 +241,7 @@ struct TerminalPaneView: NSViewRepresentable {
     /// Checks the paths Command points at; nil leaves paths unlinked.
     var fileLinks: TerminalFileLinks? = nil
     /// Opens a path Command-clicked in a pane.
-    var openFileLink: ((TerminalFileReference, String) -> Void)? = nil
+    var openFileLink: ((TerminalFileReference, String, WorkspaceTerminalPath) -> Void)? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -869,7 +869,7 @@ enum TerminalLinks {
     /// `a.ts(12,5)`, `File "a.py", line 12`. No spaces, as in Zed; a path in quotes may have them.
     private static let plainPath = try! NSRegularExpression(pattern:
         #"File "(?<quoted>[^"]+)", line (?<quotedLine>\d+)"#
-        + #"|(?<path>(?:~|\.{1,2})?/?(?:[\w.@+\-]+/)*[\w@+\-][\w.@+\-]*)"#
+        + #"|(?<path>(?:~|\.{1,2})?/?(?:[\w.@+\-]+/)*[\w.@+\-][\w.@+\-]*)"#
         + #"(?::(?<line>\d+)(?::(?<column>\d+))?|\((?<parenLine>\d+)(?:,\s*(?<parenColumn>\d+))?\))?"#)
 
     /// The text of the rows around the clicked cell, with the pane cell of every UTF-16 unit.
@@ -975,6 +975,7 @@ enum TerminalLinks {
     /// `1.2` are not checked on disk.
     static func isLikelyPath(_ path: String) -> Bool {
         if path.contains("/") { return path != "/" && path != "//" }
+        if path.hasPrefix("."), path.contains(where: \.isLetter) { return true }
         guard let dot = path.lastIndex(of: "."), dot != path.startIndex else { return false }
         let name = path[..<dot]
         let suffix = path[path.index(after: dot)...]
@@ -1000,63 +1001,107 @@ final class TerminalFileLinks {
     struct Context: Sendable {
         let cwd: String?
         let machine: HerdrMachineProfile?
+        var root: String? = nil
     }
 
-    /// The pane's directory and machine; set by the store.
     var context: (String) -> Context = { _ in Context(cwd: nil, machine: nil) }
-    /// Replaced by tests.
-    var check: @Sendable (TerminalFileReference, Context) async -> Bool = { file, context in
-        (try? await WorkspaceFiles.blocking(on: context.machine, priority: .userInitiated) {
-            try WorkspaceFiles.terminalPath(file.path, cwd: context.cwd, root: nil, machine: context.machine)
-        }) != nil
+    var directory: (String) async throws -> String? = { _ in nil }
+    var check: @Sendable (TerminalFileReference, Context) async throws -> WorkspaceTerminalPath? = { file, context in
+        try await WorkspaceFiles.blocking(on: context.machine, priority: .userInitiated) {
+            try WorkspaceFiles.terminalPath(file.path, cwd: context.cwd, root: context.root, machine: context.machine)
+        }
     }
     static let lifetime: TimeInterval = 3
+    var now: () -> Date = Date.init
 
     private struct Key: Hashable {
         let path: String
+        let paneID: String
         let cwd: String?
         let machine: String?
+        let root: String?
     }
-
-    private var answers: [Key: (exists: Bool, at: Date)] = [:]
+    private struct Answer {
+        let path: WorkspaceTerminalPath?
+        let at: Date
+    }
+    private var answers: [Key: Answer] = [:]
     private var running: Key?
     private var waiting: (key: Key, context: Context, then: () -> Void)?
+    private var clicks: [(key: Key, context: Context)] = []
+    private var callbacks: [Key: [(WorkspaceTerminalPath?) -> Void]] = [:]
 
-    /// Whether `file` exists, when known and recent; otherwise nil, after asking for a check that
-    /// calls `then` once answered.
+    private func key(_ file: TerminalFileReference, _ paneID: String) -> Key {
+        let context = context(paneID)
+        return Key(path: file.path, paneID: paneID, cwd: context.cwd, machine: context.machine?.id, root: context.root)
+    }
+
     func exists(_ file: TerminalFileReference, paneID: String, then: @escaping () -> Void) -> Bool? {
-        let context = context(paneID)
-        let key = Key(path: file.path, cwd: context.cwd, machine: context.machine?.id)
-        if let known = known(key) { return known }
-        waiting = (key, context, then)
-        startWaiting()
-        return nil
+        let key = key(file, paneID)
+        if answers[key].map({ now().timeIntervalSince($0.at) < Self.lifetime }) != true {
+            if running != key, !clicks.contains(where: { $0.key == key }) {
+                waiting = (key, context(paneID), then)
+                startWaiting()
+            }
+        }
+        return answers[key].map { $0.path != nil }
     }
 
-    /// Whether `file` exists, when known and recent, without checking.
     func known(_ file: TerminalFileReference, paneID: String) -> Bool? {
-        let context = context(paneID)
-        return known(Key(path: file.path, cwd: context.cwd, machine: context.machine?.id))
+        answers[key(file, paneID)].map { $0.path != nil }
     }
 
-    private func known(_ key: Key) -> Bool? {
-        guard let answer = answers[key], Date().timeIntervalSince(answer.at) < Self.lifetime else { return nil }
-        return answer.exists
+    /// Clicks share the hover's resolved result, including an in-flight check.
+    func open(_ file: TerminalFileReference, paneID: String,
+              then: @escaping (WorkspaceTerminalPath) -> Void) -> Bool {
+        let key = key(file, paneID)
+        if let answer = answers[key] {
+            guard let path = answer.path else { return false }
+            then(path)
+        } else {
+            callbacks[key, default: []].append { if let path = $0 { then(path) } }
+            if running != key, !clicks.contains(where: { $0.key == key }) {
+                clicks.append((key, context(paneID)))
+                if waiting?.key == key { waiting = nil }
+                startWaiting()
+            }
+        }
+        return true
+    }
+
+    func cancelPending() {
+        if let waiting, callbacks[waiting.key] == nil { self.waiting = nil }
     }
 
     private func startWaiting() {
-        guard running == nil, let next = waiting else { return }
-        waiting = nil
-        guard known(next.key) == nil else { return next.then() }
+        guard running == nil else { return }
+        let next: (key: Key, context: Context, then: () -> Void)
+        if !clicks.isEmpty {
+            let click = clicks.removeFirst()
+            next = (click.key, click.context, {})
+        } else if let pending = waiting {
+            next = pending
+            waiting = nil
+        } else { return }
         running = next.key
         let check = check
         Task { [weak self] in
-            let exists = await check(TerminalFileReference(path: next.key.path), next.context)
             guard let self else { return }
-            if answers.count > 512 { answers.removeAll() }
-            answers[next.key] = (exists, Date())
+            var succeeded = false
+            do {
+                let cwd = try await directory(next.key.paneID) ?? next.context.cwd
+                let path = try await check(TerminalFileReference(path: next.key.path),
+                                           Context(cwd: cwd, machine: next.context.machine, root: next.context.root))
+                if answers.count > 512 { answers.removeAll() }
+                answers[next.key] = Answer(path: path, at: now())
+                succeeded = true
+                callbacks.removeValue(forKey: next.key)?.forEach { $0(path) }
+            } catch {
+                callbacks.removeValue(forKey: next.key)?.forEach { $0(nil) }
+            }
             running = nil
-            next.then()
+            // Errors are retried on the next pointer/surface event, not in a busy loop.
+            if succeeded { next.then() }
             startWaiting()
         }
     }
@@ -1170,7 +1215,7 @@ final class HerdrTerminalTextView: NSTextView {
     var setSplitRatio: (([Bool], Double) -> Void)?
     var tabDrop: TerminalTabDropHandler?
     var fileLinks: TerminalFileLinks?
-    var openFileLink: ((TerminalFileReference, String) -> Void)?
+    var openFileLink: ((TerminalFileReference, String, WorkspaceTerminalPath) -> Void)?
     weak var dropOverlay: TerminalDropOverlayView?
     private var heldMouse: (paneID: String, button: UInt64)?
     private var scroll = TerminalScrollAccumulator()
@@ -1763,6 +1808,7 @@ final class HerdrTerminalTextView: NSTextView {
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
+        fileLinks?.cancelPending()
         setHoveredLink(nil)
         if let overlay = dropOverlay,
            !overlay.moveHandle.frame.contains(overlay.convert(event.locationInWindow, from: nil)) {
@@ -1811,24 +1857,29 @@ final class HerdrTerminalTextView: NSTextView {
     /// Underlines the link under the pointer while Command is held, as iTerm2 does; a path once
     /// it is found on disk.
     private func updateHoveredLink(at windowPoint: NSPoint? = nil, modifiers: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
-        guard modifiers.contains(.command), let window else { return setHoveredLink(nil) }
+        guard modifiers.contains(.command), let window else {
+            fileLinks?.cancelPending()
+            return setHoveredLink(nil)
+        }
         var link = link(at: windowPoint ?? window.mouseLocationOutsideOfEventStream)
         if let found = link, let file = found.file {
             let exists = fileLinks?.exists(file, paneID: found.paneID) { [weak self] in self?.updateHoveredLink() }
             if exists != true { link = nil }
+        } else {
+            fileLinks?.cancelPending()
         }
         setHoveredLink(link)
     }
 
     /// Opens a Command-clicked link; false for a path not found on disk, which the click then
-    /// handles as any other. A path still being checked is opened, and checked again there.
+    /// handles as any other. A pending path opens only after its shared check succeeds.
     private func open(_ link: TerminalLink) -> Bool {
         switch link.target {
         case .web(let url):
             NSWorkspace.shared.open(url)
         case .file(let file):
-            guard let openFileLink, let fileLinks, fileLinks.known(file, paneID: link.paneID) != false else { return false }
-            openFileLink(file, link.paneID)
+            guard let openFileLink, let fileLinks else { return false }
+            return fileLinks.open(file, paneID: link.paneID) { openFileLink(file, link.paneID, $0) }
         }
         return true
     }

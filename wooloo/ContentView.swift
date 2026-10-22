@@ -806,7 +806,7 @@ struct ContentView: View {
                     setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) },
                     tabDrop: terminalTabDrop,
                     fileLinks: herdr.terminalFileLinks,
-                    openFileLink: { file, paneID in commands.openTerminalFile(file, paneID: paneID) }
+                    openFileLink: { file, paneID, resolved in commands.openTerminalFile(file, paneID: paneID, resolved: resolved) }
                 )
                 .onAppear { resizeSurface(to: geometry.size) }
                 .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }

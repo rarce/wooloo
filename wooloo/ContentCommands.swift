@@ -263,16 +263,16 @@ struct ContentCommands {
     /// file in the editor at its line, as part of the Space inside its root, else on its own
     /// with its folder as root, editable too; a folder on this Mac in Finder.
     @discardableResult
-    func openTerminalFile(_ file: TerminalFileReference, paneID: String) -> Task<Void, Never> {
+    func openTerminalFile(_ file: TerminalFileReference, paneID: String, resolved: WorkspaceTerminalPath? = nil) -> Task<Void, Never> {
         let machine = herdr.machine
         let session = herdr.sessionName
         let space = explorerLocation
         let workspaceID = space?.workspaceID ?? herdr.selectedWorkspaceID ?? ""
         return Task { [herdr, documents, effects] in
-            let cwd = await herdr.paneDirectory(paneID)
-            let found = try? await WorkspaceFiles.blocking(on: machine, priority: .userInitiated) {
+            let cwd = resolved == nil ? await herdr.paneDirectory(paneID) : nil
+            let found = resolved == nil ? try? await WorkspaceFiles.blocking(on: machine, priority: .userInitiated) {
                 try WorkspaceFiles.terminalPath(file.path, cwd: cwd, root: space?.root, machine: machine)
-            }
+            } : resolved
             guard let found = found ?? nil else { return effects.beep() }
             if found.isDirectory {
                 return machine == nil ? effects.reveal(found.path) : effects.beep()
@@ -280,7 +280,9 @@ struct ContentCommands {
             let reveal = file.line.map { line in
                 WorkspaceDocumentReveal(line: line, range: file.column.map { NSRange(location: max($0 - 1, 0), length: 0) })
             }
-            if let space, let path = found.pathInRoot {
+            let prefix = space.map { $0.root == "/" ? "/" : $0.root + "/" }
+            let relative = prefix.flatMap { found.path.hasPrefix($0) ? String(found.path.dropFirst($0.count)) : nil }
+            if let space, let path = found.pathInRoot ?? relative {
                 documents.open(.file, path: path, at: space, reveal: reveal, focus: true)
                 return
             }
