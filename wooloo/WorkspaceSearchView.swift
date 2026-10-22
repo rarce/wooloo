@@ -285,7 +285,7 @@ struct WorkspaceSearchView: View {
     private func field(_ prompt: String, text: Binding<String>, focus: Field) -> some View {
         TextField(prompt, text: text)
             .textFieldStyle(.plain)
-            .font(.system(size: typography.code, design: .monospaced))
+            .font(typography.swiftUICodeFont)
             .padding(.horizontal, 8)
             .frame(height: typography.metric(26))
             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
@@ -469,7 +469,7 @@ struct WorkspaceSearchView: View {
                 .truncationMode(.tail)
             Spacer(minLength: 0)
         }
-        .font(.system(size: typography.code, design: .monospaced))
+        .font(typography.swiftUICodeFont)
         .padding(.trailing, 12)
         .frame(height: typography.metric(19))
         .background(isActiveLine ? theme.accent.opacity(0.10) : .clear)

@@ -42,22 +42,23 @@ final class LineFragmentView: NSView {
         }
         context.saveGState()
 
+        // wooloo: inherit AppKit's native smoothing policy, as the terminal does.
+        // Private smoothing overrides produced a different stroke weight here.
         context.setAllowsAntialiasing(true)
         context.setShouldAntialias(true)
-        context.setAllowsFontSmoothing(false)
-        context.setShouldSmoothFonts(false)
         context.setAllowsFontSubpixelPositioning(true)
         context.setShouldSubpixelPositionFonts(true)
-        context.setAllowsFontSubpixelQuantization(true)
-        context.setShouldSubpixelQuantizeFonts(true)
-
-        ContextSetHiddenSmoothingStyle(context, 16)
 
         context.textMatrix = .init(scaleX: 1, y: -1)
-        context.textPosition = CGPoint(
+        let baseline = CGPoint(
             x: 0,
             y: lineFragment.height - lineFragment.descent + (lineFragment.heightDifference/2)
-        ).pixelAligned
+        )
+        // Align in device pixels, including the fragment's translated origin.
+        let deviceBaseline = context.convertToDeviceSpace(baseline)
+        context.textPosition = context.convertToUserSpace(
+            CGPoint(x: deviceBaseline.x.rounded(), y: deviceBaseline.y.rounded())
+        )
 
         CTLineDraw(lineFragment.ctLine, context)
         context.restoreGState()

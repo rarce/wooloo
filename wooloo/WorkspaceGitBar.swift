@@ -63,7 +63,7 @@ struct WorkspaceGitBar: View {
     private func commitEditor(_ changes: [WorkspaceFileChange]) -> some View {
         let plan = WorkspaceCommitPlan(changes: changes)
         let mode = plan.defaultMode
-        let font = Font.system(size: typography.code, design: .monospaced)
+        let font = typography.swiftUICodeFont
         let available = { (mode: WorkspaceCommitMode) in plan.isAvailable(mode, typed: model.message) }
         return VStack(alignment: .trailing, spacing: 6) {
             ZStack(alignment: .topLeading) {

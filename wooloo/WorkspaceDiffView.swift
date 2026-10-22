@@ -747,7 +747,7 @@ struct WorkspaceDiffView: View {
                 row(rows[index], palette: palette)
             }
         }
-        .font(.system(size: typography.code, design: .monospaced))
+        .font(typography.swiftUICodeFont)
         .textSelection(.enabled)
     }
 

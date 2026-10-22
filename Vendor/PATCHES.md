@@ -10,6 +10,7 @@ The upstream column is a local assessment, not a report of current upstream stat
 
 | Local patch | Existing validation and gaps | Upstream assessment |
 | --- | --- | --- |
+| Native text rasterization and device-pixel baselines | Editor and gutter inherit AppKit smoothing instead of the private smoothing-style override; baselines are rounded in the drawing context’s device space. Visual comparison across 1x/2x displays remains manual. | Local appearance policy; preserve when updating vendors. |
 | Scroll-view clipping | VS `testDocumentEditor`, `testMainWindowEditing` are indirect visual coverage; no dedicated clipping regression identified. | Small correctness candidate after a direct regression. |
 | Gutter change bars and public accessor | [EditorLineChangesTests](../woolooTests/EditorLineChangesTests.swift): `testRecreatedSplitEditorRestoresCachedGutterColorsAndChanges`, `testStagedHunksAreMarked`. | Reusable feature requiring API discussion. |
 | Tab stops and paragraph style | MC `testTheEditorDrawsTabsEveryTabWidthSpacesForEveryFontSize`. | Focused correctness candidate. |
@@ -25,6 +26,24 @@ The upstream column is a local assessment, not a report of current upstream stat
 | Narrow-width typesetting and break lookup | MC `testAnEditorWithNoRoomToWrapInKeepsALineInOneRow`, `testATwoMegabyteLineWrapsAtTheEditorsWidth`, `testWrappedRowsBreakAfterWhitespaceOrPunctuationAndKeepCRLFTogether`. | Correctness/performance candidate. |
 | Highlight-provider replacement identity | [EditorSyntaxTests](../woolooTests/EditorSyntaxTests.swift): `testChangingConfigurationSyntaxRetainsTextViewSelectionAndUndoHistory`, `testSwitchingFromConfigurationToTagSyntaxRestoresClosingTagsAndNewlines`. | Reusable correctness/API candidate. |
 | JSON capture mapping | [DiffHighlighterTests](../woolooTests/DiffHighlighterTests.swift): `testJSONKeysAndLiteralsHaveColors`, `testPaletteMapsCapturesToThemeColors`. | Small correctness candidate. |
+
+### Text rendering rationale
+
+The editor and gutter use Core Text in AppKit's drawing context. Their local patch removes
+`ContextSetHiddenSmoothingStyle` and forced smoothing/quantization overrides, retaining native
+rasterization and fractional glyph placement. Baseline rounding uses device coordinates rather
+than whole logical points, including the view's translation at Retina scales. No custom glyph
+atlas, bitmap scaling, synthetic stroke thickening, or gamma adjustment is introduced.
+
+References reviewed on 2026-10-22:
+
+- [Zed's rendering architecture](https://zed.dev/blog/videogame): Core Text shaping/rasterization and subpixel glyph variants, composed with a GPU atlas.
+- [VS Code terminal appearance](https://code.visualstudio.com/docs/terminal/appearance): GPU acceleration targets frame cost; fonts, ligatures and custom terminal glyphs are separate concerns.
+- [Ghostty configuration](https://ghostty.org/docs/config/reference): font fallbacks, optional stroke thickening and alpha-blending policy affect appearance independently.
+
+The app now uses the terminal's font descriptor for code at the configured code size, including
+SwiftUI diffs and search snippets so measured widths and displayed glyphs agree. UI labels retain
+the system UI font. Cross-display visual QA is still needed on both 1x and 2x hardware.
 
 ## Markdown and Mermaid
 
