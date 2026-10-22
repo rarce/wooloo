@@ -11,6 +11,8 @@ final class ContentCommandsTests: XCTestCase {
         var tabs: [[String: Any]] = [["tab_id": "w1:t1", "workspace_id": "w1", "label": "one"],
                                      ["tab_id": "w1:t2", "workspace_id": "w1", "label": "two"],
                                      ["tab_id": "w1:t3", "workspace_id": "w1", "label": "three"]]
+        /// The pane's directory `pane.get` answers, after a `cd` the snapshot has not seen.
+        var paneDirectory = "/tmp/project"
 
         func update(_ change: (State) -> Void) {
             lock.withLock { change(self) }
@@ -58,6 +60,7 @@ final class ContentCommandsTests: XCTestCase {
     private var search: WorkspaceSearchModel!
     private var copied: [String] = []
     private var revealed: [String] = []
+    private var beeps = 0
     private var appConfigReloads = 0
     private var updateChecks = 0
     private var canCheckForUpdates = true
@@ -76,6 +79,9 @@ final class ContentCommandsTests: XCTestCase {
             switch method {
             case "session.snapshot": return state.snapshot()
             case "pane.read": return ["result": ["read": ["text": ""]]]
+            case "pane.get":
+                return ["result": ["pane": ["pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1",
+                                            "cwd": state.paneDirectory]]]
             case "server.reload_config": return ["result": ["status": "applied"]]
             case "workspace.create": return ["result": ["workspace": ["workspace_id": "w1"]]]
             case "tab.create": return ["result": ["tab": ["tab_id": "w1:t1"]]]
@@ -106,6 +112,7 @@ final class ContentCommandsTests: XCTestCase {
                             toggleLineWrapping: { self.lineWrappingToggles += 1 },
                             copy: { self.copied.append($0) },
                             reveal: { self.revealed.append($0) },
+                            beep: { self.beeps += 1 },
                             canCheckForUpdates: { self.canCheckForUpdates },
                             checkForUpdates: { self.updateChecks += 1 }))
     }
@@ -131,6 +138,58 @@ final class ContentCommandsTests: XCTestCase {
         let id = try XCTUnwrap(documents.documents.first?.id)
         if edited { documents.documents[0].text = "edited\n" }
         return id
+    }
+
+    // MARK: Terminal links
+
+    /// A Command-clicked path starts from the pane's directory now, opens inside the Space at its
+    /// line, or on its own outside it; a folder shows in Finder, and a missing path beeps.
+    func testTerminalPathsOpenInTheSpaceOrOnTheirOwn() async throws {
+        await connect()
+        try sandbox.write(["nested/c.txt": "c\n"], in: "repo")
+        try sandbox.write(["b.txt": "b\n"], in: "other")
+        state.update { $0.paneDirectory = repo.root + "/nested" }
+
+        await commands.openTerminalFile(TerminalFileReference(path: "../a.txt", line: 1, column: 3), paneID: "w1:p1").value
+        let inside = try XCTUnwrap(documents.documents.last)
+        XCTAssertEqual(inside.location, repo)
+        XCTAssertEqual(inside.path, "a.txt")
+        XCTAssertEqual(inside.reveal?.line, 1)
+        XCTAssertEqual(inside.reveal?.range, NSRange(location: 2, length: 0))
+
+        await commands.openTerminalFile(TerminalFileReference(path: sandbox.path("other/b.txt")), paneID: "w1:p1").value
+        let outside = try XCTUnwrap(documents.documents.last)
+        XCTAssertEqual(outside.location.root, sandbox.path("other"))
+        XCTAssertEqual(outside.location.workspaceID, repo.workspaceID)
+        XCTAssertEqual(outside.path, "b.txt")
+        XCTAssertEqual(documents.activeID, outside.id)
+
+        await commands.openTerminalFile(TerminalFileReference(path: "."), paneID: "w1:p1").value
+        XCTAssertEqual(revealed, [repo.root + "/nested"])
+        await commands.openTerminalFile(TerminalFileReference(path: "missing.txt"), paneID: "w1:p1").value
+        XCTAssertEqual(beeps, 1)
+        XCTAssertEqual(documents.documents.count, 2)
+    }
+
+    func testHoverUsesCurrentDirectoryWithoutANewSnapshotAndClickReusesIt() async throws {
+        await connect()
+        try sandbox.write(["sub/a.txt": "hello"], in: "repo")
+        state.update { $0.paneDirectory = repo.root + "/sub" }
+        let file = TerminalFileReference(path: "a.txt", line: 4)
+        var answered = false
+        XCTAssertNil(herdr.terminalFileLinks.exists(file, paneID: "w1:p1") { answered = true })
+        for _ in 0..<200 where !answered { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertTrue(answered)
+        XCTAssertEqual(herdr.terminalFileLinks.known(file, paneID: "w1:p1"), true)
+        // A different server directory must not affect the already resolved click.
+        state.update { $0.paneDirectory = "/missing" }
+        var opening: Task<Void, Never>?
+        XCTAssertTrue(herdr.terminalFileLinks.open(file, paneID: "w1:p1") { resolved in
+            opening = self.commands.openTerminalFile(file, paneID: "w1:p1", resolved: resolved)
+        })
+        await opening?.value
+        XCTAssertEqual(documents.documents.last?.path, "sub/a.txt")
+        XCTAssertEqual(beeps, 0)
     }
 
     // MARK: Tabs

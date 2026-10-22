@@ -65,6 +65,29 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(try invocations().count, count, "ssh must not run with an option as its target")
     }
 
+    /// A path a terminal printed resolves the same on this Mac and over SSH: from the pane's
+    /// directory, through symbolic links, and inside the Space's root or not.
+    func testTerminalPathsResolveLocallyAndOverSSH() throws {
+        try sandbox.write(["space/src/a.swift": "a\n", "space/src/it's here.txt": "q\n", "other/b.txt": "b\n"], in: ".")
+        try sandbox.sh("ln -s ../other space/link")
+        for machine in [nil, machine] {
+            func resolve(_ path: String, cwd: String? = sandbox.path("space/src")) throws -> WorkspaceTerminalPath? {
+                try WorkspaceFiles.terminalPath(path, cwd: cwd, root: sandbox.path("space"), machine: machine)
+            }
+            let side = machine == nil ? "local" : "SSH"
+            XCTAssertEqual(try resolve("a.swift"),
+                           WorkspaceTerminalPath(path: sandbox.path("space/src/a.swift"), isDirectory: false, pathInRoot: "src/a.swift"), side)
+            XCTAssertEqual(try resolve("it's here.txt")?.pathInRoot, "src/it's here.txt", side)
+            XCTAssertEqual(try resolve("../link/b.txt"),
+                           WorkspaceTerminalPath(path: sandbox.path("other/b.txt"), isDirectory: false, pathInRoot: nil), side)
+            XCTAssertEqual(try resolve(sandbox.path("space/src")),
+                           WorkspaceTerminalPath(path: sandbox.path("space/src"), isDirectory: true, pathInRoot: "src"), side)
+            XCTAssertNil(try resolve("missing.txt"), side)
+            XCTAssertNil(try resolve("a.swift", cwd: nil), "A relative path needs the pane's directory (\(side))")
+            XCTAssertNotNil(try resolve("~"), side)
+        }
+    }
+
     /// Whatever ssh prints on stderr must never become part of a file or a listing.
     func testReadingOverSSHKeepsStderrOutOfTheContents() throws {
         try sandbox.repository("repo", files: ["a.txt": "one\n", "b.txt": "two\n"])
