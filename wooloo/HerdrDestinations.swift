@@ -131,7 +131,7 @@ final class HerdrDestinations: ObservableObject {
         notifier.register(windowID, window: { [weak self] in self?.nativeWindow },
                           watched: { [weak self] in
             guard let self, nativeWindow?.isKeyWindow == true, active.inputReady, isTerminalVisible(),
-                  let pane = active.selectedPaneID else { return nil }
+                  let pane = active.selectedPaneID, active.surface?.focusedPaneID == pane else { return nil }
             return (active.contextID, pane)
         }, open: { [weak self] context, pane in self?.open(context: context, pane: pane) ?? false })
     }

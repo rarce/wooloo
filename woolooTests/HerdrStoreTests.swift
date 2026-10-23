@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import XCTest
 @testable import wooloo
@@ -1271,6 +1272,54 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertNil(store.surface)
         XCTAssertEqual(store.snapshot?.workspaces.first?.label, "project")
         XCTAssertFalse(FileManager.default.fileExists(atPath: remoteSocket))
+    }
+
+    private final class KeyWindow: NSWindow {
+        override var isKeyWindow: Bool { true }
+    }
+
+    func testSelectedPaneAlertsUntilItsSurfaceIsActuallyVisible() async throws {
+        state.update { $0.panes.removeAll { $0["pane_id"] as? String == "w1:p2" } }
+        let config = try TemporaryHerdrConfig("[ui.toast]\ndelivery = \"off\"\n")
+        defer { config.restore() }
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+            afterHello: [SurfaceModel(width: 80, height: 24).surfaceFrame()])
+        defer { endpoint.stop() }
+        let notifier = HerdrNotifier()
+        notifier.isAppActive = { true }
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        let window = KeyWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+        destinations.nativeWindow = window
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        await waitUntil("initial surface ready") { store.inputReady && store.surface?.focusedPaneID == "w1:p1" }
+
+        func snapshot(_ status: String) throws -> HerdrSnapshot {
+            let result = try XCTUnwrap(state.lock.withLock { state.snapshot()["result"] as? [String: Any] })
+            var object = try XCTUnwrap(result["snapshot"] as? [String: Any])
+            object["agents"] = [["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t2",
+                                  "agent": "claude", "agent_status": status]]
+            return try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        notifier.process(try snapshot("working"), selectedPaneID: nil, contextID: store.contextID)
+        store.select(tabID: "w1:t2")
+        XCTAssertEqual(store.selectedPaneID, "w1:p3")
+        XCTAssertTrue(store.inputReady, "An established connection stays ready during a tab switch")
+        XCTAssertEqual(store.surface?.focusedPaneID, "w1:p1")
+        notifier.process(try snapshot("blocked"), selectedPaneID: nil, contextID: store.contextID)
+        XCTAssertEqual(notifier.attention(for: "w1:p3", contextID: store.contextID), .request,
+                       "Selection alone must not suppress an unseen pane's alert")
+
+        var next = SurfaceModel(width: 80, height: 24)
+        next.paneID = "w1:p3"
+        next.revision = 2
+        endpoint.send(next.surfaceFrame())
+        await waitUntil("selected pane displayed") { store.surface?.focusedPaneID == "w1:p3" }
+        notifier.acknowledge(paneID: "w1:p3", contextID: store.contextID)
+        notifier.process(try snapshot("working"), selectedPaneID: nil, contextID: store.contextID)
+        notifier.process(try snapshot("blocked"), selectedPaneID: nil, contextID: store.contextID)
+        XCTAssertNil(notifier.attention(for: "w1:p3", contextID: store.contextID),
+                     "A pane actually visible in the key window remains watched")
     }
 
     func testPassiveDestinationSubscribesWithoutTerminalOrPanePolling() async throws {
