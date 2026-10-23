@@ -36,12 +36,26 @@ final class Typesetter {
             self.string = string
         }
         characters = self.string.string as NSString
+        // wooloo patch: before the scroll view has a usable width there is nothing to draw. Keep the logical
+        // range and estimated height, but do not shape a multi-megabyte unwrapped row just to discard it at the
+        // first real width. TextLine records this width, so the next width lays the text out normally.
+        if displayData.maxWidth <= 0 {
+            typesetter = nil
+            let fragment = LineFragment(
+                ctLine: CTLineCreateWithAttributedString(NSAttributedString(string: "")),
+                width: 0,
+                height: displayData.estimatedLineHeight / displayData.lineHeightMultiplier,
+                descent: 0,
+                lineHeightMultiplier: displayData.lineHeightMultiplier
+            )
+            lineFragments.build(from: [.init(data: fragment, length: self.string.length,
+                                            height: fragment.scaledHeight)],
+                                estimatedLineHeight: fragment.scaledHeight)
+            return
+        }
         self.typesetter = CTTypesetterCreateWithAttributedString(self.string)
         generateLines(
-            // wooloo patch: narrower than a line is tall, as before the editor has its width or beside a gutter that
-            // leaves a few points, there is no room to wrap in: keep the line in one row. Upstream broke it after
-            // every character, two million rows for a 2 MB line, laid out again once there was room. Upstream 0.12
-            // sets a line as one empty row when the width is not positive.
+            // A positive width too narrow for wrapping still clips a single row, as before.
             maxWidth: displayData.maxWidth >= displayData.estimatedLineHeight
                 ? displayData.maxWidth : .greatestFiniteMagnitude,
             lineHeightMultiplier: displayData.lineHeightMultiplier,

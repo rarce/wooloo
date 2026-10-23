@@ -1428,6 +1428,34 @@ final class EditorMultiCursorTests: XCTestCase {
         }
     }
 
+    func testAnEditorWithoutTextWidthDefersShapingAndLaysOutAllTextWhenWidened() throws {
+        let text = String(repeating: "alpha\t世界 👩🏽‍💻 مرحبا beta; ", count: 1_000)
+        let (_, view) = try makeEditor(text: text, wrapLines: true, width: 20, resizable: true)
+        let placeholder = try XCTUnwrap(view.layoutManager.textLineForIndex(0)?.data.lineFragments.first)
+        XCTAssertEqual(placeholder.range, NSRange(location: 0, length: text.utf16.count))
+        XCTAssertEqual(CTLineGetGlyphCount(placeholder.data.ctLine), 0,
+                       "There is no text width yet; do not shape an invisible unwrapped row.")
+
+        try resize(to: 500)
+        let rows = try XCTUnwrap(view.layoutManager.textLineForIndex(0)?.data.lineFragments)
+        let ranges = Array(rows.map(\.range))
+        let widths = Array(rows.map { $0.data.width })
+        let heights = Array(rows.map { $0.data.scaledHeight })
+        XCTAssertGreaterThan(rows.count, 100)
+        XCTAssertEqual(ranges.first?.location, 0)
+        XCTAssertEqual(ranges.last?.max, text.utf16.count)
+        XCTAssertTrue(rows.allSatisfy { CTLineGetGlyphCount($0.data.ctLine) > 0 })
+        window?.close()
+
+        // A deferred layout must give exactly the same rows as opening at the final width, including
+        // tabs, surrogate pairs, combining characters, fallback fonts and bidirectional text.
+        let (_, fresh) = try makeEditor(text: text, wrapLines: true, width: 500)
+        let expected = try XCTUnwrap(fresh.layoutManager.textLineForIndex(0)?.data.lineFragments)
+        XCTAssertEqual(ranges, Array(expected.map(\.range)))
+        XCTAssertEqual(widths, Array(expected.map { $0.data.width }))
+        XCTAssertEqual(heights, Array(expected.map { $0.data.scaledHeight }))
+    }
+
     /// Words break after whitespace or punctuation, and never inside a CRLF line ending.
     func testWrappedRowsBreakAfterWhitespaceOrPunctuationAndKeepCRLFTogether() throws {
         let line = (0..<60).map { $0 % 3 == 0 ? "alpha,beta" : "gamma delta" }.joined(separator: " ")

@@ -611,6 +611,53 @@ scripts/editor-bench.sh --save-baseline
 scripts/editor-bench.sh --check
 ```
 
+### Long-line opening follow-up (2026-10-23)
+
+The original 1.59 s opening reference predates the scroll-anchor fix, measured on
+2026-10-20. A new comparison temporarily restored only `Typesetter.swift` to the current HEAD
+for the before run. The optimized run was collected first. Both runs use the unchanged
+2.16 MB text, fixture fingerprint, 500×600 viewport, 380-point resize, plain editor without
+syntax providers, and five Release repetitions on Mac16,5 / macOS 26.6.2 / Xcode 26.6.
+
+Before the scroll view has a positive text width, the typesetter now stores an empty row
+with the full logical range and estimated height. It creates the real Core Text typesetter
+and rows when the width becomes positive, avoiding an invisible unwrapped row that would
+immediately be discarded. Positive but very narrow widths retain the previous clipping behavior.
+
+| 2.16 MB wrapped line | Before p50 | After p50 | Before p95 | After p95 |
+| --- | ---: | ---: | ---: | ---: |
+| First viewport/capture | 104.34 ms | 84.53 ms | 107.61 ms | 89.59 ms |
+| Insert/capture | 85.02 ms | 85.49 ms | 92.01 ms | 91.24 ms |
+| Resize/capture | 79.56 ms | 83.14 ms | 86.54 ms | 86.92 ms |
+
+Opening improves by about 19%; editing and resizing show no clear improvement and remain
+follow-up work. The 20,000-line Unicode control takes 29 / 6 / 5 ms after the change for
+opening / insertion / resize, and native Find remains under 2 ms for both fixtures.
+`editor-long-line-{before,after}.jsonl` retain the complete results and source/environment
+verification; the compatible comparison passes the existing regression gate. One-minute
+host load ranged from 7.38 to 8.99 on 16 logical CPUs. No default baseline was overwritten.
+
+The signed Debug build succeeded. The full suite ran 1,079 tests, with 11 skipped and one
+failure: the already documented `testDocumentChangedOnDisk` snapshot still expects the old
+banner without Compare. The new hosted regression verifies that an editor with no text width
+does not shape glyphs, then compares all row ranges, widths and heights after widening with
+a fresh editor over tabs, CJK, emoji and bidirectional text. All editor tests passed.
+Native automation reached only the setup screen of a separate app with its own bundle ID,
+so interactive controls are not claimed as manually verified. The separate app and its
+`editor-check` Space were closed; the pre-existing `wooloo-ui-test` server was left running.
+As with the previous review, the 2.16 MB fixture is injected directly into the editor; normal
+source-file opening retains its 1,000,000-byte limit.
+
+The timing samples and pixel-inclusive suite above used commit `72c637d` plus this change.
+The PR is based on `9483b3e`, which includes the later editor typography and snapshot updates;
+the saved timing samples were not rerun on that newer base.
+On the newer base the CI-equivalent signed Debug run with complete concurrency checking
+executed 1,065 tests, with 11 skipped and one failure: the unchanged
+`testRemoteWalkStopsSoonAfterItIsCut` took 1.929 s against its 1.8 s limit. Three isolated
+repetitions of that test then passed. All editor tests, including the new regression, passed.
+The concurrency audit cannot pass a log whose full test run failed. The 21 performance-tooling
+contract tests and the saved benchmark comparison passed.
+
 ## Sustained runs and process resources
 
 `WOOLOO_E2E_SECONDS` extends the ascii/color/unicode/graphics/typing streaming phases (default
