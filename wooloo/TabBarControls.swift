@@ -163,6 +163,8 @@ final class TabDragModel: ObservableObject {
         return draggedPanelTab
     }
 
+    func cancel() { endDrag() }
+
     private func endDrag() {
         dragged = nil
         if target != nil { target = nil }

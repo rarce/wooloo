@@ -2,13 +2,47 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var destinations: HerdrDestinations
+    private let documents: WorkspaceDocumentStore?
+    private let window: ContentWindowModel?
+    private let managesRuntime: Bool
+    private let notifier: HerdrNotifier
+
+    init() {
+        let notifier = HerdrNotifier.shared
+        _destinations = StateObject(wrappedValue: HerdrDestinations(notifier: notifier, pool: .shared))
+        self.notifier = notifier
+        documents = nil
+        window = nil
+        managesRuntime = true
+    }
+
+    init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil, window: ContentWindowModel? = nil) {
+        let notifier = HerdrNotifier()
+        _destinations = StateObject(wrappedValue: HerdrDestinations(store: herdr, notifier: notifier, pool: nil))
+        self.notifier = notifier
+        self.documents = documents
+        self.window = window
+        managesRuntime = false
+    }
+
+    var body: some View {
+        DestinationContentView(herdr: destinations.active, destinations: destinations,
+                               notifier: notifier, documents: documents, window: window,
+                               managesRuntime: managesRuntime)
+    }
+}
+
+private struct DestinationContentView: View {
     @Environment(\.woolooTypography) private var typography
     @ObservedObject private var runtime = HerdrRuntimeModel.shared
     private var managesRuntime = true
-    @StateObject private var herdr = HerdrStore()
+    @ObservedObject private var herdr: HerdrStore
+    @ObservedObject private var destinations: HerdrDestinations
     @StateObject private var window = ContentWindowModel()
     @State private var shortcutMap = HerdrShortcutMap.load()
     @State private var shortcutPrefixActive = false
+    @AppStorage(HerdrShortcutMap.previousContextKey) private var previousContextShortcut = "prefix+backspace"
     @State private var availableSessions: [String] = []
     @State private var showsMachineManager = false
     @State private var machines: [HerdrMachineProfile] = []
@@ -36,7 +70,8 @@ struct ContentView: View {
     @State private var popupDocument: (session: String, space: String?, tab: String?, document: String)?
 
     @StateObject private var themes = ThemeStore()
-    @StateObject private var notifier = HerdrNotifier()
+    @ObservedObject private var notifier: HerdrNotifier
+    @State private var destinationContexts: [String: (WorkspaceFileLocation?, PanelContent)] = [:]
     @AppStorage(WoolooTypography.baseKey) private var interfaceTextSize = WoolooTypography.defaultBase
     @AppStorage(WoolooTypography.codeKey) private var codeTextSize = WoolooTypography.defaultCode
     private var textScale: WoolooTypography {
@@ -51,7 +86,6 @@ struct ContentView: View {
     private var selectedTabs: [HerdrTab] { herdr.selectedTabs }
     private var selectedPanes: [HerdrPane] { herdr.selectedPanes }
 
-    init() {}
 
     private func presentPopup(_ terminalID: String?) {
         if terminalID != nil {
@@ -70,10 +104,12 @@ struct ContentView: View {
         }
     }
 
-    /// Tests pass a store for a fake Herdr session and documents opened beforehand.
-    init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil, window: ContentWindowModel? = nil) {
-        _herdr = StateObject(wrappedValue: herdr)
-        managesRuntime = false
+    init(herdr: HerdrStore, destinations: HerdrDestinations, notifier: HerdrNotifier,
+         documents: WorkspaceDocumentStore?, window: ContentWindowModel?, managesRuntime: Bool) {
+        self.herdr = herdr
+        self.destinations = destinations
+        self.notifier = notifier
+        self.managesRuntime = managesRuntime
         if let documents { _documentStore = StateObject(wrappedValue: documents) }
         if let window { _window = StateObject(wrappedValue: window) }
     }
@@ -95,14 +131,21 @@ struct ContentView: View {
             if managesRuntime {
                 guard await runtime.prepare(session: herdr.sessionName) else { return }
             }
-            herdr.start()
+            guard !Task.isCancelled else { return }
+            destinations.start()
+            window.commandStore = herdr
+            if managesRuntime { loadMachines() }
         }
+        .background { DestinationWindowObserver(destinations: destinations).frame(width: 0, height: 0) }
         .onChange(of: runtime.showsSetup) { _, showsSetup in
             guard managesRuntime, herdr.machine == nil else { return }
             if showsSetup {
                 herdr.stop()
             } else {
-                herdr.connect(to: runtime.connectedSession ?? herdr.sessionName)
+                destinations.start()
+                destinations.localSession(runtime.connectedSession ?? herdr.sessionName)
+                window.commandStore = destinations.active
+                loadMachines()
                 shortcutMap = HerdrShortcutMap.load()
             }
         }
@@ -113,7 +156,7 @@ struct ContentView: View {
             perform: handleShortcut
         ))
         .onDisappear {
-            herdr.stop()
+            destinations.stop()
             Task {
                 do { try await documentStore.flushPersistence() }
                 catch { documentStore.persistenceError = error.localizedDescription }
@@ -122,44 +165,56 @@ struct ContentView: View {
         .overlay { pickers }
         .overlay { HerdrToastStack(notifier: notifier) }
         .overlay { InactiveWindowOverlay(background: theme.contentBackground) }
-        .background { TerminalHostObserver(store: herdr, theme: theme).frame(width: 0, height: 0) }
+        .background { TerminalHostObserver(store: herdr, theme: theme).id(herdr.contextID).frame(width: 0, height: 0) }
         .background { WorkspaceDiskComparisonPresenter(store: documentStore).frame(width: 0, height: 0) }
         .background { WorkspaceSessionWindowGuard(store: documentStore).frame(width: 0, height: 0) }
     }
 
-    var body: some View {
+    private var windowBehavior: some View {
         followingPanels(windowContent)
         .onAppear {
-            notifier.onOpenPane = { focusPane($0) }
+            destinations.onOpenTerminal = { [documentStore, window] in
+                documentStore.activeID = nil
+                window.focusedPanel = .main
+            }
+            destinations.isTerminalVisible = { [documentStore, window] in
+                documentStore.activeID == nil && window.focusedPanel == .main
+            }
             notifier.reloadSettings()
         }
-        .onReceive(herdr.snapshotPublisher) { snapshot in
-            notifier.process(snapshot, selectedPaneID: herdr.selectedPaneID)
-        }
-        .onChange(of: herdr.selectedPaneID) { _, paneID in notifier.acknowledge(paneID: paneID) }
+        .onChange(of: previousContextShortcut) { _, _ in shortcutMap = HerdrShortcutMap.load() }
+        .onChange(of: herdr.selectedPaneID) { _, _ in destinations.acknowledgeVisiblePane() }
+        .onChange(of: herdr.surfaceLayout) { _, _ in destinations.acknowledgeVisiblePane() }
+        .onChange(of: activeDocumentID) { _, _ in destinations.acknowledgeVisiblePane() }
+        .onChange(of: destinations.terminalRequestID) { _, _ in showSelectedSpace() }
         .onChange(of: herdr.surfaceLayout?.popupTerminalID) { _, terminalID in presentPopup(terminalID) }
-        .onChange(of: herdr.contextID) { _, _ in
-            notifier.reset()
+        .onChange(of: herdr.contextID) { old, new in
+            destinationContexts[old] = (explorerLocation, window.focusedPanel)
+            window.commandStore = herdr
+            window.tabDrag.cancel()
             followsHerdrAgentView = true
-            explorerLocation = nil
+            explorerLocation = destinationContexts[new]?.0
             search.setLocation(nil)
             window.quickOpen.dismiss()
             window.commandPalette.dismiss()
         }
         // Documents belong to the Space they were opened in.
         .onChange(of: herdr.selectedWorkspaceID.map { "\(herdr.contextID)|\($0)" }, initial: true) { _, space in
-            documentStore.showSpace(space)
-            window.focusedPanel = .main
+            showSelectedSpace()
         }
         // Editing a preview keeps it open, so later previews never replace unsaved work.
         .onChange(of: documents.contains { $0.isPreview && $0.isDirty }) { _, edited in
             if edited { documentStore.keepEditedPreviewsOpen() }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            notifier.acknowledge(paneID: herdr.selectedPaneID)
+            destinations.acknowledgeVisiblePane()
             documentStore.checkDisk()
         }
         .onReceive(Self.diskChanges) { checkDisk(after: $0) }
+    }
+
+    private var windowSheets: some View {
+        windowBehavior
         .sheet(isPresented: $showsMachineManager, onDismiss: loadMachines) {
             HerdrMachineManagerView()
         }
@@ -177,6 +232,10 @@ struct ContentView: View {
             .environment(\.woolooTheme, theme)
             .environment(\.woolooTypography, textScale)
         }
+    }
+
+    var body: some View {
+        windowSheets
         .alert("Herdr action failed", isPresented: Binding(
             get: { herdr.actionError != nil },
             set: { if !$0 { herdr.clearActionError() } }
@@ -223,11 +282,11 @@ struct ContentView: View {
         // Here rather than in the document's view, which a tab saved from its context menu lacks.
         .background { overwriteAlert }
         .confirmationDialog(window.closeTarget?.title ?? "Close?", isPresented: Binding(
-            get: { window.closeTarget != nil }, set: { if !$0 { commands.cancelClose() } }
+            get: { window.closeTarget != nil }, set: { if !$0 { cancelClose() } }
         )) {
             Button(window.closeTarget?.isLastTab == true ? "Close Space" : "Close",
                    role: .destructive) { commitClose() }
-            Button(window.closeTarget?.isLastTab == true ? "Keep Space" : "Cancel", role: .cancel) { commands.cancelClose() }
+            Button(window.closeTarget?.isLastTab == true ? "Keep Space" : "Cancel", role: .cancel) { cancelClose() }
         } message: {
             if case .lastTab = window.closeTarget {
                 Text("This is the last terminal tab. Close the Space, or keep it with its active agent session.")
@@ -274,16 +333,17 @@ struct ContentView: View {
                                          openDocument(.change, path: path, at: location, preview: preview)
                                      },
                                      onNewTab: { [contextID = herdr.contextID] cwd in
-                                         guard herdr.contextID == contextID else { return }
+                                         guard destinations.active === herdr, herdr.contextID == contextID else { return }
                                          activeDocumentID = nil
                                          herdr.createTab(cwd: cwd)
                                      },
                                      onNewSpace: { [contextID = herdr.contextID] cwd, label in
-                                         guard herdr.contextID == contextID else { return }
+                                         guard destinations.active === herdr, herdr.contextID == contextID else { return }
                                          activeDocumentID = nil
-                                         herdr.createWorkspace(cwd: cwd, label: label)
+                                         destinations.createSpace(on: herdr, cwd: cwd, label: label)
                                      },
                                      onLocationChange: { location in
+                                         guard destinations.active === herdr else { return }
                                          explorerLocation = location
                                          search.setLocation(location)
                                      },
@@ -294,7 +354,7 @@ struct ContentView: View {
                                          openSearch(replace: false)
                                      },
                                      onOpenWorktree: { [contextID = herdr.contextID] path, repository in
-                                         guard herdr.contextID == contextID else { return }
+                                         guard destinations.active === herdr, herdr.contextID == contextID else { return }
                                          openWorktree(path: path, repository: repository)
                                      },
                                      onOpenCommitFile: { location, commit, file in
@@ -313,7 +373,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var globalActions: some View {
-        Button("New Space", systemImage: "plus.square") { commands.perform(.newWorkspace) }
+        Button("New Space on \(herdr.machine?.label ?? "Local") · \(herdr.sessionName)", systemImage: "plus.square") { commands.perform(.newWorkspace) }
             .disabled(!herdr.isConnected)
         Button("New Tab", systemImage: "plus") { commands.perform(.newTab) }
             .disabled(!herdr.isConnected || herdr.selectedWorkspaceID == nil)
@@ -333,6 +393,9 @@ struct ContentView: View {
         Button("Herdr Settings…", systemImage: "gearshape") { commands.perform(.settings) }
         Button("Reload Herdr Config", systemImage: "arrow.triangle.2.circlepath") { commands.perform(.reloadConfig) }
             .disabled(!herdr.isConnected)
+        Button("Back to Previous Context", systemImage: "arrow.uturn.backward") { destinations.goBack() }
+            .disabled(destinations.previous == nil)
+        Button("Manage Remote Hosts…", systemImage: "network") { showsMachineManager = true }
         Button("Switch Session…", systemImage: "point.3.connected.trianglepath.dotted") {
             commands.perform(.switchSession)
         }
@@ -348,7 +411,7 @@ struct ContentView: View {
                             Spacer()
                             Button {
                                 activeDocumentID = nil
-                                herdr.createWorkspace()
+                                destinations.createSpace(on: herdr)
                             } label: {
                                 Image(systemName: "plus")
                                     .font(.system(size: typography.secondary, weight: .semibold))
@@ -358,40 +421,22 @@ struct ContentView: View {
                             .help("New Space")
                             .disabled(!herdr.isConnected)
                         }
-                        ForEach(herdr.snapshot?.workspaces ?? []) { workspace in
-                            Button {
-                                herdr.select(workspaceID: workspace.workspaceID)
-                            } label: {
-                                HStack(spacing: 7) {
-                                    AgentStatusDot(status: workspace.agentStatus)
-                                    Text(workspace.label)
-                                        .lineLimit(1)
-                                    Spacer(minLength: 0)
-                                    if let git = herdr.workspaceGitStatuses[workspace.workspaceID] {
-                                        HStack(spacing: 4) {
-                                            if git.ahead > 0 {
-                                                Text("↑\(git.ahead)")
-                                                    .help("\(git.ahead) commits to push")
-                                            }
-                                            if git.behind > 0 {
-                                                Text("↓\(git.behind)")
-                                                    .help("\(git.behind) commits to pull")
-                                            }
-                                        }
-                                        .font(.system(size: typography.secondary))
-                                        .monospacedDigit()
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize()
-                                    }
-                                    let marks = notifier.attentionCount(inWorkspace: workspace.workspaceID,
-                                                                        snapshot: herdr.snapshot)
-                                    HerdrAttentionBadge(requests: marks.requests, done: marks.done)
-                                }
-                                .font(.system(size: typography.emphasis, weight: .medium))
-                                .sidebarRow(selected: workspace.workspaceID == herdr.selectedWorkspaceID)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu { spaceActions(workspace) }
+                        ForEach(destinations.stores, id: \.contextID) { store in
+                            HerdrDestinationSection(store: store, notifier: notifier,
+                                active: store === herdr, grouped: destinations.stores.count > 1,
+                                select: { destinations.select(store, workspaceID: $0) },
+                                create: { destinations.createSpace(on: store) },
+                                rename: { space in
+                                    window.renameText = space.label
+                                    window.renameTarget = .workspace(space.workspaceID)
+                                    window.renameConnection = HerdrActionConnection(store)
+                                }, close: { space in
+                                    window.closeTarget = .workspace(space.workspaceID, space.label)
+                                    window.closeConnection = HerdrActionConnection(store)
+                                })
+                        }
+                        if let error = destinations.catalogError {
+                            Text(error).font(.caption).foregroundStyle(theme.warning)
                         }
                     }
 
@@ -466,7 +511,7 @@ struct ContentView: View {
                                         Text(agent.displayName)
                                             .font(.system(size: typography.body, weight: .medium))
                                             .lineLimit(1)
-                                        if let alert = notifier.attention[agent.paneID] {
+                                        if let alert = notifier.attention(for: agent.paneID, contextID: herdr.contextID) {
                                             Label(alert.label, systemImage: alert.icon)
                                                 .font(.system(size: typography.caption, weight: .semibold))
                                                 .foregroundStyle(alert == .request ? theme.warning : theme.success)
@@ -592,7 +637,7 @@ struct ContentView: View {
                             .onSubmit(connect)
                         Button("Connect", action: connect)
                     }
-                    if let error = herdr.sessionSelectionError {
+                    if let error = destinations.sessionSelectionError ?? herdr.sessionSelectionError {
                         Text(error).font(.caption).foregroundStyle(theme.warning)
                     }
                     if managesRuntime {
@@ -630,9 +675,9 @@ struct ContentView: View {
         return Button {
             connectionRequest = UUID()
             if let profile {
-                herdr.connect(to: profile)
+                if let store = destinations.stores.first(where: { $0.machine?.id == profile.id }) { destinations.select(store) }
             } else {
-                window.requestedSessionName = UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName
+                window.requestedSessionName = destinations.lastLocal?.sessionName ?? HerdrStore.defaultSessionName
                 connect()
             }
             explorerLocation = nil
@@ -659,14 +704,13 @@ struct ContentView: View {
     private func loadMachines() {
         Task {
             let result = await BlockingWork.run { Result { try WorkspaceFiles.machines() } }
-            guard case .success(let profiles) = result else { return }
-            machines = profiles
-            // Keep an unavailable host selected until the user explicitly chooses another.
-            // Never silently route actions back to the local server.
-            if let current = explorerMachine,
-               let updated = profiles.first(where: { $0.id == current.id }), updated != current {
-                herdr.connect(to: updated)
+            guard case .success(let profiles) = result else {
+                if case .failure(let error) = result { destinations.reportCatalogError(error) }
+                return
             }
+            machines = profiles
+            destinations.refresh(profiles)
+
         }
     }
 
@@ -691,6 +735,9 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .help(window.showsSidebar ? "Hide sidebar" : "Show sidebar")
+            Text("\(herdr.machine?.label ?? "Local") · \(herdr.sessionName)")
+                .lineLimit(1)
+                .help(herdr.machine?.target ?? "This Mac")
             Text(selectedWorkspace?.label ?? "Herdr")
                 .lineLimit(1)
             if shortcutPrefixActive {
@@ -700,8 +747,9 @@ struct ContentView: View {
             }
             Spacer()
             if !herdr.isConnected {
-                Text("Disconnected")
-                    .foregroundStyle(theme.warning)
+                Text("Disconnected").foregroundStyle(theme.warning)
+            } else if !herdr.inputReady {
+                Text("Connecting terminal…").foregroundStyle(theme.warning)
             }
             Button { window.showsFilesSidebar.toggle() } label: {
                 Image(systemName: "sidebar.right")
@@ -1026,7 +1074,7 @@ struct ContentView: View {
                 Image(systemName: "terminal")
                     .font(.system(size: typography.secondary))
                 Text(tab.label).lineLimit(1)
-                let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot)
+                let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot, contextID: herdr.contextID)
                 HerdrAttentionBadge(requests: marks.requests, done: marks.done)
             }
             .font(.system(size: typography.body))
@@ -1223,9 +1271,9 @@ struct ContentView: View {
             if managesRuntime {
                 guard await runtime.prepare(session: name) else { return }
             }
-            guard connectionRequest == request else { return }
-            herdr.connect(to: name)
-            if herdr.sessionSelectionError == nil { window.showsSessionPicker = false }
+            guard destinations.isRunning, connectionRequest == request else { return }
+            destinations.localSession(name)
+            if destinations.sessionSelectionError == nil && herdr.sessionSelectionError == nil { window.showsSessionPicker = false }
         }
         activeDocumentID = nil
     }
@@ -1282,6 +1330,10 @@ struct ContentView: View {
                         effects: ContentCommandEffects(reloadAppConfig: {
                             shortcutMap = HerdrShortcutMap.load()
                             themes.reload()
+                        }, previousContext: { destinations.goBack() },
+                        createWorkspace: { destinations.createSpace(on: herdr) },
+                        isCurrentDestination: { [contextID = herdr.contextID] in
+                            destinations.active === herdr && herdr.contextID == contextID
                         }),
                         bindingLabel: { [shortcutMap] in shortcutMap.displayLabel(for: $0) })
     }
@@ -1312,15 +1364,19 @@ struct ContentView: View {
         Button("Rename Space…", systemImage: "pencil") {
             window.renameText = workspace.label
             window.renameTarget = .workspace(workspace.workspaceID)
+            window.renameConnection = HerdrActionConnection(herdr)
         }
         if let root {
             Divider()
             Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(root) }
-            Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(root) }
+            if herdr.machine == nil {
+                Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(root) }
+            }
         }
         Divider()
         Button("Close Space…", systemImage: "xmark", role: .destructive) {
             window.closeTarget = .workspace(workspace.workspaceID, workspace.label)
+            window.closeConnection = HerdrActionConnection(herdr)
         }
     }
 
@@ -1393,19 +1449,34 @@ struct ContentView: View {
         guard let pane = herdr.snapshot?.panes.first(where: { $0.paneID == paneID }) else { return }
         herdr.select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
         activeDocumentID = nil
-        notifier.acknowledge(paneID: paneID)
+        notifier.acknowledge(paneID: paneID, contextID: herdr.contextID)
+    }
+
+    private func showSelectedSpace() {
+        let space = herdr.selectedWorkspaceID.map { "\(herdr.contextID)|\($0)" }
+        let legacy = herdr.machine != nil ? herdr.selectedWorkspaceID.map { "\(herdr.legacyContextID)|\($0)" } : nil
+        documentStore.showSpace(space, legacySpace: legacy, machine: herdr.machine)
+        if destinations.wantsTerminal {
+            documentStore.activeID = nil
+            window.focusedPanel = .main
+        } else {
+            window.focusedPanel = destinationContexts[herdr.contextID]?.1 ?? .main
+        }
     }
 
     private func commitRename() {
         commands.commitRename()
     }
 
+    private func cancelClose() { commands.cancelClose() }
+
     private func commitClose() {
         commands.commitClose()
     }
 
     private func handleShortcut(_ action: String) {
-        commands.perform(action)
+        if action == "previous_context" { destinations.goBack() }
+        else { commands.perform(action) }
     }
 
     private func resizeSurface(to size: CGSize) {
@@ -1508,7 +1579,7 @@ struct ContentView: View {
     }
 }
 
-private extension View {
+extension View {
     func sidebarRow(selected: Bool, height: CGFloat = 27) -> some View {
         modifier(SidebarRowModifier(selected: selected, height: height))
     }

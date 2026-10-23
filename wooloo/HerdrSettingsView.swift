@@ -20,6 +20,7 @@ struct HerdrSettingsView: View {
     @AppStorage(HerdrNotifier.bounceDockKey) private var bouncesDock = true
     @AppStorage(WoolooTypography.baseKey) private var interfaceTextSize = WoolooTypography.defaultBase
     @AppStorage(WoolooTypography.codeKey) private var codeTextSize = WoolooTypography.defaultCode
+    @AppStorage(HerdrShortcutMap.previousContextKey) private var previousContextShortcut = "prefix+backspace"
     @AppStorage("DimInactiveWindows") private var dimsInactiveWindows = true
     @AppStorage(MarkdownPreviewStyle.storageKey) private var markdownPreviewStyle = MarkdownPreviewStyle.theme
 
@@ -264,6 +265,11 @@ struct HerdrSettingsView: View {
                                   text: shortcutBindings(definition))
                             .textFieldStyle(.roundedBorder)
                     }
+                }
+            }
+            settingsGroup("wooloo", subtitle: "This app only · applies immediately") {
+                field("Back to Previous Context", hint: "Default: prefix+backspace. Separate alternatives with commas.") {
+                    TextField("prefix+backspace", text: $previousContextShortcut).textFieldStyle(.roundedBorder)
                 }
             }
         case .worktrees:

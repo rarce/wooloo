@@ -51,6 +51,7 @@ final class ContentCommandsTests: XCTestCase {
     private let state = State()
     private var root: URL!
     private var savedRoot: URL!
+    private var savedLastSession: String?
     private var server: FakeHerdrServer!
     private var herdr: HerdrStore!
     private var sandbox: WorkspaceGitSandbox!
@@ -70,6 +71,8 @@ final class ContentCommandsTests: XCTestCase {
     override func setUp() async throws {
         // Short, so socket paths stay under the 104-byte limit.
         root = URL(fileURLWithPath: "/private/tmp/wooloo-tests/\(UUID().uuidString.prefix(8))")
+        savedLastSession = UserDefaults.standard.string(forKey: "HerdrLastSession")
+        UserDefaults.standard.set(HerdrStore.defaultSessionName, forKey: "HerdrLastSession")
         savedRoot = HerdrStore.sessionRoot
         HerdrStore.sessionRoot = root
         herdr = HerdrStore()
@@ -99,6 +102,7 @@ final class ContentCommandsTests: XCTestCase {
         herdr.stop()
         server.stop()
         HerdrStore.sessionRoot = savedRoot
+        UserDefaults.standard.set(savedLastSession, forKey: "HerdrLastSession")
         try? FileManager.default.removeItem(at: root)
         sandbox.tearDown()
     }
@@ -138,6 +142,42 @@ final class ContentCommandsTests: XCTestCase {
         let id = try XCTUnwrap(documents.documents.first?.id)
         if edited { documents.documents[0].text = "edited\n" }
         return id
+    }
+
+    func testPendingCloseAndRenameKeepOriginalDestinationWithCollidingIDs() async throws {
+        await connect()
+        let other = HerdrStore()
+        other.setPresentationActive(false)
+        let otherServer = try FakeHerdrServer(path: root.appendingPathComponent("sessions/other/herdr.sock").path) { [state] method, _ in
+            method == "session.snapshot" ? state.snapshot() : ["result": [:]]
+        }
+        defer { other.stop(); otherServer.stop() }
+        other.connect(to: "other")
+        await waitUntil("other destination connected") { other.isConnected }
+        window.commandStore = herdr
+        window.closeTarget = .workspace("w1", "project")
+        window.renameTarget = .workspace("w1")
+        window.renameText = "original destination"
+        window.commandStore = other
+        let otherCommands = ContentCommands(window: window, herdr: other, documents: documents, search: search)
+        otherCommands.commitClose()
+        otherCommands.commitRename()
+        await waitUntil("commands reached original server") {
+            self.requests("workspace.close").count == 1 && self.requests("workspace.rename").count == 1
+        }
+        XCTAssertFalse(otherServer.requests.contains { $0.method == "workspace.close" || $0.method == "workspace.rename" })
+    }
+
+    func testPendingActionIsRejectedAfterConnectionGenerationChanges() async {
+        await connect()
+        window.commandStore = herdr
+        window.closeTarget = .workspace("w1", "project")
+        herdr.stop()
+        herdr.start()
+        await waitUntil("reconnected") { herdr.isConnected }
+        commands.commitClose()
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(requests("workspace.close").isEmpty)
     }
 
     // MARK: Terminal links

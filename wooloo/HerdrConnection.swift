@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -605,9 +606,11 @@ final class HerdrStore: ObservableObject {
         set {
             objectWillChange.send()
             snapshotValue = newValue
+            if let newValue { cachedSnapshot = newValue }
             publishedSnapshots.send(newValue)
         }
     }
+    private(set) var cachedSnapshot: HerdrSnapshot?
     private var snapshotValue: HerdrSnapshot?
     private let publishedSnapshots = CurrentValueSubject<HerdrSnapshot?, Never>(nil)
     /// Each published snapshot, starting with the current one, like `@Published`'s publisher.
@@ -721,7 +724,65 @@ final class HerdrStore: ObservableObject {
     private var surfaceTask: Task<Void, Never>?
     private var eventStream: HerdrEventStream?
     private var surfaceStream: HerdrSurfaceStream?
-    private var generation = 0
+    private(set) var generation = 0
+    private var actionToken = HerdrRequestToken()
+    private(set) var actionEpoch = UUID() {
+        didSet {
+            actionToken.cancel()
+            actionToken = HerdrRequestToken()
+            inputTask?.cancel()
+            inputTask = nil
+            pendingInput = []
+        }
+    }
+    func invalidatePendingActions() { actionEpoch = UUID() }
+    private var lastBootID: String?
+    @Published private(set) var destinationEnabled = true
+
+    func setDestinationEnabled(_ enabled: Bool) {
+        guard destinationEnabled != enabled else { return }
+        destinationEnabled = enabled
+        if enabled { start() }
+        else {
+            stop()
+            snapshot = nil
+            errorMessage = "This destination was disabled or removed. Choose another destination or enable it in Manage Remote Hosts."
+        }
+    }
+    private var presentationEpoch = UUID()
+    private(set) var presentationActive = true
+    /// Multi-host windows require a fresh matching screen before accepting terminal input.
+    var requiresSurfaceForInput = false
+    @Published private(set) var presentationEstablished = false
+    var inputReady: Bool {
+        presentationActive && isConnected && (!requiresSurfaceForInput ||
+            (presentationEstablished && surfaceStream?.isReady == true))
+    }
+
+    func setPresentationActive(_ active: Bool) {
+        guard presentationActive != active else { return }
+        presentationActive = active
+        stopPresentation()
+        if active, eventTask != nil || metadataSubscription != nil { startPresentation() }
+    }
+
+    private func stopPresentation() {
+        presentationEpoch = UUID()
+        presentationEstablished = false
+        publishSelection()
+        paneTask?.cancel()
+        paneTask = nil
+        surfaceStream?.cancel()
+        surfaceStream = nil
+        surfaceTask?.cancel()
+        surfaceTask = nil
+        inputTask?.cancel()
+        inputTask = nil
+        pendingInput = []
+        setSurface(nil)
+        resetAgentView()
+        requestedFocusPaneID = nil
+    }
     /// Worktree checkouts whose Space is being opened, so a repeated choice does not open two.
     private var openingWorktrees: Set<String> = []
     private struct PendingInput {
@@ -760,16 +821,14 @@ final class HerdrStore: ObservableObject {
         terminalFileLinks.directory = { [weak self] paneID in
             guard let self else { throw CancellationError() }
             let path = self.socketPath
-            return try await BlockingWork.run(priority: .userInitiated) {
+            let reaching = BlockingWorkMachine(self.machine)
+            return try await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 try HerdrSocket.paneDirectory(path: path, paneID: paneID)
             }
         }
         if let metrics = TerminalPipelineMetrics.shared {
             publishRecorder = objectWillChange.sink { _ in metrics.published() }
         }
-        #if WOOLOO_PROBES
-        TerminalTypingProbe.store = self
-        #endif
     }
 
     /// Herdr's config root. Tests point it at a temporary directory with fake servers.
@@ -791,6 +850,7 @@ final class HerdrStore: ObservableObject {
     }
 
     var socketPath: String {
+        if let metadataSource { return metadataSource.socketPath }
         if machine != nil { return remoteBridge?.apiPath ?? "/dev/null" }
         return Self.sessionDirectory(sessionName).appendingPathComponent("herdr.sock").path
     }
@@ -803,31 +863,50 @@ final class HerdrStore: ObservableObject {
     /// A pane's directory, asked of Herdr, else the snapshot's.
     func paneDirectory(_ paneID: String) async -> String? {
         let path = socketPath
-        let current = await BlockingWork.run(priority: .userInitiated) {
+        let reaching = BlockingWorkMachine(machine)
+        let current = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
             try? HerdrSocket.paneDirectory(path: path, paneID: paneID)
         }
         return current ?? snapshot?.panes.first { $0.paneID == paneID }?.cwd
     }
 
     var clientSocketPath: String {
+        if let metadataSource { return metadataSource.clientSocketPath }
         if machine != nil { return remoteBridge?.clientPath ?? "/dev/null" }
         return Self.sessionDirectory(sessionName).appendingPathComponent("herdr-client.sock").path
     }
 
     @Published private(set) var machine: HerdrMachineProfile?
     /// Keep the existing local document keys; remote IDs are scoped to their machine.
-    var contextID: String { machine.map { "ssh:\($0.id)|\(sessionName)" } ?? sessionName }
+    var legacyContextID: String { machine.map { "ssh:\($0.id)|\(sessionName)" } ?? sessionName }
+    var contextID: String {
+        guard let machine else { return sessionName }
+        let target = SHA256.hash(data: Data(machine.target.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+        return "\(legacyContextID)|target:\(target)"
+    }
     private var remoteBridge: HerdrRemoteBridge?
+    /// App-wide passive API connection; terminal presentation remains owned by this window.
+    var metadataSource: HerdrStore?
+    private var metadataSubscription: AnyCancellable?
+
+    func updateProfile(_ profile: HerdrMachineProfile) {
+        guard let old = machine, old.id == profile.id else { return }
+        if old.target == profile.target && old.session == profile.session {
+            machine = profile
+        } else {
+            switchConnection(to: profile.session, machine: profile)
+        }
+    }
 
     func connect(to machine: HerdrMachineProfile) {
         switchConnection(to: machine.session, machine: machine)
     }
 
-    func connect(to name: String) {
-        switchConnection(to: name, machine: nil)
+    func connect(to name: String, remember: Bool = true) {
+        switchConnection(to: name, machine: nil, remember: remember)
     }
 
-    private func switchConnection(to name: String, machine: HerdrMachineProfile?) {
+    private func switchConnection(to name: String, machine: HerdrMachineProfile?, remember: Bool = true) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.utf8.count <= 64,
               trimmed.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
@@ -835,11 +914,13 @@ final class HerdrStore: ObservableObject {
             return
         }
         sessionSelectionError = nil
+        if self.machine == machine, sessionName == trimmed, eventTask != nil || metadataSubscription != nil { return }
         stop()
         self.machine = machine
         sessionName = trimmed
-        if machine == nil { UserDefaults.standard.set(trimmed, forKey: Self.lastSessionKey) }
+        if machine == nil && remember { UserDefaults.standard.set(trimmed, forKey: Self.lastSessionKey) }
         snapshot = nil
+        cachedSnapshot = nil
         paneText = [:]
         lastPaneByTab = [:]
         openingWorktrees = []
@@ -858,7 +939,28 @@ final class HerdrStore: ObservableObject {
     }
 
     func start() {
-        guard eventTask == nil else { return }
+        guard destinationEnabled else { return }
+        guard eventTask == nil, metadataSubscription == nil else { return }
+        if let source = metadataSource {
+            source.start()
+            let currentGeneration = generation
+            metadataSubscription = source.snapshotPublisher.combineLatest(source.$errorMessage)
+                .receive(on: RunLoop.main)
+                .sink { [weak self] snapshot, error in
+                    guard let self, generation == currentGeneration else { return }
+                    self.errorMessage = error
+                    self.isServerStopped = source.isServerStopped
+                    if let snapshot {
+                        receive(snapshot)
+                        repairSelection()
+                    } else {
+                        if self.snapshot != nil { actionEpoch = UUID() }
+                        self.snapshot = nil
+                    }
+                }
+            if presentationActive { startPresentation() }
+            return
+        }
         if let machine, remoteBridge == nil {
             do { remoteBridge = try HerdrRemoteBridge(machine: machine) }
             catch { errorMessage = error.localizedDescription; return }
@@ -898,6 +1000,7 @@ final class HerdrStore: ObservableObject {
                     if case HerdrSocketError.notRunning = error { stopped = true } else { stopped = false }
                     await MainActor.run {
                         guard store.generation == currentGeneration else { return }
+                        store.actionEpoch = UUID()
                         store.snapshot = nil
                         let detail = store.remoteBridge?.lastError ?? message
                         let targetMessage = store.machine.map { "\($0.label): \(detail)" } ?? detail
@@ -909,6 +1012,18 @@ final class HerdrStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
+        if presentationActive { startPresentation() }
+    }
+
+    private func startPresentation() {
+        guard presentationActive, surfaceTask == nil else { return }
+        #if WOOLOO_PROBES
+        TerminalTypingProbe.store = self
+        #endif
+        let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
+        let currentGeneration = generation
+        let epoch = presentationEpoch
         // The fallback poll reads every second: one thread for all its reads, not one per read.
         let paneTextWorker = BlockingWorker(label: "dev.wooloo.pane-text")
         paneTask = Task {
@@ -920,10 +1035,10 @@ final class HerdrStore: ObservableObject {
                         continue
                     }
                     for paneID in paneIDs {
-                        let paneResult = await BlockingWork.run(priority: .utility, on: paneTextWorker) {
+                        let paneResult = await BlockingWork.run(priority: .utility, reaching: reaching, on: paneTextWorker) {
                             Result { try HerdrSocket.paneText(path: path, paneID: paneID) }
                         }
-                        if generation == currentGeneration, case .success(let text) = paneResult,
+                        if generation == currentGeneration, presentationEpoch == epoch, case .success(let text) = paneResult,
                            paneText[paneID] != text {
                             paneText[paneID] = text
                         }
@@ -940,7 +1055,7 @@ final class HerdrStore: ObservableObject {
                 let stream = HerdrSurfaceStream(timeouts: endpointTimeouts)
                 let mailbox = HerdrSurfaceMailbox()
                 let size = await MainActor.run { () -> (Int, Int, Int, Int)? in
-                    guard store.generation == currentGeneration else { return nil }
+                    guard store.generation == currentGeneration, store.presentationEpoch == epoch else { return nil }
                     store.surfaceStream = stream
                     store.setSurface(nil)
                     store.resetAgentView()
@@ -957,7 +1072,7 @@ final class HerdrStore: ObservableObject {
                         try stream.run(path: surfacePath, cols: size.0, rows: size.1,
                                        cellWidth: size.2, cellHeight: size.3) {
                             Task { @MainActor in
-                                guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
+                                guard store.generation == currentGeneration, store.presentationEpoch == epoch, store.surfaceStream === stream else { return }
                                 // Resizes during startup were retained locally while the endpoint
                                 // was not ready. Reconcile them with the provisional hello size.
                                 if (store.surfaceCols, store.surfaceRows, store.cellWidth, store.cellHeight) != size {
@@ -978,7 +1093,7 @@ final class HerdrStore: ObservableObject {
                             guard mailbox.put(newSurface) else { return }
                             DispatchQueue.main.async {
                                 MainActor.assumeIsolated {
-                                    guard let latest = mailbox.take(), store.generation == currentGeneration,
+                                    guard let latest = mailbox.take(), store.generation == currentGeneration, store.presentationEpoch == epoch,
                                           store.surfaceStream === stream else { return }
                                     store.setSurface(latest)
                                     if store.surfaceError != nil { store.surfaceError = nil }
@@ -988,7 +1103,7 @@ final class HerdrStore: ObservableObject {
                         } onAgents: { projection in
                             DispatchQueue.main.async {
                                 MainActor.assumeIsolated {
-                                    guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
+                                    guard store.generation == currentGeneration, store.presentationEpoch == epoch, store.surfaceStream === stream else { return }
                                     store.receiveAgentProjection(projection)
                                 }
                             }
@@ -996,7 +1111,7 @@ final class HerdrStore: ObservableObject {
                     }
                 } catch {
                     await MainActor.run {
-                        guard store.generation == currentGeneration, store.surfaceStream === stream else { return }
+                        guard store.generation == currentGeneration, store.presentationEpoch == epoch, store.surfaceStream === stream else { return }
                         // Invalidate queued callbacks before clearing the last surface and projection.
                         store.surfaceStream = nil
                         store.setSurface(nil)
@@ -1048,7 +1163,16 @@ final class HerdrStore: ObservableObject {
     }
 
     private func setSurface(_ surface: HerdrSurface?) {
+        if let boot = surface?.bootID {
+            if let lastBootID, lastBootID != boot {
+                actionEpoch = UUID()
+                pendingInput = []
+            }
+            lastBootID = boot
+        }
         let showsTab = surface.map { Set($0.paneIDs) == Set(selectedPanes.map(\.paneID)) } ?? false
+        if showsTab && !presentationEstablished { presentationEstablished = true }
+        if surface == nil { presentationEstablished = false }
         let completesSwitch = showsTab && surfaceSwitchTabID != nil
         if surface == nil || showsTab { endSurfaceSwitch() }
         if let surface { popupBlocksPaneInput = surface.popup != nil }
@@ -1114,6 +1238,10 @@ final class HerdrStore: ObservableObject {
         publishSelection()
         popupBlocksPaneInput = false
         generation += 1
+        actionEpoch = UUID()
+        stopPresentation()
+        metadataSubscription?.cancel()
+        metadataSubscription = nil
         eventStream?.cancel()
         eventStream = nil
         eventTask?.cancel()
@@ -1152,9 +1280,10 @@ final class HerdrStore: ObservableObject {
 
     func clearActionError() { actionError = nil }
 
-    func createWorkspace(cwd: String? = nil, label: String? = nil) {
+    func createWorkspace(cwd: String? = nil, label: String? = nil,
+                         selectOnOpen: Bool = true, onCreated: @escaping @MainActor (String) -> Void = { _ in }) {
         let source = cwd == nil ? selectedWorkspaceID : nil
-        openSpace { path in
+        openSpace(selectOnOpen: selectOnOpen, onOpened: onCreated) { path in
             try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source, cwd: cwd, label: label)
         }
     }
@@ -1189,23 +1318,31 @@ final class HerdrStore: ObservableObject {
 
     /// Runs a request that opens a Space off the main thread, then selects that Space.
     private func openSpace(finished: @escaping @MainActor () -> Void = {},
+                           selectOnOpen: Bool = true,
+                           onOpened: @escaping @MainActor (String) -> Void = { _ in },
                            _ open: @escaping @Sendable (String) throws -> String) {
         guard isConnected else { return finished() }
         let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
+        let currentEpoch = actionEpoch
+        let requestToken = actionToken
         Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
+            guard requestToken.isValid else { return }
+            let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> (String, HerdrSnapshot) in
+                    try requestToken.check()
                     let id = try open(path)
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
             }
-            guard generation == currentGeneration else { return }
+            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
             finished()
             switch result {
             case .success(let (id, fresh)):
                 snapshot = fresh
-                select(workspaceID: id)
+                if selectOnOpen { select(workspaceID: id) }
+                onOpened(id)
                 actionError = nil
             case .failure(let error): actionError = error.localizedDescription
             }
@@ -1215,15 +1352,20 @@ final class HerdrStore: ObservableObject {
     func createTab(cwd: String? = nil) {
         guard isConnected, let workspaceID = selectedWorkspaceID else { return }
         let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
+        let currentEpoch = actionEpoch
+        let requestToken = actionToken
         Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
+            guard requestToken.isValid else { return }
+            let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> (String, HerdrSnapshot) in
+                    try requestToken.check()
                     let id = try HerdrSocket.createTab(path: path, workspaceID: workspaceID, cwd: cwd)
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
             }
-            guard generation == currentGeneration else { return }
+            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
             switch result {
             case .success(let (id, fresh)):
                 snapshot = fresh
@@ -1288,17 +1430,22 @@ final class HerdrStore: ObservableObject {
         guard isConnected, let current = snapshot, let moved = current.movingTab(tabID, to: insertIndex) else { return }
         snapshot = moved
         let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
+        let currentEpoch = actionEpoch
+        let requestToken = actionToken
         Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
+            guard requestToken.isValid else { return }
+            let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> Void in
+                    try requestToken.check()
                     _ = try HerdrSocket.request(path: path, method: "tab.move",
                                                 params: ["tab_id": tabID, "insert_index": insertIndex])
                 }
             }
             // Read Herdr's order even when the move failed, to undo the one shown.
-            let fresh = await BlockingWork.run(priority: .userInitiated) { try? HerdrSocket.snapshot(path: path) }
-            guard generation == currentGeneration else { return }
+            let fresh = await BlockingWork.run(priority: .userInitiated, reaching: reaching) { try? { try requestToken.check(); return try HerdrSocket.snapshot(path: path) }() }
+            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
             if let fresh {
                 snapshot = fresh
                 repairSelection()
@@ -1362,12 +1509,17 @@ final class HerdrStore: ObservableObject {
     private func relocatePane(_ paneID: String, destination: [String: Any], targetPaneID: String?,
                               edge: TerminalDropEdge?, detachFirst: Bool) {
         let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
         let originalTab = snapshot?.panes.first(where: { $0.paneID == paneID })?.tabID
         let originalSelection = selectedTabID
         let currentGeneration = generation
+        let currentEpoch = actionEpoch
+        let requestToken = actionToken
         Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
+            guard requestToken.isValid else { return }
+            let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> Void in
+                    try requestToken.check()
                     if detachFirst {
                         let detached = try HerdrSocket.request(path: path, method: "pane.move", params: [
                             "pane_id": paneID, "destination": ["type": "new_tab"], "focus": false
@@ -1386,8 +1538,8 @@ final class HerdrStore: ObservableObject {
                 }
             }
             // Read Herdr's layout even after a failure, which may follow a successful move.
-            let fresh = await BlockingWork.run(priority: .userInitiated) { try? HerdrSocket.snapshot(path: path) }
-            guard generation == currentGeneration else { return }
+            let fresh = await BlockingWork.run(priority: .userInitiated, reaching: reaching) { try? { try requestToken.check(); return try HerdrSocket.snapshot(path: path) }() }
+            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
             if let fresh {
                 self.snapshot = fresh
                 let succeeded: Bool
@@ -1426,10 +1578,15 @@ final class HerdrStore: ObservableObject {
     func reloadConfig() {
         guard isConnected else { return }
         let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
+        let currentEpoch = actionEpoch
+        let requestToken = actionToken
         Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
+            guard requestToken.isValid else { return }
+            let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> Void in
+                    try requestToken.check()
                     let data = try HerdrSocket.request(path: path, method: "server.reload_config")
                     guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                           let response = root["result"] as? [String: Any],
@@ -1442,7 +1599,7 @@ final class HerdrStore: ObservableObject {
                     }
                 }
             }
-            guard generation == currentGeneration else { return }
+            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
             if case .failure(let error) = result { actionError = error.localizedDescription }
             else { actionError = nil }
         }
@@ -1451,15 +1608,20 @@ final class HerdrStore: ObservableObject {
     private func performAction(method: String, params: [String: Any], followServerFocus: Bool) {
         guard isConnected else { return }
         let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
+        let currentEpoch = actionEpoch
+        let requestToken = actionToken
         Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
+            guard requestToken.isValid else { return }
+            let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> HerdrSnapshot in
+                    try requestToken.check()
                     _ = try HerdrSocket.request(path: path, method: method, params: params)
                     return try HerdrSocket.snapshot(path: path)
                 }
             }
-            guard generation == currentGeneration else { return }
+            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
             switch result {
             case .success(let fresh):
                 snapshot = fresh
@@ -1596,13 +1758,23 @@ final class HerdrStore: ObservableObject {
     }
 
     private func enqueueInput(_ input: PendingInput) {
-        guard isConnected else { return }
+        guard inputReady else { return }
         pendingInput.append(input)
         guard inputTask == nil else { return }
         let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
+        let currentEpoch = actionEpoch
+        let requestToken = actionToken
+        let inputEpoch = presentationEpoch
         inputTask = Task {
-            while !pendingInput.isEmpty && !Task.isCancelled {
+            defer {
+                if generation == currentGeneration, presentationEpoch == inputEpoch, actionEpoch == currentEpoch {
+                    inputTask = nil
+                }
+            }
+            guard requestToken.isValid else { return }
+            while !pendingInput.isEmpty && !Task.isCancelled && presentationEpoch == inputEpoch {
                 let item = pendingInput.removeFirst()
                 if let popup = item.popup {
                     guard surface?.bootID == popup.bootID, surface?.popup?.terminalID == popup.terminalID else { continue }
@@ -1633,17 +1805,16 @@ final class HerdrStore: ObservableObject {
                 case .mouse:
                     continue // JSON pane.send_input has no mouse event field.
                 }
-                let result = await BlockingWork.run(priority: .userInitiated) {
-                    Result { try HerdrSocket.sendInput(path: path, paneID: item.paneID, text: text, keys: keys) }
+                let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
+                    Result { try requestToken.check(); return try HerdrSocket.sendInput(path: path, paneID: item.paneID, text: text, keys: keys) }
                 }
-                guard generation == currentGeneration else { break }
+                guard generation == currentGeneration, actionEpoch == currentEpoch else { break }
                 if case .failure(let error) = result {
                     setIfChanged(\.inputError, error.localizedDescription)
                 } else {
                     setIfChanged(\.inputError, nil)
                 }
             }
-            if generation == currentGeneration { inputTask = nil }
         }
     }
 
@@ -1685,6 +1856,10 @@ final class HerdrStore: ObservableObject {
         }
         if !snapshot.panes.contains(where: { $0.paneID == selectedPaneID && $0.tabID == selectedTabID }) {
             selectedPaneID = preferredPane(in: selectedTabID)
+        }
+        if !presentationEstablished, let surface,
+           Set(surface.paneIDs) == Set(selectedPanes.map(\.paneID)) {
+            presentationEstablished = true
         }
     }
 }

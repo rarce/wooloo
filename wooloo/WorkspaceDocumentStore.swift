@@ -72,6 +72,7 @@ final class WorkspaceDocumentStore: ObservableObject {
     private var persistenceTask: Task<Void, Never>?
     private var restorations: [String: Task<Void, Never>] = [:]
     private var managedSpaces: [String: String?] = [:]
+    private var legacyImports: Set<String> = []
     private var failedRestorations: Set<String> = []
     private var activeBySpace: [String: UUID] = [:]
     private var selectionChanged: Set<String> = []
@@ -107,7 +108,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         }
     }
 
-    private func restoreSpace(_ space: String?) {
+    private func restoreSpace(_ space: String?, legacySpace: String? = nil, machine: HerdrMachineProfile? = nil) {
         guard let persistence else { return }
         let key = WorkspaceSessionPersistence.key(for: space)
         guard !managedSpaces.keys.contains(key) else { return }
@@ -116,7 +117,14 @@ final class WorkspaceDocumentStore: ObservableObject {
         restorations[key] = Task { [weak self] in
             do {
                 guard let self else { return }
-                let restored = try await persistence.restore(space, owner: owner)
+                let restored: (session: WorkspaceSessionSnapshot, warnings: [String])
+                if let legacySpace, let machine {
+                    restored = try await persistence.restoreDestination(space, legacySpace: legacySpace,
+                                                                        machine: machine, owner: owner)
+                    self.legacyImports.insert(key)
+                } else {
+                    restored = try await persistence.restore(space, owner: owner)
+                }
                 self.applyingRestoration = true
                 defer { self.applyingRestoration = false }
                 var warnings = restored.warnings
@@ -216,7 +224,9 @@ final class WorkspaceDocumentStore: ObservableObject {
                 let snapshot = WorkspaceSessionSnapshot(space: space, activeDocument: activeBySpace[key],
                     documents: documents.filter { $0.space == space }.map(WorkspaceDocumentSnapshot.init),
                     discardedBackups: discardedBySpace[key] ?? [])
-                try await persistence.save(snapshot, owner: persistenceOwner)
+                var scopedSnapshot = snapshot
+                if legacyImports.contains(key) { scopedSnapshot.legacyImportCompleted = true }
+                try await persistence.save(scopedSnapshot, owner: persistenceOwner)
                 discardedBySpace[key]?.subtract(snapshot.discardedBackups)
             }
             // An edit or in-flight file save may finish while disk I/O is running. Quit and
@@ -242,8 +252,19 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     /// Shows another Space's tabs; the previous Space's stay open, hidden, until it is shown
     /// again. Documents opened before any Space was known join the first one shown.
-    func showSpace(_ space: String?) {
-        restoreSpace(space)
+    func showSpace(_ space: String?, legacySpace: String? = nil, machine: HerdrMachineProfile? = nil) {
+        if let legacySpace, let machine {
+            // Preserve in-memory dirty tabs too; never move a document from another SSH target.
+            for index in documents.indices where documents[index].space == legacySpace &&
+                documents[index].location.machine?.id == machine.id &&
+                documents[index].location.machine?.target == machine.target &&
+                documents[index].location.session == machine.session {
+                let selected = activeID == documents[index].id
+                documents[index].space = space
+                if selected { activeID = documents[index].id }
+            }
+        }
+        restoreSpace(space, legacySpace: legacySpace, machine: machine)
         guard space != self.space else { return }
         diskComparison = nil
         switchingSpace = true

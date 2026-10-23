@@ -254,6 +254,7 @@ struct WoolooCommandItem: Identifiable, Equatable {
         .init("check_for_updates", "wooloo", "Check for Updates…", requires: .updates),
         .init("settings", "Herdr", "Settings…", KeyboardShortcut(",", modifiers: .command)),
         .init("reload_config", "Herdr", "Reload Config", requires: .connected),
+        .init("previous_context", "Herdr", "Back to Previous Context"),
         .init("switch_session", "Herdr", "Switch Session…"),
         .init("remote_access", "Herdr", "Remote Access…"),
         .init("help", "Help", "Keyboard Shortcuts"),

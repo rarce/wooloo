@@ -151,6 +151,36 @@ final class HerdrNotifierTests: XCTestCase {
     }
 
     /// Herdr reports idle rather than done when a client watched the pane finish.
+    func testIdenticalPaneIDsKeepIndependentAttentionAcrossDestinations() throws {
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        let working = try snapshot(["w1:p1": "working"])
+        let blocked = try snapshot(["w1:p1": "blocked"])
+        notifier.process(working, selectedPaneID: nil, contextID: "local")
+        notifier.process(working, selectedPaneID: nil, contextID: "remote")
+        notifier.process(blocked, selectedPaneID: nil, contextID: "remote")
+        XCTAssertEqual(notifier.attentionCount(inWorkspace: "w1", snapshot: blocked, contextID: "local").requests, 0)
+        XCTAssertEqual(notifier.attentionCount(inWorkspace: "w1", snapshot: blocked, contextID: "remote").requests, 1)
+        notifier.process(blocked, selectedPaneID: nil, contextID: "local")
+        XCTAssertEqual(notifier.attention.count, 2)
+        notifier.isAppActive = { true }
+        notifier.acknowledge(paneID: "w1:p1", contextID: "local")
+        XCTAssertEqual(notifier.attention.count, 1)
+        notifier.process(nil, selectedPaneID: nil, contextID: "remote")
+        XCTAssertEqual(notifier.attention.count, 1, "An offline destination retains its unread marks")
+    }
+
+    func testResetCancelsDelayedNotificationEvenWhenAppIsInactive() async throws {
+        try config.write("[ui.toast]\ndelivery = \"herdr\"\ndelay_seconds = 1\n")
+        let notifier = HerdrNotifier()
+        notifier.isAppActive = { false }
+        notifier.process(try snapshot(["w1:p1": "working"]), selectedPaneID: nil)
+        notifier.process(try snapshot(["w1:p1": "blocked"]), selectedPaneID: nil)
+        notifier.reset()
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertTrue(notifier.toasts.isEmpty)
+    }
+
     func testIdleAfterWorkingCountsAsDone() throws {
         let notifier = HerdrNotifier()
         defer { notifier.reset() }

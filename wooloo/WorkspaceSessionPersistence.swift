@@ -118,6 +118,8 @@ struct WorkspaceSessionSnapshot: Codable {
     var documents: [WorkspaceDocumentSnapshot]
     /// Committed before removing backups so a crash during discard cannot resurrect them.
     var discardedBackups: Set<UUID> = []
+    /// Target-scoped sessions import the former profile-only namespace at most once.
+    var legacyImportCompleted: Bool? = nil
 }
 
 private enum WorkspaceSessionError: LocalizedError {
@@ -249,6 +251,35 @@ actor WorkspaceSessionPersistence {
         return (session, warnings)
     }
 
+    /// Import and claim in one actor turn. Two windows must not receive the same dirty backup
+    /// from the legacy namespace before either has committed the new session index.
+    func restoreDestination(_ space: String?, legacySpace: String, machine: HerdrMachineProfile,
+                            owner: UUID) throws -> (session: WorkspaceSessionSnapshot, warnings: [String]) {
+        var current = try restore(space)
+        if current.session.legacyImportCompleted != true {
+            if current.session.documents.isEmpty {
+                let legacy = try restore(legacySpace)
+                current.warnings += legacy.warnings
+                current.session.documents = legacy.session.documents.filter {
+                    $0.location.machine?.id == machine.id && $0.location.machine?.target == machine.target &&
+                    $0.location.session == machine.session
+                }.map { document in
+                    var migrated = document
+                    migrated.space = space
+                    return migrated
+                }
+                if current.session.documents.contains(where: { $0.backupID == legacy.session.activeDocument }) {
+                    current.session.activeDocument = legacy.session.activeDocument
+                }
+            }
+            current.session.legacyImportCompleted = true
+            try save(current.session)
+        }
+        var claimed = try restore(space, owner: owner)
+        claimed.warnings += current.warnings
+        return claimed
+    }
+
     func save(_ snapshot: WorkspaceSessionSnapshot, owner: UUID? = nil) throws {
         let manager = FileManager.default
         let indexURL = sessionURL(snapshot.space)
@@ -260,6 +291,7 @@ actor WorkspaceSessionPersistence {
         }
         var manifest = snapshot
         let previous = try readSession(snapshot.space)
+        manifest.legacyImportCompleted = snapshot.legacyImportCompleted ?? previous?.legacyImportCompleted
         let key = Self.key(for: snapshot.space)
         let revision = max(previous?.revision ?? 0, revisions[key] ?? 0) + 1
         revisions[key] = revision

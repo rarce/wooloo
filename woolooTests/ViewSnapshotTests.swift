@@ -947,6 +947,40 @@ final class ViewSnapshotTests: XCTestCase {
         return bitmap
     }
 
+    func testDestinationSidebarGroups() throws {
+        let oldSession = UserDefaults.standard.string(forKey: "HerdrLastSession")
+        let oldSSH = WorkspaceFiles.sshExecutable
+        defer {
+            UserDefaults.standard.set(oldSession, forKey: "HerdrLastSession")
+            WorkspaceFiles.sshExecutable = oldSSH
+        }
+        UserDefaults.standard.set("default", forKey: "HerdrLastSession")
+        WorkspaceFiles.sshExecutable = "/usr/bin/false"
+        let local = HerdrStore()
+        let remote = HerdrStore()
+        remote.setPresentationActive(false)
+        remote.connect(to: HerdrMachineProfile(id: "preview", label: "Devbox", target: "preview.invalid", session: "agents", enabled: true))
+        // Freeze fixtures before rendering: no test connects to a saved host or a user session.
+        remote.stop()
+        defer { local.stop(); remote.stop() }
+        let snapshot = try JSONDecoder().decode(HerdrSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: Self.herdrSnapshot(repo: "/work/wooloo", docs: "/work/docs")))
+        local.receive(snapshot)
+        local.select(workspaceID: "w1")
+        remote.receive(snapshot)
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        let view = VStack(alignment: .leading, spacing: 14) {
+            HerdrDestinationSection(store: local, notifier: notifier, active: true, grouped: true,
+                select: { _ in }, create: {}, rename: { _ in }, close: { _ in })
+            HerdrDestinationSection(store: remote, notifier: notifier, active: false, grouped: true,
+                select: { _ in }, create: {}, rename: { _ in }, close: { _ in })
+            Spacer()
+        }.padding(10)
+        try assertSnapshot(render(view, size: NSSize(width: 246, height: 340)), named: "destination-groups")
+        try skipIfRecorded()
+    }
+
     func testMainWindow() throws {
         try skipWithoutTerminalFont()
         try assertSnapshot(renderMainWindow(), named: "main-window")

@@ -21,6 +21,7 @@ final class HerdrStoreTests: XCTestCase {
         var zoomedTabs: Set<String> = []
         /// When set, `pane.send_input` waits for it before answering, keeping the request in flight.
         var inputGate: DispatchSemaphore?
+        var createGate: DispatchSemaphore?
 
         /// Changes the state from a test, which may be async.
         func update(_ change: (State) -> Void) {
@@ -38,17 +39,21 @@ final class HerdrStoreTests: XCTestCase {
     private let state = State()
     private var root: URL!
     private var savedRoot: URL!
+    private var savedLastSession: String?
     private var server: FakeHerdrServer!
     private var store: HerdrStore!
 
     override func setUp() async throws {
         // Short, so socket paths stay under the 104-byte limit.
         root = URL(fileURLWithPath: "/private/tmp/wooloo-tests/\(UUID().uuidString.prefix(8))")
+        savedLastSession = UserDefaults.standard.string(forKey: "HerdrLastSession")
+        UserDefaults.standard.set(HerdrStore.defaultSessionName, forKey: "HerdrLastSession")
         savedRoot = HerdrStore.sessionRoot
         HerdrStore.sessionRoot = root
         store = HerdrStore()
         server = try FakeHerdrServer(path: store.socketPath) { [state] method, params in
             if method == "pane.send_input", let gate = state.lock.withLock({ state.inputGate }) { gate.wait() }
+            if method == "workspace.create", let gate = state.lock.withLock({ state.createGate }) { gate.wait() }
             state.lock.lock()
             defer { state.lock.unlock() }
             switch method {
@@ -143,6 +148,7 @@ final class HerdrStoreTests: XCTestCase {
         store.stop()
         server.stop()
         HerdrStore.sessionRoot = savedRoot
+        UserDefaults.standard.set(savedLastSession, forKey: "HerdrLastSession")
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -647,6 +653,8 @@ final class HerdrStoreTests: XCTestCase {
 
     /// Keys typed while the window still shows the previous tab go to the tab switched to.
     func testInputDuringATabSwitchGoesToTheNewPane() async throws {
+        store.requiresSurfaceForInput = true
+        state.update { $0.panes.removeAll { $0["pane_id"] as? String == "w1:p2" } }
         let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
                                                afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
         defer { endpoint.stop() }
@@ -1263,6 +1271,198 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertNil(store.surface)
         XCTAssertEqual(store.snapshot?.workspaces.first?.label, "project")
         XCTAssertFalse(FileManager.default.fileExists(atPath: remoteSocket))
+    }
+
+    func testPassiveDestinationSubscribesWithoutTerminalOrPanePolling() async throws {
+        state.update { $0.panes.removeAll { $0["pane_id"] as? String == "w1:p2" } }
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+            afterHello: [SurfaceModel(width: 80, height: 24).surfaceFrame()])
+        defer { endpoint.stop() }
+        store.requiresSurfaceForInput = true
+        store.setPresentationActive(false)
+        await connect()
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertTrue(endpoint.received.isEmpty, "A background destination must not open the endpoint")
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.read" })
+        store.sendText("must not send", to: "w1:p1")
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.send_input" })
+        store.setPresentationActive(true)
+        await waitUntil("fresh active surface") { store.inputReady }
+        store.select(tabID: "w1:t2")
+        store.select(paneID: "w1:p3")
+        store.setPresentationActive(false)
+        XCTAssertNil(store.surface)
+        XCTAssertFalse(store.inputReady)
+        XCTAssertTrue(store.isConnected)
+        XCTAssertEqual(store.selectedTabID, "w1:t2")
+        state.update { $0.workspaces[0]["label"] = "background update" }
+        server.emit(["event": "workspace.renamed"])
+        await waitUntil("background metadata continues") { store.snapshot?.workspaces.first?.label == "background update" }
+        XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 1)
+    }
+
+    func testMetadataPoolSharesOneSubscriptionAndKeepsWindowSelectionsIndependent() async throws {
+        let notifier = HerdrNotifier()
+        let pool = HerdrMetadataPool(notifier: notifier)
+        let first = HerdrDestinations(store: store, notifier: notifier, pool: pool)
+        let second = HerdrDestinations(notifier: notifier, pool: pool)
+        first.start()
+        second.start()
+        defer { first.stop(); second.stop(); notifier.reset() }
+        await waitUntil("both windows connected") { first.active.isConnected && second.active.isConnected }
+        XCTAssertTrue(first.active.metadataSource === second.active.metadataSource)
+        XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 1)
+        first.active.select(tabID: "w1:t2")
+        XCTAssertEqual(second.active.selectedTabID, "w1:t1")
+        first.stop()
+        state.update { $0.workspaces[0]["label"] = "still connected" }
+        server.emit(["event": "workspace.renamed"])
+        await waitUntil("remaining window keeps metadata") { second.active.snapshot?.workspaces.first?.label == "still connected" }
+    }
+
+    func testDestinationNavigationReturnsToRememberedTabWithoutReconnectingMetadata() async throws {
+        let otherPath = root.appendingPathComponent("sessions/other/herdr.sock").path
+        let other = try FakeHerdrServer(path: otherPath) { [state] method, _ in
+            method == "session.snapshot" ? state.snapshot() : ["result": [:]]
+        }
+        defer { other.stop() }
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        await waitUntil("first destination connected") { store.isConnected }
+        store.select(tabID: "w1:t2")
+        let firstGeneration = store.generation
+        destinations.localSession("other")
+        let second = destinations.active
+        await waitUntil("second destination connected") { second.isConnected }
+        destinations.goBack()
+        XCTAssertTrue(destinations.active === store)
+        XCTAssertEqual(store.selectedTabID, "w1:t2")
+        XCTAssertEqual(store.generation, firstGeneration)
+        XCTAssertFalse(second.presentationActive)
+        XCTAssertTrue(second.isConnected)
+        destinations.goBack()
+        XCTAssertTrue(destinations.active === second)
+        XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 1)
+    }
+
+    func testSlowSpaceCreationDoesNotStealALaterSelectionOnTheSameDestination() async throws {
+        state.update {
+            $0.workspaces.append(["workspace_id": "w9", "label": "chosen", "active_tab_id": "w9:t1"])
+            $0.tabs.append(["tab_id": "w9:t1", "workspace_id": "w9", "label": "1"])
+            $0.panes.append(["pane_id": "w9:p1", "workspace_id": "w9", "tab_id": "w9:t1"])
+        }
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        await waitUntil("connected") { store.isConnected }
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        state.update { $0.createGate = gate }
+        destinations.createSpace(on: store)
+        await waitUntil("creation started") { server.requests.contains { $0.method == "workspace.create" } }
+        destinations.select(store, workspaceID: "w9")
+        gate.signal()
+        await waitUntil("created without navigating") { store.snapshot?.workspaces.contains { $0.workspaceID == "w2" } == true }
+        XCTAssertEqual(store.selectedWorkspaceID, "w9")
+        destinations.goBack()
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+    }
+
+    func testLateCatalogResultCannotOpenConnectionsAfterWindowCloses() async {
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.start()
+        destinations.stop()
+        destinations.refresh([HerdrMachineProfile(id: "late", label: "Late", target: "absent", session: "agents", enabled: true)])
+        XCTAssertEqual(destinations.stores.count, 1)
+        XCTAssertNil(store.metadataSource)
+        destinations.localSession("late")
+        XCTAssertEqual(destinations.stores.count, 1)
+    }
+
+    func testChangingSSHTargetChangesRoutingAndDocumentIdentity() {
+        let originalSSH = WorkspaceFiles.sshExecutable
+        WorkspaceFiles.sshExecutable = "/usr/bin/false"
+        defer { WorkspaceFiles.sshExecutable = originalSSH }
+        store.setPresentationActive(false)
+        store.connect(to: HerdrMachineProfile(id: "same-profile", label: "Devbox", target: "host-one", session: "agents", enabled: true))
+        let old = store.contextID
+        let action = HerdrActionConnection(store)
+        store.updateProfile(HerdrMachineProfile(id: "same-profile", label: "Devbox", target: "host-two", session: "agents", enabled: true))
+        XCTAssertNotEqual(store.contextID, old)
+        XCTAssertNil(action.validStore)
+    }
+
+    func testQueuedMutationIsCancelledBeforeDispatchAfterConnectionChanges() async {
+        await connect()
+        for _ in 0..<BlockingWork.limit { try? await BlockingWork.slots.acquire() }
+        store.closeWorkspace("w1")
+        await Task.yield()
+        store.stop()
+        store.start()
+        for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() }
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(server.requests.contains { $0.method == "workspace.close" })
+    }
+
+    func testSaturatedRemoteDoesNotBlockLocalMutations() async throws {
+        await connect()
+        let originalSSH = WorkspaceFiles.sshExecutable
+        let remoteServer = try FakeHerdrServer { [state] method, _ in
+            method == "session.snapshot" ? state.snapshot() : ["result": [:]]
+        }
+        let remote = HerdrStore()
+        remote.setPresentationActive(false)
+        defer { remote.stop(); remoteServer.stop(); WorkspaceFiles.sshExecutable = originalSSH }
+        WorkspaceFiles.sshExecutable = try fakeSSH(api: remoteServer.path, client: "/private/tmp/no-client")
+        let machine = HerdrMachineProfile(id: "budget-test", label: "Budget", target: "budget-test", session: "agents", enabled: true)
+        remote.connect(to: machine)
+        await waitUntil("remote metadata connected") { remote.isConnected }
+        let slots = BlockingWork.slots(for: BlockingWorkMachine(machine))
+        for _ in 0..<BlockingWork.machineLimit { try await slots.acquire() }
+        remote.closeWorkspace("w1")
+        store.closeWorkspace("w1")
+        await waitUntil("local mutation does not wait for remote capacity") { server.requests.contains { $0.method == "workspace.close" } }
+        XCTAssertFalse(remoteServer.requests.contains { $0.method == "workspace.close" })
+        for _ in 0..<BlockingWork.machineLimit { slots.release() }
+        await waitUntil("remote mutation follows after its own capacity frees") { remoteServer.requests.contains { $0.method == "workspace.close" } }
+    }
+
+    func testInvalidatingQueuedInputDoesNotLeaveACompletedTaskBlockingNewKeys() async throws {
+        state.update { $0.panes.removeAll { $0["pane_id"] as? String == "w1:p2" } }
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+            afterHello: [SurfaceModel(width: 80, height: 24).surfaceFrame()])
+        defer { endpoint.stop() }
+        store.requiresSurfaceForInput = true
+        await connect()
+        await waitUntil("terminal ready") { store.inputReady }
+        store.sendText("old epoch", to: "w1:p1")
+        store.invalidatePendingActions()
+        store.sendText("new epoch", to: "w1:p1")
+        await waitUntil("new input task sends") {
+            endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .text("new epoch"))!)
+        }
+        XCTAssertFalse(endpoint.received.contains(SurfaceWriter.paneInput(paneID: "w1:p1", event: .text("old epoch"))!))
+    }
+
+    func testSameDestinationSelectionDoesNotRestartConnection() async {
+        await connect()
+        let generation = store.generation
+        store.connect(to: store.sessionName)
+        XCTAssertEqual(store.generation, generation)
+        XCTAssertTrue(store.isConnected)
+    }
+
+    func testStrictInputWaitsForSurfaceAndDoesNotUseJSONFallback() async {
+        store.requiresSurfaceForInput = true
+        await connect()
+        store.sendText("not yet", to: "w1:p1")
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(store.inputReady)
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.send_input" })
     }
 
     func testBridgePreservesSSHPortAndQuotesSession() throws {
