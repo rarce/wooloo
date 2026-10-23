@@ -35,7 +35,15 @@ struct WorkspaceDocumentReveal: Equatable {
     let line: Int
     /// UTF-16 range within the line to select.
     let range: NSRange?
+    /// An editor navigation target, independent of the LF line numbers used by Git search.
+    let absoluteRange: NSRange?
     let token = UUID()
+
+    init(line: Int, range: NSRange?, absoluteRange: NSRange? = nil) {
+        self.line = line
+        self.range = range
+        self.absoluteRange = absoluteRange
+    }
 }
 
 /// An open file against its file on disk, which something else may write or delete.
@@ -72,7 +80,12 @@ struct WorkspaceDocument: Identifiable {
     var commit: String?
     /// Pre-rename path for `.commit` documents.
     var originalPath: String?
-    var text = ""
+    var text = "" {
+        didSet {
+            if kind == .file, text != oldValue { metadata = EditorDocumentMetadata(text) }
+        }
+    }
+    private(set) var metadata = EditorDocumentMetadata()
     var savedText = ""
     var version: String?
     /// PDFKit state lives with the tab so switching tabs preserves its position and zoom.
@@ -171,6 +184,8 @@ struct WorkspaceDocumentView: View {
         get { document.cursorPositions }
         nonmutating set { document.cursorPositions = newValue }
     }
+    @StateObject private var structure = EditorStructureModel()
+    @State var showsOutline = false
     @State private var sessionCoordinator = EditorSessionCoordinator()
     @State private var revealCoordinator = EditorRevealCoordinator()
     @State private var lineChangeCoordinator = EditorLineChangeCoordinator()
@@ -191,6 +206,15 @@ struct WorkspaceDocumentView: View {
     @State private var notebookEditError: String?
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
     @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
+    @AppStorage("EditorIndentUsesTabs") private var indentUsesTabs = false
+    @AppStorage("EditorIndentWidth") private var storedIndentWidth = 4
+    @State private var showsGoToLine = false
+    @State private var goToLineInput = ""
+    private var indentWidth: Int { min(max(storedIndentWidth, 1), 8) }
+    private var showsSource: Bool {
+        document.isEditable && !document.isLoading &&
+        (!document.supportsPreview || document.markdownMode != .preview)
+    }
 
     @AppStorage(SyntaxAssociation.storageKey) private var syntaxAssociationsJSON = "[]"
     @State private var diffDetectedSyntax: EditorSyntax?
@@ -230,13 +254,6 @@ struct WorkspaceDocumentView: View {
                         .help(commit)
                 }
                 Spacer()
-                if !document.isReadOnly {
-                    EditorSyntaxPicker(detected: detectedSyntax, path: document.path,
-                                       selection: Binding(get: { document.syntaxOverride }, set: {
-                                           document.syntaxOverride = $0
-                                           document.isPreview = false
-                                       }), associationsJSON: $syntaxAssociationsJSON)
-                }
                 Text("\(document.location.machineLabel) · \(document.location.workspaceLabel)")
                     .lineLimit(1)
                     .foregroundStyle(.secondary)
@@ -308,6 +325,10 @@ struct WorkspaceDocumentView: View {
             .padding(.horizontal, 12)
             .frame(height: 33)
             Divider()
+            if document.isEditable && !document.isLoading {
+                structureBar
+                Divider()
+            }
             if document.kind == .file && !document.isLoading, let notice = diskNotice {
                 diskBanner(notice)
                 Divider()
@@ -328,28 +349,21 @@ struct WorkspaceDocumentView: View {
                     .padding(16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if document.kind == .file {
-                VStack(spacing: 0) {
-                    if let error = document.error {
-                        Text(error)
-                            .font(.system(size: typography.body))
-                            .foregroundStyle(theme.warning)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                    }
-                    if document.isPDF, let pdf = document.pdf {
-                        PDFPreviewView(model: pdf, focusRequest: document.focusRequest,
-                                       onFocus: { document.focusRequest = nil })
-                    } else if document.isImage, let image = document.image {
-                        ImagePreviewView(model: image, focusRequest: document.focusRequest,
-                                         onFocus: { document.focusRequest = nil })
-                    } else if document.supportsPreview {
-                        switch document.markdownMode {
-                        case .source: editor
-                        case .preview: documentPreview
-                        case .split: HSplitView { editor; documentPreview }
+                GeometryReader { geometry in
+                    HStack(spacing: 0) {
+                        if showsOutline && geometry.size.width >= 560 {
+                            outlinePanel.frame(width: 210)
+                            Divider()
                         }
-                    } else {
-                        editor
+                        fileContents
+                    }
+                    .overlay(alignment: .leading) {
+                        if showsOutline && geometry.size.width < 560 {
+                            outlinePanel
+                                .frame(width: min(240, max(120, geometry.size.width - 24)))
+                                .background(theme.contentBackground)
+                                .shadow(color: .black.opacity(0.2), radius: 6, x: 3)
+                        }
                     }
                 }
             } else if showsNotebookCells {
@@ -359,27 +373,16 @@ struct WorkspaceDocumentView: View {
                 jsonDiff
             }
             Divider()
-            HStack {
-                Text(document.kind == .file ? (document.isImage ? "\(document.image?.contents.format ?? "Image") · Read only" : document.isPDF ? "PDF · Read only" : document.isDirty ? "Unsaved changes" : NotebookDocument.supports(document.path) ? "Notebook · Saved output" : "UTF-8 text")
-                     : (document.kind == .commit ? "Commit diff" : "Git diff"))
-                Spacer()
-                if document.isEditable, cursorPositions.count > 1 {
-                    Text("\(cursorPositions.count) cursors")
-                } else if document.isEditable, let cursor = cursorPositions.first {
-                    let place = cursor.lineAndColumn(in: document.text)
-                    Text("Ln \(place.line), Col \(place.column)")
-                }
-                if document.isSaving { ProgressView().controlSize(.small) }
-            }
-            .font(.system(size: typography.secondary))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 11)
-            .frame(height: 23)
+            statusBar
+
         }
         .background(theme.contentBackground)
         .background {
             if isFocused && document.kind == .file && !document.isImage { findShortcuts }
         }
+        .onAppear { updateStructure() }
+        .onChange(of: document.text) { _, _ in updateStructure() }
+        .onChange(of: syntax.id) { _, _ in updateStructure() }
         .onChange(of: find.isVisible) { _, _ in updateFind(anchor: cursorPositions.first?.range.location) }
         .onChange(of: find.options) { _, _ in
             updateFind(anchor: cursorPositions.first?.range.location)
@@ -450,6 +453,270 @@ struct WorkspaceDocumentView: View {
         .allowsHitTesting(false)
     }
 
+    private func updateStructure() {
+        structure.update(source: document.isEditable ? document.text : "",
+                         languageID: document.isEditable ? syntax.id : "plaintext")
+    }
+
+    private var fileContents: some View {
+        VStack(spacing: 0) {
+            if let error = document.error {
+                Text(error)
+                    .font(.system(size: typography.body))
+                    .foregroundStyle(theme.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
+            if document.isPDF, let pdf = document.pdf {
+                PDFPreviewView(model: pdf, focusRequest: document.focusRequest,
+                               onFocus: { document.focusRequest = nil })
+            } else if document.isImage, let image = document.image {
+                ImagePreviewView(model: image, focusRequest: document.focusRequest,
+                                 onFocus: { document.focusRequest = nil })
+            } else if document.supportsPreview {
+                switch document.markdownMode {
+                case .source: editor
+                case .preview: documentPreview
+                case .split: HSplitView { editor; documentPreview }
+                }
+            } else {
+                editor
+            }
+        }
+    }
+
+    private var structureChain: [SourceSymbol] {
+        guard !document.supportsPreview || document.markdownMode != .preview else { return [] }
+        return EditorStructure.chain(at: cursorPositions.first?.range.location ?? 0,
+                              in: structure.symbols, documentLength: document.metadata.utf16Length)
+    }
+
+    private var structureBar: some View {
+        HStack(spacing: 6) {
+            Button {
+                showsOutline.toggle()
+            } label: {
+                Image(systemName: "list.bullet.indent")
+                    .foregroundStyle(showsOutline ? theme.accent : .secondary)
+            }
+            .accessibilityLabel(showsOutline ? "Hide Outline" : "Show Outline")
+            .help("Show or hide the file outline")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    Menu {
+                        Button("Copy Path") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(document.location.absolutePath(document.path), forType: .string)
+                        }
+                        if document.location.isLocal && !document.isUntitled {
+                            Button("Reveal in Finder") { AppActions.reveal(document.location.absolutePath(document.path)) }
+                        }
+                        if !structure.symbols.isEmpty {
+                            Divider()
+                            ForEach(structure.symbols) { symbol in
+                                Button(symbol.name) { navigateToSymbol(symbol) }
+                            }
+                        }
+                    } label: {
+                        Label(document.displayPath, systemImage: document.icon)
+                            .lineLimit(1).fixedSize()
+                    }
+                    .help(document.displayPath)
+                    ForEach(structureChain) { symbol in
+                        Image(systemName: "chevron.right").font(.system(size: 8))
+                            .foregroundStyle(.tertiary)
+                        Menu {
+                            Button("Go to \(symbol.name)") { navigateToSymbol(symbol) }
+                            if !symbol.children.isEmpty {
+                                Divider()
+                                ForEach(symbol.children) { child in
+                                    Button(child.name) { navigateToSymbol(child) }
+                                }
+                            }
+                        } label: {
+                            Text(symbol.name).lineLimit(1).fixedSize()
+                        }
+                        .help("Navigate within \(symbol.name)")
+                        .accessibilityIdentifier("editor.breadcrumb.\(symbol.name)")
+                    }
+                }
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .font(.system(size: typography.secondary))
+        .padding(.horizontal, 10)
+        .frame(height: 27)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Breadcrumbs")
+    }
+
+    private var outlinePanel: some View {
+        let selectedID = structureChain.last?.id
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Outline").fontWeight(.medium)
+                Spacer()
+                if structure.isIndexing { ProgressView().controlSize(.mini) }
+                Button { showsOutline = false } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close Outline")
+            }
+            .padding(10)
+            Divider()
+            if !EditorStructure.supported.contains(syntax.id) {
+                Text("Outline is not available for \(syntax.name).")
+                    .foregroundStyle(.secondary).padding(12)
+            } else if structure.symbols.isEmpty && !structure.isIndexing {
+                Text("No symbols in this file.")
+                    .foregroundStyle(.secondary).padding(12)
+            } else {
+                ScrollView {
+                    ForEach(structure.symbols) { symbol in
+                        EditorOutlineRow(symbol: symbol, activePath: Set(structureChain.map(\.id)),
+                                         selectedID: selectedID, onNavigate: navigateToSymbol)
+                    }
+                    .padding(8)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: typography.secondary))
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(theme.contentBackground)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("File Outline")
+    }
+
+    private func navigateToSymbol(_ symbol: SourceSymbol) {
+        let range = symbol.selectionRange
+        guard NSMaxRange(range) <= document.metadata.utf16Length else { return }
+        if document.markdownMode == .preview { document.markdownMode = .source }
+        // Existing reveal handling updates the primary selection and focuses the source editor.
+        document.reveal = WorkspaceDocumentReveal(line: document.metadata.position(at: range.location).line,
+                                                  range: nil, absoluteRange: range)
+        document.focusRequest = UUID()
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            Text(documentStatus).lineLimit(1).help(documentStatus)
+            if document.isSaving { ProgressView().controlSize(.mini) }
+            Spacer(minLength: 4)
+            ViewThatFits(in: .horizontal) {
+                statusContents(compact: false)
+                statusContents(compact: true)
+                ScrollView(.horizontal, showsIndicators: false) { statusContents(compact: true) }
+            }
+        }
+        .font(.system(size: typography.secondary))
+        .foregroundStyle(.secondary)
+        .buttonStyle(.plain)
+        .padding(.horizontal, 11)
+        .frame(height: 25)
+        .popover(isPresented: $showsGoToLine) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Go to Line").font(.headline)
+                TextField("Line number", text: $goToLineInput)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { goToLine() }
+                Button("Go") { goToLine() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(Int(goToLineInput).map { $0 < 1 || $0 > document.metadata.lineStarts.count } ?? true)
+            }
+            .padding(14).frame(width: 220)
+        }
+    }
+
+    private var documentStatus: String {
+        if document.kind != .file { return document.kind == .commit ? "Commit diff" : "Git diff" }
+        if document.isImage { return "\(document.image?.contents.format ?? "Image") · Read only" }
+        if document.isPDF { return "PDF · Read only" }
+        if document.isLoading { return "Loading…" }
+        return document.isSaving ? "Saving…" : document.isDirty || document.isUntitled ? "Unsaved" : "Saved"
+    }
+
+    private func statusContents(compact: Bool) -> some View {
+        HStack(spacing: 12) {
+            if showsSource {
+                let position = document.metadata.position(at: cursorPositions.first?.range.location ?? 0)
+                let selected = EditorDocumentMetadata.selectedCharacters(in: document.text, ranges: cursorPositions.map(\.range))
+                Button {
+                    goToLineInput = String(position.line)
+                    showsGoToLine = true
+                } label: {
+                    Text(compact ? "\(position.line):\(position.column)" : "Ln \(position.line), Col \(position.column)")
+                }
+                .help("Go to line")
+                .accessibilityIdentifier("editor-cursor-position")
+                if !compact, selected > 0 { Text("\(selected) selected") }
+                if !compact, cursorPositions.count > 1 { Text("\(cursorPositions.count) cursors") }
+            }
+            if !compact, document.isEditable {
+                Text("UTF-8").help("Files are read and saved as UTF-8")
+                Text(document.metadata.lineEndings).help("Detected line endings; content is preserved")
+            }
+            if !compact, !document.isReadOnly { syntaxPicker }
+            if compact, document.isEditable {
+                Menu {
+                    Text("UTF-8 · \(document.metadata.lineEndings)")
+                    if showsSource {
+                        Text("\(EditorDocumentMetadata.selectedCharacters(in: document.text, ranges: cursorPositions.map(\.range))) selected · \(cursorPositions.count) cursors")
+                        Toggle("Wrap Lines", isOn: $wrapsLines)
+                        indentationControls
+                    }
+                } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).fixedSize()
+            } else if showsSource {
+                indentationMenu
+                Button { wrapsLines.toggle() } label: {
+                    Image(systemName: "arrow.turn.down.left")
+                        .foregroundStyle(wrapsLines ? theme.accent : .secondary)
+                }
+                .help(wrapsLines ? "Wrap Lines: On" : "Wrap Lines: Off")
+                .accessibilityLabel("Wrap Lines")
+                .accessibilityValue(wrapsLines ? "On" : "Off")
+            }
+            if compact, !document.isReadOnly { syntaxPicker }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var syntaxPicker: some View {
+        EditorSyntaxPicker(detected: detectedSyntax, path: document.path,
+                           selection: Binding(get: { document.syntaxOverride }, set: {
+                               document.syntaxOverride = $0
+                               document.isPreview = false
+                           }), associationsJSON: $syntaxAssociationsJSON)
+    }
+
+    private var indentationMenu: some View {
+        Menu { indentationControls } label: {
+            Text("\(indentUsesTabs ? "Tabs" : "Spaces"): \(indentWidth)")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .help("Indentation for all editors; existing text is preserved")
+    }
+
+    private var indentationControls: some View {
+        Group {
+            Toggle("Indent Using Tabs", isOn: $indentUsesTabs)
+            Picker("Indent Width", selection: $storedIndentWidth) {
+                ForEach(1...8, id: \.self) { Text(String($0)).tag($0) }
+            }
+        }
+    }
+
+    private func goToLine() {
+        guard let line = Int(goToLineInput),
+              let target = document.metadata.contentRange(ofLine: line, in: document.text as NSString) else { return }
+        document.reveal = WorkspaceDocumentReveal(line: line, range: nil,
+                                                 absoluteRange: NSRange(location: target.location, length: 0))
+        document.focusRequest = UUID()
+        showsGoToLine = false
+    }
+
     private var editor: some View {
         HStack(spacing: 0) {
             sourceEditor
@@ -464,13 +731,14 @@ struct WorkspaceDocumentView: View {
             language: syntax.language,
             theme: editorTheme,
             font: typography.codeFont,
-            tabWidth: 4,
+            tabWidth: indentWidth,
+            indentOption: indentUsesTabs ? .tab : .spaces(count: indentWidth),
             lineHeight: 1.15,
             wrapLines: wrapsLines,
             cursorPositions: $document.cursorPositions,
             highlightProviders: syntax.isConfiguration ? [ConfigurationHighlightProvider()] : [TreeSitterClient()],
             highlightingID: syntax.isConfiguration ? "configuration" : nil,
-            coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator]
+            coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator, structure]
         )
         .onAppear {
             sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil,
@@ -751,13 +1019,21 @@ struct WorkspaceDocumentView: View {
 
     /// Selects the requested line or match and scrolls it into view.
     private func applyReveal() {
-        guard let reveal = document.reveal,
-              let line = WorkspaceSearch.range(ofLine: reveal.line, in: document.text as NSString) else { return }
-        // A column typed in Go to File can lie past the end of the line.
-        let selection = reveal.range.map {
-            let start = min($0.location, line.length)
-            return NSRange(location: line.location + start, length: min($0.length, line.length - start))
-        } ?? NSRange(location: line.location, length: 0)
+        guard let reveal = document.reveal else { return }
+        let selection: NSRange
+        if let absoluteRange = reveal.absoluteRange {
+            let length = document.metadata.utf16Length
+            guard absoluteRange.location >= 0, absoluteRange.location <= length,
+                  absoluteRange.length >= 0, absoluteRange.length <= length - absoluteRange.location else { return }
+            selection = absoluteRange
+        } else {
+            guard let line = WorkspaceSearch.range(ofLine: reveal.line, in: document.text as NSString) else { return }
+            // External search uses LF line numbers. A column typed in Go to File may exceed the line.
+            selection = reveal.range.map {
+                let start = min($0.location, line.length)
+                return NSRange(location: line.location + start, length: min($0.length, line.length - start))
+            } ?? NSRange(location: line.location, length: 0)
+        }
         cursorPositions = [CursorPosition(range: selection)]
         document.reveal = nil
         DispatchQueue.main.async {

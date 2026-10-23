@@ -869,6 +869,9 @@ struct WorkspaceDiffView: View {
             var run = AttributedString(text[start..<end].replacingOccurrences(of: "\t", with: "    "))
             if let span = line.syntax.last(where: { $0.range.contains(lower) }), let color = palette.color(span.capture) {
                 run.foregroundColor = color
+                if span.capture == .textTitle || span.capture == .textStrong || span.capture == .textStrongEmphasis { run.inlinePresentationIntent = .stronglyEmphasized }
+                if span.capture == .textEmphasis { run.inlinePresentationIntent = .emphasized }
+                if span.capture == .textStrongEmphasis { run.inlinePresentationIntent = [.stronglyEmphasized, .emphasized] }
             }
             if line.emphasis.contains(where: { $0.contains(lower) }) {
                 run.backgroundColor = color(line.kind).opacity(0.35)
@@ -921,6 +924,10 @@ struct SyntaxPalette {
         switch capture {
         case .include, .constructor, .keyword, .boolean, .variableBuiltin,
              .keywordReturn, .keywordFunction, .repeat, .conditional, .tag: keywords
+        case .textTitle, .textStrong, .textStrongEmphasis: keywords
+        case .textLiteral, .textURI: strings
+        case .textReference, .textEmphasis: attributes
+        case .punctuation: comments
         case .comment: comments
         case .number, .float: numbers
         case .string: strings
