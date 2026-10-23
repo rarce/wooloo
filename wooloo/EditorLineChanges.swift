@@ -1,4 +1,6 @@
 import AppKit
+import SwiftUI
+import CodeEditTextView
 import CodeEditSourceEditor
 
 /// The Git change bars beside the editor's line numbers. As in VS Code and Zed, the text being
@@ -130,6 +132,15 @@ final class EditorLineChangeCoordinator: TextViewCoordinator {
     private var colors: (added: NSColor, modified: NSColor, deleted: NSColor)?
     private var pending: DispatchWorkItem?
     private var generation = 0
+    weak var overview: EditorGitOverviewView? {
+        didSet { refreshOverview() }
+    }
+
+    private func refreshOverview() {
+        overview?.textView = controller?.textView
+        overview?.changes = controller?.gutterView?.lineChanges ?? []
+        if let colors { overview?.colors = colors }
+    }
     private static let queue = DispatchQueue(label: "dev.wooloo.line-changes", qos: .userInitiated)
 
     func prepareCoordinator(controller: TextViewController) {
@@ -147,6 +158,7 @@ final class EditorLineChangeCoordinator: TextViewCoordinator {
         pending?.cancel()
         generation += 1
         controller = nil
+        refreshOverview()
     }
 
     func setBases(head: String?, index: String?) {
@@ -157,6 +169,7 @@ final class EditorLineChangeCoordinator: TextViewCoordinator {
     func setColors(added: NSColor, modified: NSColor, deleted: NSColor) {
         colors = (added, modified, deleted)
         controller?.gutterView?.lineChangeColors = (added, modified, deleted)
+        refreshOverview()
     }
 
     private func update(after delay: TimeInterval) {
@@ -167,6 +180,7 @@ final class EditorLineChangeCoordinator: TextViewCoordinator {
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.generation == generation, let controller = self.controller else { return }
             if let colors { controller.gutterView?.lineChangeColors = colors }
+            refreshOverview()
             guard let bases else { return }
             let text = controller.textView.string
             Self.queue.async {
@@ -174,6 +188,7 @@ final class EditorLineChangeCoordinator: TextViewCoordinator {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.generation == generation else { return }
                     self.controller?.gutterView?.lineChanges = changes
+                    self.refreshOverview()
                 }
             }
         }
@@ -209,4 +224,124 @@ final class GitDirectoryWatcher {
         pending?.cancel()
         source.cancel()
     }
+}
+
+/// A separate rail leaves the native scroller usable with both overlay and legacy scrollbars.
+struct EditorGitOverview: NSViewRepresentable {
+    let coordinator: EditorLineChangeCoordinator
+
+    func makeNSView(context: Context) -> EditorGitOverviewView {
+        let view = EditorGitOverviewView()
+        coordinator.overview = view
+        return view
+    }
+
+    func updateNSView(_ view: EditorGitOverviewView, context: Context) {
+        coordinator.overview = view
+    }
+}
+
+/// Whole-document Git markers. Uses the line tree's current heights without forcing offscreen
+/// layout; wrapped lines refine the mapping as the editor lays them out.
+final class EditorGitOverviewView: NSView {
+    weak var textView: TextView? {
+        didSet {
+            guard textView !== oldValue else { return }
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+            observers.removeAll()
+            if let textView, let scrollView = textView.enclosingScrollView {
+                for (name, object) in [
+                    (NSView.frameDidChangeNotification, textView as NSView),
+                    (NSView.boundsDidChangeNotification, scrollView.contentView as NSView),
+                    (NSView.frameDidChangeNotification, scrollView.contentView as NSView)
+                ] {
+                    observers.append(NotificationCenter.default.addObserver(forName: name, object: object,
+                        queue: .main) { [weak self] _ in self?.needsDisplay = true })
+                }
+            }
+            needsDisplay = true
+        }
+    }
+    var changes: [GutterView.LineChange] = [] { didSet { needsDisplay = true } }
+    var colors: (added: NSColor, modified: NSColor, deleted: NSColor)
+        = (.systemGreen, .systemYellow, .systemRed) { didSet { needsDisplay = true } }
+    private var observers: [NSObjectProtocol] = []
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        toolTip = "Git changes — click a marker to reveal the change"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Git changes in document")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Minimum height keeps single-line changes and deletions visible, including at EOF.
+    static func markerRect(top: CGFloat, bottom: CGFloat, documentHeight: CGFloat,
+                           bounds: CGRect) -> CGRect {
+        guard documentHeight > 0, bounds.height > 0 else { return .zero }
+        let height = min(bounds.height, max(3, (bottom - top) / documentHeight * bounds.height))
+        let y = min(max(0, top / documentHeight * bounds.height), bounds.height - height)
+        return CGRect(x: bounds.minX + 2, y: bounds.minY + y, width: max(0, bounds.width - 4), height: height)
+    }
+
+    func markers() -> [(change: GutterView.LineChange, rect: CGRect)] {
+        guard let textView, let layout = textView.layoutManager, layout.lineCount > 0 else { return [] }
+        let height = max(layout.estimatedHeight(), textView.enclosingScrollView?.contentSize.height ?? 0)
+        return changes.compactMap { change in
+            let firstIndex = min(max(change.line, 0), layout.lineCount - 1)
+            let lastIndex = min(firstIndex + max(change.count - 1, 0), layout.lineCount - 1)
+            guard let first = layout.textLineForIndex(firstIndex),
+                  let last = layout.textLineForIndex(lastIndex) else { return nil }
+            let top = change.line >= layout.lineCount ? last.yPos + last.height : first.yPos
+            let bottom = change.kind == .deleted ? top : last.yPos + last.height
+            return (change, Self.markerRect(top: top, bottom: bottom, documentHeight: height, bounds: bounds))
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        for (change, rect) in markers() {
+            let color: NSColor
+            switch change.kind {
+            case .added: color = colors.added
+            case .modified: color = colors.modified
+            case .deleted: color = colors.deleted
+            }
+            color.setFill()
+            color.setStroke()
+            if change.isStaged {
+                let path = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5))
+                path.lineWidth = 1
+                path.stroke()
+            } else {
+                rect.fill()
+            }
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        revealMarker(at: convert(event.locationInWindow, from: nil))
+    }
+
+    func revealMarker(at point: CGPoint) {
+        guard let textView, let scrollView = textView.enclosingScrollView,
+              let marker = markers().filter({ $0.rect.insetBy(dx: -2, dy: -3).contains(point) })
+                .min(by: { abs($0.rect.midY - point.y) < abs($1.rect.midY - point.y) }),
+              let line = textView.layoutManager.textLineForIndex(
+                min(max(marker.change.line, 0), textView.layoutManager.lineCount - 1)) else { return }
+        let offset = marker.change.line >= textView.layoutManager.lineCount ? textView.length : line.range.location
+        EditorScrolling.settle(on: { textView.layoutManager.rectForOffset(offset) }) { rect in
+            let clip = scrollView.contentView
+            let origin = CGPoint(x: clip.bounds.minX, y: rect.midY - clip.bounds.height / 2)
+            clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: origin, size: clip.bounds.size)).origin)
+            scrollView.reflectScrolledClipView(clip)
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) { textView?.scrollWheel(with: event) }
+
+    deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
 }
