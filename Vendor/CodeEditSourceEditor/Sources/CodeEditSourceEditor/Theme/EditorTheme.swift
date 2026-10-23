@@ -71,6 +71,10 @@ public struct EditorTheme {
         case .include, .constructor, .keyword, .boolean, .variableBuiltin,
                 .keywordReturn, .keywordFunction, .repeat, .conditional, .tag:
             return keywords
+        case .textTitle, .textStrong, .textStrongEmphasis: return keywords
+        case .textLiteral, .textURI: return strings
+        case .textReference, .textEmphasis: return attributes
+        case .punctuation: return comments
         case .comment: return comments
         case .variable, .property: return variables
         case .function, .method: return variables

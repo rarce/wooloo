@@ -53,6 +53,20 @@ final class DiffHighlighterTests: XCTestCase {
         XCTAssertEqual(CaptureName.fromString("escape"), .string)
     }
 
+    func testMarkdownDiffColorsBlockDocumentSyntax() {
+        let lines = highlighted("# Heading\n\n- item\n\n```\nplain code\n```\n", .markdown)
+        XCTAssertTrue(lines[0].contains("Heading:text.title"), "\(lines[0])")
+        XCTAssertTrue(lines[2].contains("- :punctuation"), "\(lines[2])")
+        let theme = WoolooTheme.all[0].editorTheme
+        let palette = SyntaxPalette(theme)
+        for (capture, color) in [(CaptureName.textTitle, theme.keywords), (.textStrong, theme.keywords),
+                                 (.textLiteral, theme.strings), (.textURI, theme.strings),
+                                 (.textReference, theme.attributes), (.textEmphasis, theme.attributes),
+                                 (.punctuation, theme.comments)] {
+            XCTAssertEqual(palette.color(capture), SwiftUI.Color(nsColor: color))
+        }
+    }
+
     func testPaletteMapsCapturesToThemeColors() {
         let theme = WoolooTheme.all[0].editorTheme
         let palette = SyntaxPalette(theme)

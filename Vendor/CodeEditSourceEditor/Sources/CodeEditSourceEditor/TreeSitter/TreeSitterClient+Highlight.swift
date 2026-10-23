@@ -13,6 +13,20 @@ extension TreeSitterClient {
     func queryHighlightsForRange(range: NSRange) -> [HighlightRange] {
         guard let state = self.state else { return [] }
 
+        // Markdown's inline injection covers heading text too. Keep block captures as a
+        // fallback, then let narrower inline/code captures override them.
+        if state.primaryLayer.id == .markdown {
+            var captures = queryLayerHighlights(layer: state.layers[0], range: range)
+            for layer in state.layers.dropFirst() {
+                for layerRange in layer.ranges {
+                    if let intersection = range.intersection(layerRange) {
+                        captures += queryLayerHighlights(layer: layer, range: intersection)
+                    }
+                }
+            }
+            return flattenedDocumentHighlights(captures)
+        }
+
         var highlights: [HighlightRange] = []
         var injectedSet = IndexSet(integersIn: range)
 
@@ -41,6 +55,36 @@ extension TreeSitterClient {
         }
 
         return highlights
+    }
+
+    /// The storage consumes disjoint runs. Resolve nesting before handing it document captures.
+    private func flattenedDocumentHighlights(_ captures: [HighlightRange]) -> [HighlightRange] {
+        var starts: [Int: [Int]] = [:]
+        var ends: [Int: [Int]] = [:]
+        for (index, capture) in captures.enumerated() {
+            starts[capture.range.location, default: []].append(index)
+            ends[capture.range.upperBound, default: []].append(index)
+        }
+        let boundaries = Set(starts.keys).union(ends.keys).sorted()
+        var active = Set<Int>()
+        var result: [HighlightRange] = []
+        for (lower, upper) in zip(boundaries, boundaries.dropFirst()) {
+            for index in ends[lower] ?? [] { active.remove(index) }
+            for index in starts[lower] ?? [] { active.insert(index) }
+            // Narrower captures style nested elements; later layers win equal ranges.
+            guard let index = active.min(by: {
+                let lhs = captures[$0].range.length, rhs = captures[$1].range.length
+                return lhs == rhs ? $0 > $1 : lhs < rhs
+            }) else { continue }
+            var capture = captures[index].capture
+            if capture == .textStrong || capture == .textEmphasis {
+                let hasStrong = active.contains { captures[$0].capture == .textStrong || captures[$0].capture == .textTitle }
+                let hasEmphasis = active.contains { captures[$0].capture == .textEmphasis }
+                if hasStrong && hasEmphasis { capture = .textStrongEmphasis }
+            }
+            result.append(HighlightRange(range: NSRange(location: lower, length: upper - lower), capture: capture))
+        }
+        return result
     }
 
     /// Queries the given language layer for any highlights.

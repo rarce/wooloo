@@ -40,8 +40,13 @@ extension StyledRangeStore {
 
     /// Check if the run and the run after it are equal, and if so remove the next one and concatenate the two.
     private func coalesceRunAfter(index: inout Index) {
+        // Deleting at EOF can resolve the boundary to endIndex; its predecessor
+        // is already the final run and has no following element to coalesce.
+        guard index < _guts.endIndex else { return }
+        let followingIndex = _guts.index(after: index)
+        guard followingIndex < _guts.endIndex else { return }
         let thisRun = _guts[index]
-        let nextRun = _guts[_guts.index(after: index)]
+        let nextRun = _guts[followingIndex]
 
         if thisRun.styleCompare(nextRun) {
             _guts.update(at: &index, by: { $0.length += nextRun.length })

@@ -16,6 +16,8 @@ final class ViewSnapshotTests: XCTestCase {
     private var recorded: [String] = []
     /// The view `render` is drawing, for `ready` conditions that look inside AppKit views.
     private var rendered: NSView?
+    /// Preview fixtures share one isolated store across their header and rendered content.
+    private var snapshotDefaults: UserDefaults?
 
     private static var systemVersion: String {
         let version = ProcessInfo.processInfo.operatingSystemVersion
@@ -29,6 +31,7 @@ final class ViewSnapshotTests: XCTestCase {
     private func render<Content: View>(_ content: Content, size: NSSize, settle: Int = 1,
                                        ready: () -> Bool = { true }) -> NSBitmapImageRep {
         let host = NSHostingView(rootView: content
+            .defaultAppStorage(snapshotDefaults ?? .standard)
             .environment(\.woolooTheme, Self.theme)
             .environment(\.woolooTypography, WoolooTypography())
             .preferredColorScheme(Self.theme.colorScheme)
@@ -685,9 +688,14 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     private func withPreviewStyle(_ style: MarkdownPreviewStyle, _ body: () throws -> Void) rethrows {
-        let defaults = UserDefaults.standard
-        let saved = defaults.object(forKey: MarkdownPreviewStyle.storageKey)
-        defer { defaults.set(saved, forKey: MarkdownPreviewStyle.storageKey) }
+        let suite = "wooloo-snapshot-preview-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let previous = snapshotDefaults
+        snapshotDefaults = defaults
+        defer {
+            snapshotDefaults = previous
+            defaults.removePersistentDomain(forName: suite)
+        }
         defaults.set(style.rawValue, forKey: MarkdownPreviewStyle.storageKey)
         try body()
     }
