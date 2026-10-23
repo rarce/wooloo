@@ -19,12 +19,16 @@ final class EditorLineChangesTests: XCTestCase {
         let colors = (added: NSColor.systemGreen, modified: NSColor.systemOrange, deleted: NSColor.systemRed)
         coordinator.setColors(added: colors.added, modified: colors.modified, deleted: colors.deleted)
         coordinator.setBases(head: "original\n", index: "original\n")
-        let editor = CodeEditSourceEditor(
+        let sourceEditor = CodeEditSourceEditor(
             .constant("changed\n"), language: .markdown, theme: theme.editorTheme,
             font: .monospacedSystemFont(ofSize: 13, weight: .regular), tabWidth: 4,
             lineHeight: 1.15, wrapLines: false, cursorPositions: .constant([]),
             coordinators: [spy, coordinator]
         )
+        let editor = HStack(spacing: 0) {
+            sourceEditor
+            EditorGitOverview(coordinator: coordinator).frame(width: 10)
+        }
         let size = NSSize(width: 700, height: 300)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: .borderless, backing: .buffered, defer: false)
@@ -57,10 +61,70 @@ final class EditorLineChangesTests: XCTestCase {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
         XCTAssertEqual(gutter.lineChanges, expected)
+        let overview = try XCTUnwrap(coordinator.overview)
+        XCTAssertTrue(overview.textView === controller.textView)
+        XCTAssertEqual(overview.changes, expected)
+        XCTAssertEqual(overview.colors.modified, colors.modified)
         XCTAssertEqual(gutter.lineChangeColors.added, colors.added)
         XCTAssertEqual(gutter.lineChangeColors.modified, colors.modified)
         XCTAssertEqual(gutter.lineChangeColors.deleted, colors.deleted)
         withExtendedLifetime([spy, coordinator] as [any TextViewCoordinator]) {}
+    }
+
+    func testOverviewKeepsSmallChangesAndEOFDeletionsVisible() {
+        let bounds = CGRect(x: 0, y: 0, width: 10, height: 300)
+        let middle = EditorGitOverviewView.markerRect(top: 500, bottom: 501,
+                                                      documentHeight: 1_000, bounds: bounds)
+        XCTAssertEqual(middle.minY, 150)
+        XCTAssertEqual(middle.height, 3)
+        let deletion = EditorGitOverviewView.markerRect(top: 1_000, bottom: 1_000,
+                                                        documentHeight: 1_000, bounds: bounds)
+        XCTAssertEqual(deletion.maxY, bounds.maxY)
+        XCTAssertEqual(deletion.height, 3)
+        XCTAssertEqual(EditorGitOverviewView.markerRect(top: 0, bottom: 1,
+            documentHeight: 1, bounds: .zero), .zero)
+    }
+
+    func testOverviewNavigatesWrappedChangesWithoutMovingSelection() throws {
+        let spy = ControllerSpy()
+        let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
+        let text = (0..<200).map { "line \($0) " + String(repeating: "wrapped content ", count: 8) }
+            .joined(separator: "\n")
+        let editor = CodeEditSourceEditor(
+            .constant(text), language: .markdown, theme: theme.editorTheme,
+            font: .monospacedSystemFont(ofSize: 13, weight: .regular), tabWidth: 4,
+            lineHeight: 1.15, wrapLines: true, cursorPositions: .constant([]), coordinators: [spy]
+        )
+        let size = NSSize(width: 400, height: 300)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let host = NSHostingView(rootView: editor.frame(width: size.width, height: size.height))
+        host.frame = NSRect(origin: .zero, size: size)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        let textView = try XCTUnwrap(spy.controller?.textView)
+        let scroll = try XCTUnwrap(textView.enclosingScrollView)
+        let overview = EditorGitOverviewView(frame: CGRect(x: 0, y: 0, width: 10, height: 300))
+        overview.textView = textView
+        overview.changes = [.init(line: 150, count: 1, kind: .modified, isStaged: false),
+                            .init(line: 200, count: 0, kind: .deleted, isStaged: true)]
+        let selections = textView.selectionManager.textSelections.map(\.range)
+        let target = try XCTUnwrap(textView.layoutManager.textLineForIndex(150)).range.location
+        let marker = try XCTUnwrap(overview.markers().first)
+        overview.revealMarker(at: CGPoint(x: marker.rect.midX, y: marker.rect.midY))
+        let targetRect = try XCTUnwrap(textView.layoutManager.rectForOffset(target))
+        XCTAssertTrue(scroll.documentVisibleRect.intersects(targetRect))
+        XCTAssertGreaterThan(scroll.contentView.bounds.minY, 0)
+        XCTAssertEqual(textView.selectionManager.textSelections.map(\.range), selections)
+        let eofMarker = try XCTUnwrap(overview.markers().last)
+        overview.revealMarker(at: CGPoint(x: eofMarker.rect.midX, y: eofMarker.rect.midY))
+        let eofRect = try XCTUnwrap(textView.layoutManager.rectForOffset(textView.length))
+        XCTAssertTrue(scroll.documentVisibleRect.intersects(eofRect))
+        XCTAssertEqual(textView.selectionManager.textSelections.map(\.range), selections)
+        overview.changes = []
+        XCTAssertTrue(overview.markers().isEmpty)
     }
 
     func testIdenticalTextHasNoChanges() {

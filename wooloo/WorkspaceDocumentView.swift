@@ -430,6 +430,14 @@ struct WorkspaceDocumentView: View {
     }
 
     private var editor: some View {
+        HStack(spacing: 0) {
+            sourceEditor
+            EditorGitOverview(coordinator: lineChangeCoordinator)
+                .frame(width: 10)
+        }
+    }
+
+    private var sourceEditor: some View {
         CodeEditSourceEditor(
             $document.text,
             language: syntax.language,
