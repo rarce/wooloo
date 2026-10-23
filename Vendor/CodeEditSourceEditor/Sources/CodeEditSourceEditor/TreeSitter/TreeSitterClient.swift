@@ -54,6 +54,10 @@ public final class TreeSitterClient: HighlightProviding {
     /// Optional flag to force every operation to be done on the caller's thread.
     package var forceSyncOperation: Bool = false
 
+    // Issued only on the main queue; parsed revision is read/written only under executor.
+    var symbolRevision: UInt64 = 0
+    var parsedSymbolRevision: UInt64 = 0
+
     public init() { }
 
     // MARK: - Constants
@@ -114,6 +118,8 @@ public final class TreeSitterClient: HighlightProviding {
     public func setUp(textView: TextView, codeLanguage: CodeLanguage) {
         Self.logger.debug("TreeSitterClient setting up with language: \(codeLanguage.id.rawValue, privacy: .public)")
 
+        symbolRevision &+= 1
+        let revision = symbolRevision
         let readBlock = textView.createReadBlock()
         let readCallback = textView.createReadCallback()
         self.readBlock = readBlock
@@ -126,6 +132,7 @@ public final class TreeSitterClient: HighlightProviding {
                 readBlock: readBlock
             )
             self?.state = state
+            self?.parsedSymbolRevision = revision
         }
 
         executor.cancelAll(below: .all)
@@ -151,6 +158,8 @@ public final class TreeSitterClient: HighlightProviding {
         delta: Int,
         completion: @escaping @MainActor (Result<IndexSet, Error>) -> Void
     ) {
+        symbolRevision &+= 1
+        let revision = symbolRevision
         let oldEndPoint: Point = self.oldEndPoint ?? textView.pointForLocation(range.max) ?? .zero
         guard let edit = InputEdit(range: range, delta: delta, oldEndPoint: oldEndPoint, textView: textView) else {
             completion(.failure(TreeSitterClientError.invalidEdit))
@@ -158,7 +167,9 @@ public final class TreeSitterClient: HighlightProviding {
         }
 
         let operation = { [weak self] in
-            return self?.applyEdit(edit: edit) ?? IndexSet()
+            let result = self?.applyEdit(edit: edit) ?? IndexSet()
+            if !Task.isCancelled { self?.parsedSymbolRevision = revision }
+            return result
         }
 
         let longEdit = range.length > Constants.maxSyncEditLength

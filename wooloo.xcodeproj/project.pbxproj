@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F18000000000000000000003 /* EditorStructureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F18000000000000000000004 /* EditorStructureTests.swift */; };
+		F18000000000000000000001 /* EditorStructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = F18000000000000000000002 /* EditorStructure.swift */; };
 		AFE300000000000000000000 /* HerdrRemoteBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE300000000000000000001 /* HerdrRemoteBridgeTests.swift */; };
 		B63000000000000000000001 /* WorkspaceDiskComparisonView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */; };
 		B90000000000000000000001 /* HerdrRemoteBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000002 /* HerdrRemoteBridge.swift */; };
@@ -56,6 +58,7 @@
 		A10000000000000000000056 /* WoolooTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000057 /* WoolooTypography.swift */; };
 		A10000000000000000000058 /* WorkspaceDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000059 /* WorkspaceDiffView.swift */; };
 		A100000000000000000000E0 /* EditorLineChanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E1 /* EditorLineChanges.swift */; };
+		F31000000000000000000001 /* EditorDocumentMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = F31000000000000000000002 /* EditorDocumentMetadata.swift */; };
 		A100000000000000000000F0 /* EditorMultiCursor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F1 /* EditorMultiCursor.swift */; };
 		A1000000000000000000005A /* DocumentFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005B /* DocumentFind.swift */; };
 		A10000000000000000000042 /* WorkspaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000043 /* WorkspaceSearch.swift */; };
@@ -158,6 +161,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		F18000000000000000000004 /* EditorStructureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStructureTests.swift; sourceTree = "<group>"; };
+		F18000000000000000000002 /* EditorStructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStructure.swift; sourceTree = "<group>"; };
 		AFE300000000000000000001 /* HerdrRemoteBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRemoteBridgeTests.swift; sourceTree = "<group>"; };
 		B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiskComparisonView.swift; sourceTree = "<group>"; };
 		B90000000000000000000002 /* HerdrRemoteBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRemoteBridge.swift; sourceTree = "<group>"; };
@@ -207,6 +212,7 @@
 		A10000000000000000000057 /* WoolooTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooTypography.swift; sourceTree = "<group>"; };
 		A10000000000000000000059 /* WorkspaceDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiffView.swift; sourceTree = "<group>"; };
 		A100000000000000000000E1 /* EditorLineChanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorLineChanges.swift; sourceTree = "<group>"; };
+		F31000000000000000000002 /* EditorDocumentMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorDocumentMetadata.swift; sourceTree = "<group>"; };
 		A100000000000000000000F1 /* EditorMultiCursor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorMultiCursor.swift; sourceTree = "<group>"; };
 		A1000000000000000000005B /* DocumentFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentFind.swift; sourceTree = "<group>"; };
 		A10000000000000000000043 /* WorkspaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearch.swift; sourceTree = "<group>"; };
@@ -337,6 +343,7 @@
 				AFE100000000000000000001 /* WorkspaceFiles+Transport.swift */,
 				A10000000000000000000029 /* WorkspaceBrowserView.swift */,
 				A10000000000000000000031 /* WorkspaceDocumentView.swift */,
+				F18000000000000000000002 /* EditorStructure.swift */,
 				D91000000000000000000005 /* EditorSyntaxPicker.swift */,
 				D91000000000000000000003 /* ConfigurationHighlighter.swift */,
 				D91000000000000000000001 /* EditorSyntax.swift */,
@@ -361,6 +368,7 @@
 				B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */,
 				A1000000000000000000005B /* DocumentFind.swift */,
 				A100000000000000000000E1 /* EditorLineChanges.swift */,
+				F31000000000000000000002 /* EditorDocumentMetadata.swift */,
 				A100000000000000000000F1 /* EditorMultiCursor.swift */,
 				A10000000000000000000043 /* WorkspaceSearch.swift */,
 				A1000000000000000000005D /* HostStats.swift */,
@@ -435,6 +443,7 @@
 				C30000000000000000000073 /* HerdrSettingsModelTests.swift */,
 				C30000000000000000000075 /* EditorFindHighlightTests.swift */,
 				D91000000000000000000007 /* EditorSyntaxTests.swift */,
+				F18000000000000000000004 /* EditorStructureTests.swift */,
 				C30000000000000000000041 /* WorkspaceTreeTests.swift */,
 				C30000000000000000000043 /* DocumentFindTests.swift */,
 				C300000000000000000000E3 /* EditorLineChangesTests.swift */,
@@ -620,6 +629,7 @@
 				AFE100000000000000000000 /* WorkspaceFiles+Transport.swift in Sources */,
 				A10000000000000000000028 /* WorkspaceBrowserView.swift in Sources */,
 				A10000000000000000000030 /* WorkspaceDocumentView.swift in Sources */,
+				F18000000000000000000001 /* EditorStructure.swift in Sources */,
 				D91000000000000000000004 /* EditorSyntaxPicker.swift in Sources */,
 				D91000000000000000000002 /* ConfigurationHighlighter.swift in Sources */,
 				D91000000000000000000000 /* EditorSyntax.swift in Sources */,
@@ -643,6 +653,7 @@
 				B63000000000000000000001 /* WorkspaceDiskComparisonView.swift in Sources */,
 				A1000000000000000000005A /* DocumentFind.swift in Sources */,
 				A100000000000000000000E0 /* EditorLineChanges.swift in Sources */,
+				F31000000000000000000001 /* EditorDocumentMetadata.swift in Sources */,
 				A100000000000000000000F0 /* EditorMultiCursor.swift in Sources */,
 				A10000000000000000000042 /* WorkspaceSearch.swift in Sources */,
 				A1000000000000000000005C /* HostStats.swift in Sources */,
@@ -706,6 +717,7 @@
 				C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */,
 				C30000000000000000000074 /* EditorFindHighlightTests.swift in Sources */,
 				D91000000000000000000006 /* EditorSyntaxTests.swift in Sources */,
+				F18000000000000000000003 /* EditorStructureTests.swift in Sources */,
 				C30000000000000000000040 /* WorkspaceTreeTests.swift in Sources */,
 				C30000000000000000000042 /* DocumentFindTests.swift in Sources */,
 				C300000000000000000000E2 /* EditorLineChangesTests.swift in Sources */,

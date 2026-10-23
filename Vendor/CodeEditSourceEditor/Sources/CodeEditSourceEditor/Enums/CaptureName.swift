@@ -34,6 +34,16 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
     case keywordReturn
     case keywordFunction
 
+    // wooloo patch: semantic document captures from the bundled Markdown queries.
+    case textTitle
+    case textLiteral
+    case textURI
+    case textReference
+    case textEmphasis
+    case textStrong
+    case textStrongEmphasis
+    case punctuation
+
     var alternate: CaptureName {
         switch self {
         case .type:
@@ -50,6 +60,14 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
     public static func fromString(_ string: String?) -> CaptureName? { // swiftlint:disable:this cyclomatic_complexity
         guard let string else { return nil }
         switch string {
+        case "text.title": return .textTitle
+        case "text.literal": return .textLiteral
+        case "text.uri": return .textURI
+        case "text.reference": return .textReference
+        case "text.emphasis": return .textEmphasis
+        case "text.strong": return .textStrong
+        case "punctuation.special", "punctuation.delimiter": return .punctuation
+        case "string.escape": return .string
         // wooloo patch: names emitted by the bundled JSON highlight query.
         case "string.special.key":
             return .typeAlternate
@@ -107,6 +125,14 @@ public enum CaptureName: Int8, CaseIterable, Sendable {
     /// See ``CaptureName`` docs for why this enum isn't a raw representable.
     var stringValue: String {
         switch self {
+        case .textTitle: return "text.title"
+        case .textLiteral: return "text.literal"
+        case .textURI: return "text.uri"
+        case .textReference: return "text.reference"
+        case .textEmphasis: return "text.emphasis"
+        case .textStrong: return "text.strong"
+        case .textStrongEmphasis: return "text.strong_emphasis"
+        case .punctuation: return "punctuation"
         case .include:
             return "include"
         case .constructor:
