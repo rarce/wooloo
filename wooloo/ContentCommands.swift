@@ -68,9 +68,16 @@ final class ContentWindowModel: ObservableObject {
     /// Bumped to reload the explorer and repository views.
     @Published var fileRefreshVersion = 0
     @Published var showsSearchTab = false
-    @Published var renameTarget: HerdrRenameTarget?
+    weak var commandStore: HerdrStore?
+    var renameConnection: HerdrActionConnection?
+    var closeConnection: HerdrActionConnection?
+    @Published var renameTarget: HerdrRenameTarget? {
+        didSet { renameConnection = renameTarget == nil ? nil : commandStore.map(HerdrActionConnection.init) }
+    }
     @Published var renameText = ""
-    @Published var closeTarget: HerdrCloseTarget?
+    @Published var closeTarget: HerdrCloseTarget? {
+        didSet { closeConnection = closeTarget == nil ? nil : commandStore.map(HerdrActionConnection.init) }
+    }
     /// Go to File; `QuickOpenOverlay` observes it.
     /// The command palette; `CommandPaletteOverlay` observes it.
     let commandPalette: CommandPaletteModel
@@ -100,6 +107,9 @@ final class ContentWindowModel: ObservableObject {
 struct ContentCommandEffects {
     /// Reads wooloo's shortcut map and themes again from Herdr's config.
     var reloadAppConfig: () -> Void = {}
+    var previousContext: () -> Void = {}
+    var createWorkspace: (() -> Void)?
+    var isCurrentDestination: () -> Bool = { true }
     var forgetRecentFileResults: () -> Void = { WorkspaceFiles.forgetRecentResults() }
     var toggleLineWrapping: () -> Void = { EditorLineWrapping.toggle() }
     var copy: (String) -> Void = { AppActions.copy($0) }
@@ -171,7 +181,8 @@ struct ContentCommands {
             effects.checkForUpdates()
         case .newWorkspace:
             documents.activeID = nil
-            herdr.createWorkspace()
+            if let create = effects.createWorkspace { create() }
+            else { herdr.createWorkspace() }
         case .newTab:
             documents.activeID = nil
             herdr.createTab()
@@ -196,6 +207,7 @@ struct ContentCommands {
         case .refreshFiles:
             effects.forgetRecentFileResults()
             window.fileRefreshVersion += 1
+        case .previousContext: effects.previousContext()
         case .switchSession:
             window.showsSidebar = true
             window.requestedSessionName = herdr.machine == nil ? herdr.sessionName
@@ -268,11 +280,13 @@ struct ContentCommands {
         let session = herdr.sessionName
         let space = explorerLocation
         let workspaceID = space?.workspaceID ?? herdr.selectedWorkspaceID ?? ""
+        let documentSpace = documents.space
         return Task { [herdr, documents, effects] in
             let cwd = resolved == nil ? await herdr.paneDirectory(paneID) : nil
             let found = resolved == nil ? try? await WorkspaceFiles.blocking(on: machine, priority: .userInitiated) {
                 try WorkspaceFiles.terminalPath(file.path, cwd: cwd, root: space?.root, machine: machine)
             } : resolved
+            guard effects.isCurrentDestination(), documents.space == documentSpace else { return }
             guard let found = found ?? nil else { return effects.beep() }
             if found.isDirectory {
                 return machine == nil ? effects.reveal(found.path) : effects.beep()
@@ -316,10 +330,12 @@ struct ContentCommands {
         if let path = quickOpen.selectedCreatePath {
             // A listing cut at its limits may not have reached a file that exists; that file is opened.
             let keepingExisting = quickOpen.isPartial || quickOpen.isTruncated
-            return Task { [documents, window] in
+            let documentSpace = documents.space
+            return Task { [documents, window, effects] in
                 let created = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
                     Result { try WorkspaceFiles.createFile(path, at: location, keepingExisting: keepingExisting) }
                 }
+                guard effects.isCurrentDestination(), documents.space == documentSpace else { return }
                 switch created {
                 case .success(let isNew):
                     quickOpen.dismiss(restoringFocus: false)
@@ -404,6 +420,7 @@ struct ContentCommands {
         let label = window.renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         defer { window.renameTarget = nil }
         guard let target = window.renameTarget else { return }
+        guard let herdr = window.renameConnection.map({ $0.validStore }) ?? Optional(self.herdr) else { return }
         if case .agent(let id) = target {
             herdr.renameAgent(id, to: label.isEmpty ? nil : label)
             return
@@ -441,20 +458,23 @@ struct ContentCommands {
     }
 
     func cancelClose() {
+        defer { window.closeTarget = nil }
+        // Cancelling an old destination's confirmation must not alter this window's new context.
+        if let captured = window.closeConnection, captured.validStore !== herdr { return }
         if case .lastTab(let id, _) = window.closeTarget,
            herdr.snapshot?.workspaces.contains(where: { $0.workspaceID == id }) == true {
             documents.activeID = nil
             herdr.select(workspaceID: id)
             focusPanel(.main)
         }
-        window.closeTarget = nil
     }
 
     func commitClose() {
         defer { window.closeTarget = nil }
+        guard let herdr = window.closeConnection.map({ $0.validStore }) ?? Optional(self.herdr) else { return }
         switch window.closeTarget {
         case .workspace(let id, _), .lastTab(let id, _):
-            documents.activeID = nil
+            if herdr === self.herdr { documents.activeID = nil }
             herdr.closeWorkspace(id)
         case .tab(let id, _): herdr.closeTab(id)
         case .pane(let id): herdr.closePane(id)

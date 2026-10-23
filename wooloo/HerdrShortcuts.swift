@@ -7,6 +7,8 @@ struct HerdrShortcutDefinition: Identifiable {
     let defaultBindings: [String]
     var id: String { key }
 
+    static let previousContext = Self(key: "previous_context", title: "Back to Previous Context", defaultBindings: ["prefix+backspace"])
+
     static let supported: [Self] = [
         .init(key: "help", title: "Shortcut help", defaultBindings: ["prefix+?"]),
         .init(key: "settings", title: "Settings", defaultBindings: ["prefix+s"]),
@@ -29,7 +31,7 @@ struct HerdrShortcutDefinition: Identifiable {
 
 /// What a shortcut or menu item asks wooloo to do, from Herdr's action names plus wooloo's own.
 enum HerdrCommand: Equatable {
-    case help, settings, reloadConfig, switchSession
+    case help, settings, reloadConfig, switchSession, previousContext
     /// The Remote Access settings, which publish this Mac's SSH through a Cloudflare Tunnel.
     case remoteAccess
     /// Asks Sparkle for a newer wooloo release.
@@ -65,6 +67,7 @@ enum HerdrCommand: Equatable {
         case "settings": self = .settings
         case "reload_config": self = .reloadConfig
         case "switch_session": self = .switchSession
+        case "previous_context": self = .previousContext
         case "remote_access": self = .remoteAccess
         case "check_for_updates": self = .checkForUpdates
         case "new_workspace": self = .newWorkspace
@@ -191,6 +194,7 @@ struct HerdrShortcutMap {
     }
 
     static let defaultPrefix = "cmd+ctrl+b"
+    static let previousContextKey = "PreviousContextShortcut"
 
     let prefixLabel: String
     let labels: [String: [String]]
@@ -198,7 +202,7 @@ struct HerdrShortcutMap {
     private let direct: [HerdrKeyChord: String]
     private let prefixed: [HerdrKeyChord: String]
 
-    init(document: HerdrConfigDocument) {
+    init(document: HerdrConfigDocument, previousContextBindings: String? = nil) {
         let requestedPrefix = document.string(section: "keys", key: "prefix", default: Self.defaultPrefix)
         let resolvedPrefix = HerdrKeyChord(requestedPrefix)
         prefixLabel = resolvedPrefix == nil ? Self.defaultPrefix : requestedPrefix
@@ -206,8 +210,15 @@ struct HerdrShortcutMap {
         var direct: [HerdrKeyChord: String] = [:]
         var prefixed: [HerdrKeyChord: String] = [:]
         var labels: [String: [String]] = [:]
-        for definition in HerdrShortcutDefinition.supported {
-            let bindings = document.bindings(definition.key, default: definition.defaultBindings)
+        for definition in HerdrShortcutDefinition.supported + [.previousContext] {
+            let bindings: [String]
+            if definition.key == "previous_context" {
+                bindings = previousContextBindings.map {
+                    $0.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+                } ?? definition.defaultBindings
+            } else {
+                bindings = document.bindings(definition.key, default: definition.defaultBindings)
+            }
             labels[definition.key] = bindings
             for raw in bindings where !raw.isEmpty {
                 let isPrefix = raw.lowercased().hasPrefix("prefix+")
@@ -233,7 +244,8 @@ struct HerdrShortcutMap {
 
     static func load() -> Self {
         let content = (try? HerdrConfigFile.read(at: HerdrConfigFile.url)) ?? ""
-        return Self(document: HerdrConfigDocument(text: content))
+        return Self(document: HerdrConfigDocument(text: content),
+                    previousContextBindings: UserDefaults.standard.string(forKey: previousContextKey))
     }
 
     /// The first binding for an action in Mac notation, for example "⌃B V" for prefix+v.

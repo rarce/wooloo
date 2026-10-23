@@ -260,6 +260,24 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertTrue(store.visibleDocuments.allSatisfy(\.isDirty))
     }
 
+    func testLegacyRemoteDocumentsMigrateOnlyToTheirOriginalSSHTarget() {
+        let machine = HerdrMachineProfile(id: "same-profile", label: "Devbox", target: "host-one", session: "agents", enabled: true)
+        let other = HerdrMachineProfile(id: machine.id, label: machine.label, target: "host-two", session: machine.session, enabled: true)
+        let location = WorkspaceFileLocation(machine: machine, session: "agents", workspaceID: "w1", workspaceLabel: "project", root: "/project")
+        let legacy = "ssh:same-profile|agents|w1"
+        var document = WorkspaceDocument(space: legacy, location: location, path: "a.txt", kind: .file)
+        document.text = "unsaved"
+        document.savedText = "original"
+        store.documents = [document]
+        store.showSpace("target-two|w1", legacySpace: legacy, machine: other)
+        XCTAssertTrue(store.visibleDocuments.isEmpty)
+        XCTAssertEqual(store.documents.first?.text, "unsaved")
+        store.showSpace("target-one|w1", legacySpace: legacy, machine: machine)
+        XCTAssertEqual(store.visibleDocuments.map(\.text), ["unsaved"])
+        XCTAssertTrue(store.visibleDocuments[0].isDirty)
+        XCTAssertEqual(store.visibleDocuments[0].backupID, document.backupID)
+    }
+
     func testSaveWritesTheFileAndReportsIt() async throws {
         _ = await open("a.txt")
         edit("a.txt", "changed\n")

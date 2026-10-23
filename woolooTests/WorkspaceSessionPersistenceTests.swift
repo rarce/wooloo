@@ -49,6 +49,40 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
     }
 
     /// Disk access runs on the persistence's own queue rather than Swift's cooperative threads.
+    func testRemoteNamespaceMigrationAtomicallyClaimsDirtyBuffersAcrossTwoWindows() async throws {
+        let machine = HerdrMachineProfile(id: "remote", label: "Remote", target: "host-one", session: "agents", enabled: true)
+        let remote = WorkspaceFileLocation(machine: machine, session: "agents", workspaceID: "w1", workspaceLabel: "project", root: "/project")
+        let legacy = "ssh:remote|agents|w1"
+        let scoped = "ssh:remote|agents|target:one|w1"
+        var document = WorkspaceDocument(space: legacy, location: remote, path: "a.txt", kind: .file)
+        document.text = "legacy dirty buffer"
+        document.savedText = "original"
+        let legacySession = WorkspaceSessionSnapshot(space: legacy, activeDocument: document.backupID,
+                                                    documents: [WorkspaceDocumentSnapshot(document)])
+        try await disk.save(legacySession)
+        let ownerOne = UUID(), ownerTwo = UUID()
+        async let first = disk.restoreDestination(scoped, legacySpace: legacy, machine: machine, owner: ownerOne)
+        async let second = disk.restoreDestination(scoped, legacySpace: legacy, machine: machine, owner: ownerTwo)
+        let results = try await [first, second]
+        XCTAssertEqual(results.reduce(0) { $0 + $1.session.documents.count }, 1,
+                       "Only one live owner receives the migrated dirty buffer")
+        let owner = results[0].session.documents.isEmpty ? ownerTwo : ownerOne
+        let otherOwner = owner == ownerOne ? ownerTwo : ownerOne
+        var firstVersion = results.first { !$0.session.documents.isEmpty }!.session
+        firstVersion.documents[0].text = "first window edit"
+        try await disk.save(firstVersion, owner: owner)
+        var independent = document
+        independent.space = scoped
+        independent.backupID = UUID()
+        independent.text = "second window edit"
+        try await disk.save(WorkspaceSessionSnapshot(space: scoped, documents: [WorkspaceDocumentSnapshot(independent)]), owner: otherOwner)
+        let restored = try await WorkspaceSessionPersistence(root: root).restore(scoped)
+        XCTAssertEqual(Set(restored.session.documents.compactMap(\.text)), ["first window edit", "second window edit"])
+        XCTAssertEqual(restored.session.legacyImportCompleted, true)
+        let untouchedLegacy = try await disk.restore(legacy)
+        XCTAssertEqual(untouchedLegacy.session.documents.first?.text, "legacy dirty buffer")
+    }
+
     func testDiskWorkRunsOnItsOwnQueue() async {
         let label = await disk.currentQueueLabel()
         XCTAssertEqual(label, "dev.wooloo.session-persistence")

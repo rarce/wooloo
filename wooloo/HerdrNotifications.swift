@@ -17,6 +17,7 @@ struct HerdrToast: Identifiable, Equatable {
     let paneID: String
     let title: String
     let body: String
+    var contextID: String = ""
 }
 
 /// Herdr's `[ui.sound]` and `[ui.toast]` settings from config.toml.
@@ -85,6 +86,35 @@ struct HerdrNotificationSettings {
 /// unread attention marks until the user looks at the pane.
 @MainActor
 final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
+    static let shared = HerdrNotifier()
+    private struct WindowRegistration {
+        let window: () -> NSWindow?
+        let watched: () -> (String, String)?
+        let open: (String, String) -> Bool
+    }
+    private var windows: [UUID: WindowRegistration] = [:]
+    private var deliveryGeneration = 0
+    private var contextBaselines: Set<String> = []
+    private var statusScopes: [String: Set<String>] = [:]
+    private var contextEpochs: [String: UUID] = [:]
+
+    func register(_ id: UUID, window: @escaping () -> NSWindow?,
+                  watched: @escaping () -> (String, String)?, open: @escaping (String, String) -> Bool) {
+        windows[id] = WindowRegistration(window: window, watched: watched, open: open)
+    }
+
+    func unregister(_ id: UUID) { windows[id] = nil }
+
+    private func key(_ pane: String, context: String) -> String {
+        context.isEmpty ? pane : "\(context.utf8.count):\(context)\(pane)"
+    }
+
+    private func openDestination(_ context: String, pane: String) {
+        guard !context.isEmpty else { onOpenPane(pane); return }
+        let ordered = windows.values.sorted { ($0.window()?.isKeyWindow == true ? 0 : 1) < ($1.window()?.isKeyWindow == true ? 0 : 1) }
+        // The receiver validates that it still owns this destination and pane.
+        for receiver in ordered where receiver.open(context, pane) { break }
+    }
     /// Unacknowledged alerts by pane.
     @Published private(set) var attention: [String: HerdrAlertKind] = [:]
     @Published private(set) var toasts: [HerdrToast] = []
@@ -143,21 +173,38 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     func reset() {
         statuses = [:]
         hasBaseline = false
+        contextBaselines = []
+        contextEpochs = [:]
+        statusScopes = [:]
+        deliveryGeneration += 1
         attention = [:]
         toasts = []
         updateDockBadge()
     }
 
     /// Compares agent statuses with the previous snapshot and raises alerts on transitions.
-    func process(_ snapshot: HerdrSnapshot?, selectedPaneID: String?) {
-        guard let snapshot else { reset(); return }
+    func process(_ snapshot: HerdrSnapshot?, selectedPaneID: String?, contextID: String = "") {
+        guard let snapshot else {
+            // A disconnected destination retains unread marks; reconnect establishes a baseline.
+            if contextID.isEmpty { reset() }
+            else {
+                contextBaselines.remove(contextID)
+                contextEpochs[contextID] = UUID()
+            }
+            return
+        }
         var next: [String: String] = [:]
-        for agent in snapshot.agents { next[agent.paneID] = agent.agentStatus ?? "unknown" }
+        for agent in snapshot.agents { next[key(agent.paneID, context: contextID)] = agent.agentStatus ?? "unknown" }
+        let scoped = statusScopes[contextID] ?? []
         defer {
-            statuses = next
+            for id in scoped { statuses[id] = nil }
+            statuses.merge(next) { _, new in new }
             hasBaseline = true
+            contextBaselines.insert(contextID)
+            statusScopes[contextID] = Set(next.keys)
             // Drop marks for panes that closed or went back to work.
             let stale = attention.keys.filter { pane in
+                guard scoped.contains(pane) || next[pane] != nil else { return false }
                 guard let status = next[pane] else { return true }
                 return status == "working" || (attention[pane] == .request && status != "blocked")
             }
@@ -166,10 +213,11 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
                 updateDockBadge()
             }
         }
-        guard hasBaseline else { return }
+        guard contextID.isEmpty ? hasBaseline : contextBaselines.contains(contextID) else { return }
         for agent in snapshot.agents {
-            let status = next[agent.paneID] ?? "unknown"
-            guard let previous = statuses[agent.paneID], previous != status else { continue }
+            let paneKey = key(agent.paneID, context: contextID)
+            let status = next[paneKey] ?? "unknown"
+            guard let previous = statuses[paneKey], previous != status else { continue }
             let kind: HerdrAlertKind
             switch status {
             case "blocked": kind = .request
@@ -178,14 +226,16 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
             case "idle" where previous == "working": kind = .done
             default: continue
             }
-            raise(kind, agent: agent, snapshot: snapshot, selectedPaneID: selectedPaneID)
+            raise(kind, agent: agent, snapshot: snapshot, selectedPaneID: selectedPaneID, contextID: contextID)
         }
     }
 
     /// The user is looking at this pane, so its alert has been seen.
-    func acknowledge(paneID: String?) {
-        guard let paneID, isAppActive(), attention[paneID] != nil else { return }
-        attention[paneID] = nil
+    func acknowledge(paneID: String?, contextID: String = "") {
+        guard let paneID, isAppActive() else { return }
+        let id = key(paneID, context: contextID)
+        guard attention[id] != nil else { return }
+        attention[id] = nil
         updateDockBadge()
     }
 
@@ -195,16 +245,29 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
 
     func open(_ toast: HerdrToast) {
         dismiss(toast)
-        onOpenPane(toast.paneID)
+        openDestination(toast.contextID, pane: toast.paneID)
     }
 
-    func attentionCount(inWorkspace workspaceID: String, snapshot: HerdrSnapshot?) -> (requests: Int, done: Int) {
-        let panes = Set(snapshot?.panes.filter { $0.workspaceID == workspaceID }.map(\.paneID) ?? [])
+    func forget(contextID: String) {
+        let scoped = statusScopes.removeValue(forKey: contextID) ?? []
+        for id in scoped { statuses[id] = nil; attention[id] = nil }
+        contextBaselines.remove(contextID)
+        contextEpochs[contextID] = UUID()
+        toasts.removeAll { $0.contextID == contextID }
+        updateDockBadge()
+    }
+
+    func attention(for paneID: String, contextID: String) -> HerdrAlertKind? {
+        attention[key(paneID, context: contextID)]
+    }
+
+    func attentionCount(inWorkspace workspaceID: String, snapshot: HerdrSnapshot?, contextID: String = "") -> (requests: Int, done: Int) {
+        let panes = Set(snapshot?.panes.filter { $0.workspaceID == workspaceID }.map { key($0.paneID, context: contextID) } ?? [])
         return count(attention.filter { panes.contains($0.key) })
     }
 
-    func attentionCount(inTab tabID: String, snapshot: HerdrSnapshot?) -> (requests: Int, done: Int) {
-        let panes = Set(snapshot?.panes.filter { $0.tabID == tabID }.map(\.paneID) ?? [])
+    func attentionCount(inTab tabID: String, snapshot: HerdrSnapshot?, contextID: String = "") -> (requests: Int, done: Int) {
+        let panes = Set(snapshot?.panes.filter { $0.tabID == tabID }.map { key($0.paneID, context: contextID) } ?? [])
         return count(attention.filter { panes.contains($0.key) })
     }
 
@@ -213,12 +276,17 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     }
 
     private func raise(_ kind: HerdrAlertKind, agent: HerdrAgent, snapshot: HerdrSnapshot,
-                       selectedPaneID: String?) {
+                       selectedPaneID: String?, contextID: String) {
         // Herdr's terminal UI shows one workspace at a time, so it sounds only for background
         // workspaces. wooloo shows one pane, so any pane out of view counts as background.
-        let isWatched = isAppActive() && agent.paneID == selectedPaneID
+        let registeredWatch = windows.values.contains { registration in
+            guard let watched = registration.watched() else { return false }
+            return watched.0 == contextID && watched.1 == agent.paneID
+        }
+        let isWatched = isAppActive() && (registeredWatch || (contextID.isEmpty && agent.paneID == selectedPaneID))
+        let paneKey = key(agent.paneID, context: contextID)
         if !isWatched {
-            attention[agent.paneID] = kind
+            attention[paneKey] = kind
             updateDockBadge()
             if settings.playsSound(for: agent.agent) { playSound(kind) }
         }
@@ -231,13 +299,14 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
         let tab = snapshot.tabs.first { $0.tabID == agent.tabID }?.label
         let toast = HerdrToast(kind: kind, paneID: agent.paneID,
                                title: kind == .done ? "\(agent.displayName) finished" : "\(agent.displayName) needs input",
-                               body: [workspace, tab.map { "Tab \($0)" }].compactMap { $0 }.joined(separator: " · "))
+                               body: [workspace, tab.map { "Tab \($0)" }].compactMap { $0 }.joined(separator: " · "), contextID: contextID)
         let delay = settings.delaySeconds
-        let paneID = agent.paneID
+        let generation = deliveryGeneration
+        let contextEpoch = contextEpochs[contextID]
         Task {
             if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000) }
             // Skip alerts the user already handled during the delay.
-            guard attention[paneID] == kind || !self.isAppActive() else { return }
+            guard generation == deliveryGeneration, contextEpochs[contextID] == contextEpoch, attention[paneKey] == kind else { return }
             deliver(toast)
         }
     }
@@ -252,11 +321,15 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
             let content = UNMutableNotificationContent()
             content.title = toast.title
             content.body = toast.body
-            content.userInfo = ["paneID": toast.paneID]
+            content.userInfo = ["paneID": toast.paneID, "contextID": toast.contextID]
             let request = UNNotificationRequest(identifier: toast.id.uuidString, content: content, trigger: nil)
+            let generation = deliveryGeneration
+            let epoch = contextEpochs[toast.contextID]
             Task {
                 // Without permission macOS drops the alert silently, so show it in the app instead.
                 let status = await notificationStatus()
+                guard generation == deliveryGeneration, contextEpochs[toast.contextID] == epoch,
+                      attention[key(toast.paneID, context: toast.contextID)] == toast.kind else { return }
                 guard status == .authorized || status == .provisional else { showToast(toast); return }
                 do { try await addNotification(request) } catch { showToast(toast) }
             }
@@ -264,7 +337,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     }
 
     private func showToast(_ toast: HerdrToast) {
-        toasts.removeAll { $0.paneID == toast.paneID }
+        toasts.removeAll { $0.paneID == toast.paneID && $0.contextID == toast.contextID }
         toasts.append(toast)
         if toasts.count > 4 { toasts.removeFirst(toasts.count - 4) }
         Task {
@@ -307,8 +380,10 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     nonisolated func openNotification(userInfo: [AnyHashable: Any],
                                       completionHandler: @escaping () -> Void) {
         let paneID = userInfo["paneID"] as? String
+        let contextID = userInfo["contextID"] as? String ?? ""
         Task { @MainActor in
-            self.openNotification(paneID: paneID)
+            NSApp.activate(ignoringOtherApps: true)
+            if let paneID { self.openDestination(contextID, pane: paneID) }
             completionHandler()
         }
     }

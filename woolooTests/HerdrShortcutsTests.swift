@@ -19,6 +19,14 @@ final class HerdrShortcutsTests: XCTestCase {
         return nil
     }
 
+    func testPreviousContextShortcutUsesAppSettingsWithoutAddingAnUnknownHerdrKey() {
+        let map = HerdrShortcutMap(document: HerdrConfigDocument(text: ""), previousContextBindings: "ctrl+option+backspace")
+        XCTAssertEqual(map.labels["previous_context"], ["ctrl+option+backspace"])
+        XCTAssertFalse(HerdrShortcutDefinition.supported.contains { $0.key == "previous_context" })
+        let disabled = HerdrShortcutMap(document: HerdrConfigDocument(text: ""), previousContextBindings: "")
+        XCTAssertEqual(disabled.labels["previous_context"], [""])
+    }
+
     func testDefaultPrefixThenKeyRunsTheAction() {
         guard case .prefix = defaults.match(key("\u{2}", ignoringModifiers: "b", code: 11, [.control, .command]), prefixPending: false) else {
             return XCTFail("ctrl+cmd+b should start the prefix")
