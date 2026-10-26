@@ -55,6 +55,27 @@ final class HostStatsTests: XCTestCase {
         XCTAssertEqual(sample.diskFree, 200_000_000 * 1024)
     }
 
+    func testParsesMultipleGPUsAndRejectsUnavailableReadings() throws {
+        let sample = try XCTUnwrap(HostProbe.parse(Self.linuxOutput + """
+
+            gpu=nvidia-0|NVIDIA A100|72
+            gpu=nvidia-1|NVIDIA A100|0
+            gpu=amd-card2|AMD card2|100
+            gpu=unsupported|Unknown|N/A
+            gpu=invalid|Unknown|nan
+            gpu=negative|Unknown|-1
+            gpu=overflow|Unknown|101
+            gpu=broken
+            gpu=nvidia-0|Duplicate|20
+            """))
+        XCTAssertEqual(sample.gpus.map(\.id), ["nvidia-0", "nvidia-1", "amd-card2"])
+        XCTAssertEqual(sample.gpus.map(\.fraction), [0.72, 0, 1])
+        XCTAssertEqual(sample.gpus.first?.name, "NVIDIA A100")
+        XCTAssertTrue(try XCTUnwrap(HostProbe.parse(Self.macOutput)).gpus.isEmpty)
+        let mac = try XCTUnwrap(HostProbe.parse(Self.macOutput + "\ngpu=mac-0|Mac GPU|12.5"))
+        XCTAssertEqual(mac.gpus.first?.fraction, 0.125)
+    }
+
     func testRejectsOutputWithoutAHost() {
         XCTAssertNil(HostProbe.parse("load=1 2 3\n"))
         XCTAssertNil(HostProbe.parse(""))
@@ -133,6 +154,9 @@ final class HostStatsTests: XCTestCase {
         XCTAssertLessThanOrEqual(used, try XCTUnwrap(sample.memoryTotal))
         XCTAssertGreaterThan(try XCTUnwrap(sample.uptime), 0)
         XCTAssertNotNil(sample.diskFree)
+        // The SSH macOS path must expose the same GPUs as the native IOKit probe.
+        XCTAssertEqual(sample.gpus.count, HostProbe.localGPUs().count)
+        XCTAssertTrue(sample.gpus.allSatisfy { (0...1).contains($0.fraction) })
     }
 
     func testMemoryAndDiskFractions() {
