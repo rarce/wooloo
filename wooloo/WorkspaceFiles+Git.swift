@@ -283,7 +283,17 @@ extension WorkspaceFiles {
         GitSection(["status", "--porcelain=v2", "--branch", "--untracked-files=no"], limit: 4_000_000),
         GitSection(["remote"], limit: 20_000),
         GitSection(["for-each-ref", "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(push:remotename)%00%(upstream)%00%(push)", "refs/heads"], limit: 200_000),
-        GitSection(["config", "--get-regexp", "^(push\\.default|remote\\..*\\.(url|push|pushurl|mirror))$"], limit: 20_000),
+        GitSection(["config", "--get-regexp", "^(push\\.default|remote\\..*\\.(push|pushurl|mirror))$"], limit: 20_000),
+        // Resolve both directions on the host that runs Git, including insteadOf/pushInsteadOf.
+        // Keeping this in the batch avoids extra SSH round trips for status refreshes.
+        GitSection([], limit: 20_000, script: """
+            branch=$(git symbolic-ref --quiet HEAD) || exit 1
+            remote=$(git for-each-ref --format='%(upstream:remotename)' "$branch") || exit 1
+            [ -n "$remote" ] || exit 1
+            git remote get-url --all -- "$remote" || exit 1
+            printf '\\0'
+            git remote get-url --push --all -- "$remote"
+            """),
     ]
 
     private static func branchStatus(from results: ArraySlice<Result<Data, Error>>) throws -> WorkspaceBranchStatus {
@@ -291,7 +301,16 @@ extension WorkspaceFiles {
         let remoteData = (try? outputs[1].get()) ?? Data()
         let remotes = String(decoding: remoteData, as: UTF8.self).split(separator: "\n").map(String.init)
         var status = parseBranchStatus(try outputs[0].get(), remotes: remotes)
-        if let branch = status.branch, let refs = try? outputs[2].get() {
+        if let branch = status.branch, let refs = try? outputs[2].get(),
+           let urlData = try? outputs[4].get() {
+            let directions = String(decoding: urlData, as: UTF8.self).split(separator: "\0", omittingEmptySubsequences: false)
+            guard directions.count == 2 else { return status }
+            let fetchURLs = directions[0].split(separator: "\n")
+            let pushURLs = directions[1].split(separator: "\n")
+            // A shared remote name/ref does not imply a shared repository. Refuse ambiguous
+            // destinations, and retain the resolved URL so changing rewrite rules invalidates
+            // an already displayed Sync action as well.
+            guard fetchURLs.count == 1, pushURLs.count == 1, fetchURLs == pushURLs else { return status }
             let config = String(decoding: (try? outputs[3].get()) ?? Data(), as: UTF8.self)
             for line in String(decoding: refs, as: UTF8.self).split(separator: "\n") {
                 let fields = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
@@ -300,15 +319,13 @@ extension WorkspaceFiles {
                       fields[1] == fields[3], !fields[4].isEmpty, fields[4] == fields[5] else { continue }
                 // An explicit/multiple refspec or matching push may publish other branches.
                 let configLines = config.split(separator: "\n")
-                let urlKey = "remote.\(fields[1]).url "
-                let urls = configLines.filter { $0.hasPrefix(urlKey) }.map { String($0.dropFirst(urlKey.count)) }
-                let unsafe = urls.count != 1 || configLines.contains {
+                let unsafe = configLines.contains {
                     $0.hasPrefix("remote.\(fields[1]).push ") || $0.hasPrefix("remote.\(fields[1]).pushurl ")
                         || ($0.hasPrefix("remote.\(fields[1]).mirror") && $0 != "remote.\(fields[1]).mirror false")
                         || $0 == "push.default matching" || $0 == "push.default nothing"
                 }
                 if !unsafe {
-                    status.syncTarget = WorkspaceSyncTarget(branch: branch, remote: fields[1], remoteRef: fields[2], remoteURL: urls[0])
+                    status.syncTarget = WorkspaceSyncTarget(branch: branch, remote: fields[1], remoteRef: fields[2], remoteURL: String(fetchURLs[0]))
                 }
             }
         }

@@ -69,6 +69,17 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(try invocations().count, 2, "Both repository detection and list loading must use SSH")
     }
 
+    func testRemoteSyncResolvesURLRewritesOnTheRemoteHost() throws {
+        try sandbox.repository("repo")
+        try sandbox.sh("git remote add origin alias: && git config branch.main.remote origin && git config branch.main.merge refs/heads/main && git config url.../origin.git.insteadOf alias:", in: "repo")
+        let repo = remote("repo")
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        XCTAssertEqual(target.remoteURL, "../origin.git")
+        try sandbox.sh("git config url.../fork.git.pushInsteadOf alias:", in: "repo")
+        XCTAssertNil(try WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo))
+    }
+
     func testRemoteSyncIntegratesAndPushesThenStopsAtAConflict() throws {
         try sandbox.sh("git init -q --bare -b main origin.git")
         try sandbox.repository("repo")

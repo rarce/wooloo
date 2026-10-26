@@ -752,6 +752,49 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertNil(try WorkspaceFiles.branchStatus(at: repo).syncTarget, "Explicit refspecs are conservative separate actions")
     }
 
+    func testPushInsteadOfDisablesSyncAndInvalidatesAnExistingAction() throws {
+        let repo = try divergedRepository()
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        try sandbox.sh("git clone -q --bare origin.git fork.git")
+        let head = try sandbox.sh("git rev-parse HEAD", in: "repo")
+        let origin = try sandbox.sh("git --git-dir=origin.git rev-parse main")
+        let fork = try sandbox.sh("git --git-dir=fork.git rev-parse main")
+        try sandbox.sh("git config url.../fork.git.pushInsteadOf ../origin.git", in: "repo")
+        XCTAssertEqual(try sandbox.sh("git remote get-url origin", in: "repo"), "../origin.git\n")
+        XCTAssertEqual(try sandbox.sh("git remote get-url --push origin", in: "repo"), "../fork.git\n")
+        let rewritten = try WorkspaceFiles.branchStatus(at: repo)
+        XCTAssertNil(rewritten.syncTarget)
+        guard case .pull = WorkspaceSyncPlan(status: rewritten).primaryAction else {
+            return XCTFail("Different repositories must keep Pull and Push separate")
+        }
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target, strategy: .merge), at: repo)) {
+            XCTAssertTrue($0.localizedDescription.contains("destination changed"))
+        }
+        XCTAssertEqual(try sandbox.sh("git rev-parse HEAD", in: "repo"), head)
+        XCTAssertEqual(try sandbox.sh("git --git-dir=origin.git rev-parse main"), origin)
+        XCTAssertEqual(try sandbox.sh("git --git-dir=fork.git rev-parse main"), fork)
+    }
+
+    func testSharedInsteadOfDestinationCanSyncButRewriteChangesInvalidateTheTarget() throws {
+        let repo = try divergedRepository()
+        try sandbox.sh("git config url.../origin.git.insteadOf alias: && git remote set-url origin alias:", in: "repo")
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        XCTAssertEqual(target.remoteURL, "../origin.git")
+        try WorkspaceFiles.sync(.sync(target: target, strategy: .merge), at: repo)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).ahead, 0)
+        try sandbox.sh("git config --unset url.../origin.git.insteadOf && git config url.../fork.git.insteadOf alias:", in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo)) {
+            XCTAssertTrue($0.localizedDescription.contains("destination changed"))
+        }
+    }
+
+    func testMultipleResolvedPushDestinationsKeepSyncDisabled() throws {
+        let repo = try divergedRepository()
+        try sandbox.sh("git remote set-url --add --push origin ../origin.git && git remote set-url --add --push origin ../fork.git", in: "repo")
+        XCTAssertEqual(try sandbox.sh("git remote get-url --push --all origin", in: "repo"), "../origin.git\n../fork.git\n")
+        XCTAssertNil(try WorkspaceFiles.branchStatus(at: repo).syncTarget)
+    }
+
     func testSyncStopsAtConflictsAndPreservesDirtyFiles() throws {
         let repo = try divergedRepository()
         let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
