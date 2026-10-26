@@ -48,7 +48,14 @@ extension TextView {
         }
 
         textStorage.endEditing()
+        hasPendingEditFinalization = true
         layoutManager.endTransaction()
+    }
+
+    /// An undo group or a caller's outer transaction publishes and reveals only its final selections.
+    func finishReplacingCharacters() {
+        guard hasPendingEditFinalization, !layoutManager.isInTransaction else { return }
+        hasPendingEditFinalization = false
         selectionManager.notifyAfterEdit()
         NotificationCenter.default.post(name: Self.textDidChangeNotification, object: self)
 

@@ -815,3 +815,46 @@ contract tests passed.
 
 The CI-equivalent Debug selection (excluding environment-dependent pixel snapshots, as in
 `.github/workflows/ci.yml`) then passed: 1026 tests, 11 skipped, zero failures.
+
+
+### Long-line edit and resize follow-up (2026-10-26)
+
+Astra's profile of the hosted editor found 60,000 wrapped rows at the 380-point window
+width. Each row eagerly allocated a UUID, even though only rows with visible fragment views
+need an identity. `LineFragment.id` now creates its stable UUID on first access. Core Text
+still computes every row's exact break, glyphs and metrics; no estimated offscreen geometry
+or text-size-specific path was introduced.
+
+The paired runs below differ only in eager versus deferred fragment UUID allocation; both
+include the bidi-selection and hidden-edit scroll fixes. The candidate was measured first,
+then the eager allocation was temporarily restored for the control and restored again.
+Both use five Release repetitions, the unchanged 2.16 MB fixture and fixture fingerprint,
+500×600 viewport resized to 380×600, Mac16,5 / macOS 26.6.2 / Xcode 26.6. Syntax providers
+remain disabled. One-minute host load stayed between 3.40 and 5.10 on 16 logical CPUs.
+
+| 2.16 MB wrapped line | Before p50 | After p50 | Before p95 | After p95 |
+| --- | ---: | ---: | ---: | ---: |
+| First viewport/capture | 93.49 ms | 86.58 ms | 97.42 ms | 91.63 ms |
+| Insert/capture | 88.90 ms | 80.03 ms | 96.27 ms | 87.07 ms |
+| Resize/capture | 86.77 ms | 75.89 ms | 91.86 ms | 78.52 ms |
+
+Insertion improves by about 10% and resizing by 13%; opening improves by 7%. The
+20,000-line Unicode control takes 32.93 / 7.58 / 6.14 ms before and 31.67 / 7.42 / 6.53 ms
+after for opening / insertion / resize. Native Find remains below 1.5 ms at p50. The
+compatible comparison passes the existing regression gate. `editor-todos-{before,after}.jsonl`
+retain complete samples and verified source/environment metadata; the default baseline
+was not overwritten. An earlier typesetter-reuse candidate showed no material improvement
+in an isolated comparison and was discarded.
+
+Hosted regressions compare every wrapped row's ranges, metrics, glyphs, positions, indices
+and attributes with freshly invalidated layout after resizing, attributed changes, edits,
+undo and IME composition. This benchmark injects its fixture directly into the editor;
+normal source-file opening retains its existing 1,000,000-byte limit. Exact layout still
+costs tens of milliseconds for this pathological line; the change reduces that cost.
+
+The final signed Debug CI-equivalent suite with complete concurrency checking passed:
+1,113 tests, 11 skipped, no failures, including all 104 editor multiple-selection tests.
+The migrated-file concurrency audit, 21 Python performance-tool contract tests and
+`git diff --check` passed. Pixel snapshot suites were excluded as in CI. Native hosted
+controls and synthetic input were exercised; interactive controls against an isolated
+Herdr session and a live SSH server were not verified.

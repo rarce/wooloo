@@ -99,11 +99,13 @@ public class CEUndoManager {
         }
         isUndoing = true
         NotificationCenter.default.post(name: .NSUndoManagerWillUndoChange, object: self.manager)
+        textView.layoutManager.beginTransaction()
         textView.textStorage.beginEditing()
         for mutation in item.mutations.reversed() {
             textView.replaceCharacters(in: mutation.inverse.range, with: mutation.inverse.string)
         }
         textView.textStorage.endEditing()
+        textView.layoutManager.endTransaction()
         NotificationCenter.default.post(name: .NSUndoManagerDidUndoChange, object: self.manager)
         redoStack.append(item)
         isUndoing = false
@@ -116,11 +118,13 @@ public class CEUndoManager {
         }
         isRedoing = true
         NotificationCenter.default.post(name: .NSUndoManagerWillRedoChange, object: self.manager)
+        textView.layoutManager.beginTransaction()
         textView.textStorage.beginEditing()
         for mutation in item.mutations {
             textView.replaceCharacters(in: mutation.mutation.range, with: mutation.mutation.string)
         }
         textView.textStorage.endEditing()
+        textView.layoutManager.endTransaction()
         NotificationCenter.default.post(name: .NSUndoManagerDidRedoChange, object: self.manager)
         undoStack.append(item)
         isRedoing = false

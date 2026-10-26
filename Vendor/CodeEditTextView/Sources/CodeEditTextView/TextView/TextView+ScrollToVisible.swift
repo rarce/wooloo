@@ -13,6 +13,7 @@ extension TextView {
 
     /// Scrolls the upmost selection to the visible rect if `scrollView` is not `nil`.
     public func scrollSelectionToVisible() {
+        guard !layoutManager.isInTransaction else { return }
         guard let scrollView, let selection = getSelection() else {
             return
         }

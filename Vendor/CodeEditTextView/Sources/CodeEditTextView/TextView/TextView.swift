@@ -236,6 +236,8 @@ public class TextView: NSView, NSTextContent {
     }
 
     internal(set) public var _undoManager: CEUndoManager?
+    /// Nested replacements publish and reveal their final state after the outer layout transaction.
+    var hasPendingEditFinalization = false
     @objc dynamic open var allowsUndo: Bool
 
     var scrollView: NSScrollView? {

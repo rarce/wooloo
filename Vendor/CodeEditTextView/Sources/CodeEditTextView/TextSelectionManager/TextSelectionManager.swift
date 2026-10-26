@@ -79,7 +79,7 @@ public class TextSelectionManager: NSObject {
 
     /// Set the selected ranges to new ranges. Overrides any existing selections.
     /// - Parameter range: The selected ranges to set.
-    public func setSelectedRanges(_ ranges: [NSRange]) {
+    public func setSelectedRanges(_ ranges: [NSRange], visualCarets: [Int: TextSelection.VisualCaret] = [:]) {
         textSelections.forEach { $0.view?.removeFromSuperview() }
         // Remove duplicates, invalid ranges, update suggested X position.
         textSelections = Set(ranges)
@@ -89,7 +89,8 @@ public class TextSelectionManager: NSObject {
             }
             .map {
                 let selection = TextSelection(range: $0)
-                selection.suggestedXPos = layoutManager?.rectForOffset($0.location)?.minX
+                selection.visualCaret = $0.isEmpty ? visualCarets[$0.location] : nil
+                selection.suggestedXPos = caretRect(for: selection)?.minX
                 return selection
             }
         if textView?.isFirstResponder ?? false {
@@ -127,14 +128,40 @@ public class TextSelectionManager: NSObject {
 
     // MARK: - Selection Views
 
+    /// Resolve a chosen visual edge in the current layout. Ordinary selections retain the default caret affinity.
+    public func caretRect(for selection: TextSelection) -> CGRect? {
+        guard let layoutManager else { return nil }
+        if selection.range.isEmpty, let caret = selection.visualCaret, let textStorage,
+           caret.anchorOffset >= 0, caret.anchorOffset < textStorage.length {
+            // Lay out the anchor's row first, then reread its position because layout may change row heights.
+            _ = layoutManager.rectForOffset(caret.anchorOffset)
+            if let line = layoutManager.textLineForOffset(caret.anchorOffset),
+               let fragment = line.data.lineFragments.getLine(atOffset: caret.anchorOffset - line.range.location),
+               let cluster = fragment.data.visualClusters(in: textStorage.string as NSString,
+                                                         lineOffset: line.range.location).first(where: {
+                   NSLocationInRange(caret.anchorOffset - line.range.location, $0.range)
+               }) {
+                let leading = caret.edge == .leading
+                let boundary = line.range.location + (leading ? cluster.range.location : cluster.range.max)
+                if boundary == selection.range.location {
+                    return CGRect(x: layoutManager.edgeInsets.left + (leading ? cluster.leadingX : cluster.trailingX),
+                                  y: line.yPos + fragment.yPos, width: 0, height: fragment.height)
+                }
+            }
+        }
+        return layoutManager.rectForOffset(selection.range.location)
+    }
+
     /// Update all selection cursors. Placing them in the correct position for each text selection and reseting the
     /// blink timer.
     func updateSelectionViews() {
+        guard layoutManager?.isInTransaction != true else { return }
         var didUpdate: Bool = false
 
         for textSelection in textSelections {
             if textSelection.range.isEmpty {
-                let cursorOrigin = (layoutManager?.rectForOffset(textSelection.range.location) ?? .zero).origin
+                let rect = caretRect(for: textSelection) ?? .zero
+                let cursorOrigin = rect.origin
 
                 var doesViewNeedReposition: Bool
 
@@ -171,7 +198,8 @@ public class TextSelectionManager: NSObject {
                     }
 
                     cursorView.frame.origin = cursorOrigin
-                    cursorView.frame.size.height = heightForCursorAt(textSelection.range) ?? 0
+                    cursorView.frame.size.height = textSelection.visualCaret == nil
+                        ? heightForCursorAt(textSelection.range) ?? 0 : rect.height
 
                     textSelection.view = cursorView
                     textSelection.boundingRect = cursorView.frame

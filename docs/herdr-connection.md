@@ -91,6 +91,8 @@ Complete surfaces also carry native graphics assets and placements. wooloo decod
 
 ## Popup terminals
 
+Popup title cell transport is an upstream dependency; the [unsubmitted protocol proposal](herdr-popup-title-cells.md) records the compatibility and clipping contract. Until Herdr provides it, wooloo retains its pinned Unicode title layout.
+
 A complete surface can carry a separate popup terminal with its ID, title, size hints, cells, cursor, links, and mouse modes. wooloo retains that model and composes it in the existing AppKit terminal grid, with a centered border, title, accessible Close Popup button, and dimmed background. Geometry follows Herdr's cell and percentage sizing, minimum dimensions, viewport clamping, and reserved right gutter. The raw pane surface stays intact for patches and independent trace verification. See [Herdr's popup composition](https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/src/client/shell/composition.rs).
 
 Keyboard input, IME text, text paste, file-path drops, and mouse reporting address the popup terminal through `ClientShellPopupInput`. Escape reaches the program. The close button and popup context menu send `popup.close`. Input, pane menus, split drags, tab drops, and pane shortcuts cannot act on the covered terminal. Selection and link activation stay within the popup content; popup graphics are clipped there, and underlying pane graphics are clipped around the popup. Pane input resumes when a surface confirms the popup closed.
