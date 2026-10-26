@@ -45,6 +45,7 @@
 		A10000000000000000000028 /* WorkspaceBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000029 /* WorkspaceBrowserView.swift */; };
 		A10000000000000000000030 /* WorkspaceDocumentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000031 /* WorkspaceDocumentView.swift */; };
 		A10000000000000000000038 /* WorkspaceRepositoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000039 /* WorkspaceRepositoryView.swift */; };
+		E02600000000000000000001 /* WorkspaceGitHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E02600000000000000000002 /* WorkspaceGitHubView.swift */; };
 		A10000000000000000000050 /* MarkdownPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000051 /* MarkdownPreviewView.swift */; };
 		A10000000000000000000048 /* ThemeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000049 /* ThemeSettingsView.swift */; };
 		A10000000000000000000046 /* WoolooTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000047 /* WoolooTheme.swift */; };
@@ -134,6 +135,7 @@
 		C30000000000000000000056 /* WorkspaceDocumentStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000057 /* WorkspaceDocumentStoreTests.swift */; };
 		C30000000000000000000052 /* WorkspaceRepositoryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */; };
 		C30000000000000000000050 /* WorkspaceGitBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000051 /* WorkspaceGitBarTests.swift */; };
+		E02600000000000000000003 /* WorkspaceGitHubTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E02600000000000000000004 /* WorkspaceGitHubTests.swift */; };
 		C3000000000000000000004E /* DiffHighlighterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004F /* DiffHighlighterTests.swift */; };
 		C3000000000000000000004C /* WorkspaceSearchModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004D /* WorkspaceSearchModelTests.swift */; };
 		C3000000000000000000004A /* SurfaceLayersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004B /* SurfaceLayersTests.swift */; };
@@ -197,6 +199,7 @@
 		A10000000000000000000029 /* WorkspaceBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceBrowserView.swift; sourceTree = "<group>"; };
 		A10000000000000000000031 /* WorkspaceDocumentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDocumentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000039 /* WorkspaceRepositoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRepositoryView.swift; sourceTree = "<group>"; };
+		E02600000000000000000002 /* WorkspaceGitHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitHubView.swift; sourceTree = "<group>"; };
 		A10000000000000000000051 /* MarkdownPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPreviewView.swift; sourceTree = "<group>"; };
 		A10000000000000000000049 /* ThemeSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeSettingsView.swift; sourceTree = "<group>"; };
 		A10000000000000000000047 /* WoolooTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooTheme.swift; sourceTree = "<group>"; };
@@ -284,6 +287,7 @@
 		C30000000000000000000057 /* WorkspaceDocumentStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDocumentStoreTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRepositoryModelTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000051 /* WorkspaceGitBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitBarTests.swift; sourceTree = "<group>"; };
+		E02600000000000000000004 /* WorkspaceGitHubTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitHubTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000004F /* DiffHighlighterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffHighlighterTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000004D /* WorkspaceSearchModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearchModelTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000004B /* SurfaceLayersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceLayersTests.swift; sourceTree = "<group>"; };
@@ -349,6 +353,7 @@
 				A1000000000000000000B002 /* ImagePreviewView.swift */,
 				A1000000000000000000AD02 /* NotebookDocument.swift */,
 				A10000000000000000000039 /* WorkspaceRepositoryView.swift */,
+				E02600000000000000000002 /* WorkspaceGitHubView.swift */,
 				A10000000000000000000051 /* MarkdownPreviewView.swift */,
 				A10000000000000000000049 /* ThemeSettingsView.swift */,
 				A10000000000000000000047 /* WoolooTheme.swift */,
@@ -459,6 +464,7 @@
 				C3000000000000000000B002 /* ImagePreviewTests.swift */,
 				C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */,
 				C30000000000000000000051 /* WorkspaceGitBarTests.swift */,
+				E02600000000000000000004 /* WorkspaceGitHubTests.swift */,
 				C3000000000000000000004F /* DiffHighlighterTests.swift */,
 				C3000000000000000000004D /* WorkspaceSearchModelTests.swift */,
 				C3000000000000000000004B /* SurfaceLayersTests.swift */,
@@ -632,6 +638,7 @@
 				A1000000000000000000B001 /* ImagePreviewView.swift in Sources */,
 				A1000000000000000000AD01 /* NotebookDocument.swift in Sources */,
 				A10000000000000000000038 /* WorkspaceRepositoryView.swift in Sources */,
+				E02600000000000000000001 /* WorkspaceGitHubView.swift in Sources */,
 				A10000000000000000000050 /* MarkdownPreviewView.swift in Sources */,
 				A10000000000000000000048 /* ThemeSettingsView.swift in Sources */,
 				A10000000000000000000046 /* WoolooTheme.swift in Sources */,
@@ -731,6 +738,7 @@
 				C3000000000000000000B001 /* ImagePreviewTests.swift in Sources */,
 				C30000000000000000000052 /* WorkspaceRepositoryModelTests.swift in Sources */,
 				C30000000000000000000050 /* WorkspaceGitBarTests.swift in Sources */,
+				E02600000000000000000003 /* WorkspaceGitHubTests.swift in Sources */,
 				C3000000000000000000004E /* DiffHighlighterTests.swift in Sources */,
 				C3000000000000000000004C /* WorkspaceSearchModelTests.swift in Sources */,
 				C3000000000000000000004A /* SurfaceLayersTests.swift in Sources */,

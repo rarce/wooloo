@@ -40,6 +40,7 @@ private struct DestinationContentView: View {
     @ObservedObject private var herdr: HerdrStore
     @ObservedObject private var destinations: HerdrDestinations
     @StateObject private var window = ContentWindowModel()
+    @State private var hoveredTabID: String?
     @State private var shortcutMap = HerdrShortcutMap.load()
     @State private var shortcutPrefixActive = false
     @AppStorage(HerdrShortcutMap.previousContextKey) private var previousContextShortcut = "prefix+backspace"
@@ -382,7 +383,7 @@ private struct DestinationContentView: View {
                systemImage: "sidebar.left") { commands.perform(.toggleSidebar) }
         Button(window.showsFilesSidebar ? "Hide Files and Changes" : "Show Files and Changes",
                systemImage: "sidebar.right") { commands.perform(.toggleFilesSidebar) }
-        Button("Refresh Files and Repository", systemImage: "arrow.clockwise") { commands.perform(.refreshFiles) }
+        Button("Refresh Explorer", systemImage: "arrow.clockwise") { commands.perform(.refreshFiles) }
         Button("Find in Project…", systemImage: "magnifyingglass") { openSearch(replace: false) }
         Button("Replace in Project…", systemImage: "text.magnifyingglass") { openSearch(replace: true) }
         Button("Go to File…", systemImage: "doc.text.magnifyingglass") { commands.perform(.quickOpen) }
@@ -999,7 +1000,7 @@ private struct DestinationContentView: View {
     private var tabBar: some View {
         GeometryReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
+                HStack(spacing: 0) {
                     ForEach(Array(selectedTabs.enumerated()), id: \.element.id) { index, tab in
                         terminalTab(tab, index: index)
                     }
@@ -1044,7 +1045,7 @@ private struct DestinationContentView: View {
                             .document: TabDropEnd(lastIndex: documents.count - 1, onMove: { documentStore.move($0, to: $1) })
                         ])
                 }
-                .padding(.horizontal, 7)
+                .padding(.horizontal, 0)
                 .frame(minWidth: proxy.size.width, minHeight: proxy.size.height, alignment: .leading)
             }
         }
@@ -1060,31 +1061,48 @@ private struct DestinationContentView: View {
         }
     }
 
+    private func tabCloseButton(visible: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: typography.tiny))
+                .frame(width: 23, height: typography.metric(27))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(visible ? 1 : 0)
+        .allowsHitTesting(visible)
+        .accessibilityLabel("Close tab")
+    }
+
     private var terminalTabsEnd: TabDropEnd {
         TabDropEnd(lastIndex: selectedTabs.count - 1, onMove: { herdr.moveTab($0, to: $1) })
     }
 
     private func terminalTab(_ tab: HerdrTab, index: Int) -> some View {
-        Button {
-            herdr.select(tabID: tab.tabID)
-            activeDocumentID = nil
-            commands.focusPanel(.main)
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "terminal")
-                    .font(.system(size: typography.secondary))
-                Text(tab.label).lineLimit(1)
-                let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot, contextID: herdr.contextID)
-                HerdrAttentionBadge(requests: marks.requests, done: marks.done)
+        HStack(spacing: 0) {
+            Button {
+                herdr.select(tabID: tab.tabID)
+                activeDocumentID = nil
+                commands.focusPanel(.main)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: typography.secondary))
+                    Text(tab.label).lineLimit(1)
+                    let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot, contextID: herdr.contextID)
+                    HerdrAttentionBadge(requests: marks.requests, done: marks.done)
+                }
+                .font(.system(size: typography.body))
+                .padding(.horizontal, 10)
+                .frame(height: typography.metric(27))
+                .contentShape(Rectangle())
             }
-            .font(.system(size: typography.body))
-            .padding(.horizontal, 10)
-            .frame(height: typography.metric(27))
-            .background(tabBackground(nil, inMain: activeDocumentID == nil && herdr.selectedTabID == tab.tabID),
-                        in: RoundedRectangle(cornerRadius: 4))
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            tabCloseButton(visible: hoveredTabID == tab.tabID || (activeDocumentID == nil && herdr.selectedTabID == tab.tabID)) { closeTerminalTab(tab) }
         }
-        .buttonStyle(.plain)
+        .modifier(EditorTabStyle(selected: activeDocumentID == nil && herdr.selectedTabID == tab.tabID,
+                                 presence: tabBackground(nil, inMain: activeDocumentID == nil && herdr.selectedTabID == tab.tabID)))
+        .onHover { hoveredTabID = $0 ? tab.tabID : nil }
         .onMiddleClick { closeTerminalTab(tab) }
         .contextMenu {
             Button("New Tab", systemImage: "plus") {
@@ -1142,15 +1160,11 @@ private struct DestinationContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Button { closeSearch() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: typography.tiny))
-                    .frame(width: 22, height: typography.metric(27))
-            }
-            .buttonStyle(.plain)
+            tabCloseButton(visible: hoveredTabID == WorkspaceSearchModel.tabID || activeDocumentID == WorkspaceSearchModel.tabID) { closeSearch() }
         }
-        .background(tabBackground(.search, inMain: activeDocumentID == WorkspaceSearchModel.tabID),
-                    in: RoundedRectangle(cornerRadius: 4))
+        .modifier(EditorTabStyle(selected: activeDocumentID == WorkspaceSearchModel.tabID,
+                                 presence: tabBackground(.search, inMain: activeDocumentID == WorkspaceSearchModel.tabID)))
+        .onHover { hoveredTabID = $0 ? WorkspaceSearchModel.tabID : nil }
         .help("Project Search")
         .onMiddleClick { closeSearch() }
         .onDrag { window.tabDrag.begin(.search, id: WorkspaceSearchModel.tabID) }
@@ -1177,15 +1191,11 @@ private struct DestinationContentView: View {
             }
             .buttonStyle(.plain)
             .simultaneousGesture(TapGesture(count: 2).onEnded { keepDocumentOpen(document.id) })
-            Button { closeDocument(document.id) } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: typography.tiny))
-                    .frame(width: 22, height: typography.metric(27))
-            }
-            .buttonStyle(.plain)
+            tabCloseButton(visible: hoveredTabID == document.id || activeDocumentID == document.id) { closeDocument(document.id) }
         }
-        .background(tabBackground(.document(document.backupID), inMain: activeDocumentID == document.id),
-                    in: RoundedRectangle(cornerRadius: 4))
+        .modifier(EditorTabStyle(selected: activeDocumentID == document.id,
+                                 presence: tabBackground(.document(document.backupID), inMain: activeDocumentID == document.id)))
+        .onHover { hoveredTabID = $0 ? document.id : nil }
         .help(document.isUntitled ? "\(document.title) · not saved yet"
               : "\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.path)")
         .onMiddleClick { closeDocument(document.id) }
@@ -1551,7 +1561,7 @@ private struct DestinationContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Matches the EXPLORER and REPOSITORY headers of the files sidebar.
+    /// Matches the EXPLORER and GITHUB headers of the files sidebar.
     private func sectionTitle(_ title: String, icon: String) -> some View {
         HStack(spacing: 8) {
             Text(title)

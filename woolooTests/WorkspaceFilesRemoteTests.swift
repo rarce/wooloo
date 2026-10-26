@@ -43,6 +43,32 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return log.split(separator: "\u{1e}").map { $0.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init) }
     }
 
+    func testGitHubReadsUseTheRemoteCLIAndExplicitRepository() async throws {
+        try sandbox.repository("repo")
+        try sandbox.sh("git remote add origin https://github.com/team/app.git", in: "repo")
+        try sandbox.write(["shims/gh": """
+            #!/bin/sh
+            [ "$GH_PROMPT_DISABLED" = 1 ] || exit 10
+            printf '%s\\n' "$*" >> '\(sandbox.path("gh.log"))'
+            case "$1 $2" in
+              'repo view') printf '%s' '{"nameWithOwner":"team/app","url":"https://github.com/team/app","hasIssuesEnabled":true}' ;;
+              'pr list') printf '%s' '[{"number":42,"title":"Remote PR","url":"https://github.com/team/app/pull/42","author":null,"isDraft":true}]' ;;
+              *) exit 11 ;;
+            esac
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/gh")
+        let location = remote("repo")
+        let items = try await WorkspaceFiles.blocking(at: location) {
+            let repository = try WorkspaceGitHub.repository(at: location)
+            return try WorkspaceGitHub.items(.prs, repository: repository, at: location)
+        }
+        XCTAssertEqual(items.first?.title, "Remote PR")
+        XCTAssertEqual(items.first?.isDraft, true)
+        let log = try String(contentsOfFile: sandbox.path("gh.log"), encoding: .utf8)
+        XCTAssertTrue(log.contains("--repo https://github.com/team/app"))
+        XCTAssertEqual(try invocations().count, 2, "Both repository detection and list loading must use SSH")
+    }
+
     func testSSHArgumentsAndTargets() throws {
         try sandbox.repository("repo")
         _ = try WorkspaceFiles.listing(at: remote("repo"))

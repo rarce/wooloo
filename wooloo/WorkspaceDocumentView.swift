@@ -119,7 +119,11 @@ struct WorkspaceDocument: Identifiable {
     var isImage: Bool { kind == .file && !isUntitled && WorkspaceImage.supports(path) }
     var isReadOnly: Bool { isPDF || isImage }
     var isEditable: Bool { kind == .file && !isReadOnly }
-    var icon: String { isImage ? "photo" : isPDF ? "doc.richtext" : kind.icon }
+    var icon: String {
+        if isImage { return "photo" }
+        if isPDF { return "doc.richtext" }
+        return kind == .file && !isUntitled ? WorkspaceExplorer.fileIcon(path) : kind.icon
+    }
     var id: String {
         if isUntitled { return "\(space ?? "")|\(location.identity)|untitled|\(backupID.uuidString)" }
         return "\(space ?? "")|\(location.identity)|\(kind.rawValue)|\(commit ?? "")|\(path)"
