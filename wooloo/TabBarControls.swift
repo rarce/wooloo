@@ -379,3 +379,114 @@ struct UntitledSaveSheet: View {
         }
     }
 }
+
+/// Compact, named tabs shared by Explorer and GitHub. The selected destination always fits;
+/// the overflow menu retains every destination rather than reducing tabs to unlabeled icons.
+struct PanelTab: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let icon: String
+
+    static let explorer = [
+        PanelTab(id: "files", title: "Files", icon: "doc.text"),
+        PanelTab(id: "changes", title: "Changes", icon: "arrow.left.arrow.right"),
+        PanelTab(id: "history", title: "History", icon: "clock.arrow.circlepath"),
+        PanelTab(id: "branches", title: "Branches", icon: "arrow.triangle.branch")
+    ]
+    static let github = [
+        PanelTab(id: "issues", title: "Issues", icon: "circle.dotted"),
+        PanelTab(id: "prs", title: "Pull Requests", icon: "arrow.triangle.pull")
+    ]
+}
+
+struct PanelTabStrip: View {
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
+    let tabs: [PanelTab]
+    @Binding var selection: String
+
+    private func width(_ tab: PanelTab) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: typography.secondary, weight: .semibold)
+        return ceil((tab.title as NSString).size(withAttributes: [.font: font]).width) + 38
+    }
+
+    func visibleTabs(in width: CGFloat) -> [PanelTab] {
+        guard tabs.reduce(0, { $0 + self.width($1) }) > width else { return tabs }
+        guard let active = tabs.first(where: { $0.id == selection }) ?? tabs.first else { return [] }
+        var remaining = width - 30 - self.width(active)
+        var visible = Set([active.id])
+        for tab in tabs where tab.id != active.id {
+            if self.width(tab) <= remaining {
+                visible.insert(tab.id)
+                remaining -= self.width(tab)
+            }
+        }
+        return tabs.filter { visible.contains($0.id) }
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let visible = visibleTabs(in: geometry.size.width)
+            HStack(spacing: 0) {
+                ForEach(visible) { tab in
+                    Button { selection = tab.id } label: {
+                        Label(tab.title, systemImage: tab.icon)
+                            .font(.system(size: typography.secondary, weight: selection == tab.id ? .semibold : .regular))
+                            .foregroundStyle(selection == tab.id ? Color.primary : .secondary)
+                            .frame(width: width(tab), height: typography.metric(32))
+                            .background(selection == tab.id ? theme.barBackground : .clear)
+                            .overlay(alignment: .bottom) {
+                                if selection == tab.id { theme.accent.frame(height: 1) }
+                            }
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selection == tab.id ? .isSelected : [])
+                }
+                Spacer(minLength: 0)
+                if visible.count < tabs.count {
+                    Menu {
+                        ForEach(tabs) { tab in
+                            Button { selection = tab.id } label: {
+                                Label(tab.title, systemImage: selection == tab.id ? "checkmark" : tab.icon)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis").frame(width: 26, height: typography.metric(32))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("All tabs")
+                    .accessibilityLabel("All tabs")
+                }
+            }
+        }
+        .frame(height: typography.metric(32))
+    }
+}
+
+
+/// Shared geometry for terminal, search and document tabs; their existing actions and drag
+/// groups remain owned by ContentView.
+struct EditorTabStyle: ViewModifier {
+    @Environment(\.woolooTheme) private var theme
+    let selected: Bool
+    let presence: Color
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    selected ? theme.sidebarBackground : theme.barBackground.opacity(0.45)
+                    presence
+                }
+            }
+            .overlay(alignment: .trailing) { Color.primary.opacity(0.08).frame(width: 1) }
+            .overlay(alignment: .top) {
+                if selected { theme.accent.opacity(0.8).frame(height: 1) }
+            }
+            .overlay(alignment: .bottom) {
+                if !selected { Color.primary.opacity(0.08).frame(height: 1) }
+            }
+    }
+}

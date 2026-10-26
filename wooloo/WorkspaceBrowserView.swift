@@ -35,8 +35,12 @@ struct WorkspaceBrowserView: View {
     @FocusState private var treeFocused: Bool
     @State private var keyMonitor: Any?
     @State private var windowBox = WindowBox()
-    @AppStorage("RepositoryCollapsed") private var repositoryCollapsed = false
-    /// A file whose history the repository panel shows.
+    @AppStorage("GitHubCollapsed") private var githubCollapsed = false
+    @State var explorerTab = "files"
+    @StateObject private var repositoryModel = WorkspaceRepositoryModel()
+    @StateObject private var githubModel = WorkspaceGitHubModel()
+    @State private var selectedHistoryCommit: WorkspaceCommit?
+    /// A file whose history Explorer shows.
     @State private var historyPath: String?
     /// Changes waiting for confirmation before they are discarded.
     @State private var pendingDiscard: PendingDiscard?
@@ -58,21 +62,32 @@ struct WorkspaceBrowserView: View {
 
     var body: some View {
         Group {
-            // A collapsed repository keeps only its header, so the explorer takes the rest without a divider to drag.
-            if repositoryCollapsed {
+            // A collapsed GitHub panel leaves the available height to Explorer.
+            if githubCollapsed {
                 VStack(spacing: 0) {
                     explorer.frame(maxHeight: .infinity)
                     Divider()
-                    repository
+                    github
                 }
             } else {
                 VSplitView {
                     explorer
                         .frame(minHeight: 190)
-                    repository
+                    github
                         .frame(minHeight: 160)
                 }
             }
+        }
+        .onChange(of: explorerTab) { _, tab in
+            treeFocused = false
+            if tab == "files" || tab == "changes" { model.showsChanges = tab == "changes" }
+        }
+        .onChange(of: location?.identity) { _, _ in
+            historyPath = nil
+            selectedHistoryCommit = nil
+        }
+        .onChange(of: historyPath) { _, path in
+            if path != nil { explorerTab = "history" }
         }
         .background(theme.sidebarBackground)
         .background(WindowReader(box: windowBox))
@@ -81,7 +96,7 @@ struct WorkspaceBrowserView: View {
             keyMonitor = keyMonitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 handleFileShortcut(event) ? nil : event
             }
-            commandTarget?.register(commandToken, available: { treeFocused && model.canPerform($0) }) {
+            commandTarget?.register(commandToken, available: { treeFocused && (explorerTab == "files" || explorerTab == "changes") && model.canPerform($0) }) {
                 _ = performFileCommand($0)
             }
         }
@@ -120,13 +135,24 @@ struct WorkspaceBrowserView: View {
         }
     }
 
+    private func showHistory(_ path: String) {
+        selectedHistoryCommit = nil
+        historyPath = path
+        explorerTab = "history"
+    }
+
+    private var github: some View {
+        WorkspaceGitHubView(location: location, isCollapsed: $githubCollapsed, model: githubModel)
+    }
+
     private var repository: some View {
         WorkspaceRepositoryView(location: location, refreshVersion: model.listingVersion,
-                                isCollapsed: $repositoryCollapsed,
                                 onChange: { loadListing() },
                                 onNewSpace: onNewSpace,
                                 onOpenCommitFile: onOpenCommitFile,
-                                historyPath: $historyPath)
+                                historyPath: $historyPath,
+                                model: repositoryModel,
+                                selectedTab: explorerTab == "branches" ? 1 : 0, selectedCommit: $selectedHistoryCommit)
     }
 
     private var explorer: some View {
@@ -138,7 +164,7 @@ struct WorkspaceBrowserView: View {
                     .tracking(0.7)
                 machineIcon
                 Spacer()
-                if !model.showsChanges {
+                if explorerTab == "files" {
                     // A plain button, because a borderless Menu ignores its label's color and weight.
                     Button { model.modifiedOnly.toggle() } label: {
                         HStack(spacing: 4) {
@@ -157,20 +183,18 @@ struct WorkspaceBrowserView: View {
                         .font(.system(size: typography.secondary))
                 }
                 .buttonStyle(.plain)
-                .help("Refresh files and changes")
+                .help("Refresh Explorer")
             }
             .padding(.horizontal, 11)
             .frame(height: typography.metric(35))
             Divider()
 
-            HStack(spacing: 0) {
-                segment("Files", icon: "doc.text", selected: !model.showsChanges) { model.showsChanges = false }
-                segment("Changes", icon: "arrow.left.arrow.right", selected: model.showsChanges) { model.showsChanges = true }
-            }
-            .padding(.horizontal, 3)
+            PanelTabStrip(tabs: PanelTab.explorer, selection: $explorerTab)
             Divider()
 
-            if model.isLoading {
+            if explorerTab == "history" || explorerTab == "branches" {
+                repository
+            } else if model.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = model.error {
                 Text(error)
@@ -320,22 +344,6 @@ struct WorkspaceBrowserView: View {
                  ? "Files are restored to their last commit, and new files are deleted. This cannot be undone."
                  : "Files are restored to their last commit. This cannot be undone.")
         }
-    }
-
-    private func segment(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.system(size: typography.secondary, weight: selected ? .semibold : .regular))
-                .frame(maxWidth: .infinity)
-                .frame(height: typography.metric(25))
-                .background(selected ? Color.primary.opacity(0.1) : .clear,
-                            in: RoundedRectangle(cornerRadius: 4))
-                // Keep the spacing inside the hit area so the whole strip is clickable.
-                .padding(.horizontal, 1)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private func hint(_ value: String) -> some View {
@@ -649,7 +657,7 @@ struct WorkspaceBrowserView: View {
                                                                                        : change?.kind == .untracked)
                         if !node.isDirectory {
                             Divider()
-                            Button("View File History", systemImage: "clock.arrow.circlepath") { historyPath = node.path }
+                            Button("View File History", systemImage: "clock.arrow.circlepath") { showHistory(node.path) }
                                 .disabled(change?.kind == .untracked || change?.kind == .added)
                         }
                     }
@@ -768,7 +776,7 @@ struct WorkspaceBrowserView: View {
         ignoreActions(location, node: node, enabled: true)
         // History and permalinks come from commits, so only files they contain have them.
         if !node.isDirectory, change?.kind != .untracked, change?.kind != .added {
-            Button("View File History", systemImage: "clock.arrow.circlepath") { historyPath = node.path }
+            Button("View File History", systemImage: "clock.arrow.circlepath") { showHistory(node.path) }
             Button("Open File Permalink", systemImage: "link") {
                 model.runOperation(location, reloads: false, { try WorkspaceFiles.permalink(node.path, at: location) }) {
                     NSWorkspace.shared.open($0)
@@ -869,6 +877,7 @@ struct WorkspaceBrowserView: View {
     /// Runs a file shortcut on the selected row, or on the Space root when nothing is selected,
     /// while the Files tree of this window has focus. Returns whether the key was used.
     private func handleFileShortcut(_ event: NSEvent) -> Bool {
+        guard explorerTab == "files" || explorerTab == "changes" else { return false }
         guard treeFocused, event.window != nil, event.window === windowBox.window,
               let command = ExplorerFileCommand.allCases.first(where: { $0.matches(event) }) else { return false }
         // Holding Return would rename again right after the name is committed.
@@ -878,7 +887,8 @@ struct WorkspaceBrowserView: View {
 
     /// Runs a file command from its key or the command palette.
     private func performFileCommand(_ command: ExplorerFileCommand) -> Bool {
-        model.perform(command, open: { location, path, preview in
+        guard explorerTab == "files" || explorerTab == "changes" else { return false }
+        return model.perform(command, open: { location, path, preview in
             if model.showsChanges { onOpenDiff(location, path, preview) } else { onOpenFile(location, path, preview) }
         }, findInFolder: onFindInFolder)
     }

@@ -5,17 +5,16 @@ struct WorkspaceRepositoryView: View {
     @Environment(\.woolooTheme) private var theme
     let location: WorkspaceFileLocation?
     let refreshVersion: Int
-    @Binding var isCollapsed: Bool
     let onChange: () -> Void
     let onNewSpace: ((String, String) -> Void)?
     let onOpenCommitFile: (WorkspaceFileLocation, WorkspaceCommit, WorkspaceCommitFile) -> Void
     /// A Space-relative file whose history the History tab shows instead of the branch's.
     @Binding var historyPath: String?
 
-    /// The model, tab and commit shown first are not private so snapshot tests can set them.
+    /// Explorer owns navigation; snapshot tests can inject the repository model.
     @StateObject var model = WorkspaceRepositoryModel()
-    @State var selectedTab = 0
-    @State var selectedCommit: WorkspaceCommit? = nil
+    var selectedTab = 0
+    @Binding var selectedCommit: WorkspaceCommit?
     @State private var addRequest: AddWorktreeRequest?
     @State private var removing: WorkspaceWorktree?
     @State private var selectedCommitFile: String?
@@ -32,83 +31,31 @@ struct WorkspaceRepositoryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Button { isCollapsed.toggle() } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                            .font(.system(size: typography.tiny, weight: .semibold))
-                            .frame(width: 9)
-                        Text("REPOSITORY")
-                            .font(.system(size: typography.secondary, weight: .semibold))
-                            .tracking(0.7)
-                        Image(systemName: "arrow.triangle.branch")
-                            .font(.system(size: typography.secondary))
-                        Spacer(minLength: 0)
-                    }
-                    .foregroundStyle(.secondary)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(isCollapsed ? "Show repository" : "Hide repository")
-                Button { reload() } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: typography.secondary))
-                }
-                .buttonStyle(.plain)
-                .help("Refresh repository")
-            }
-            .padding(.horizontal, 11)
-            .frame(height: typography.metric(34))
-            .contentShape(Rectangle())
-            .contextMenu {
-                Button("Refresh", systemImage: "arrow.clockwise") { reload() }
-                if let listing {
-                    Button("Add Worktree…", systemImage: "plus") { prepareAdd(listing) }
-                        .disabled(listing.branches.isEmpty)
-                }
-                if let location {
-                    Divider()
-                    Button("Copy Repository Path", systemImage: "doc.on.doc") { AppActions.copy(location.root) }
-                    if location.isLocal {
-                        Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.root) }
-                    }
-                }
-            }
-            if !isCollapsed {
-                Divider()
-                HStack(spacing: 0) {
-                    tab("History", icon: "clock.arrow.circlepath", index: 0)
-                    tab("Branches", icon: "point.3.connected.trianglepath.dotted", index: 1)
-                }
-                .padding(.horizontal, 3)
-                Divider()
-
-                if isLoading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let error {
-                    hint(error).foregroundStyle(theme.warning)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                } else if let listing {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            if selectedTab == 0 {
-                                if let selectedCommit { commitDetail(selectedCommit) }
-                                else if let historyPath { fileHistory(historyPath) }
-                                else { history(listing) }
-                            }
-                            else { branches(listing) }
+            if isLoading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error {
+                hint(error).foregroundStyle(theme.warning)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else if let listing {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if selectedTab == 0 {
+                            if let selectedCommit { commitDetail(selectedCommit) }
+                            else if let historyPath { fileHistory(historyPath) }
+                            else { history(listing) }
                         }
-                        .padding(.vertical, 4)
+                        else { branches(listing) }
                     }
-                    .id("\(selectedTab)|\(selectedCommit?.id ?? "")")
-                } else {
-                    hint("Select a Space to browse its repository")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.vertical, 4)
                 }
+                .id("\(selectedTab)|\(selectedCommit?.id ?? "")")
+            } else {
+                hint("Select a Space to browse its repository")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .background(theme.sidebarBackground)
-        // A collapsed repository loads when it is opened again.
-        .task(id: "\(identity)|\(isCollapsed)") { if !isCollapsed { await model.load(location) } }
+        .task(id: identity) { await model.load(location) }
         .task(id: "\(location?.identity ?? "")|\(selectedCommit?.id ?? "")") {
             await model.loadCommitFiles(selectedCommit?.id, at: location)
         }
@@ -120,8 +67,6 @@ struct WorkspaceRepositoryView: View {
         .onChange(of: historyPath) { _, path in
             guard path != nil else { return }
             selectedCommit = nil
-            selectedTab = 0
-            isCollapsed = false
         }
         .sheet(item: $addRequest) { request in
             AddWorktreeSheet(request: request) { branch, path, newBranch in
@@ -148,22 +93,6 @@ struct WorkspaceRepositoryView: View {
         } message: {
             Text(model.operationError ?? "")
         }
-    }
-
-    private func tab(_ title: String, icon: String, index: Int) -> some View {
-        Button { selectedTab = index } label: {
-            Label(title, systemImage: icon)
-                .font(.system(size: typography.secondary, weight: selectedTab == index ? .semibold : .regular))
-                .frame(maxWidth: .infinity)
-                .frame(height: typography.metric(25))
-                .background(selectedTab == index ? Color.primary.opacity(0.1) : .clear,
-                            in: RoundedRectangle(cornerRadius: 4))
-                // Keep the spacing inside the hit area so the whole strip is clickable.
-                .padding(.horizontal, 1)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private func hint(_ text: String) -> some View {
@@ -491,11 +420,6 @@ struct WorkspaceRepositoryView: View {
         addRequest = AddWorktreeRequest.suggested(for: listing, from: preferred)
     }
 
-    /// An explicit refresh reads the repository again, even if it was just loaded.
-    private func reload() {
-        WorkspaceFiles.forgetRecentResults()
-        model.reload()
-    }
 }
 
 /// The repository panel's listing, a selected commit's files, and worktree and branch operations.

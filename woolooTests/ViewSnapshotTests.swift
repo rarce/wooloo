@@ -327,9 +327,9 @@ final class ViewSnapshotTests: XCTestCase {
         let (sandbox, repo) = try snapshotRepository()
         defer { sandbox.tearDown() }
         let defaults = UserDefaults.standard
-        let savedCollapsed = defaults.object(forKey: "RepositoryCollapsed")
-        defer { defaults.set(savedCollapsed, forKey: "RepositoryCollapsed") }
-        defaults.set(true, forKey: "RepositoryCollapsed")
+        let savedCollapsed = defaults.object(forKey: "GitHubCollapsed")
+        defer { defaults.set(savedCollapsed, forKey: "GitHubCollapsed") }
+        defaults.set(true, forKey: "GitHubCollapsed")
         let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: [
             "workspaces": [["workspace_id": "repo", "label": "repo"]],
             "tabs": [["tab_id": "repo:t1", "workspace_id": "repo", "label": "1"]],
@@ -353,7 +353,7 @@ final class ViewSnapshotTests: XCTestCase {
                                             onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in }, onNewTab: { _ in },
                                             onNewSpace: { _, _ in }, onLocationChange: { _ in },
                                             onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in },
-                                            onOpenCommitFile: { _, _, _ in }, model: model)
+                                            onOpenCommitFile: { _, _, _ in }, model: model, explorerTab: changes ? "changes" : "files")
             // The Git bar under the tree loads its branch after the listing, out of the model's sight.
             try assertSnapshot(render(view, size: NSSize(width: 300, height: 600), settle: 5) {
                 model.listing != nil && !model.isLoading
@@ -368,9 +368,9 @@ final class ViewSnapshotTests: XCTestCase {
         let (sandbox, repo) = try snapshotRepository()
         defer { sandbox.tearDown() }
         let defaults = UserDefaults.standard
-        let savedCollapsed = defaults.object(forKey: "RepositoryCollapsed")
-        defer { defaults.set(savedCollapsed, forKey: "RepositoryCollapsed") }
-        defaults.set(true, forKey: "RepositoryCollapsed")
+        let savedCollapsed = defaults.object(forKey: "GitHubCollapsed")
+        defer { defaults.set(savedCollapsed, forKey: "GitHubCollapsed") }
+        defaults.set(true, forKey: "GitHubCollapsed")
         let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: JSONSerialization.data(withJSONObject: [
             "workspaces": [["workspace_id": "repo", "label": "repo"]],
             "tabs": [["tab_id": "repo:t1", "workspace_id": "repo", "label": "1"]],
@@ -421,16 +421,50 @@ final class ViewSnapshotTests: XCTestCase {
 
         func snapshot(tab: Int = 0, commit: WorkspaceCommit? = nil, height: CGFloat = 340) -> NSBitmapImageRep {
             let model = WorkspaceRepositoryModel()
-            let panel = WorkspaceRepositoryView(location: repo, refreshVersion: 0, isCollapsed: .constant(false),
+            let panel = WorkspaceRepositoryView(location: repo, refreshVersion: 0,
                                                 onChange: {}, onNewSpace: nil, onOpenCommitFile: { _, _, _ in }, historyPath: .constant(nil),
-                                                model: model, selectedTab: tab, selectedCommit: commit)
-            return render(panel, size: NSSize(width: 300, height: height), settle: 2) {
+                                                model: model, selectedTab: tab, selectedCommit: .constant(commit))
+            let explorer = VStack(alignment: .leading, spacing: 0) {
+                Text("EXPLORER").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    .tracking(0.7).padding(.horizontal, 11).frame(height: 35)
+                Divider()
+                PanelTabStrip(tabs: PanelTab.explorer, selection: .constant(tab == 0 ? "history" : "branches"))
+                Divider()
+                panel
+            }
+            return render(explorer, size: NSSize(width: 300, height: height), settle: 2) {
                 model.listing != nil && !model.isLoading && (commit == nil || model.commitFiles != nil)
             }
         }
         try assertSnapshot(snapshot(), named: "repository-history")
         try assertSnapshot(snapshot(commit: head), named: "repository-commit")
         try assertSnapshot(snapshot(tab: 1, height: 420), named: "repository-branches")
+        try skipIfRecorded()
+    }
+
+    func testGitHubPanels() throws {
+        let repo = WorkspaceFileLocation(machine: nil, session: "test", workspaceID: "github",
+                                         workspaceLabel: "Wooloo", root: "/private/tmp/github-preview")
+        for (tab, width) in [("issues", 244.0), ("prs", 200.0)] {
+            let model = WorkspaceGitHubModel(loadRepository: { _ in
+                WorkspaceGitHubRepository(nameWithOwner: "rarce/wooloo", url: "https://github.com/rarce/wooloo", hasIssuesEnabled: true)
+            }, loadItems: { _, kind, _ in
+                if kind == .issues {
+                    return [
+                        WorkspaceGitHubItem(number: 142, title: "Improve SSH reconnection", url: "https://github.com/rarce/wooloo/issues/142", author: .init(login: "roberto")),
+                        WorkspaceGitHubItem(number: 138, title: "Keep file history close to Explorer", url: "https://github.com/rarce/wooloo/issues/138", author: .init(login: "ana"))
+                    ]
+                }
+                return [
+                    WorkspaceGitHubItem(number: 143, title: "Refresh Explorer and GitHub navigation", url: "https://github.com/rarce/wooloo/pull/143", author: .init(login: "roberto"), isDraft: true),
+                    WorkspaceGitHubItem(number: 140, title: "Preserve terminal focus", url: "https://github.com/rarce/wooloo/pull/140", author: nil, isDraft: false)
+                ]
+            })
+            let view = WorkspaceGitHubView(location: repo, isCollapsed: .constant(false), model: model, selectedTab: tab)
+            try assertSnapshot(render(view, size: NSSize(width: width, height: 340), settle: 3) {
+                model.items != nil && !model.isLoading
+            }, named: "github-\(tab)")
+        }
         try skipIfRecorded()
     }
 
@@ -892,7 +926,7 @@ final class ViewSnapshotTests: XCTestCase {
         let defaults = UserDefaults.standard
         let values: [String: Any] = [
             "HerdrLastSession": "work", "SidebarWidth": 206.0, "FilesSidebarWidth": 244.0,
-            "AgentsInSelectedSpaceOnly": false, "HostStatsCollapsed": false, "RepositoryCollapsed": false,
+            "AgentsInSelectedSpaceOnly": false, "HostStatsCollapsed": false, "GitHubCollapsed": false,
             "AgentQuotasCollapsed": true,
             AgentQuotaConsent.storageKey: AgentQuotaConsent(machines: [AgentQuotaConsent.key(for: nil)]).stored,
             WoolooTypography.baseKey: WoolooTypography.defaultBase, WoolooTypography.codeKey: WoolooTypography.defaultCode,
