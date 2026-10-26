@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The sidebar's HOST section: the machine the explorer points at and its CPU, memory, disk
-/// and uptime; collapsed, only CPU and memory. It samples only while its window is active.
+/// GPU and uptime; collapsed, CPU, memory and GPU. It samples only while its window is active.
 struct HostStatsSection: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
@@ -63,9 +63,15 @@ struct HostStatsSection: View {
 
     @ViewBuilder private var summary: some View {
         if let stats = monitor.stats {
-            HStack(spacing: 10) {
-                SidebarMiniMeter(label: "CPU", fraction: stats.cpuUsage)
-                SidebarMiniMeter(label: "MEM", fraction: stats.memoryFraction)
+            VStack(spacing: 3) {
+                HStack(spacing: 10) {
+                    SidebarMiniMeter(label: "CPU", fraction: stats.cpuUsage)
+                    SidebarMiniMeter(label: "MEM", fraction: stats.memoryFraction)
+                }
+                if let busiest = stats.sample.gpus.max(by: { $0.fraction < $1.fraction }) {
+                    SidebarMiniMeter(label: "GPU", fraction: busiest.fraction)
+                        .help("Busiest GPU: \(busiest.name)")
+                }
             }
             .padding(.horizontal, 8)
             .help([stats.sample.hostname, monitor.failure].compactMap { $0 }.joined(separator: " — "))
@@ -90,6 +96,11 @@ struct HostStatsSection: View {
                 SidebarMeter(label: "CPU", fraction: stats.cpuUsage,
                              value: (stats.cpuUsage.map { "\(Int(($0 * 100).rounded()))%" } ?? "…")
                                  + (stats.sample.cpuCount.map { " / \($0) cores" } ?? ""))
+                ForEach(Array(stats.sample.gpus.enumerated()), id: \.element.id) { index, gpu in
+                    SidebarMeter(label: stats.sample.gpus.count == 1 ? "GPU" : "GPU\(index)",
+                                 fraction: gpu.fraction, value: "\(Int((gpu.fraction * 100).rounded()))%")
+                        .help(gpu.name)
+                }
                 if let used = stats.sample.memoryUsed, let total = stats.sample.memoryTotal {
                     SidebarMeter(label: "MEM", fraction: stats.memoryFraction,
                                  value: "\(HostStats.bytesText(used)) / \(HostStats.bytesText(total))")

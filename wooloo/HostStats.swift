@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import IOKit
 
 /// Cumulative CPU time of a host, in ticks. Usage is the busy share of the ticks between two samples.
 struct CPUTicks: Equatable {
@@ -12,12 +13,26 @@ struct CPUTicks: Equatable {
     }
 }
 
+struct GPUUsage: Equatable, Identifiable {
+    var id: String
+    var name: String
+    /// Busy fraction, 0...1.
+    var fraction: Double
+
+    static func percent(_ text: String) -> Double? {
+        guard let value = Double(text.trimmingCharacters(in: .whitespaces)),
+              value.isFinite, (0...100).contains(value) else { return nil }
+        return value / 100
+    }
+}
+
 /// One reading of a host's resources. Fields a host cannot report stay nil.
 struct HostSample: Equatable {
     var hostname: String
     var cpuTicks: CPUTicks?
     /// Instant CPU usage (0...1), for hosts without tick counters (a remote Mac).
     var cpuUsage: Double?
+    var gpus: [GPUUsage] = []
     var loadAverage: [Double] = []
     var cpuCount: Int?
     var memoryUsed: UInt64?
@@ -72,7 +87,20 @@ enum HostProbe {
               echo "ncpu=$(getconf _NPROCESSORS_ONLN)"
               awk '/^(MemTotal|MemAvailable):/ { sub(":", "", $1); print $1 "=" $2 }' /proc/meminfo
               echo "uptime=$(cut -d ' ' -f 1 /proc/uptime)"
+              if command -v nvidia-smi >/dev/null 2>&1; then
+                nvidia-smi --query-gpu=index,name,utilization.gpu --format=csv,noheader,nounits 2>/dev/null |
+                  awk -F ', ' '{ print "gpu=nvidia-" $1 "|" $2 "|" $3 }'
+              fi
+              for card in /sys/class/drm/card[0-9]*; do
+                case "${card##*/}" in *-*) continue ;; esac
+                [ -r "$card/device/vendor" ] || continue
+                [ "$(cat "$card/device/vendor" 2>/dev/null)" = "0x1002" ] || continue
+                [ -r "$card/device/gpu_busy_percent" ] || continue
+                echo "gpu=amd-${card##*/}|AMD ${card##*/}|$(cat "$card/device/gpu_busy_percent" 2>/dev/null)"
+              done
             else
+              /usr/sbin/ioreg -r -c IOAccelerator -l -w 0 2>/dev/null |
+                awk 'BEGIN { i = 0 } /"PerformanceStatistics"/ { n = split($0, parts, "Device Utilization %\\\"="); if (n > 1) { split(parts[2], value, /[^0-9.]/); print "gpu=mac-" i "|Mac GPU " i "|" value[1]; i++ } }'
               echo "load=$(sysctl -n vm.loadavg | tr -d '{}')"
               echo "ncpu=$(sysctl -n hw.ncpu)"
               echo "memsize=$(sysctl -n hw.memsize)"
@@ -88,12 +116,23 @@ enum HostProbe {
 
     static func parse(_ output: String) -> HostSample? {
         var values: [String: String] = [:]
+        var gpus: [GPUUsage] = []
         for line in output.split(separator: "\n") {
             guard let equals = line.firstIndex(of: "=") else { continue }
+            if line[..<equals] == "gpu" {
+                let fields = line[line.index(after: equals)...].split(separator: "|", omittingEmptySubsequences: false)
+                if fields.count == 3, !fields[0].isEmpty,
+                   let fraction = GPUUsage.percent(String(fields[2])),
+                   !gpus.contains(where: { $0.id == String(fields[0]) }) {
+                    gpus.append(GPUUsage(id: String(fields[0]), name: String(fields[1]), fraction: fraction))
+                }
+                continue
+            }
             values[String(line[..<equals])] = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
         }
         guard let host = values["host"], !host.isEmpty else { return nil }
         var sample = HostSample(hostname: host)
+        sample.gpus = gpus
         sample.cpuCount = values["ncpu"].flatMap { Int($0) }
         sample.loadAverage = (values["load"] ?? "").split(separator: " ").prefix(3).compactMap { Double($0) }
 
@@ -142,6 +181,7 @@ enum HostProbe {
         var name = [CChar](repeating: 0, count: 256)
         let hostname = gethostname(&name, name.count) == 0 ? String(cString: name) : "localhost"
         var sample = HostSample(hostname: hostname.hasSuffix(".local") ? String(hostname.dropLast(6)) : hostname)
+        sample.gpus = localGPUs()
         sample.cpuCount = ProcessInfo.processInfo.activeProcessorCount
         sample.memoryTotal = ProcessInfo.processInfo.physicalMemory
         sample.uptime = ProcessInfo.processInfo.systemUptime
@@ -182,6 +222,26 @@ enum HostProbe {
             sample.diskFree = values.volumeAvailableCapacity.map { UInt64($0) }
         }
         return sample
+    }
+
+    /// Driver counters exposed by IOAccelerator; no root access or powermetrics required.
+    static func localGPUs() -> [GPUUsage] {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS else { return [] }
+        defer { IOObjectRelease(iterator) }
+        var result: [GPUUsage] = []
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            defer { IOObjectRelease(service) }
+            guard let counters = IORegistryEntryCreateCFProperty(service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any],
+                  let percent = counters["Device Utilization %"] as? NSNumber,
+                  let fraction = GPUUsage.percent(percent.stringValue) else { continue }
+            var identifier: UInt64 = 0
+            IORegistryEntryGetRegistryEntryID(service, &identifier)
+            let name = IORegistryEntryCreateCFProperty(service, "model" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+            let model = (name as? String) ?? (name as? Data).flatMap { String(data: $0, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) }
+            result.append(GPUUsage(id: String(identifier), name: model ?? "Mac GPU", fraction: fraction))
+        }
+        return result
     }
 
     /// Samples this Mac; tests replace it, since real stats change on every run.
