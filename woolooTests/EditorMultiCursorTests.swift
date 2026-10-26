@@ -2,7 +2,7 @@ import XCTest
 import SwiftUI
 import Carbon.HIToolbox
 import CodeEditSourceEditor
-import CodeEditTextView
+@testable import CodeEditTextView
 @testable import wooloo
 
 /// Multi-cursor commands as in Zed: the range logic alone, then the shortcuts, typing, undo and
@@ -1078,6 +1078,240 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(textView), [range(2, 3), range(long.utf16.count + 3, 3)])
     }
 
+    func testOptionDragSelectsScreenColumnsInRightToLeftRowsWithAndWithoutWrapping() throws {
+        let alphabet = "אבגדהוזחטיכלמנסעפצקרשת"
+        for wraps in [false, true] {
+            let text = wraps ? String(repeating: alphabet, count: 10)
+                : Array(repeating: alphabet, count: 3).joined(separator: "\n")
+            let (coordinator, view) = try makeEditor(text: text, wrapLines: wraps, width: 320)
+            let rows = Array(displayRows(view).prefix(3))
+            XCTAssertEqual(rows.count, 3)
+            let firstLine = try XCTUnwrap(view.layoutManager.textLineForOffset(rows[0].location))
+            let first = try XCTUnwrap(firstLine.data.lineFragments.first)
+            let unit = CTLineGetOffsetForStringIndex(first.data.ctLine, rows[0].max - 1, nil)
+            XCTAssertGreaterThan(unit, 0)
+            let inset = view.layoutManager.edgeInsets.left
+            let firstY = try XCTUnwrap(view.layoutManager.rectForOffset(rows[0].location)).midY
+            let lastY = try XCTUnwrap(view.layoutManager.rectForOffset(rows[2].location)).midY
+            let start = CGPoint(x: inset + unit, y: firstY)
+            let end = CGPoint(x: inset + unit * 3, y: lastY)
+            let expected = rows.map { range($0.max - 3, 2) }
+            for reverse in [false, true] {
+                view.selectionManager.setSelectedRange(range(0))
+                optionDrag(coordinator, in: view, from: reverse ? end : start, to: reverse ? start : end)
+                XCTAssertEqual(selectedRanges(view), expected)
+                for selection in view.selectionManager.textSelections {
+                    let fills = view.selectionManager.getFillRects(in: view.bounds, for: selection)
+                    XCTAssertEqual(fills.count, 1)
+                    let fill = try XCTUnwrap(fills.first)
+                    XCTAssertEqual(fill.minX, inset + unit, accuracy: 0.01)
+                    XCTAssertEqual(fill.width, unit * 2, accuracy: 0.01)
+                }
+                XCTAssertTrue(coordinator.handle(key("\u{1B}", [], code: kVK_Escape)))
+                XCTAssertEqual(selectedRanges(view), [reverse ? expected[0] : expected[2]],
+                               "Esc keeps the piece on the visual head row")
+            }
+            window?.close()
+        }
+    }
+
+    func testOptionDragAcrossMixedDirectionsKeepsDisjointRangesAndUndo() throws {
+        let text = "abc אבג xyz"
+        let (coordinator, view) = try makeEditor(text: text)
+        let row = try XCTUnwrap(view.layoutManager.textLineForIndex(0)?.data.lineFragments.first)
+        let inset = view.layoutManager.edgeInsets.left
+        let left = CTLineGetOffsetForStringIndex(row.data.ctLine, 2, nil) + inset
+        let right = CTLineGetOffsetForStringIndex(row.data.ctLine, 5, nil) + inset
+        let y = row.height / 2
+        let expected = [range(2, 2), range(5, 2)] // c + space, then visual gimel + bet; alef stays unselected.
+        for reverse in [false, true] {
+            view.selectionManager.setSelectedRange(range(0))
+            optionDrag(coordinator, in: view, from: CGPoint(x: reverse ? right : left, y: y),
+                       to: CGPoint(x: reverse ? left : right, y: y))
+            XCTAssertEqual(selectedRanges(view), expected)
+            let fills = view.selectionManager.textSelections.flatMap {
+                view.selectionManager.getFillRects(in: view.bounds, for: $0)
+            }
+            XCTAssertTrue(fills.allSatisfy { $0.width > 0 })
+            XCTAssertEqual(fills.map(\.width).reduce(0, +), right - left, accuracy: 0.01)
+            XCTAssertEqual(fills.map(\.minX).min()!, left, accuracy: 0.01)
+            XCTAssertEqual(fills.map(\.maxX).max()!, right, accuracy: 0.01)
+            XCTAssertTrue(coordinator.handle(key("\u{1B}", [], code: kVK_Escape)))
+            XCTAssertEqual(selectedRanges(view), [reverse ? expected[0] : expected[1]],
+                           "the visual head determines newest even when logical order differs")
+        }
+        view.selectionManager.setSelectedRange(range(0))
+        optionDrag(coordinator, in: view, from: CGPoint(x: left, y: y), to: CGPoint(x: right, y: y))
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(view), [range(0)], "one drag is one selection-undo step")
+        XCTAssertTrue(coordinator.perform(.redoSelection))
+        XCTAssertEqual(selectedRanges(view), expected)
+        view.insertText("Q")
+        XCTAssertEqual(view.string, "abQאQ xyz")
+        view.undoManager?.undo()
+        XCTAssertEqual(view.string, text, "one text undo restores every disjoint replacement")
+    }
+
+    func testBidirectionalBlockKeepsWholeEmojiCombiningMarksAndLigatureCarets() throws {
+        let text = "אב\t👩🏽‍💻 e\u{301} لا xyz"
+        let string = text as NSString
+        let (coordinator, view) = try makeEditor(text: text)
+        let row = try XCTUnwrap(view.layoutManager.textLineForIndex(0)?.data.lineFragments.first)
+        for needle in ["👩🏽‍💻", "e\u{301}", "ل", "ا"] {
+            let expected = string.range(of: needle)
+            var edges: [CGFloat] = []
+            CTLineEnumerateCaretOffsets(row.data.ctLine) { x, index, _, _ in
+                if NSLocationInRange(index, expected) { edges.append(x) }
+            }
+            let left = try XCTUnwrap(edges.min()), right = try XCTUnwrap(edges.max())
+            XCTAssertGreaterThan(right, left)
+            let inset = view.layoutManager.edgeInsets.left
+            // Both ends are inside the glyph, on opposite sides of the nearest-caret midpoint.
+            let start = CGPoint(x: inset + left + (right - left) * 0.4, y: row.height / 2)
+            let end = CGPoint(x: inset + left + (right - left) * 0.6, y: row.height / 2)
+            optionDrag(coordinator, in: view, from: start, to: end)
+            XCTAssertEqual(selectedRanges(view), [expected], needle)
+            optionDrag(coordinator, in: view, from: end, to: start)
+            XCTAssertEqual(selectedRanges(view), [expected], needle)
+        }
+    }
+
+    func testBidirectionalVerticalBlockIncludesEmptyRowsAtTheLeftEdge() throws {
+        for wraps in [false, true] {
+            let text = "אבג\n\nאבג"
+            let (coordinator, view) = try makeEditor(text: text, wrapLines: wraps)
+            let rows = displayRows(view)
+            let inset = view.layoutManager.edgeInsets.left
+            let firstY = try XCTUnwrap(view.layoutManager.rectForOffset(0)).midY
+            let lastY = try XCTUnwrap(view.layoutManager.rectForOffset(5)).midY
+            optionDrag(coordinator, in: view, from: CGPoint(x: inset, y: firstY), to: CGPoint(x: inset, y: lastY))
+            XCTAssertEqual(selectedRanges(view), [range(3), range(4), range(8)])
+            XCTAssertEqual(rows.count, 3)
+            window?.close()
+        }
+    }
+
+    func testBidirectionalBlockKeepsFormattingControlsWithTheirVisibleCaretUnit() throws {
+        for (text, expected) in [("אב\u{200F}גד", range(1, 2)), ("אב\u{200B}גד", range(1, 2)),
+                                  // LRE has its own zero-width caret at the other side of the embedded run;
+                                  // selecting Bet must not stretch across that run merely to include the control.
+                                  ("אב\u{202A}xy\u{202C}גד", range(1, 1)),
+                                  ("אב\u{202A}xy\u{202C}גד", range(4, 2))] {
+            let (coordinator, view) = try makeEditor(text: text)
+            let row = try XCTUnwrap(view.layoutManager.textLineForIndex(0)?.data.lineFragments.first)
+            var edges: [CGFloat] = []
+            CTLineEnumerateCaretOffsets(row.data.ctLine) { x, index, _, _ in
+                if NSLocationInRange(index, expected) { edges.append(x) }
+            }
+            let inset = view.layoutManager.edgeInsets.left
+            let left = try XCTUnwrap(edges.min()), right = try XCTUnwrap(edges.max())
+            XCTAssertGreaterThan(right, left)
+            optionDrag(coordinator, in: view, from: CGPoint(x: inset + left, y: row.height / 2),
+                       to: CGPoint(x: inset + right, y: row.height / 2))
+            XCTAssertEqual(selectedRanges(view), [expected])
+            let fills = view.selectionManager.textSelections.flatMap {
+                view.selectionManager.getFillRects(in: view.bounds, for: $0)
+            }
+            XCTAssertEqual(fills.map(\.width).reduce(0, +), right - left, accuracy: 0.01)
+            view.insertText("Q")
+            XCTAssertEqual(view.string, (text as NSString).replacingCharacters(in: expected, with: "Q"))
+            view.undoManager?.undo()
+            XCTAssertEqual(view.string, text, "undo retains the exact original formatting controls")
+            window?.close()
+        }
+    }
+
+    func testVerticalRTLBlockPreservesCaretsOnTheirSoftWrappedRows() throws {
+        let text = String(repeating: "אבגדהוזחטיכלמנסעפצקרשת", count: 10)
+        let (coordinator, view) = try makeEditor(text: text, wrapLines: true, width: 320)
+        _ = displayRows(view)
+        let line = try XCTUnwrap(view.layoutManager.textLineForIndex(0))
+        XCTAssertGreaterThan(line.data.lineFragments.count, 3)
+        let rows = Array(line.data.lineFragments.prefix(3))
+        let expected = rows.map { range($0.range.max) }
+        let x = view.layoutManager.edgeInsets.left
+        func assertCarets(file: StaticString = #filePath, line: UInt = #line) {
+            XCTAssertEqual(selectedRanges(view), expected, file: file, line: line)
+            for row in rows {
+                guard let selection = view.selectionManager.textSelections.first(where: {
+                    $0.range == range(row.range.max)
+                }) else {
+                    XCTFail("missing caret at the preceding wrapped row's trailing boundary", file: file, line: line)
+                    continue
+                }
+                XCTAssertEqual(selection.boundingRect.minX, x, accuracy: 1, file: file, line: line)
+                XCTAssertEqual(selection.boundingRect.minY, row.yPos, accuracy: 1, file: file, line: line)
+            }
+        }
+        for reverse in [false, true] {
+            view.selectionManager.setSelectedRange(range(0))
+            let first = CGPoint(x: x, y: rows[0].yPos + rows[0].height / 2)
+            let last = CGPoint(x: x, y: rows[2].yPos + rows[2].height / 2)
+            optionDrag(coordinator, in: view, from: reverse ? last : first, to: reverse ? first : last)
+            assertCarets()
+            XCTAssertTrue(coordinator.perform(.undoSelection))
+            XCTAssertEqual(selectedRanges(view), [range(0)])
+            XCTAssertTrue(coordinator.perform(.redoSelection))
+            assertCarets()
+        }
+        let replaced = NSMutableString(string: text)
+        for selection in expected.reversed() { replaced.replaceCharacters(in: selection, with: "Q") }
+        view.insertText("Q")
+        XCTAssertEqual(view.string, replaced as String)
+        view.undoManager?.undo()
+        XCTAssertEqual(view.string, text)
+    }
+
+    func testVerticalMixedDirectionBlockPreservesSecondaryCaretEdgesAndHistory() throws {
+        let (coordinator, view) = try makeEditor(text: "abc אבג xyz\nabc אבג xyz")
+        view.selectionManager.setSelectedRange(range(0))
+        XCTAssertEqual(selectedRanges(view), [range(0)])
+        _ = displayRows(view)
+        let first = try XCTUnwrap(view.layoutManager.textLineForIndex(0))
+        let last = try XCTUnwrap(view.layoutManager.textLineForIndex(1))
+        let firstRow = try XCTUnwrap(first.data.lineFragments.first)
+        let lastRow = try XCTUnwrap(last.data.lineFragments.first)
+        var secondary: CGFloat = 0
+        let primary = CTLineGetOffsetForStringIndex(firstRow.data.ctLine, 4, &secondary)
+        XCTAssertGreaterThan(abs(primary - secondary), 1)
+        let x = secondary + view.layoutManager.edgeInsets.left
+        func assertCarets(file: StaticString = #filePath, line: UInt = #line) {
+            XCTAssertEqual(view.selectionManager.textSelections.count, 2, file: file, line: line)
+            for selection in view.selectionManager.textSelections {
+                XCTAssertTrue(selection.range.isEmpty, file: file, line: line)
+                XCTAssertEqual(selection.boundingRect.minX, x, accuracy: 1, file: file, line: line)
+                let y = selection.range.location < last.range.location ? first.yPos : last.yPos
+                XCTAssertEqual(selection.boundingRect.minY, y, accuracy: 1, file: file, line: line)
+            }
+        }
+        optionDrag(coordinator, in: view,
+                   from: CGPoint(x: x, y: first.yPos + firstRow.height / 2),
+                   to: CGPoint(x: x, y: last.yPos + lastRow.height / 2))
+        assertCarets()
+        XCTAssertTrue(coordinator.perform(.undoSelection))
+        XCTAssertEqual(selectedRanges(view), [range(0)])
+        XCTAssertTrue(coordinator.perform(.redoSelection))
+        assertCarets()
+        XCTAssertTrue(coordinator.handle(key("\u{1B}", [], code: kVK_Escape)))
+        let remaining = try XCTUnwrap(view.selectionManager.textSelections.first)
+        XCTAssertEqual(view.selectionManager.textSelections.count, 1)
+        XCTAssertEqual(remaining.boundingRect.minX, x, accuracy: 1)
+        XCTAssertEqual(remaining.boundingRect.minY, last.yPos, accuracy: 1)
+    }
+
+    private func optionDrag(_ coordinator: EditorMultiCursorCoordinator, in view: TextView,
+                            from start: CGPoint, to end: CGPoint) {
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        for (index, item) in [(NSEvent.EventType.leftMouseDown, start), (.leftMouseDragged, end),
+                              (.leftMouseUp, end)].enumerated() {
+            let event = NSEvent.mouseEvent(with: item.0, location: view.convert(item.1, to: nil),
+                                           modifierFlags: .option, timestamp: timestamp + Double(index) * 0.01,
+                                           windowNumber: window?.windowNumber ?? 0, context: nil,
+                                           eventNumber: 0, clickCount: 1, pressure: 1)!
+            XCTAssertTrue(coordinator.handleMouse(event))
+        }
+    }
+
     func testAReplacedEditorStartsAFreshHistoryAndKeepsTheCoordinator() throws {
         // As when a document is reloaded or its Markdown mode changes: the view keeps its
         // coordinator while SwiftUI replaces the editor.
@@ -1456,6 +1690,105 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(heights, Array(expected.map { $0.data.scaledHeight }))
     }
 
+    /// Reusing a shaped paragraph must preserve exact fallback-font, tab and bidirectional geometry.
+    func testResizingPreservesUnicodeRowsAndAttributesAgainstFreshLayout() throws {
+        let text = String(repeating: "alpha\t世界 👩🏽‍💻 مرحبا e\u{301}; $foo+bar, (baz)! ", count: 80)
+        let (_, view) = try makeEditor(text: text, wrapLines: true, resizable: true)
+        view.textStorage.addAttributes([.font: NSFont.systemFont(ofSize: 19), .kern: 0.7],
+                                       range: range(5, 30))
+        view.textStorage.addAttribute(.foregroundColor, value: NSColor.systemRed, range: range(40, 20))
+        for width in [380.0, 650, 20, 500] {
+            try resize(to: width)
+            try assertReflowMatchesFreshLayout(view)
+        }
+        // These are manager-level invalidations, without replacing the line's typesetter.
+        view.layoutManager.lineBreakStrategy = .character
+        view.lineHeight = 1.4
+        view.needsLayout = true
+        window?.contentView?.layoutSubtreeIfNeeded()
+        try settle()
+        try assertReflowMatchesFreshLayout(view)
+    }
+
+    func testReflowMatchesFreshLayoutAfterEditsUndoAndMarkedTextChanges() throws {
+        let text = String(repeating: "alpha beta, 世界 👩🏽‍💻 مرحبا; ", count: 80)
+        let (_, view) = try makeEditor(text: text, wrapLines: true, resizable: true)
+        view.insertText("x", replacementRange: range(0))
+        try settle()
+        XCTAssertEqual(view.string, "x" + text)
+        try assertReflowMatchesFreshLayout(view)
+
+        // Equal-length edits must update the rendered paragraph even when its range is unchanged.
+        view.insertText("XYZ", replacementRange: range(1, 3))
+        try settle()
+        try assertReflowMatchesFreshLayout(view)
+        view.undoManager?.undo()
+        try settle()
+        try assertReflowMatchesFreshLayout(view)
+
+        view.selectionManager.setSelectedRange(range(0))
+        view.setMarkedText("漢字", selectedRange: range(2), replacementRange: range(0))
+        view.layoutManager.setNeedsLayout()
+        view.needsLayout = true
+        window?.contentView?.layoutSubtreeIfNeeded()
+        try settle()
+        XCTAssertTrue(view.hasMarkedText())
+        try assertReflowMatchesFreshLayout(view)
+        // Moving away clears the marked attributes without changing the underlying text.
+        view.moveToEndOfDocument(nil)
+        try settle()
+        XCTAssertFalse(view.hasMarkedText())
+        try assertReflowMatchesFreshLayout(view)
+    }
+
+    private struct ReflowRow: Equatable {
+        var range: NSRange
+        var width: CGFloat
+        var height: CGFloat
+        var descent: CGFloat
+        var scaledHeight: CGFloat
+        var glyphs: [[CGGlyph]]
+        var positions: [[CGPoint]]
+        var indices: [[CFIndex]]
+        var attributes: [NSDictionary]
+    }
+
+    /// Compare a reflow with an explicitly invalidated paragraph. Glyphs, indices and run attributes catch
+    /// stale shaping even when an edit or an IME underline does not change the row's dimensions.
+    private func assertReflowMatchesFreshLayout(_ view: TextView,
+                                               file: StaticString = #filePath, line: UInt = #line) throws {
+        func rows() throws -> [ReflowRow] {
+            let position = try XCTUnwrap(view.layoutManager.textLineForIndex(0), file: file, line: line)
+            return position.data.lineFragments.map { fragment in
+                let runs = CTLineGetGlyphRuns(fragment.data.ctLine) as! [CTRun]
+                var glyphs: [[CGGlyph]] = [], positions: [[CGPoint]] = [], indices: [[CFIndex]] = []
+                for run in runs {
+                    let count = CTRunGetGlyphCount(run)
+                    var runGlyphs = [CGGlyph](repeating: 0, count: count)
+                    var runPositions = [CGPoint](repeating: .zero, count: count)
+                    var runIndices = [CFIndex](repeating: 0, count: count)
+                    if count > 0 {
+                        CTRunGetGlyphs(run, CFRange(location: 0, length: count), &runGlyphs)
+                        CTRunGetPositions(run, CFRange(location: 0, length: count), &runPositions)
+                        CTRunGetStringIndices(run, CFRange(location: 0, length: count), &runIndices)
+                    }
+                    glyphs.append(runGlyphs)
+                    positions.append(runPositions)
+                    indices.append(runIndices)
+                }
+                return ReflowRow(range: fragment.range, width: fragment.data.width,
+                                 height: fragment.data.height, descent: fragment.data.descent,
+                                 scaledHeight: fragment.data.scaledHeight, glyphs: glyphs,
+                                 positions: positions, indices: indices,
+                                 attributes: runs.map { CTRunGetAttributes($0) as NSDictionary })
+            }
+        }
+        let before = try rows()
+        XCTAssertFalse(before.isEmpty, file: file, line: line)
+        view.layoutManager.invalidateLayoutForRange(range(0, view.string.utf16.count))
+        XCTAssertEqual(before, try rows(), file: file, line: line)
+    }
+
     /// Words break after whitespace or punctuation, and never inside a CRLF line ending.
     func testWrappedRowsBreakAfterWhitespaceOrPunctuationAndKeepCRLFTogether() throws {
         let line = (0..<60).map { $0 % 3 == 0 ? "alpha,beta" : "gamma delta" }.joined(separator: " ")
@@ -1797,6 +2130,215 @@ final class EditorMultiCursorTests: XCTestCase {
                              rows)
         let pixel = 1 / (window?.backingScaleFactor ?? 1)
         XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel)
+    }
+
+    /// An edit above the visible rows of the same logical line changes the document offset of
+    /// the character at the top. Reusing its old line-relative offset follows different text.
+    func testAnInsertionInHiddenWrappedRowsKeepsTheTopThroughUndoAndRedo() throws {
+        let unit = "a mediumword longerIdentifier βeta 👩🏽‍💻 short words with varied lengths; "
+        let text = String(repeating: unit, count: 300)
+        let (_, textView) = try makeEditor(text: text, wrapLines: true, width: 430)
+        try scrollDown(textView, to: 1_200)
+        let offset = try XCTUnwrap(topOffset(textView))
+        let dy = try depth(of: offset, in: textView)
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        let insertion = "inserted 👩🏽‍💻 words of different widths that change wrapping before the visible text; "
+        let insertedLength = insertion.utf16.count
+        let location = unit.utf16.count * 2
+        XCTAssertLessThan(location + insertedLength, offset)
+        // Keep the active caret in view, so selection reveal does not obscure the layout defect.
+        textView.selectionManager.setSelectedRange(range(offset + 120))
+        textView._undoManager?.clearStack()
+        textView.replaceCharacters(in: range(location), with: insertion)
+        try settle()
+        XCTAssertEqual(try depth(of: offset + insertedLength, in: textView), dy, accuracy: pixel, "insert")
+        for cycle in 0..<4 {
+            textView.undoManager?.undo()
+            try settle()
+            XCTAssertEqual(textView.string, text)
+            XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel, "undo \(cycle)")
+            textView.undoManager?.redo()
+            try settle()
+            XCTAssertEqual(try depth(of: offset + insertedLength, in: textView), dy, accuracy: pixel,
+                           "redo \(cycle)")
+        }
+    }
+
+    /// Each inverse mutation used to lay out separately. Pasting line breaks also moves the
+    /// preserved character into a new logical line whose preceding newline undo must remove.
+    func testMultipleHiddenWrappedEditsKeepTheTopAcrossGroupedUndoAndRedo() throws {
+        let unit = "one somewhatLongerWord three βeta 👩🏽‍💻 five six varying word lengths; "
+        let text = String(repeating: unit, count: 300)
+        let (_, textView) = try makeEditor(text: text, wrapLines: true, width: 430)
+        try scrollDown(textView, to: 1_200)
+        let offset = try XCTUnwrap(topOffset(textView))
+        let dy = try depth(of: offset, in: textView)
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        let insertion = "new words\nnext line 👩🏽‍💻\nremaining prefix "
+        let ranges = [range(unit.utf16.count), range(unit.utf16.count * 3)]
+        let insertedLength = insertion.utf16.count * ranges.count
+        XCTAssertLessThan(try XCTUnwrap(ranges.last).location, offset)
+        textView.selectionManager.setSelectedRange(range(offset + 120))
+        textView._undoManager?.clearStack()
+        textView.replaceCharacters(in: ranges, with: insertion)
+        try settle()
+        XCTAssertEqual(try depth(of: offset + insertedLength, in: textView), dy, accuracy: pixel, "insert")
+        for cycle in 0..<4 {
+            textView.undoManager?.undo()
+            try settle()
+            XCTAssertEqual(textView.string, text, "the whole replacement is one undo step")
+            XCTAssertEqual(try depth(of: offset, in: textView), dy, accuracy: pixel, "undo \(cycle)")
+            textView.undoManager?.redo()
+            try settle()
+            XCTAssertEqual(try depth(of: offset + insertedLength, in: textView), dy, accuracy: pixel,
+                           "redo \(cycle)")
+        }
+    }
+
+    func testHiddenReplacementKeepsTheTopWhenADescendingBatchEditsVisibleTextFirst() throws {
+        let unit = "one mediumword longerIdentifier βeta 👩🏽‍💻 short varied words; "
+        let original = String(repeating: unit, count: 300)
+        let (_, view) = try makeEditor(text: original, wrapLines: true, width: 430)
+        try scrollDown(view, to: 1_200)
+        let offset = try XCTUnwrap(topOffset(view))
+        let dy = try depth(of: offset, in: view)
+        let pixel = 1 / (window?.backingScaleFactor ?? 1)
+        let replacement = "replacement 👩🏽‍💻 with other word lengths "
+        let hidden = range(unit.utf16.count, unit.utf16.count)
+        let visible = (original as NSString).rangeOfComposedCharacterSequences(for: range(offset + 180, 5))
+        view.selectionManager.setSelectedRange(range(offset + 100))
+        view._undoManager?.clearStack()
+        view.replaceCharacters(in: [hidden, visible], with: replacement)
+        try settle()
+        XCTAssertEqual(try depth(of: offset + replacement.utf16.count - hidden.length, in: view), dy,
+                       accuracy: pixel)
+        view.undoManager?.undo()
+        try settle()
+        XCTAssertEqual(view.string, original)
+        XCTAssertEqual(try depth(of: offset, in: view), dy, accuracy: pixel)
+    }
+
+    func testTypingAtTheTopAfterReflowKeepsInsertedTextInView() throws {
+        let unit = "one mediumword longerIdentifier βeta 👩🏽‍💻 short varied words; "
+        let (_, view) = try makeEditor(text: String(repeating: unit, count: 300), wrapLines: true,
+                                       width: 430, resizable: true)
+        try scrollDown(view, to: 1_200)
+        let keptOffset = try XCTUnwrap(topOffset(view))
+        var rowStart = keptOffset
+        for width in [600.0, 540, 700] {
+            try resize(to: width)
+            rowStart = try XCTUnwrap(topOffset(view))
+            if rowStart < keptOffset { break }
+        }
+        XCTAssertLessThan(rowStart, keptOffset, "the character kept across reflow is inside the top row")
+        let top = try viewTop(view)
+        view.selectionManager.setSelectedRange(range(rowStart + 80))
+        view.replaceCharacters(in: range(rowStart), with: String(repeating: "visible typing ", count: 8))
+        try settle()
+        XCTAssertEqual(try viewTop(view), top, accuracy: 1 / (window?.backingScaleFactor ?? 1))
+        XCTAssertEqual(topOffset(view), rowStart, "the newly inserted text stays at the top")
+    }
+
+    func testReplacingAnAnchoredDocumentDoesNotScrollToTheReplacementStart() throws {
+        let unit = "one mediumword longerIdentifier βeta 👩🏽‍💻 short varied words; "
+        let original = String(repeating: unit, count: 300)
+        let (_, view) = try makeEditor(text: original, wrapLines: true, width: 430)
+        try scrollDown(view, to: 1_200)
+        let offset = try XCTUnwrap(topOffset(view))
+        view.selectionManager.setSelectedRange(range(offset + 100))
+        view.layoutManager.beginTransaction()
+        view.replaceCharacters(in: range(unit.utf16.count), with: "hidden inserted prefix ")
+        // A whole-buffer reload does not reveal the selection. It destroys the pending character.
+        view.string = original + "replacement suffix"
+        view.layoutManager.endTransaction()
+        try settle()
+        XCTAssertGreaterThan(try viewTop(view), 1_000, "a consumed anchor is discarded instead of mapped to zero")
+    }
+
+    func testCallerManagedTransactionsPublishFinalSelectionsAndTextOnceIncludingUndo() throws {
+        let original = "one two three"
+        let (_, view) = try makeEditor(text: original)
+        view.selectionManager.setSelectedRange(range(original.utf16.count))
+        view._undoManager?.clearStack()
+        var textChanges = 0
+        var selectionChanges = 0
+        let center = NotificationCenter.default
+        let textObserver = center.addObserver(forName: TextView.textDidChangeNotification, object: view,
+                                               queue: nil) { _ in textChanges += 1 }
+        let selectionObserver = center.addObserver(forName: TextSelectionManager.selectionChangedNotification,
+                                                    object: view.selectionManager, queue: nil) { _ in
+            selectionChanges += 1
+        }
+        defer {
+            center.removeObserver(textObserver)
+            center.removeObserver(selectionObserver)
+        }
+        view.layoutManager.beginTransaction()
+        view.layoutManager.beginTransaction()
+        view._undoManager?.beginGrouping()
+        view.replaceCharacters(in: [range(0), range(4)], with: "x")
+        view.replaceCharacters(in: range(view.textStorage.length), with: "!")
+        view._undoManager?.endGrouping()
+        XCTAssertEqual(textChanges, 0)
+        XCTAssertEqual(selectionChanges, 0)
+        view.layoutManager.endTransaction()
+        XCTAssertEqual(textChanges, 0, "the caller's outer transaction is still open")
+        XCTAssertEqual(selectionChanges, 0)
+        view.layoutManager.endTransaction()
+        XCTAssertEqual(view.string, "xone xtwo three!")
+        XCTAssertEqual(textChanges, 1)
+        XCTAssertEqual(selectionChanges, 1)
+
+        textChanges = 0
+        selectionChanges = 0
+        view.undoManager?.undo()
+        XCTAssertEqual(view.string, original)
+        XCTAssertEqual(textChanges, 1, "the whole undo group publishes once")
+        XCTAssertEqual(selectionChanges, 1)
+        textChanges = 0
+        selectionChanges = 0
+        view.undoManager?.redo()
+        XCTAssertEqual(view.string, "xone xtwo three!")
+        XCTAssertEqual(textChanges, 1)
+        XCTAssertEqual(selectionChanges, 1)
+    }
+
+    func testASkippedLayoutKeepsTheHiddenEditAnchorUntilTheOuterTransactionEnds() throws {
+        let unit = "one mediumword longerIdentifier βeta 👩🏽‍💻 short varied words; "
+        let (_, view) = try makeEditor(text: String(repeating: unit, count: 300), wrapLines: true, width: 430)
+        try scrollDown(view, to: 1_200)
+        let offset = try XCTUnwrap(topOffset(view))
+        let dy = try depth(of: offset, in: view)
+        let inserted = "hidden 👩🏽‍💻 words with varied widths "
+        view.selectionManager.setSelectedRange(range(offset + 100))
+        view.layoutManager.beginTransaction()
+        view.replaceCharacters(in: range(unit.utf16.count), with: inserted)
+        view.layoutManager.invalidateLayoutForRange(range(0, 1))
+        view.updatedViewport(view.visibleRect)
+        view.layoutManager.endTransaction()
+        try settle()
+        XCTAssertEqual(try depth(of: offset + inserted.utf16.count, in: view), dy,
+                       accuracy: 1 / (window?.backingScaleFactor ?? 1))
+    }
+
+    func testScrollingAwayAndBackCancelsAHiddenEditAnchorWaitingForLayout() throws {
+        let unit = "one mediumword longerIdentifier βeta 👩🏽‍💻 short varied words; "
+        let (_, view) = try makeEditor(text: String(repeating: unit, count: 300), wrapLines: true, width: 430)
+        try scrollDown(view, to: 1_200)
+        let offset = try XCTUnwrap(topOffset(view))
+        let dy = try depth(of: offset, in: view)
+        let clip = try XCTUnwrap(view.enclosingScrollView?.contentView)
+        let originalOrigin = clip.bounds.origin
+        let inserted = String(repeating: "hidden inserted words ", count: 5)
+        view.selectionManager.setSelectedRange(range(offset + 100))
+        view.layoutManager.beginTransaction()
+        view.replaceCharacters(in: range(unit.utf16.count), with: inserted)
+        clip.scroll(to: NSPoint(x: originalOrigin.x, y: originalOrigin.y + 400))
+        clip.scroll(to: originalOrigin)
+        view.layoutManager.endTransaction()
+        try settle()
+        XCTAssertGreaterThan(abs(try depth(of: offset + inserted.utf16.count, in: view) - dy), 10,
+                             "the user's scroll supersedes the old character anchor")
     }
 
     /// Scrolling up more than the layout rect's padding at a time lays out several wrapped lines

@@ -14,6 +14,7 @@ extension TextSelectionManager {
         // over several non-empty selections (edited last to first) left the cursors in the wrong places.
         let delta = replacementLength - range.length
         for textSelection in self.textSelections {
+            textSelection.visualCaret = nil
             if textSelection.range.intersection(range) != nil
                 || textSelection.range == range
                 || (textSelection.range.isEmpty && textSelection.range.location > range.location

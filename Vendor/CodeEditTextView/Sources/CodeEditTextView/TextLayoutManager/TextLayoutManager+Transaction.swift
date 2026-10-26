@@ -25,10 +25,12 @@ extension TextLayoutManager {
     public func endTransaction(forceLayout: Bool = false) {
         transactionCounter -= 1
         if transactionCounter == 0 {
+            finishEditTopTransaction()
             if forceLayout {
                 setNeedsLayout()
             }
             layoutLines()
+            delegate?.layoutManagerDidEndTransaction()
         } else if transactionCounter < 0 {
             assertionFailure(
                 "TextLayoutManager.endTransaction called without a matching TextLayoutManager.beginTransaction call"

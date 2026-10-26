@@ -8,6 +8,10 @@
 import AppKit
 
 extension TextView: TextLayoutManagerDelegate {
+    public func layoutManagerDidEndTransaction() {
+        finishReplacingCharacters()
+    }
+
     public func layoutManagerHeightDidUpdate(newHeight: CGFloat) {
         updateFrameIfNeeded()
     }

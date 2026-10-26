@@ -8,11 +8,15 @@ import CodeEditTextView
 struct MultiCursorSelection: Equatable {
     var ranges: [NSRange]
     var newest: NSRange
+    var visualCarets: [Int: TextSelectionManager.TextSelection.VisualCaret]
 
-    init(ranges: [NSRange], newest: NSRange) {
+    init(ranges: [NSRange], newest: NSRange,
+         visualCarets: [Int: TextSelectionManager.TextSelection.VisualCaret] = [:]) {
         var seen = Set<NSRange>()
         self.ranges = ranges.filter { seen.insert($0).inserted }.sorted { $0.location < $1.location }
         self.newest = newest
+        let cursors = Set(self.ranges.filter(\.isEmpty).map(\.location))
+        self.visualCarets = visualCarets.filter { cursors.contains($0.key) }
     }
 }
 
@@ -194,7 +198,8 @@ enum MultiCursor {
 
     /// Esc: keeps only the newest selection.
     static func collapse(_ selection: MultiCursorSelection) -> MultiCursorSelection? {
-        selection.ranges.count > 1 ? MultiCursorSelection(ranges: [selection.newest], newest: selection.newest) : nil
+        selection.ranges.count > 1 ? MultiCursorSelection(ranges: [selection.newest], newest: selection.newest,
+                                                         visualCarets: selection.visualCarets) : nil
     }
 
     /// The word containing `offset`, or ending right before it.
@@ -264,6 +269,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     private var mouseMonitor: Any?
     /// The selections last seen, sorted, and the newest of them.
     private var ranges: [NSRange] = []
+    private var visualCarets: [Int: TextSelectionManager.TextSelection.VisualCaret] = [:]
     private var newest: NSRange?
     /// The text a ⌘D or ⇧⌘L run started from a cursor selected, matched as a whole word.
     private var wordwiseQuery: String?
@@ -296,10 +302,18 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
                           left: layout?.edgeInsets.left ?? 0)
     }
     /// Selections before each change, for ⌘U, with the ranges the change left.
-    private var history: [(before: MultiCursorSelection, after: [NSRange], change: SelectionChange)] = []
+    private struct SelectionState: Equatable {
+        var ranges: [NSRange]
+        var visualCarets: [Int: TextSelectionManager.TextSelection.VisualCaret]
+        init(_ selection: MultiCursorSelection) {
+            ranges = selection.ranges
+            visualCarets = selection.visualCarets
+        }
+    }
+    private var history: [(before: MultiCursorSelection, after: SelectionState, change: SelectionChange)] = []
     /// Steps ⌘U went back through, latest last, for ⇧⌘U: the ranges ⌘U left and the selections
     /// it left them for. Any newly recorded change clears it.
-    private var redoHistory: [(before: [NSRange], after: MultiCursorSelection, change: SelectionChange)] = []
+    private var redoHistory: [(before: SelectionState, after: MultiCursorSelection, change: SelectionChange)] = []
     /// ⌘U or ⇧⌘U moved through the history last, so the next change starts a step of its own
     /// rather than extending the step they returned to.
     private var steppedThroughHistory = false
@@ -319,7 +333,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     private var awaitsChord = false
     /// An Option-drag: the offset and display column it started at, and whether it has left them.
     /// With line wrapping on, `row` is where the display row it started on starts.
-    private var columnDrag: (anchor: Int, column: Int, row: Int, started: Bool)?
+    private var columnDrag: (anchor: Int, column: Int, row: Int, x: CGFloat, started: Bool)?
     /// Repeats the last drag event of an Option-drag while the mouse is held still, so that the
     /// block keeps growing as the editor scrolls under a mouse past its edge, or as it is scrolled.
     private var columnDragTimer: Timer?
@@ -356,6 +370,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             // view keeps this coordinator, but the old selections and history mean nothing in it.
             endColumnDrag()
             ranges = []
+            visualCarets = [:]
             newest = nil
             history.removeAll()
             redoHistory.removeAll()
@@ -440,7 +455,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     func syncSelection() {
         guard let textView = controller?.textView else { return }
         let actual = textView.selectionManager.textSelections.map(\.range).sorted { $0.location < $1.location }
-        guard actual != ranges else { return }
+        guard actual != ranges || actualVisualCarets != visualCarets else { return }
         track(actual, change: (.other, false))
     }
 
@@ -539,9 +554,10 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             if !window.isKeyWindow { window.makeKey() }
             if window.firstResponder !== textView { window.makeFirstResponder(textView) }
             if textView.layoutManager.wrapLines, let position = wrappedPosition(at: point, in: text) {
-                columnDrag = (offset, position.column, position.row.range.location, false)
+                columnDrag = (offset, position.column, position.row.range.location, point.x, false)
             } else {
-                columnDrag = (offset, displayColumn(at: point, offset: offset, in: text), 0, false)
+                columnDrag = (offset, displayColumn(at: point, offset: offset, in: text),
+                              text.lineRange(for: NSRange(location: offset, length: 0)).location, point.x, false)
             }
             optionClick(at: offset)
             return true
@@ -574,15 +590,24 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         let point = textView.convert(event.locationInWindow, from: nil)
         let text = textView.textStorage.string as NSString
         let block: MultiCursorSelection?
-        if textView.layoutManager.wrapLines {
-            guard let head = wrappedPosition(at: point, in: text) else { return }
+        guard let head = wrappedPosition(at: point, in: text) else { return }
+        let headRow = head.row.range.location
+        let rows = displayRows(from: min(drag.row, headRow), to: max(drag.row, headRow), in: text)
+        let visual = visualColumnSelection(rows: rows, anchorX: drag.x, headX: point.x,
+                                           headRow: headRow, in: text)
+        if visual.hasRightToLeftText {
+            if !drag.started {
+                guard abs(point.x - drag.x) > 0.01 || headRow != drag.row else { return }
+                drag.started = true
+                columnDrag = drag
+            }
+            block = visual.selection
+        } else if textView.layoutManager.wrapLines {
             if !drag.started {
                 guard head.column != drag.column || head.row.range.location != drag.row else { return }
                 drag.started = true
                 columnDrag = drag
             }
-            let headRow = head.row.range.location
-            let rows = displayRows(from: min(drag.row, headRow), to: max(drag.row, headRow), in: text)
             block = MultiCursor.columnSelection(in: text, rows: rows, anchorColumn: drag.column,
                                                 headRow: headRow < drag.row ? 0 : rows.count - 1,
                                                 headColumn: head.column, tabWidth: tabWidth)
@@ -599,10 +624,87 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             block = MultiCursor.columnSelection(in: text, anchor: drag.anchor, anchorColumn: drag.column,
                                                 head: offset, headColumn: column, tabWidth: tabWidth)
         }
-        guard let block, block.ranges != ranges || block.newest != newest else { return }
-        record(block.ranges, change: .mouse, continues: mouseDown != nil && recordedMouseDown == mouseDown)
+        guard let block, block != currentSelection else { return }
+        record(block.ranges, visualCarets: block.visualCarets,
+               change: .mouse, continues: mouseDown != nil && recordedMouseDown == mouseDown)
         recordedMouseDown = mouseDown
         apply(block)
+    }
+
+    /// A rectangle over bidi text may cover several disjoint logical ranges on each row. Every row in that
+    /// block uses the same screen x positions, including its LTR rows. Ordinary LTR blocks keep their existing
+    /// display-column behavior. Core Text's paired caret edges preserve bidi affinity and grapheme boundaries.
+    private func visualColumnSelection(rows: [MultiCursor.DisplayRow], anchorX: CGFloat, headX: CGFloat,
+                                       headRow: Int, in text: NSString)
+        -> (hasRightToLeftText: Bool, selection: MultiCursorSelection?) {
+        guard let layout = controller?.textView.layoutManager else { return (false, nil) }
+        let shaped = rows.compactMap { row -> (MultiCursor.DisplayRow, Int, LineFragment?)? in
+            guard let line = layout.textLineForOffset(row.range.location) else { return nil }
+            let fragment = line.data.lineFragments.getLine(atOffset: row.range.location - line.range.location)?.data
+            return (row, line.range.location, fragment)
+        }
+        guard shaped.contains(where: { $0.2?.hasRightToLeftText == true }) else { return (false, nil) }
+        let left = min(anchorX, headX) - layout.edgeInsets.left
+        let right = max(anchorX, headX) - layout.edgeInsets.left
+        let head = headX - layout.edgeInsets.left
+        var ranges: [NSRange] = []
+        var visualCarets: [Int: TextSelectionManager.TextSelection.VisualCaret] = [:]
+        var newest: NSRange?
+        for (row, lineOffset, fragment) in shaped {
+            if row.range.isEmpty {
+                if left <= 0, row.endsLine {
+                    ranges.append(row.range)
+                    if row.range.location == headRow { newest = row.range }
+                }
+                continue
+            }
+            guard let fragment else { continue }
+            let clusters = fragment.visualClusters(in: text, lineOffset: lineOffset).filter {
+                $0.range.location + lineOffset < NSMaxRange(row.range) && $0.maxX > $0.minX
+            }
+            guard let maxX = clusters.map(\.maxX).max(), left <= maxX + 0.01 else { continue }
+            let selected = clusters.filter {
+                let middle = ($0.minX + $0.maxX) / 2
+                return middle >= left && middle < right
+            }
+            var rowRanges: [NSRange] = []
+            for cluster in selected.sorted(by: { $0.range.location < $1.range.location }) {
+                let range = NSRange(location: lineOffset + cluster.range.location, length: cluster.range.length)
+                if let last = rowRanges.last, range.location <= NSMaxRange(last) {
+                    rowRanges[rowRanges.count - 1] = NSUnionRange(last, range)
+                } else {
+                    rowRanges.append(range)
+                }
+            }
+            if rowRanges.isEmpty {
+                // Both edges rounded to one caret, or a vertical block: keep a cursor at a whole-cluster edge.
+                let carets = clusters.flatMap { cluster in
+                    [(x: cluster.leadingX, offset: lineOffset + cluster.range.location,
+                      marker: TextSelectionManager.TextSelection.VisualCaret(
+                        anchorOffset: lineOffset + cluster.range.location, edge: .leading)),
+                     (x: cluster.trailingX, offset: lineOffset + NSMaxRange(cluster.range),
+                      marker: TextSelectionManager.TextSelection.VisualCaret(
+                        anchorOffset: lineOffset + NSMaxRange(cluster.range) - 1, edge: .trailing))]
+                }
+                if let caret = carets.min(by: { abs($0.x - head) < abs($1.x - head) }) {
+                    rowRanges = [NSRange(location: caret.offset, length: 0)]
+                    visualCarets[caret.offset] = caret.marker
+                }
+            }
+            ranges += rowRanges
+            if row.range.location == headRow {
+                // The newest logical piece is the one closest to the mouse's visual edge, in either direction.
+                if let cluster = selected.min(by: {
+                    abs(($0.minX + $0.maxX) / 2 - head) < abs(($1.minX + $1.maxX) / 2 - head)
+                }) {
+                    newest = rowRanges.first { NSLocationInRange(lineOffset + cluster.range.location, $0) }
+                } else {
+                    newest = rowRanges.last
+                }
+            }
+        }
+        guard let fallback = ranges.last else { return (true, nil) }
+        return (true, MultiCursorSelection(ranges: ranges, newest: newest ?? fallback, visualCarets: visualCarets))
     }
 
     private func endColumnDrag() {
@@ -860,13 +962,13 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
 
     /// ⌘U: returns to the selections before the last change, while they are unchanged since.
     private func undoSelection() -> Bool {
-        guard let last = history.last, last.after == ranges else {
+        guard let last = history.last, last.after == SelectionState(currentSelection) else {
             history.removeAll()
             return false
         }
         history.removeLast()
-        redoHistory.append((last.before.ranges, currentSelection, last.change))
-        trim(&redoHistory) { $0.before.count + $0.after.ranges.count }
+        redoHistory.append((SelectionState(last.before), currentSelection, last.change))
+        trim(&redoHistory) { $0.before.ranges.count + $0.after.ranges.count }
         steppedThroughHistory = true
         apply(last.before)
         return true
@@ -875,12 +977,12 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     /// ⇧⌘U: goes forward again through a change ⌘U went back from, while the selections are
     /// still the ones ⌘U left.
     private func redoSelection() -> Bool {
-        guard let next = redoHistory.last, next.before == ranges else {
+        guard let next = redoHistory.last, next.before == SelectionState(currentSelection) else {
             redoHistory.removeAll()
             return false
         }
         redoHistory.removeLast()
-        history.append((currentSelection, next.after.ranges, next.change))
+        history.append((currentSelection, SelectionState(next.after), next.change))
         trimHistory()
         steppedThroughHistory = true
         apply(next.after)
@@ -888,31 +990,48 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     }
 
     private var currentSelection: MultiCursorSelection {
-        MultiCursorSelection(ranges: ranges, newest: newest ?? ranges.last ?? NSRange(location: 0, length: 0))
+        MultiCursorSelection(ranges: ranges, newest: newest ?? ranges.last ?? NSRange(location: 0, length: 0),
+                             visualCarets: visualCarets)
+    }
+
+    private var actualVisualCarets: [Int: TextSelectionManager.TextSelection.VisualCaret] {
+        var result: [Int: TextSelectionManager.TextSelection.VisualCaret] = [:]
+        for selection in controller?.textView.selectionManager.textSelections ?? [] {
+            if selection.range.isEmpty, let caret = selection.visualCaret {
+                result[selection.range.location] = caret
+            }
+        }
+        return result
     }
 
     /// Records a change from the current selections to `after`, which ends what ⇧⌘U could go
     /// forward through. With `continues`, a change of the same kind right after the last one
     /// extends that step instead of adding one, and a step that ends where it began is dropped.
-    private func record(_ after: [NSRange], change: SelectionChange, continues: Bool) {
-        guard after != ranges else { return }
+    private func record(_ after: [NSRange],
+                        visualCarets afterCarets: [Int: TextSelectionManager.TextSelection.VisualCaret] = [:],
+                        change: SelectionChange, continues: Bool) {
+        let state = SelectionState(MultiCursorSelection(ranges: after,
+                                                       newest: after.last ?? NSRange(location: 0, length: 0),
+                                                       visualCarets: afterCarets))
+        let current = SelectionState(currentSelection)
+        guard state != current else { return }
         redoHistory.removeAll()
         defer { steppedThroughHistory = false }
-        if continues, !steppedThroughHistory, let last = history.last, last.change == change, last.after == ranges {
-            if last.before.ranges == after {
+        if continues, !steppedThroughHistory, let last = history.last, last.change == change, last.after == current {
+            if SelectionState(last.before) == state {
                 history.removeLast()
             } else {
-                history[history.count - 1].after = after
+                history[history.count - 1].after = state
                 trimHistory()
             }
             return
         }
-        history.append((currentSelection, after, change))
+        history.append((currentSelection, state, change))
         trimHistory()
     }
 
     private func trimHistory() {
-        trim(&history) { $0.before.ranges.count + $0.after.count }
+        trim(&history) { $0.before.ranges.count + $0.after.ranges.count }
     }
 
     /// Drops the oldest steps past `historyLimit`, then while the steps hold more than
@@ -970,9 +1089,9 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
 
     private func run(_ command: (MultiCursorSelection, NSString) -> MultiCursorSelection?) {
         guard let textView = controller?.textView else { return }
-        let current = MultiCursorSelection(ranges: ranges, newest: newest ?? ranges.last ?? NSRange(location: 0, length: 0))
+        let current = currentSelection
         guard let result = command(current, textView.textStorage.string as NSString), result != current else { return }
-        record(result.ranges, change: .command, continues: false)
+        record(result.ranges, visualCarets: result.visualCarets, change: .command, continues: false)
         apply(result)
     }
 
@@ -980,11 +1099,16 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
         guard let textView = controller?.textView else { return }
         newest = selection.newest
         ranges = selection.ranges
+        visualCarets = selection.visualCarets
         isApplying = true
-        textView.selectionManager.setSelectedRanges(selection.ranges)
+        textView.selectionManager.setSelectedRanges(selection.ranges, visualCarets: selection.visualCarets)
         isApplying = false
         textView.needsDisplay = true
-        EditorScrolling.settle(on: { textView.layoutManager.rectForOffset(selection.newest.location) }) { rect in
+        EditorScrolling.settle(on: {
+            guard let newest = textView.selectionManager.textSelections.first(where: { $0.range == selection.newest })
+            else { return nil }
+            return textView.selectionManager.caretRect(for: newest)
+        }) { rect in
             textView.scrollToVisible(rect.insetBy(dx: -20, dy: -rect.height))
         }
     }
@@ -994,17 +1118,21 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
     /// part of an edit for ⌘U, as `change` says or as the current event tells.
     private func track(_ new: [NSRange], change: (change: SelectionChange, continues: Bool)? = nil) {
         let sorted = new.sorted { $0.location < $1.location }
+        let carets = actualVisualCarets
         let storageID = controller.map { ObjectIdentifier($0.textView.textStorage) }
         if storageID != textStorageID {
             // New text from outside: the old selections mean nothing in it.
             textStorageID = storageID
             history.removeAll()
             redoHistory.removeAll()
-        } else if !isApplying, !isEditing, sorted != ranges, !ranges.isEmpty {
+        } else if !isApplying, !isEditing, (sorted != ranges || carets != visualCarets), !ranges.isEmpty {
             let user = change ?? userChange()
-            record(sorted, change: user.change, continues: user.continues)
+            record(sorted, visualCarets: carets, change: user.change, continues: user.continues)
         }
-        defer { ranges = sorted }
+        defer {
+            ranges = sorted
+            visualCarets = carets
+        }
         if let newest, sorted.contains(newest) { return }
         if sorted.count == ranges.count, let index = newest.flatMap({ ranges.firstIndex(of: $0) }) {
             newest = sorted[index]

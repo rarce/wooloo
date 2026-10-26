@@ -67,10 +67,39 @@ extension TextSelectionManager {
             guard let fragmentRange = fragmentPosition
                 .range
                 .shifted(by: linePosition.range.location),
-                  let intersectionRange = fragmentRange.intersection(range),
-                  let minRect = layoutManager.rectForOffset(intersectionRange.location) else {
+                  let intersectionRange = fragmentRange.intersection(range) else {
                 continue
             }
+
+            // wooloo patch: a logical selection in bidi text can occupy several separate screen intervals.
+            // Keep both caret affinities and whole graphemes, and never form a negative-width RTL rectangle.
+            if fragmentPosition.data.hasRightToLeftText, let text = layoutManager.textStorage?.string as NSString? {
+                let local = NSRange(location: intersectionRange.location - linePosition.range.location,
+                                    length: intersectionRange.length)
+                let clusters = fragmentPosition.data.visualClusters(in: text, lineOffset: linePosition.range.location)
+                    .filter { NSIntersectionRange($0.range, local).length > 0 && $0.maxX > $0.minX }
+                var intervals: [CGRect] = []
+                for cluster in clusters {
+                    let next = CGRect(x: layoutManager.edgeInsets.left + cluster.minX,
+                                      y: linePosition.yPos + fragmentPosition.yPos,
+                                      width: cluster.maxX - cluster.minX, height: fragmentPosition.height)
+                    if let last = intervals.last, next.minX <= last.maxX + 0.01 {
+                        intervals[intervals.count - 1] = last.union(next)
+                    } else {
+                        intervals.append(next)
+                    }
+                }
+                if fragmentRange.max <= range.max, intersectionRange.max != layoutManager.lineStorage.length {
+                    let end = layoutManager.edgeInsets.left + fragmentPosition.data.width
+                    if end < rect.maxX {
+                        intervals.append(CGRect(x: end, y: linePosition.yPos + fragmentPosition.yPos,
+                                                width: rect.maxX - end, height: fragmentPosition.height))
+                    }
+                }
+                fillRects.append(contentsOf: intervals)
+                continue
+            }
+            guard let minRect = layoutManager.rectForOffset(intersectionRange.location) else { continue }
 
             let maxRect: CGRect
             // If the selection is at the end of the line, or contains the end of the fragment, and is not the end

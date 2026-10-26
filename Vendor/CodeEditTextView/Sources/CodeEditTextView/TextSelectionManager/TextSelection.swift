@@ -10,7 +10,22 @@ import AppKit
 
 public extension TextSelectionManager {
     class TextSelection: Hashable, Equatable {
-        public var range: NSRange
+        public var range: NSRange {
+            didSet { visualCaret = nil }
+        }
+        /// wooloo patch: retain a visual edge without storing coordinates that become stale on reflow.
+        /// Leading anchors name the first UTF-16 unit; trailing anchors name the last unit of the caret cluster.
+        public struct VisualCaret: Equatable {
+            public enum Edge { case leading, trailing }
+            public var anchorOffset: Int
+            public var edge: Edge
+
+            public init(anchorOffset: Int, edge: Edge) {
+                self.anchorOffset = anchorOffset
+                self.edge = edge
+            }
+        }
+        public internal(set) var visualCaret: VisualCaret?
         weak var view: NSView?
         var boundingRect: CGRect = .zero
         var suggestedXPos: CGFloat?

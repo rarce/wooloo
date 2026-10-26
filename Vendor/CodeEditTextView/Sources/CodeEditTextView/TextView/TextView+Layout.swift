@@ -52,6 +52,7 @@ extension TextView {
     }
 
     public func updatedViewport(_ newRect: CGRect) {
+        layoutManager.cancelTopAfterScrolling()
         if !updateFrameIfNeeded() {
             layoutManager.layoutLines()
         }

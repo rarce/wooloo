@@ -14,8 +14,13 @@ public protocol TextLayoutManagerDelegate: AnyObject {
     func layoutManagerTypingAttributes() -> [NSAttributedString.Key: Any]
     func textViewportSize() -> CGSize
     func layoutManagerYAdjustment(_ yAdjustment: CGFloat)
+    func layoutManagerDidEndTransaction()
 
     var visibleRect: NSRect { get }
+}
+
+public extension TextLayoutManagerDelegate {
+    func layoutManagerDidEndTransaction() { }
 }
 
 /// The text layout manager manages laying out lines in a code document.
@@ -34,7 +39,9 @@ public class TextLayoutManager: NSObject {
             // keeping the height it was laid out at until it comes into view, and the row at the top stays there.
             if wrapLines != oldValue {
                 // A second toggle before a pass would find the lines without layout: keep the first anchor.
-                pendingTop = pendingTop ?? topAnchor()
+                if pendingTop == nil {
+                    pendingTop = topAnchor()
+                }
                 lineStorage.resetHeights(to: estimateLineHeight()) { line in
                     if !line.lineFragments.isEmpty { line.setNeedsLayout() }
                 }
@@ -106,8 +113,20 @@ public class TextLayoutManager: NSObject {
         /// How far into that row the view starts.
         let dy: CGFloat
     }
-    /// wooloo patch: the top before wrapping was turned on or off, for the next layout pass only.
+    /// wooloo patch: the top before wrapping changed or a batch edited its hidden rows, until layout can run.
     var pendingTop: TopAnchor?
+    /// A batch maps document positions, never the character offsets of stale wrapped rows.
+    struct EditTop {
+        var anchor: TopAnchor
+        var rowStart: Int
+        var lineStart: Int
+        var shouldKeep = false
+        let viewportTop: CGFloat
+    }
+    var editTop: EditTop?
+    var pendingEditTop: EditTop?
+    /// A canceled or unavailable anchor must not be captured again from partially edited rows.
+    var capturedEditTop = false
     /// wooloo patch: the last top kept, used again while it is still at the top, so that going to another width and
     /// back keeps the same character rather than the start of the row it was in.
     var keptTop: TopAnchor?
@@ -197,6 +216,9 @@ public class TextLayoutManager: NSObject {
         markedTextManager.removeAll()
         keptTop = nil // wooloo patch: offsets into the old text
         pendingTop = nil
+        editTop = nil
+        pendingEditTop = nil
+        capturedEditTop = false
         prepareTextLines()
         setNeedsLayout()
     }
@@ -237,15 +259,18 @@ public class TextLayoutManager: NSObject {
     /// Lays out all visible lines
     func layoutLines(in rect: NSRect? = nil) { // swiftlint:disable:this function_body_length
         assertNotInLayout()
-        // wooloo patch: a toggle's top is for this pass only, so a scroll made after the pass is not undone.
-        let toggledTop = pendingTop
-        pendingTop = nil
         guard layoutView?.superview != nil,
               let visibleRect = rect ?? delegate?.visibleRect,
               !isInTransaction,
               let textStorage else {
             return
         }
+        // A skipped pass must retain its anchor. A scroll while waiting cancels it; consume it
+        // before layout can itself scroll, so those synchronous viewport callbacks cannot replay it.
+        cancelTopAfterScrolling()
+        let toggledTop = pendingTop
+        pendingTop = nil
+        pendingEditTop = nil
         // wooloo patch: lines rewrapped to another width have other heights; keep the row at the top in place.
         // Noted before the pass: finding it can lay out the line at the top, which can lay out again.
         let layoutWidth = maxLineLayoutWidth
@@ -381,6 +406,19 @@ public class TextLayoutManager: NSObject {
             return scrollView.documentVisibleRect.minY + scrollView.contentInsets.top
         }
         return delegate?.visibleRect.minY
+    }
+
+    /// Called at the viewport callback too, so scrolling away and back still cancels a pending edit.
+    func cancelTopAfterScrolling() {
+        guard let top = viewTop else { return }
+        // A wrapping toggle resets every height estimate and can automatically clamp the
+        // scroll position before its pass. Its existing anchor must survive that clamp.
+        let expectedTop = editTop?.viewportTop ?? pendingEditTop?.viewportTop
+        guard let expectedTop, abs(top - expectedTop) > 0.5 else { return }
+        editTop = nil
+        pendingEditTop = nil
+        pendingTop = nil
+        keptTop = nil
     }
 
     /// The character at the start of the row at the top of the view, as laid out now, and how far into the row the
