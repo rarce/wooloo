@@ -687,6 +687,115 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(try sandbox.read("b.txt", in: "repo"), "other\n")
     }
 
+    /// A real divergence with non-overlapping changes and an isolated bare remote.
+    private func divergedRepository() throws -> WorkspaceFileLocation {
+        try sandbox.sh("git init -q --bare -b main origin.git")
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("git remote add origin ../origin.git && git push -qu origin main", in: "repo")
+        try sandbox.sh("git clone -q origin.git other")
+        try sandbox.configure("other")
+        try sandbox.sh("echo remote > remote.txt && git add remote.txt && git commit -qm Remote && git push -q", in: "other")
+        try sandbox.sh("echo local > local.txt && git add local.txt && git commit -qm Local && git fetch -q", in: "repo")
+        return repo
+    }
+
+    func testSyncIntegratesAndPushesWithConfiguredMergeOrRebase() throws {
+        let repo = try divergedRepository()
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        try sandbox.sh("git config pull.rebase false", in: "repo")
+        try WorkspaceFiles.sync(.sync(target: target), at: repo)
+        var status = try WorkspaceFiles.branchStatus(at: repo)
+        XCTAssertEqual(status.ahead, 0)
+        XCTAssertEqual(status.behind, 0)
+        XCTAssertEqual(try sandbox.sh("git rev-list --parents -n 1 HEAD", in: "repo").split(separator: " ").count, 3)
+
+        try sandbox.sh("git pull -q && echo next > next.txt && git add next.txt && git commit -qm Next && git push -q", in: "other")
+        try sandbox.sh("echo again >> local.txt && git commit -qam Again && git fetch -q && git config branch.main.rebase true", in: "repo")
+        try WorkspaceFiles.sync(.sync(target: target), at: repo)
+        status = try WorkspaceFiles.branchStatus(at: repo)
+        XCTAssertEqual(status.ahead, 0)
+        XCTAssertEqual(status.behind, 0)
+        XCTAssertEqual(try sandbox.sh("git rev-list --parents -n 1 HEAD", in: "repo").split(separator: " ").count, 2)
+        XCTAssertEqual(try sandbox.read("next.txt", in: "repo"), "next\n")
+    }
+
+    func testSyncRequiresAnIntegrationChoiceWithoutChangingConfig() throws {
+        let repo = try divergedRepository()
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        let head = try sandbox.sh("git rev-parse HEAD", in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo)) { error in
+            guard case WorkspaceSyncError.needsStrategy(let requested) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(requested, target)
+        }
+        XCTAssertEqual(try sandbox.sh("git rev-parse HEAD", in: "repo"), head)
+        try WorkspaceFiles.sync(.sync(target: target, strategy: .rebase), at: repo)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).ahead, 0)
+        XCTAssertEqual(try sandbox.sh("git config --get pull.rebase || true", in: "repo"), "")
+    }
+
+    func testSyncRespectsFastForwardOnlyAndRejectsChangedDestination() throws {
+        let repo = try divergedRepository()
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        try sandbox.sh("git remote set-url origin ../other-origin.git", in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo)) {
+            XCTAssertTrue($0.localizedDescription.contains("destination changed"))
+        }
+        try sandbox.sh("git remote set-url origin ../origin.git", in: "repo")
+        try sandbox.sh("git config pull.ff only", in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target, strategy: .merge), at: repo)) {
+            XCTAssertTrue($0.localizedDescription.contains("pull.ff=only"))
+        }
+        try sandbox.sh("git remote add fork ../origin.git && git config branch.main.pushRemote fork", in: "repo")
+        XCTAssertNil(try WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo))
+        try sandbox.sh("git config --unset branch.main.pushRemote && git config remote.origin.push refs/heads/main:refs/heads/main", in: "repo")
+        XCTAssertNil(try WorkspaceFiles.branchStatus(at: repo).syncTarget, "Explicit refspecs are conservative separate actions")
+    }
+
+    func testSyncStopsAtConflictsAndPreservesDirtyFiles() throws {
+        let repo = try divergedRepository()
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        try sandbox.sh("git config pull.rebase true && echo dirty >> a.txt", in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo))
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "one\ndirty\n")
+        try sandbox.sh("git checkout -- a.txt && echo local > a.txt && git commit -qam LocalConflict", in: "repo")
+        try sandbox.sh("echo remote > a.txt && git commit -qam RemoteConflict && git push -q", in: "other")
+        let remoteHead = try sandbox.sh("git rev-parse HEAD", in: "other")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo))
+        XCTAssertEqual(try sandbox.sh("git --git-dir=../origin.git rev-parse main", in: "repo"), remoteHead)
+        XCTAssertFalse(try sandbox.sh("git ls-files --unmerged", in: "repo").isEmpty)
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo))
+    }
+
+    func testAutostashConflictOutsideTheWorkspaceFolderPreventsPush() throws {
+        _ = try divergedRepository()
+        try sandbox.sh("mkdir subfolder && git config pull.rebase true && git config rebase.autoStash true && echo dirty > a.txt", in: "repo")
+        try sandbox.sh("echo remote > a.txt && git commit -qam RemoteChange && git push -q", in: "other")
+        let repo = sandbox.location("repo/subfolder")
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        let remoteHead = try sandbox.sh("git rev-parse HEAD", in: "other")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo)) {
+            XCTAssertTrue($0.localizedDescription.contains("Pull completed; push pending"))
+        }
+        XCTAssertEqual(try sandbox.sh("git --git-dir=../origin.git rev-parse main", in: "repo"), remoteHead)
+        XCTAssertFalse(try sandbox.sh("git ls-files --unmerged", in: "repo").isEmpty)
+    }
+
+    func testRejectedPushReportsCompletedPullAndKeepsIntegratedCommits() throws {
+        let repo = try divergedRepository()
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        try sandbox.sh("git config pull.rebase false", in: "repo")
+        try sandbox.write(["hooks/pre-receive": "#!/bin/sh\nexit 1\n"], in: "origin.git")
+        try sandbox.sh("chmod +x origin.git/hooks/pre-receive")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo)) {
+            XCTAssertTrue($0.localizedDescription.contains("Pull completed; push pending"))
+        }
+        let status = try WorkspaceFiles.branchStatus(at: repo)
+        XCTAssertEqual(status.behind, 0)
+        XCTAssertGreaterThan(status.ahead, 0)
+        XCTAssertEqual(try sandbox.read("remote.txt", in: "repo"), "remote\n")
+    }
+
     // MARK: Explorer file operations
 
     func testCreateRenameAndDeleteFilesAndFolders() throws {

@@ -248,6 +248,24 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    func testDivergedGitBar() throws {
+        let sandbox = try WorkspaceGitSandbox()
+        defer { sandbox.tearDown() }
+        try sandbox.sh("git init -q --bare -b main origin.git")
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("git remote add origin ../origin.git && git push -qu origin main", in: "repo")
+        try sandbox.sh("git clone -q origin.git other")
+        try sandbox.configure("other")
+        try sandbox.sh("echo remote > remote.txt && git add . && git commit -qm Remote && git push -q", in: "other")
+        try sandbox.sh("echo local > local.txt && git add . && git commit -qm Local && git fetch -q", in: "repo")
+        let model = WorkspaceGitBarModel()
+        let bar = WorkspaceGitBar(location: repo, reloadToken: 0, changes: nil, onChange: {},
+                                  onOpenWorktree: nil, onError: { XCTFail($0) }, model: model)
+        let bitmap = render(bar, size: NSSize(width: 300, height: 50), settle: 2) { model.status?.syncTarget != nil }
+        try assertSnapshot(bitmap, named: "git-bar-diverged")
+        try skipIfRecorded()
+    }
+
     /// The branch picker over local, remote and worktree branches, filtered by a query.
     func testBranchPicker() throws {
         func branch(_ name: String, remote: Bool = false, current: Bool = false, upstream: String = "") -> WorkspaceBranch {

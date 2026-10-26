@@ -35,6 +35,18 @@ struct WorkspaceGitBar: View {
         }
         .background(theme.sidebarBackground)
         .task(id: identity) { await model.load(location) }
+        .confirmationDialog("How should Sync integrate the diverged branches?", isPresented: Binding(
+            get: { model.pendingSyncStrategy != nil },
+            set: { if !$0 { model.pendingSyncStrategy = nil } }
+        )) {
+            if let target = model.pendingSyncStrategy {
+                Button("Rebase") { perform(.sync(target: target, strategy: .rebase)) }
+                Button("Merge") { perform(.sync(target: target, strategy: .merge)) }
+            }
+            Button("Cancel", role: .cancel) { model.pendingSyncStrategy = nil }
+        } message: {
+            Text("Choose how to integrate remote commits before pushing. This applies only to this sync; Git configuration will not change.")
+        }
         .confirmationDialog("Force push this branch?", isPresented: $confirmsForcePush) {
             Button("Force Push", role: .destructive) { perform(.forcePush) }
         } message: {
@@ -358,16 +370,19 @@ struct WorkspaceSyncPlan {
            let remote = status.remotes.first(where: { $0 == "origin" }) ?? status.remotes.first {
             return .publish(remote: remote, branch: branch)
         }
+        if status.ahead > 0, status.behind > 0, let target = status.syncTarget { return .sync(target: target) }
         if status.behind > 0 { return .pull }
         if status.ahead > 0 { return .push }
         return .fetch
     }
 
-    /// The action's icon already shows the direction, so the title carries only the commit count.
+    /// Both directions remain visible when the histories diverge.
     var primaryTitle: String {
         switch primaryAction {
-        case .pull: return "Pull \(status.behind)"
-        case .push: return "Push \(status.ahead)"
+        case .sync: return "Sync ↓\(status.behind) ↑\(status.ahead)"
+        case .pull:
+            return status.ahead > 0 ? "Pull ↓\(status.behind) ↑\(status.ahead)" : "Pull ↓\(status.behind)"
+        case .push: return status.syncTarget != nil ? "Push ↑\(status.ahead)" : "Push"
         case let action: return action.title
         }
     }
@@ -376,10 +391,16 @@ struct WorkspaceSyncPlan {
         guard hasRemote else { return "This repository has no remotes" }
         let commits: (Int) -> String = { $0 == 1 ? "1 commit" : "\($0) commits" }
         switch primaryAction {
+        case .sync(let target, _):
+            return "Pull \(commits(status.behind)), then push to \(target.remote)/\(target.remoteRef.dropFirst(11))"
         case .pull:
             let pull = "Pull \(commits(status.behind))"
-            return status.ahead > 0 ? pull + "; \(commits(status.ahead)) to push afterwards" : pull
-        case .push: return "Push \(commits(status.ahead))"
+            return status.ahead > 0 ? pull + "; \(commits(status.ahead)) ahead of upstream. Push separately." : pull
+        case .push:
+            if let target = status.syncTarget {
+                return "Push \(commits(status.ahead)) to \(target.remote)/\(target.remoteRef.dropFirst(11))"
+            }
+            return "Push using Git configuration; \(commits(status.ahead)) ahead of upstream"
         case let action: return action.title
         }
     }
@@ -393,8 +414,10 @@ final class WorkspaceGitBarModel: ObservableObject {
     /// The running operation's label, such as "Committing…".
     @Published private(set) var running: String?
     @Published var message = ""
+    @Published var pendingSyncStrategy: WorkspaceSyncTarget?
     private var location: WorkspaceFileLocation?
     private var loadGeneration = 0
+    private var locationGeneration = 0
 
     var currentWorktree: WorkspaceWorktree? {
         repository?.worktrees.first { $0.path == repository?.root }
@@ -448,6 +471,11 @@ final class WorkspaceGitBarModel: ObservableObject {
     func load(_ location: WorkspaceFileLocation) async {
         loadGeneration += 1
         let generation = loadGeneration
+        if self.location?.identity != location.identity {
+            locationGeneration += 1
+            pendingSyncStrategy = nil
+            message = ""
+        }
         self.location = location
         let start = TerminalPipelineMetrics.now()
         defer { TerminalPipelineMetrics.spanShown("git-bar", start: start, detail: location.isLocal ? "local" : "ssh") }
@@ -474,7 +502,17 @@ final class WorkspaceGitBarModel: ObservableObject {
     }
 
     func perform(_ action: WorkspaceGitSync, finished: @escaping (String?) -> Void) {
-        run(action.title + "…", finished: finished) { try WorkspaceFiles.sync(action, at: $0) }
+        pendingSyncStrategy = nil
+        let generation = locationGeneration
+        run(action.title + "…", finished: finished) { [weak self] location in
+            try WorkspaceFiles.sync(action, at: location) { [weak self] label in
+                Task { @MainActor [weak self] in
+                    guard let self, self.locationGeneration == generation,
+                          ["Sync…", "Pulling…"].contains(self.running ?? "") else { return }
+                    self.running = label
+                }
+            }
+        }
     }
 
     func switchBranch(_ branch: WorkspaceBranch, finished: @escaping (String?) -> Void) {
@@ -490,20 +528,30 @@ final class WorkspaceGitBarModel: ObservableObject {
                      _ operation: @escaping @Sendable (WorkspaceFileLocation) throws -> Void) {
         guard running == nil, let location else { return }
         running = label
+        let generation = locationGeneration
         Task {
             let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
                 Result { try operation(location) }
             }
+            // Keep all controls disabled until the final status is loaded. Old locations must
+            // not clear a new Space's message, present a dialog, or invoke its callbacks.
+            if self.locationGeneration == generation {
+                running = "Refreshing…"
+                await load(location)
+            }
             running = nil
+            guard self.locationGeneration == generation else { return }
             switch result {
             case .success:
                 onSuccess()
                 finished(nil)
             case .failure(let failure):
-                finished(failure.localizedDescription)
+                if case WorkspaceSyncError.needsStrategy(let target) = failure {
+                    pendingSyncStrategy = target
+                } else {
+                    finished(failure.localizedDescription)
+                }
             }
-            // A bar that moved to another location meanwhile loads that one itself.
-            if self.location?.identity == location.identity { await load(location) }
         }
     }
 }
