@@ -282,13 +282,54 @@ extension WorkspaceFiles {
     private static let branchStatusSections = [
         GitSection(["status", "--porcelain=v2", "--branch", "--untracked-files=no"], limit: 4_000_000),
         GitSection(["remote"], limit: 20_000),
+        GitSection(["for-each-ref", "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(push:remotename)%00%(upstream)%00%(push)", "refs/heads"], limit: 200_000),
+        GitSection(["config", "--get-regexp", "^(push\\.default|remote\\..*\\.(push|pushurl|mirror))$"], limit: 20_000),
+        // Resolve both directions on the host that runs Git, including insteadOf/pushInsteadOf.
+        // Keeping this in the batch avoids extra SSH round trips for status refreshes.
+        GitSection([], limit: 20_000, script: """
+            branch=$(git symbolic-ref --quiet HEAD) || exit 1
+            remote=$(git for-each-ref --format='%(upstream:remotename)' "$branch") || exit 1
+            [ -n "$remote" ] || exit 1
+            git remote get-url --all -- "$remote" || exit 1
+            printf '\\0'
+            git remote get-url --push --all -- "$remote"
+            """),
     ]
 
     private static func branchStatus(from results: ArraySlice<Result<Data, Error>>) throws -> WorkspaceBranchStatus {
         let outputs = Array(results)
         let remoteData = (try? outputs[1].get()) ?? Data()
         let remotes = String(decoding: remoteData, as: UTF8.self).split(separator: "\n").map(String.init)
-        return parseBranchStatus(try outputs[0].get(), remotes: remotes)
+        var status = parseBranchStatus(try outputs[0].get(), remotes: remotes)
+        if let branch = status.branch, let refs = try? outputs[2].get(),
+           let urlData = try? outputs[4].get() {
+            let directions = String(decoding: urlData, as: UTF8.self).split(separator: "\0", omittingEmptySubsequences: false)
+            guard directions.count == 2 else { return status }
+            let fetchURLs = directions[0].split(separator: "\n")
+            let pushURLs = directions[1].split(separator: "\n")
+            // A shared remote name/ref does not imply a shared repository. Refuse ambiguous
+            // destinations, and retain the resolved URL so changing rewrite rules invalidates
+            // an already displayed Sync action as well.
+            guard fetchURLs.count == 1, pushURLs.count == 1, fetchURLs == pushURLs else { return status }
+            let config = String(decoding: (try? outputs[3].get()) ?? Data(), as: UTF8.self)
+            for line in String(decoding: refs, as: UTF8.self).split(separator: "\n") {
+                let fields = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+                guard fields.count == 6, fields[0] == "refs/heads/" + branch,
+                      !fields[1].isEmpty, fields[1] != ".", fields[2].hasPrefix("refs/heads/"),
+                      fields[1] == fields[3], !fields[4].isEmpty, fields[4] == fields[5] else { continue }
+                // An explicit/multiple refspec or matching push may publish other branches.
+                let configLines = config.split(separator: "\n")
+                let unsafe = configLines.contains {
+                    $0.hasPrefix("remote.\(fields[1]).push ") || $0.hasPrefix("remote.\(fields[1]).pushurl ")
+                        || ($0.hasPrefix("remote.\(fields[1]).mirror") && $0 != "remote.\(fields[1]).mirror false")
+                        || $0 == "push.default matching" || $0 == "push.default nothing"
+                }
+                if !unsafe {
+                    status.syncTarget = WorkspaceSyncTarget(branch: branch, remote: fields[1], remoteRef: fields[2], remoteURL: String(fetchURLs[0]))
+                }
+            }
+        }
+        return status
     }
 
     /// The commands of a repository listing after the root, for `makeRepository`.
@@ -318,8 +359,8 @@ extension WorkspaceFiles {
         let sections = (withBranchStatus ? branchStatusSections : [])
             + (knownRoot == nil ? [GitSection.root] : []) + repositorySections
         var results = try gitBatch(location, sections)[...]
-        let status = withBranchStatus ? Result { try branchStatus(from: results.prefix(2)) } : nil
-        if withBranchStatus { results = results.dropFirst(2) }
+        let status = withBranchStatus ? Result { try branchStatus(from: results.prefix(branchStatusSections.count)) } : nil
+        if withBranchStatus { results = results.dropFirst(branchStatusSections.count) }
         let repository = Result { () throws -> WorkspaceRepositoryListing in
             var root = knownRoot
             if root == nil, let rootResult = results.popFirst() {
@@ -617,10 +658,14 @@ extension WorkspaceFiles {
     }
 
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
-    static func sync(_ action: WorkspaceGitSync, at location: WorkspaceFileLocation) throws {
+    static func sync(_ action: WorkspaceGitSync, at location: WorkspaceFileLocation,
+                     progress: @escaping @Sendable (String) -> Void = { _ in }) throws {
         defer { forgetRecentResults() }
         let args: [String]
         switch action {
+        case .sync(let target, let strategy):
+            try synchronize(target, strategy: strategy, at: location, progress: progress)
+            return
         case .fetch: args = ["fetch", "--prune"]
         case .pull: args = ["pull"]
         case .pullRebase: args = ["pull", "--rebase"]
@@ -633,6 +678,78 @@ extension WorkspaceFiles {
             args = ["push", "--set-upstream", remote, branch]
         }
         _ = try git(location, args, limit: 200_000, timeout: 120)
+    }
+
+    /// Uses the same verified destination for both halves; never force pushes or adds a stash.
+    private static func synchronize(_ target: WorkspaceSyncTarget, strategy: WorkspacePullStrategy?,
+                                    at location: WorkspaceFileLocation, progress: @Sendable (String) -> Void) throws {
+        func validate() throws -> WorkspaceBranchStatus {
+            let status = try branchStatus(at: location)
+            guard status.syncTarget == target else {
+                throw WorkspaceFileError.message("Branch or sync destination changed. Refresh and try again.")
+            }
+            // Also catches an autostash conflict, for which pull can exit successfully.
+            let conflicts = try git(location, ["ls-files", "--unmerged", "--", ":/"], limit: 200_000)
+            let paths = try git(location, ["rev-parse", "--git-path", "MERGE_HEAD", "--git-path", "rebase-merge",
+                                           "--git-path", "rebase-apply"], limit: 20_000)
+            let checks = String(decoding: paths, as: UTF8.self).split(separator: "\n")
+            let pending = try gitBatch(location, checks.map { path in
+                GitSection([], limit: 100, script: "test ! -e " + quote(String(path)))
+            }).contains { if case .failure = $0 { return true }; return false }
+            guard conflicts.isEmpty, !pending else {
+                throw WorkspaceFileError.message("Resolve or abort the current Git integration before syncing.")
+            }
+            return status
+        }
+        func config(_ key: String) -> String? {
+            guard let data = try? git(location, ["config", "--get", key], limit: 20_000) else { return nil }
+            return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let before = try validate()
+        let rebase = config("branch.\(target.branch).rebase") ?? config("pull.rebase")
+        let ff = config("pull.ff")
+        if rebase == "interactive" || rebase == "i" {
+            throw WorkspaceFileError.message("Interactive rebase requires a terminal. Run git pull there, then push.")
+        }
+        if before.ahead > 0, before.behind > 0 {
+            if ff == "only" {
+                throw WorkspaceFileError.message("This branch has diverged and pull.ff=only prevents integration. Choose Pull (Rebase) or merge in a terminal.")
+            }
+            if strategy == nil, rebase == nil, ff != "false", ff != "true" {
+                throw WorkspaceSyncError.needsStrategy(target)
+            }
+        }
+        var args = ["pull", "--no-edit"]
+        switch strategy {
+        case .merge: args.append("--no-rebase")
+        case .rebase: args.append("--rebase")
+        case nil: break
+        }
+        args += ["--", target.remote, target.remoteRef]
+        progress("Pulling…")
+        do {
+            _ = try git(location, args, limit: 200_000, timeout: 120)
+        } catch {
+            // A fetch inside pull may discover divergence newer than the displayed counters.
+            if strategy == nil, rebase == nil, ff == nil,
+               let current = try? validate(), current.ahead > 0, current.behind > 0 {
+                throw WorkspaceSyncError.needsStrategy(target)
+            }
+            throw error
+        }
+        do {
+            let after = try validate()
+            guard after.behind == 0 else {
+                throw WorkspaceFileError.message("Remote commits are still pending. Refresh and try again.")
+            }
+            if after.ahead > 0 {
+                progress("Pushing…")
+                _ = try git(location, ["push", "--", target.remote, "refs/heads/\(target.branch):\(target.remoteRef)"],
+                            limit: 200_000, timeout: 120)
+            }
+        } catch {
+            throw WorkspaceFileError.message("Pull completed; push pending. " + error.localizedDescription)
+        }
     }
 
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")

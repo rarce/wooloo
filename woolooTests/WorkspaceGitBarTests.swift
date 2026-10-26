@@ -46,12 +46,13 @@ final class WorkspaceGitBarPlanTests: XCTestCase {
     }
 
     private func status(branch: String? = "main", upstream: String? = "origin/main", ahead: Int = 0, behind: Int = 0,
-                        remotes: [String] = ["origin"]) -> WorkspaceSyncPlan {
+                        remotes: [String] = ["origin"], sameDestination: Bool = true) -> WorkspaceSyncPlan {
         WorkspaceSyncPlan(status: WorkspaceBranchStatus(branch: branch, shortHead: "abc1234", upstream: upstream,
-                                                        ahead: ahead, behind: behind, remotes: remotes))
+                                                        ahead: ahead, behind: behind, remotes: remotes,
+                                                        syncTarget: sameDestination && upstream != nil ? WorkspaceSyncTarget(branch: branch ?? "", remote: "origin", remoteRef: "refs/heads/main") : nil))
     }
 
-    func testSyncPrefersPublishThenPullThenPush() {
+    func testSyncDistinguishesDivergenceFromPullAndPush() {
         let publish = status(branch: "feature", upstream: nil, remotes: ["upstream", "origin"])
         guard case .publish(let remote, let branch) = publish.primaryAction else { return XCTFail("\(publish.primaryAction)") }
         XCTAssertEqual([remote, branch], ["origin", "feature"])
@@ -59,15 +60,22 @@ final class WorkspaceGitBarPlanTests: XCTestCase {
         XCTAssertFalse(publish.tracksUpstream)
 
         let both = status(ahead: 1, behind: 2)
-        XCTAssertEqual(both.primaryTitle, "Pull 2")
-        XCTAssertEqual(both.primaryHelp, "Pull 2 commits; 1 commit to push afterwards")
+        XCTAssertEqual(both.primaryTitle, "Sync ↓2 ↑1")
+        XCTAssertEqual(both.primaryHelp, "Pull 2 commits, then push to origin/main")
 
         let ahead = status(ahead: 3)
-        XCTAssertEqual(ahead.primaryTitle, "Push 3")
-        XCTAssertEqual(ahead.primaryHelp, "Push 3 commits")
+        XCTAssertEqual(ahead.primaryTitle, "Push ↑3")
+        XCTAssertEqual(ahead.primaryHelp, "Push 3 commits to origin/main")
 
         XCTAssertEqual(status().primaryTitle, "Fetch")
         XCTAssertEqual(status(behind: 1).primaryHelp, "Pull 1 commit")
+    }
+
+    func testDifferentPushDestinationKeepsActionsSeparate() {
+        let both = status(ahead: 3, behind: 2, sameDestination: false)
+        guard case .pull = both.primaryAction else { return XCTFail("Expected separate Pull") }
+        XCTAssertEqual(both.primaryTitle, "Pull ↓2 ↑3")
+        XCTAssertEqual(status(ahead: 3, sameDestination: false).primaryTitle, "Push")
     }
 
     func testDetachedHeadOrNoRemotes() {
@@ -196,6 +204,48 @@ final class WorkspaceGitBarModelTests: XCTestCase {
         await settle { model.status?.branch == "topic" }
         XCTAssertEqual(outcome, .some(nil))
         XCTAssertEqual(model.localBranches.map(\.name).sorted(), ["main", "other", "topic"])
+    }
+
+    func testOperationCompletionDoesNotClearAnotherSpacesMessageOrCallItsCallback() async throws {
+        try sandbox.write([".git/hooks/pre-commit": "#!/bin/sh\nsleep 0.4\n"], in: "repo")
+        try sandbox.sh("chmod +x .git/hooks/pre-commit && echo more >> a.txt", in: "repo")
+        let another = try sandbox.repository("another")
+        var called = false
+        model.message = "Original message"
+        model.commit(.tracked, plan: WorkspaceCommitPlan(changes: [])) { _ in called = true }
+        await model.load(another)
+        model.message = "Other Space draft"
+        await settle()
+        XCTAssertFalse(called)
+        XCTAssertEqual(model.message, "Other Space draft")
+        XCTAssertEqual(model.currentWorktree?.path, another.root)
+    }
+
+    func testSyncOffersStrategyThenRefreshesBeforeCompletion() async throws {
+        try sandbox.sh("git init -q --bare -b main origin.git")
+        try sandbox.sh("git remote add origin ../origin.git && git push -qu origin main", in: "repo")
+        try sandbox.sh("git clone -q origin.git other")
+        try sandbox.configure("other")
+        try sandbox.sh("echo remote > remote.txt && git add . && git commit -qm Remote && git push -q", in: "other")
+        try sandbox.sh("echo local > local.txt && git add . && git commit -qm Local && git fetch -q", in: "repo")
+        await model.load(repo)
+        let target = try XCTUnwrap(model.status?.syncTarget)
+        var callbacks = 0
+        model.perform(.sync(target: target)) { _ in callbacks += 1 }
+        await settle()
+        XCTAssertEqual(model.pendingSyncStrategy, target)
+        XCTAssertEqual(callbacks, 0)
+        model.perform(.sync(target: target, strategy: .merge)) { error in
+            XCTAssertNil(error)
+            XCTAssertEqual(self.model.status?.ahead, 0)
+            XCTAssertEqual(self.model.status?.behind, 0)
+            callbacks += 1
+        }
+        // The second click must be ignored throughout pull, push and final refresh.
+        model.perform(.sync(target: target, strategy: .merge)) { _ in callbacks += 1 }
+        await settle()
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(model.pendingSyncStrategy)
     }
 
     /// One operation runs at a time; another started meanwhile is ignored.

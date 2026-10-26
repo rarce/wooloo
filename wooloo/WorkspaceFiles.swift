@@ -273,14 +273,32 @@ struct WorkspaceBranchStatus {
     let ahead: Int
     let behind: Int
     let remotes: [String]
+    var syncTarget: WorkspaceSyncTarget? = nil
+}
+
+struct WorkspaceSyncTarget: Equatable, Sendable {
+    let branch: String
+    let remote: String
+    let remoteRef: String
+    var remoteURL: String = ""
+}
+
+enum WorkspacePullStrategy: Sendable {
+    case merge, rebase
+}
+
+enum WorkspaceSyncError: Error {
+    case needsStrategy(WorkspaceSyncTarget)
 }
 
 enum WorkspaceGitSync {
     case fetch, pull, pullRebase, push, forcePush
+    case sync(target: WorkspaceSyncTarget, strategy: WorkspacePullStrategy? = nil)
     case publish(remote: String, branch: String)
 
     var title: String {
         switch self {
+        case .sync: return "Sync"
         case .fetch: return "Fetch"
         case .pull: return "Pull"
         case .pullRebase: return "Pull (Rebase)"
@@ -292,7 +310,7 @@ enum WorkspaceGitSync {
 
     var icon: String {
         switch self {
-        case .fetch: return "arrow.triangle.2.circlepath"
+        case .fetch, .sync: return "arrow.triangle.2.circlepath"
         case .pull, .pullRebase: return "arrow.down"
         case .push, .forcePush: return "arrow.up"
         case .publish: return "icloud.and.arrow.up"

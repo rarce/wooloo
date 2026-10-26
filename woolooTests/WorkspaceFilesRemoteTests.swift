@@ -69,6 +69,38 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(try invocations().count, 2, "Both repository detection and list loading must use SSH")
     }
 
+    func testRemoteSyncResolvesURLRewritesOnTheRemoteHost() throws {
+        try sandbox.repository("repo")
+        try sandbox.sh("git remote add origin alias: && git config branch.main.remote origin && git config branch.main.merge refs/heads/main && git config url.../origin.git.insteadOf alias:", in: "repo")
+        let repo = remote("repo")
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        XCTAssertEqual(target.remoteURL, "../origin.git")
+        try sandbox.sh("git config url.../fork.git.pushInsteadOf alias:", in: "repo")
+        XCTAssertNil(try WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo))
+    }
+
+    func testRemoteSyncIntegratesAndPushesThenStopsAtAConflict() throws {
+        try sandbox.sh("git init -q --bare -b main origin.git")
+        try sandbox.repository("repo")
+        try sandbox.sh("git remote add origin ../origin.git && git push -qu origin main && git config pull.rebase true", in: "repo")
+        try sandbox.sh("git clone -q origin.git other")
+        try sandbox.configure("other")
+        try sandbox.sh("echo remote > remote.txt && git add remote.txt && git commit -qm Remote && git push -q", in: "other")
+        try sandbox.sh("echo local > local.txt && git add local.txt && git commit -qm Local && git fetch -q", in: "repo")
+        let repo = remote("repo")
+        let target = try XCTUnwrap(WorkspaceFiles.branchStatus(at: repo).syncTarget)
+        try WorkspaceFiles.sync(.sync(target: target), at: repo)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).ahead, 0)
+        XCTAssertEqual(try WorkspaceFiles.branchStatus(at: repo).behind, 0)
+        XCTAssertEqual(try sandbox.read("remote.txt", in: "repo"), "remote\n")
+        try sandbox.sh("git pull -q && echo remote > a.txt && git commit -qam RemoteConflict && git push -q", in: "other")
+        try sandbox.sh("echo local > a.txt && git commit -qam LocalConflict && git fetch -q", in: "repo")
+        let remoteHead = try sandbox.sh("git rev-parse HEAD", in: "other")
+        XCTAssertThrowsError(try WorkspaceFiles.sync(.sync(target: target), at: repo))
+        XCTAssertEqual(try sandbox.sh("git --git-dir=../origin.git rev-parse main", in: "repo"), remoteHead)
+    }
+
     func testSSHArgumentsAndTargets() throws {
         try sandbox.repository("repo")
         _ = try WorkspaceFiles.listing(at: remote("repo"))
