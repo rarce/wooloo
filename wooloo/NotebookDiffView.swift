@@ -12,13 +12,15 @@ enum NotebookDiffMode: String, CaseIterable, Identifiable {
 
 /// A notebook's changes cell by cell: each changed cell with what changed, its source as a line
 /// diff and a summary of its outputs when they changed, and runs of unchanged cells folded.
-/// Falls back to the JSON patch when either side is not a notebook it can read.
-struct NotebookDiffView: View {
+/// Falls back to the JSON patch (`fallback`) when either side is not a notebook it can read.
+struct NotebookDiffView<Fallback: View>: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     let text: String
     let source: DiffSource
-    let mode: DiffDisplayMode
+    /// Called with whether the JSON patch is shown instead of the cells.
+    var onFallback: (Bool) -> Void = { _ in }
+    @ViewBuilder let fallback: () -> Fallback
     @State private var diff: NotebookDiff?
     @State private var loadedSource: DiffSource?
     @State private var loadedText: String?
@@ -28,7 +30,7 @@ struct NotebookDiffView: View {
     var body: some View {
         Group {
             if failed, loadedSource == source, loadedText == text {
-                WorkspaceDiffView(text: text, source: source, mode: mode)
+                fallback()
             } else if let diff, loadedSource == source, loadedText == text {
                 ScrollView(.vertical) {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -51,18 +53,17 @@ struct NotebookDiffView: View {
         .task(id: "\(source.path)|\(source.commit ?? "")|\(source.scope)|\(text.hashValue)") {
             let key = (source, text)
             let result = try? await WorkspaceFiles.blocking(at: key.0.location, priority: .userInitiated) { () -> NotebookDiff? in
-                let sides: (old: String?, new: String?)
                 if let snapshots = key.0.snapshots {
-                    sides = (snapshots.old, snapshots.new)
-                } else {
-                    sides = WorkspaceFiles.diffSides(key.0.path, originalPath: key.0.originalPath, commit: key.0.commit,
-                                                    scope: key.0.scope, at: key.0.location)
+                    return NotebookDiff.compare(old: snapshots.old, new: snapshots.new)
                 }
-                return NotebookDiff.compare(old: sides.old, new: sides.new)
+                let sides = WorkspaceFiles.diffSides(key.0.path, originalPath: key.0.originalPath, commit: key.0.commit,
+                                                     scope: key.0.scope, at: key.0.location)
+                return NotebookDiff.compare(old: sides.old, new: sides.new, patch: key.1)
             }
             guard !Task.isCancelled else { return }
             diff = result ?? nil
             failed = diff == nil
+            onFallback(failed)
             expanded = []
             loadedSource = key.0
             loadedText = key.1

@@ -194,6 +194,8 @@ struct WorkspaceDocumentView: View {
 
     @AppStorage(SyntaxAssociation.storageKey) private var syntaxAssociationsJSON = "[]"
     @State private var diffDetectedSyntax: EditorSyntax?
+    /// The diff whose notebook could not be read as cells, so it shows the JSON patch.
+    @State private var notebookCellsUnavailable: DiffSource?
     @State private var diffDetectedSource: DiffSource?
     @State private var diffDetectedAssociations: [SyntaxAssociation] = []
 
@@ -280,7 +282,7 @@ struct WorkspaceDocumentView: View {
                     .frame(width: 120)
                     .help("Show the notebook's changes cell by cell, or as changes to its JSON")
                 }
-                if document.kind != .file && !showsNotebookCells {
+                if document.kind != .file && (!showsNotebookCells || notebookCellsUnavailable == document.diffSource) {
                     Picker("View", selection: $diffMode) {
                         ForEach(DiffDisplayMode.allCases) { mode in
                             Label(mode.rawValue, systemImage: mode.icon).tag(mode)
@@ -351,15 +353,10 @@ struct WorkspaceDocumentView: View {
                     }
                 }
             } else if showsNotebookCells {
-                NotebookDiffView(text: document.patch, source: document.diffSource, mode: diffMode)
+                NotebookDiffView(text: document.patch, source: document.diffSource,
+                                 onFallback: { notebookCellsUnavailable = $0 ? document.diffSource : nil }) { jsonDiff }
             } else {
-                WorkspaceDiffView(text: document.patch, source: document.diffSource, mode: diffMode,
-                                  syntaxOverride: document.syntaxOverride, associations: syntaxAssociations,
-                                  onDetectedSyntax: {
-                                      diffDetectedSyntax = $0
-                                      diffDetectedSource = document.diffSource
-                                      diffDetectedAssociations = syntaxAssociations
-                                  })
+                jsonDiff
             }
             Divider()
             HStack {
@@ -549,6 +546,16 @@ struct WorkspaceDocumentView: View {
         }
     }
 
+    private var jsonDiff: some View {
+        WorkspaceDiffView(text: document.patch, source: document.diffSource, mode: diffMode,
+                          syntaxOverride: document.syntaxOverride, associations: syntaxAssociations,
+                          onDetectedSyntax: {
+                              diffDetectedSyntax = $0
+                              diffDetectedSource = document.diffSource
+                              diffDetectedAssociations = syntaxAssociations
+                          })
+    }
+
     private var showsNotebookCells: Bool {
         document.kind != .file && NotebookDocument.supports(document.path) && notebookDiffMode == .cells
     }
@@ -556,19 +563,24 @@ struct WorkspaceDocumentView: View {
     /// A cell edit made in the notebook preview, against the text it was rendered from (an edit
     /// to a page about to be replaced is dropped). Like a checkbox in a Markdown preview, it is
     /// unsaved; in Split it goes through the editor, and in Preview through the window's undo.
-    private func editNotebook(_ edit: NotebookEdit, base: String) {
-        guard document.kind == .file, !document.isLoading, document.text == base else { return }
+    /// Returns whether the notebook changed.
+    private func editNotebook(_ edit: NotebookEdit, base: String) -> Bool {
+        guard document.kind == .file, !document.isLoading, document.text == base else { return false }
         let replacement: NotebookEditing.Replacement?
         do { replacement = try NotebookEditing.replacement(for: edit, in: base) }
-        catch { notebookEditError = error.localizedDescription; return }
-        guard let replacement else { return }
-        if document.markdownMode == .split, revealCoordinator.replace([(replacement.range, replacement.text)]) { return }
+        catch { notebookEditError = error.localizedDescription; return false }
+        guard let replacement else { return false }
+        if document.markdownMode == .split, let shown = revealCoordinator.text {
+            // The range is in `base`; an editor showing other text would take it elsewhere.
+            return shown == base && revealCoordinator.replace([(replacement.range, replacement.text)])
+        }
         let text = (base as NSString).replacingCharacters(in: replacement.range, with: replacement.text)
         document.text = text
         if let undoManager {
             NotebookUndo.register(undoManager, current: text, previous: base, name: edit.actionName,
                                   replace: onReplaceText)
         }
+        return true
     }
 
     /// ⌘Z or ⇧⌘Z pressed in a notebook preview, outside a cell being edited.
@@ -783,6 +795,9 @@ final class EditorRevealCoordinator: TextViewCoordinator {
     }
 
     func scrollSelectionToVisible() { controller?.textView.scrollSelectionToVisible() }
+
+    /// The text the editor shows, or nil when no editor is shown.
+    var text: String? { controller?.textView.string }
 
     /// Undoes or redoes the editor's last change, for ⌘Z pressed in a preview beside it.
     /// Returns false when no editor is shown.

@@ -44,8 +44,15 @@ struct NotebookDiff {
     var changedCount: Int { cells.filter { $0.status != .unchanged }.count }
 
     /// Nil unless both sides are notebooks this can read; a missing side (a file added or
-    /// deleted) counts as a notebook without cells.
-    static func compare(old: String?, new: String?) -> NotebookDiff? {
+    /// deleted) counts as a notebook without cells. With `patch`, a side counts as missing only
+    /// where the patch shows `/dev/null`: otherwise a nil side is one that could not be read
+    /// (too large, not UTF-8, or a failed read), and the JSON patch is shown instead.
+    static func compare(old: String?, new: String?, patch: String? = nil) -> NotebookDiff? {
+        if let patch {
+            let lines = patch.split(separator: "\n", maxSplits: 8).map { $0.hasSuffix("\r") ? $0.dropLast() : $0 }
+            if old == nil, !lines.contains("--- /dev/null") { return nil }
+            if new == nil, !lines.contains("+++ /dev/null") { return nil }
+        }
         guard old != nil || new != nil,
               let before = Side(old), let after = Side(new) else { return nil }
         var cells: [Cell] = []
@@ -82,18 +89,19 @@ struct NotebookDiff {
             var gapOld: [Int] = [], gapNew: [Int] = []
             while oldIndex < before.cells.count, removed.contains(oldIndex) { gapOld.append(oldIndex); oldIndex += 1 }
             while newIndex < after.cells.count, inserted.contains(newIndex) { gapNew.append(newIndex); newIndex += 1 }
-            // Cells replaced in place are edits of one cell when their types agree.
-            var leftOld: [Int] = [], leftNew = gapNew
+            // Cells replaced in place are edits of one cell when their types agree: each old cell
+            // pairs with the next new cell of its type, and new cells skipped over were added.
+            var next = 0
             for old in gapOld {
-                if let first = leftNew.first, before.cells[old].kind == after.cells[first].kind {
-                    append(.modified, old, first)
-                    leftNew.removeFirst()
-                } else {
-                    leftOld.append(old)
+                guard let match = gapNew[next...].firstIndex(where: { before.cells[old].kind == after.cells[$0].kind }) else {
+                    append(.removed, old, nil)
+                    continue
                 }
+                gapNew[next..<match].forEach { append(.added, nil, $0) }
+                append(.modified, old, gapNew[match])
+                next = match + 1
             }
-            leftOld.forEach { append(.removed, $0, nil) }
-            leftNew.forEach { append(.added, nil, $0) }
+            gapNew[next...].forEach { append(.added, nil, $0) }
             guard oldIndex < before.cells.count, newIndex < after.cells.count else {
                 if gapOld.isEmpty && gapNew.isEmpty { break }
                 continue
@@ -101,7 +109,8 @@ struct NotebookDiff {
             append(.unchanged, oldIndex, newIndex)
             oldIndex += 1; newIndex += 1
         }
-        return NotebookDiff(cells: cells, metadataChanged: before.metadata != after.metadata)
+        // An added or deleted notebook has no metadata of its own to compare.
+        return NotebookDiff(cells: cells, metadataChanged: old != nil && new != nil && before.metadata != after.metadata)
     }
 
     /// One side's cells, reduced to what is compared.

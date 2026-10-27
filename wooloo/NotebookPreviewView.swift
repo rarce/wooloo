@@ -15,9 +15,9 @@ struct NotebookPreviewView: View {
     var revealRequest = 0
     var onSearchText: ([String]) -> Void = { _ in }
     var onFindCommand: (String, Bool, Bool) -> Void = { _, _, _ in }
-    /// Applies a cell edit made in the preview to the JSON the notebook was rendered from; nil
-    /// leaves the preview read only.
-    var onEdit: ((NotebookEdit, String) -> Void)?
+    /// Applies a cell edit made in the preview to the JSON the notebook was rendered from, and
+    /// returns whether it did; nil leaves the preview read only.
+    var onEdit: ((NotebookEdit, String) -> Bool)?
     @State private var notebook: NotebookDocument?
     @State private var error: String?
 
@@ -71,7 +71,7 @@ struct NotebookWebView: NSViewRepresentable {
     let onOpenFile: (String) -> Void
     let onSearchText: ([String]) -> Void
     let onFindCommand: (String, Bool, Bool) -> Void
-    var onEdit: ((NotebookEdit, String) -> Void)?
+    var onEdit: ((NotebookEdit, String) -> Bool)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -202,8 +202,12 @@ struct NotebookWebView: NSViewRepresentable {
                 owner.onFindCommand(body["key"] as? String ?? "", body["shift"] as? Bool ?? false, body["option"] as? Bool ?? false)
             case "escape": owner.onFindCommand("escape", false, false)
             case "edit":
-                guard let onEdit = owner.onEdit, let edit = Self.edit(body, in: owner.notebook) else { return }
-                onEdit(edit, owner.notebook.sourceText)
+                guard let onEdit = owner.onEdit else { return }
+                // An edit that changes nothing renders the page again, which closes a cell editor
+                // waiting for it and puts back a cell type the notebook kept.
+                if let edit = Self.edit(body, in: owner.notebook), onEdit(edit, owner.notebook.sourceText) { return }
+                webView?.callAsyncJavaScript("window.notebook.restore(token)", arguments: ["token": revision],
+                                            in: nil, in: .page, completionHandler: { _ in })
             default: break
             }
         }

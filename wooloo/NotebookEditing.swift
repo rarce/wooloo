@@ -115,7 +115,7 @@ enum NotebookEditing {
             if cells.isEmpty {
                 let arrayRange = cellsMember.value.range
                 let closing = format.indent(atLineOf: cellsMember.keyRange.location)
-                let body = format.isCompact ? "[\(newCell)]" : "[\n\(cellIndent)\(newCell)\n\(closing)]"
+                let body = format.isCompact ? "[\(newCell)]" : "[\(format.newline)\(cellIndent)\(newCell)\(format.newline)\(closing)]"
                 return Replacement(range: arrayRange, text: body)
             }
             let separator = format.elementSeparator
@@ -147,17 +147,6 @@ enum NotebookEditing {
                                                 length: second.range.location - NSMaxRange(first.range)))
             let range = NSRange(location: first.range.location, length: NSMaxRange(second.range) - first.range.location)
             return Replacement(range: range, text: format.string(second.range) + between + format.string(first.range))
-        }
-    }
-
-    /// The index a cell has after `edit`, to keep the cell being worked on in view; nil when
-    /// it is gone.
-    static func cellIndex(after edit: NotebookEdit) -> Int? {
-        switch edit {
-        case .setSource(let cell, _), .setKind(let cell, _): cell
-        case .insert(let at, _): at
-        case .delete: nil
-        case .move(let cell, let offset): cell + offset
         }
     }
 
@@ -215,7 +204,7 @@ enum NotebookEditing {
             separator = String(utf16CodeUnits: Array(units[NSMaxRange(members[0].value.range)..<members[1].keyRange.location]),
                                count: members[1].keyRange.location - NSMaxRange(members[0].value.range))
         } else {
-            separator = format.isCompact ? "," : ",\n" + format.elementIndent + format.unit
+            separator = format.isCompact ? "," : "," + format.newline + format.elementIndent + format.unit
         }
         if let next = members.first(where: { $0.key > key }) {
             text = (text as NSString).replacingCharacters(in: NSRange(location: next.keyRange.location, length: 0),
@@ -256,6 +245,8 @@ enum NotebookEditing {
         /// One level of indentation; empty in a minified file.
         let unit: String
         let isCompact: Bool
+        /// The file's line break, "\r\n" in a notebook saved with Windows line endings.
+        let newline: String
         let colon: String
         let usesCellIDs: Bool
         /// The indentation of a cell's opening brace, and what goes between two cells.
@@ -265,14 +256,16 @@ enum NotebookEditing {
         init(units: [UInt16], root: JSONNode, cells: JSONMember) {
             self.units = units
             guard case .object(let members) = root.kind, let first = members.first else {
-                unit = " "; isCompact = false; colon = ": "; usesCellIDs = false
+                unit = " "; isCompact = false; newline = "\n"; colon = ": "; usesCellIDs = false
                 elementIndent = "  "; elementSeparator = ",\n  "
                 return
             }
-            let leading = Self.string(units, NSRange(location: root.range.location + 1,
-                                                     length: first.keyRange.location - root.range.location - 1))
-            isCompact = !leading.contains("\n")
-            unit = isCompact ? "" : String(leading.split(separator: "\n", omittingEmptySubsequences: false).last ?? " ")
+            // In UTF-16 units: as a Character, "\r\n" is not "\n".
+            let leading = units[(root.range.location + 1)..<first.keyRange.location]
+            let lineEnd = leading.lastIndex(of: 0x0A)
+            isCompact = lineEnd == nil
+            newline = lineEnd.map { $0 > leading.startIndex && units[$0 - 1] == 0x0D } == true ? "\r\n" : "\n"
+            unit = lineEnd.map { Self.string(units, NSRange(location: $0 + 1, length: first.keyRange.location - $0 - 1)) } ?? ""
             colon = Self.string(units, NSRange(location: NSMaxRange(first.keyRange),
                                                length: first.value.range.location - NSMaxRange(first.keyRange)))
             let major = members.first { $0.key == "nbformat" }.flatMap { Int(Self.string(units, $0.value.range)) } ?? 4
@@ -284,7 +277,7 @@ enum NotebookEditing {
                 elementSeparator = Self.string(units, NSRange(location: NSMaxRange(elements[0].range),
                                                               length: elements[1].range.location - NSMaxRange(elements[0].range)))
             } else {
-                elementSeparator = isCompact ? "," : ",\n" + elementIndent
+                elementSeparator = isCompact ? "," : "," + newline + elementIndent
             }
         }
 
@@ -317,7 +310,7 @@ enum NotebookEditing {
             let items = lines.map(jsonString)
             if isCompact { return "[" + items.joined(separator: ",") + "]" }
             let inner = indent + unit
-            return "[\n" + items.map { inner + $0 }.joined(separator: ",\n") + "\n" + indent + "]"
+            return "[" + newline + items.map { inner + $0 }.joined(separator: "," + newline) + newline + indent + "]"
         }
 
         func newCell(kind: String, id: String?, indent: String) -> String {
@@ -330,7 +323,7 @@ enum NotebookEditing {
             let items = pairs.map { jsonString($0.0) + colon + $0.1 }
             if isCompact { return "{" + items.joined(separator: ",") + "}" }
             let inner = indent + unit
-            return "{\n" + items.map { inner + $0 }.joined(separator: ",\n") + "\n" + indent + "}"
+            return "{" + newline + items.map { inner + $0 }.joined(separator: "," + newline) + newline + indent + "}"
         }
     }
 }

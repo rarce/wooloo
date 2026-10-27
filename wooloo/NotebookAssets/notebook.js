@@ -19,7 +19,7 @@
         return true;
     });
     const priority = ["text/html", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "text/markdown", "text/latex", "application/json", "text/plain"];
-    let revision = "", imagePrefix = "", imageCounter = 0, svgCounter = 0, groups = [], pendingImages = new Map(), editable = false;
+    let revision = "", imagePrefix = "", imageCounter = 0, svgCounter = 0, groups = [], pendingImages = new Map(), editable = false, rendering = false, last = null;
     const node = (tag, text, className) => {
         const element = document.createElement(tag);
         if (text !== undefined) element.textContent = text;
@@ -269,13 +269,17 @@
         const hint = node("div", "⌘↩ or click outside to apply · Esc to cancel", "cell-editor-hint");
         const hidden = Array.from(section.children).filter(child => !child.classList.contains("cell-tools") && !child.classList.contains("cell-label"));
         const fit = () => {editor.style.height = "auto";editor.style.height = (editor.scrollHeight + 2) + "px";};
+        // A textarea turns "\r\n" and "\r" into "\n": compare without them, and write a changed
+        // source back with the line breaks it had.
+        const breaks = cell.source.includes("\r\n") ? "\r\n" : "\n", original = cell.source.replace(/\r\n?/g, "\n");
         let done = false;
         const finish = (save) => {
             if (done) return;done = true;
-            if (save && editor.value !== cell.source) {
-                // Kept on screen until the new render replaces the cell.
+            // Removing an editor while the page renders again blurs it; the cell it edited is gone.
+            if (save && !rendering && editor.value !== original) {
+                // Kept on screen until the new render replaces the cell, or a refused edit restores it.
                 editor.readOnly = true;hint.textContent = "Applying…";
-                edit({op:"source", cell:cellIndex, id:cell.id, text:editor.value});
+                edit({op:"source", cell:cellIndex, id:cell.id, text:breaks === "\n" ? editor.value : editor.value.replace(/\n/g, breaks)});
             } else {
                 editor.remove();hint.remove();hidden.forEach(child => child.hidden = false);
             }
@@ -316,13 +320,14 @@
     };
     window.notebook = {
         render(data, token, palette, canEdit) {
-            editable = Boolean(canEdit);
+            editable = Boolean(canEdit);last = {data, palette, canEdit};
             const anchor = Array.from(root.querySelectorAll(".cell")).find(cell => cell.getBoundingClientRect().bottom > 0);
             const anchorID = anchor?.id, offset = anchor?.getBoundingClientRect().top;
             const collapsed = new Set(Array.from(root.querySelectorAll("details[data-output]")).filter(item => !item.open).map(item => item.dataset.output));
             revision = token;imagePrefix = `wooloo-notebook://${token}/image/`;pendingImages.clear();
             for (const [key,value] of Object.entries(palette)) document.documentElement.style.setProperty(key,value);
-            root.replaceChildren();
+            rendering = true;
+            try {root.replaceChildren();} finally {rendering = false;}
             const header = node("header");header.append(node("h1", "Notebook"));
             header.append(node("p", `${data.cells.length} cells · ${data.language}${data.kernel ? " · " + data.kernel : ""} · Saved output`));root.append(header);
             data.warnings.forEach(warning => root.append(node("div", warning, "notice")));
@@ -371,6 +376,10 @@
             });
             if (anchorID) { const next = document.getElementById(anchorID);if (next) window.scrollBy(0,next.getBoundingClientRect().top-offset); }
             collectSearch();setFind([],null,false);
+        },
+        // Shows the notebook as it was rendered again, after an edit the app did not make.
+        restore(token) {
+            if (token === revision && last) this.render(last.data, token, last.palette, last.canEdit);
         },
         image(id,url,token) {
             if (token !== revision) return;

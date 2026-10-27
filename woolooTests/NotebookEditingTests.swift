@@ -67,6 +67,18 @@ final class NotebookEditingTests: XCTestCase {
         XCTAssertEqual(markdown, #"{"cells":[{"cell_type":"markdown","metadata":{},"source":"a"}],"metadata":{},"nbformat":4,"nbformat_minor":4}"#)
     }
 
+    func testNotebooksWithWindowsLineEndingsKeepThem() throws {
+        let crlf = F.original.replacingOccurrences(of: "\n", with: "\r\n")
+        for edit in [NotebookEdit.setSource(cell: 1, text: "a\nb"), .insert(at: 1, kind: "code"), .insert(at: 3, kind: "markdown"),
+                     .setKind(cell: 2, kind: "code"), .delete(cell: 1)] {
+            let edited = try apply(edit, to: crlf)
+            XCTAssertEqual(edited.replacingOccurrences(of: "\r\n", with: "\n"), try apply(edit), "\(edit)")
+            XCTAssertFalse(edited.components(separatedBy: "\r\n").joined().contains("\n"), "\(edit) wrote a bare line feed")
+        }
+        XCTAssertEqual(try apply(.insert(at: 0, kind: "code"), to: F.empty.replacingOccurrences(of: "\n", with: "\r\n")),
+                       F.insertIntoEmpty.replacingOccurrences(of: "\n", with: "\r\n"))
+    }
+
     func testSourcesRoundTripThroughJSONWithControlCharactersAndEmoji() throws {
         let tricky = "quote \" backslash \\ tab\t\u{01}\u{1F}\u{7F} é 👩‍👩‍👧 \u{2028}\r\nnext\rlast"
         let edited = try apply(.setSource(cell: 2, text: tricky))
@@ -155,14 +167,16 @@ final class NotebookEditingTests: XCTestCase {
     func testTheCellToolbarAndEditorSendEdits() async throws {
         let location = WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test", workspaceID: "test",
                                              workspaceLabel: "Notebook test", root: "/private/tmp")
-        let model = try NotebookDocument.parse(F.original)
+        // Cell 1's first line ends in "\r\n", which a textarea shows as "\n".
+        let text = F.original.replacingOccurrences(of: #""x = 2\n""#, with: #""x = 2\r\n""#)
+        let model = try NotebookDocument.parse(text)
         var edits: [(NotebookEdit, String)] = []
         var commands: [String] = []
         let view = NotebookWebView(notebook: model, path: "edit.ipynb", location: location,
                                    theme: WoolooTheme.all[0], typography: WoolooTypography(), matches: [],
                                    currentMatch: nil, revealRequest: 0, onOpenFile: { _ in },
                                    onSearchText: { _ in }, onFindCommand: { key, shift, _ in commands.append(key + (shift ? "+shift" : "")) },
-                                   onEdit: { edits.append(($0, $1)) })
+                                   onEdit: { edits.append(($0, $1)); return false })
         let host = NSHostingView(rootView: view)
         window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 650),
                           styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -187,18 +201,34 @@ final class NotebookEditingTests: XCTestCase {
             for _ in 0..<100 where edits.count < count { try await Task.sleep(for: .milliseconds(20)) }
             XCTAssertEqual(edits.count, count)
         }
-        _ = try await page.evaluateJavaScript("document.querySelectorAll('.cell')[2].querySelector('[aria-label=\"Delete the cell\"]').click()")
+        /// Marks the page; the mark is gone once the page renders again.
+        let mark = "document.querySelector('header').dataset.stale = '1';"
+        func rendered() async throws -> Bool {
+            for _ in 0..<100 {
+                if try await page.evaluateJavaScript("document.querySelector('header').dataset.stale === undefined") as? Bool == true { return true }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            return false
+        }
+        _ = try await page.evaluateJavaScript(mark + "document.querySelectorAll('.cell')[2].querySelector('[aria-label=\"Delete the cell\"]').click()")
         try await waitForEdits(1)
+        let restoredDelete = try await rendered()
+        XCTAssertTrue(restoredDelete)
         XCTAssertEqual(edits.last?.0, .delete(cell: 2))
-        XCTAssertEqual(edits.last?.1, F.original)
+        XCTAssertEqual(edits.last?.1, text)
         let disabled = try await page.evaluateJavaScript("document.querySelectorAll('.cell')[0].querySelector('[aria-label=\"Move the cell up\"]').disabled") as? Bool
         XCTAssertEqual(disabled, true)
-        _ = try await page.evaluateJavaScript("""
+        _ = try await page.evaluateJavaScript(mark + """
             { const select = document.querySelectorAll('.cell')[1].querySelector('select[aria-label="Cell type"]');
               select.value = 'raw'; select.dispatchEvent(new Event('change')); }
             """)
         try await waitForEdits(2)
         XCTAssertEqual(edits.last?.0, .setKind(cell: 1, kind: "raw"))
+        // An edit the app does not make renders the page again as it was.
+        let restoredKind = try await rendered()
+        XCTAssertTrue(restoredKind)
+        let kind = try await page.evaluateJavaScript("document.querySelectorAll('.cell')[1].querySelector('select[aria-label=\"Cell type\"]').value") as? String
+        XCTAssertEqual(kind, "code")
         // Editing a source: the editor shows the whole source, Escape cancels, ⌘↩ applies.
         _ = try await page.evaluateJavaScript("document.querySelectorAll('.cell')[1].querySelector('[aria-label=\"Edit the cell\\'s source\"]').click()")
         let shown = try await page.evaluateJavaScript("document.querySelector('textarea.cell-editor').value") as? String
@@ -209,15 +239,25 @@ final class NotebookEditingTests: XCTestCase {
             """)
         let cancelled = try await page.evaluateJavaScript("document.querySelector('textarea.cell-editor') === null && !document.querySelectorAll('.cell')[1].querySelector('.source').hidden") as? Bool
         XCTAssertEqual(cancelled, true)
-        XCTAssertEqual(edits.count, 2)
+        // Applying an unchanged source sends nothing, though the textarea changed its line breaks.
         _ = try await page.evaluateJavaScript("""
             document.querySelectorAll('.cell')[1].querySelector('[aria-label="Edit the cell\\'s source"]').click();
+            document.querySelector('textarea.cell-editor')
+                .dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', metaKey: true, bubbles: true}));
+            """)
+        XCTAssertEqual(edits.count, 2)
+        _ = try await page.evaluateJavaScript(mark + """
+            document.querySelectorAll('.cell')[1].querySelector('[aria-label="Edit the cell\\'s source"]').click();
             { const editor = document.querySelector('textarea.cell-editor');
-              editor.value = 'print(3)';
+              editor.value = 'print(3)\\nprint(4)';
               editor.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', metaKey: true, bubbles: true})); }
             """)
         try await waitForEdits(3)
-        XCTAssertEqual(edits.last?.0, .setSource(cell: 1, text: "print(3)"))
+        XCTAssertEqual(edits.last?.0, .setSource(cell: 1, text: "print(3)\r\nprint(4)"))
+        let restoredSource = try await rendered()
+        XCTAssertTrue(restoredSource)
+        let editorClosed = try await page.evaluateJavaScript("document.querySelector('textarea.cell-editor') === null") as? Bool
+        XCTAssertEqual(editorClosed, true)
         // ⌘Z outside a text field goes to the app's undo.
         _ = try await page.evaluateJavaScript("document.querySelector('.cell').dispatchEvent(new KeyboardEvent('keydown', {key: 'z', metaKey: true, shiftKey: true, bubbles: true}))")
         for _ in 0..<100 where commands.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
@@ -295,6 +335,12 @@ final class NotebookDiffTests: XCTestCase {
         // A cell replaced by one of another type is a removal and an addition.
         let retyped = try notebook([cell("markdown", "intro"), cell("raw", "a2()"), cell("code", "b()")], minor: 4)
         XCTAssertEqual(NotebookDiff.compare(old: old, new: retyped)?.cells.map(\.status), [.unchanged, .removed, .added, .unchanged])
+        // An edited cell after a cell of another type inserted before it is still an edit.
+        let inserted = try notebook([cell("markdown", "intro"), cell("markdown", "note"), cell("code", "a2()"), cell("code", "b()")], minor: 4)
+        let paired = try XCTUnwrap(NotebookDiff.compare(old: old, new: inserted))
+        XCTAssertEqual(paired.cells.map(\.status), [.unchanged, .added, .modified, .unchanged])
+        XCTAssertEqual(paired.cells.map(\.newIndex), [0, 1, 2, 3])
+        XCTAssertEqual(paired.cells[2].oldIndex, 1)
     }
 
     func testOutputsMetadataAndCountsAreReportedWithImagesSummarized() throws {
@@ -323,6 +369,16 @@ final class NotebookDiffTests: XCTestCase {
         let one = try notebook([cell("code", "a()", id: "a")])
         XCTAssertEqual(NotebookDiff.compare(old: nil, new: one)?.cells.map(\.status), [.added])
         XCTAssertEqual(NotebookDiff.compare(old: one, new: nil)?.cells.map(\.status), [.removed])
+        XCTAssertEqual(NotebookDiff.compare(old: nil, new: one)?.metadataChanged, false)
+        // A side the patch shows as a file is unreadable when missing, not empty.
+        let added = "diff --git a/n.ipynb b/n.ipynb\nnew file mode 100644\n--- /dev/null\n+++ b/n.ipynb\n@@ -0,0 +1 @@\n+{}\n"
+        let deleted = "diff --git a/n.ipynb b/n.ipynb\ndeleted file mode 100644\n--- a/n.ipynb\n+++ /dev/null\n@@ -1 +0,0 @@\n-{}\n"
+        let modified = "diff --git a/n.ipynb b/n.ipynb\n--- a/n.ipynb\n+++ b/n.ipynb\n@@ -1 +1 @@\n-{}\n+{ }\n"
+        XCTAssertEqual(NotebookDiff.compare(old: nil, new: one, patch: added)?.cells.map(\.status), [.added])
+        XCTAssertEqual(NotebookDiff.compare(old: one, new: nil, patch: deleted)?.cells.map(\.status), [.removed])
+        XCTAssertNil(NotebookDiff.compare(old: nil, new: one, patch: modified))
+        XCTAssertNil(NotebookDiff.compare(old: one, new: nil, patch: modified))
+        XCTAssertEqual(NotebookDiff.compare(old: one, new: one, patch: modified)?.changedCount, 0)
         XCTAssertNil(NotebookDiff.compare(old: one, new: "{ not json"))
         XCTAssertNil(NotebookDiff.compare(old: nil, new: nil))
         XCTAssertEqual(NotebookDiff.compare(old: one, new: one)?.changedCount, 0)
