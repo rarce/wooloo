@@ -19,7 +19,7 @@
         return true;
     });
     const priority = ["text/html", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "text/markdown", "text/latex", "application/json", "text/plain"];
-    let revision = "", imagePrefix = "", imageCounter = 0, svgCounter = 0, groups = [], pendingImages = new Map();
+    let revision = "", imagePrefix = "", imageCounter = 0, svgCounter = 0, groups = [], pendingImages = new Map(), editable = false;
     const node = (tag, text, className) => {
         const element = document.createElement(tag);
         if (text !== undefined) element.textContent = text;
@@ -259,8 +259,64 @@
             CSS.highlights.set("notebook-find", new Highlight(...ranges));CSS.highlights.set("notebook-current", new Highlight(...active));
         }
     };
+    // Structured edits go to the app, which rewrites only the changed part of the JSON and
+    // renders the notebook again; nothing here changes the document on its own.
+    const edit = (body) => post(Object.assign({kind:"edit", revision}, body));
+    const beginEdit = (section, cell, cellIndex) => {
+        if (!editable || !cell.editable || section.querySelector("textarea.cell-editor")) return;
+        const editor = node("textarea", undefined, "cell-editor");
+        editor.value = cell.source;editor.spellcheck = false;editor.setAttribute("aria-label", `Source of cell ${cellIndex+1}`);
+        const hint = node("div", "⌘↩ or click outside to apply · Esc to cancel", "cell-editor-hint");
+        const hidden = Array.from(section.children).filter(child => !child.classList.contains("cell-tools") && !child.classList.contains("cell-label"));
+        const fit = () => {editor.style.height = "auto";editor.style.height = (editor.scrollHeight + 2) + "px";};
+        let done = false;
+        const finish = (save) => {
+            if (done) return;done = true;
+            if (save && editor.value !== cell.source) {
+                // Kept on screen until the new render replaces the cell.
+                editor.readOnly = true;hint.textContent = "Applying…";
+                edit({op:"source", cell:cellIndex, id:cell.id, text:editor.value});
+            } else {
+                editor.remove();hint.remove();hidden.forEach(child => child.hidden = false);
+            }
+        };
+        editor.addEventListener("keydown", event => {
+            if (event.key === "Escape") {event.preventDefault();event.stopPropagation();finish(false);section.focus();}
+            else if (event.key === "Enter" && event.metaKey) {event.preventDefault();event.stopPropagation();finish(true);section.focus();}
+        });
+        editor.addEventListener("blur", () => finish(true));
+        editor.addEventListener("input", fit);
+        hidden.forEach(child => child.hidden = true);
+        section.append(editor, hint);fit();editor.focus();
+    };
+    const tools = (section, cell, cellIndex, count) => {
+        const bar = node("div", undefined, "cell-tools");
+        bar.setAttribute("role", "toolbar");bar.setAttribute("aria-label", `Cell ${cellIndex+1} actions`);
+        const button = (label, title, action, disabled) => {
+            const element = node("button", label);element.type = "button";element.title = title;element.setAttribute("aria-label", title);
+            element.disabled = Boolean(disabled);element.addEventListener("click", event => {event.stopPropagation();action();});
+            bar.append(element);
+        };
+        button("Edit", cell.editable ? "Edit the cell's source" : "The source is too long to edit here; use Source view",
+               () => beginEdit(section, cell, cellIndex), !cell.editable);
+        const kind = node("select");kind.title = "Cell type";kind.setAttribute("aria-label", "Cell type");
+        for (const value of ["code", "markdown", "raw"]) {
+            const option = node("option", value === "markdown" ? "Markdown" : value[0].toUpperCase() + value.slice(1));option.value = value;kind.append(option);
+        }
+        if (!["code", "markdown", "raw"].includes(cell.kind)) {const option = node("option", cell.kind);option.value = cell.kind;option.disabled = true;kind.append(option);}
+        kind.value = cell.kind;
+        kind.addEventListener("change", () => edit({op:"kind", cell:cellIndex, id:cell.id, value:kind.value}));
+        bar.append(kind);
+        button("↑", "Move the cell up", () => edit({op:"move", cell:cellIndex, id:cell.id, offset:-1}), cellIndex === 0);
+        button("↓", "Move the cell down", () => edit({op:"move", cell:cellIndex, id:cell.id, offset:1}), cellIndex === count - 1);
+        button("+ Code", "Insert a code cell below", () => edit({op:"insert", cell:cellIndex, id:cell.id, value:"code"}));
+        button("+ Markdown", "Insert a Markdown cell below", () => edit({op:"insert", cell:cellIndex, id:cell.id, value:"markdown"}));
+        button("Delete", "Delete the cell", () => edit({op:"delete", cell:cellIndex, id:cell.id}));
+        return bar;
+    };
     window.notebook = {
-        render(data, token, palette) {
+        render(data, token, palette, canEdit) {
+            editable = Boolean(canEdit);
             const anchor = Array.from(root.querySelectorAll(".cell")).find(cell => cell.getBoundingClientRect().bottom > 0);
             const anchorID = anchor?.id, offset = anchor?.getBoundingClientRect().top;
             const collapsed = new Set(Array.from(root.querySelectorAll("details[data-output]")).filter(item => !item.open).map(item => item.dataset.output));
@@ -270,10 +326,29 @@
             const header = node("header");header.append(node("h1", "Notebook"));
             header.append(node("p", `${data.cells.length} cells · ${data.language}${data.kernel ? " · " + data.kernel : ""} · Saved output`));root.append(header);
             data.warnings.forEach(warning => root.append(node("div", warning, "notice")));
-            if (!data.cells.length) root.append(node("p", "This notebook has no cells.", "unsupported"));
+            if (!data.cells.length) {
+                root.append(node("p", "This notebook has no cells.", "unsupported"));
+                if (editable) {
+                    const add = node("div", undefined, "cell-tools empty");
+                    for (const [label, value] of [["Add code cell", "code"], ["Add Markdown cell", "markdown"]]) {
+                        const button = node("button", label);button.type = "button";
+                        button.addEventListener("click", () => edit({op:"insert", cell:-1, value}));add.append(button);
+                    }
+                    root.append(add);
+                }
+            }
             data.cells.forEach((cell, cellIndex) => {
                 const section = node("section", undefined, "cell");section.id = "cell-" + cell.id;section.tabIndex = 0;
                 section.setAttribute("aria-label", `${cell.kind} cell ${cellIndex+1}`);
+                if (editable) {
+                    section.append(tools(section, cell, cellIndex, data.cells.length));
+                    section.addEventListener("dblclick", event => {
+                        if (event.target.closest(".source, .markdown") && !event.target.closest("a")) beginEdit(section, cell, cellIndex);
+                    });
+                    section.addEventListener("keydown", event => {
+                        if (event.key === "Enter" && event.target === section) {event.preventDefault();beginEdit(section, cell, cellIndex);}
+                    });
+                }
                 if (cell.kind === "markdown") section.append(markdown(cell.source, cell));
                 else {
                     const label = node("div", undefined, "cell-label");
@@ -312,6 +387,10 @@
     });
     root.addEventListener("keydown", event => {
         if (event.key === "Escape") {post({kind:"escape", revision});return;}
+        // Undo and redo the app's cell edits, except while a text field keeps its own.
+        if (editable && event.metaKey && event.key.toLowerCase() === "z" && !event.target.closest("textarea, input, select")) {
+            event.preventDefault();post({kind:"findCommand", revision, key:"z", shift:event.shiftKey, option:false});return;
+        }
         if (event.metaKey && ["f","g"].includes(event.key.toLowerCase())) {
             event.preventDefault();post({kind:"findCommand", revision, key:event.key.toLowerCase(), shift:event.shiftKey, option:event.altKey});
         }

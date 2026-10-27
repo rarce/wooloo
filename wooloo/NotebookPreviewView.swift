@@ -15,6 +15,9 @@ struct NotebookPreviewView: View {
     var revealRequest = 0
     var onSearchText: ([String]) -> Void = { _ in }
     var onFindCommand: (String, Bool, Bool) -> Void = { _, _, _ in }
+    /// Applies a cell edit made in the preview to the JSON the notebook was rendered from; nil
+    /// leaves the preview read only.
+    var onEdit: ((NotebookEdit, String) -> Void)?
     @State private var notebook: NotebookDocument?
     @State private var error: String?
 
@@ -33,7 +36,8 @@ struct NotebookPreviewView: View {
                 NotebookWebView(notebook: notebook, path: path, location: location,
                                 theme: style == .document ? .markdownDocument : theme, typography: typography,
                                 matches: matches, currentMatch: currentMatch, revealRequest: revealRequest,
-                                onOpenFile: onOpenFile, onSearchText: onSearchText, onFindCommand: onFindCommand)
+                                onOpenFile: onOpenFile, onSearchText: onSearchText, onFindCommand: onFindCommand,
+                                onEdit: onEdit)
             } else {
                 ProgressView("Preparing notebook…").frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -67,6 +71,7 @@ struct NotebookWebView: NSViewRepresentable {
     let onOpenFile: (String) -> Void
     let onSearchText: ([String]) -> Void
     let onFindCommand: (String, Bool, Bool) -> Void
+    var onEdit: ((NotebookEdit, String) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -104,6 +109,7 @@ struct NotebookWebView: NSViewRepresentable {
         private var lastJSON: String?
         private var lastModelID: UUID?
         private var lastPalette: [String: String] = [:]
+        private var lastEditable = false
         private var lastFind = ""
         private var lastReveal = -1
         private(set) var revision = ""
@@ -114,17 +120,20 @@ struct NotebookWebView: NSViewRepresentable {
             self.owner = owner
             guard ready, let webView else { return }
             let palette = Self.palette(theme: owner.theme, typography: owner.typography)
-            if owner.notebook.identity != lastModelID || palette != lastPalette {
+            let editable = owner.onEdit != nil
+            if owner.notebook.identity != lastModelID || palette != lastPalette || editable != lastEditable {
                 if owner.notebook.identity != lastModelID {
                     lastJSON = owner.notebook.previewJSON; lastModelID = owner.notebook.identity
                 }
                 guard let json = lastJSON else { return }
                 lastPalette = palette
+                lastEditable = editable
                 revision = UUID().uuidString.lowercased()
                 resources.replace(images: owner.notebook.images, location: owner.location, documentPath: owner.path, revision: revision)
                 lastFind = ""
-                webView.callAsyncJavaScript("window.notebook.render(JSON.parse(payload), token, palette)",
-                                            arguments: ["payload": json, "token": revision, "palette": palette],
+                webView.callAsyncJavaScript("window.notebook.render(JSON.parse(payload), token, palette, editable)",
+                                            arguments: ["payload": json, "token": revision, "palette": palette,
+                                                        "editable": editable],
                                             in: nil, in: .page, completionHandler: { _ in })
             }
             updateFind()
@@ -192,7 +201,40 @@ struct NotebookWebView: NSViewRepresentable {
             case "findCommand":
                 owner.onFindCommand(body["key"] as? String ?? "", body["shift"] as? Bool ?? false, body["option"] as? Bool ?? false)
             case "escape": owner.onFindCommand("escape", false, false)
+            case "edit":
+                guard let onEdit = owner.onEdit, let edit = Self.edit(body, in: owner.notebook) else { return }
+                onEdit(edit, owner.notebook.sourceText)
             default: break
+            }
+        }
+
+        /// The edit a message from the cell toolbar asks for, checked against the notebook the
+        /// page shows: the cell must still be there with the same ID. Internal for tests.
+        nonisolated static func edit(_ body: [String: Any], in notebook: NotebookDocument) -> NotebookEdit? {
+            guard let operation = body["op"] as? String, let index = body["cell"] as? Int else { return nil }
+            let cells = notebook.cells
+            let identified = cells.indices.contains(index) && body["id"] as? String == cells[index].id
+            switch operation {
+            case "source":
+                guard identified, cells[index].editable, let text = body["text"] as? String,
+                      text.utf8.count <= NotebookDocument.maximumFileBytes else { return nil }
+                return .setSource(cell: index, text: text)
+            case "kind":
+                guard identified, let kind = body["value"] as? String, NotebookEdit.kinds.contains(kind) else { return nil }
+                return .setKind(cell: index, kind: kind)
+            case "move":
+                guard identified, let offset = body["offset"] as? Int, offset == -1 || offset == 1 else { return nil }
+                return .move(cell: index, offset: offset)
+            case "insert":
+                // Below the cell at `index`, or first in a notebook without cells.
+                guard identified || (index == -1 && cells.isEmpty),
+                      let kind = body["value"] as? String, NotebookEdit.kinds.contains(kind) else { return nil }
+                return .insert(at: index + 1, kind: kind)
+            case "delete":
+                guard identified else { return nil }
+                return .delete(cell: index)
+            default:
+                return nil
             }
         }
 

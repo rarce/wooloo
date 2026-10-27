@@ -157,6 +157,10 @@ struct WorkspaceDocumentView: View {
     /// Records where the editor is scrolled. The document store looks the document up by id:
     /// `document`, a binding to its index, can outlive that index when a tab before it closes.
     var onScroll: (CGPoint, EditorScrollAnchor?) -> Void = { _, _ in }
+    /// Puts the second text in the document while it still has the first, by id like
+    /// `onScroll`; false when it changed since. Undo of a cell edit made in a notebook preview
+    /// goes through it, so it never overwrites later edits.
+    var onReplaceText: (String, String) -> Bool = { _, _ in false }
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
     /// Whether this document's panel has focus. With split panels several documents show at
@@ -182,6 +186,9 @@ struct WorkspaceDocumentView: View {
     /// Set by Replace so the next match is selected once the edited text comes back.
     @State private var revealsAfterEdit = false
     @AppStorage(DiffDisplayMode.storageKey) private var diffMode = DiffDisplayMode.unified
+    @AppStorage(NotebookDiffMode.storageKey) private var notebookDiffMode = NotebookDiffMode.cells
+    @Environment(\.undoManager) private var undoManager
+    @State private var notebookEditError: String?
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
     @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
 
@@ -262,7 +269,18 @@ struct WorkspaceDocumentView: View {
                     .frame(width: 210)
                     .help("Show all changes since the last commit, only staged changes, or only unstaged changes")
                 }
-                if document.kind != .file {
+                if document.kind != .file && NotebookDocument.supports(document.path) {
+                    Picker("Notebook changes", selection: $notebookDiffMode) {
+                        ForEach(NotebookDiffMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 120)
+                    .help("Show the notebook's changes cell by cell, or as changes to its JSON")
+                }
+                if document.kind != .file && !showsNotebookCells {
                     Picker("View", selection: $diffMode) {
                         ForEach(DiffDisplayMode.allCases) { mode in
                             Label(mode.rawValue, systemImage: mode.icon).tag(mode)
@@ -332,6 +350,8 @@ struct WorkspaceDocumentView: View {
                         editor
                     }
                 }
+            } else if showsNotebookCells {
+                NotebookDiffView(text: document.patch, source: document.diffSource, mode: diffMode)
             } else {
                 WorkspaceDiffView(text: document.patch, source: document.diffSource, mode: diffMode,
                                   syntaxOverride: document.syntaxOverride, associations: syntaxAssociations,
@@ -507,8 +527,15 @@ struct WorkspaceDocumentView: View {
                                     if key == "escape" { find.close() }
                                     else if key == "f" { openFind(replace: option) }
                                     else if key == "g" { find.isVisible ? find.move(shift ? -1 : 1) : openFind(replace: false) }
-                                })
+                                    else if key == "z" { undoNotebookEdit(redo: shift) }
+                                }, onEdit: document.isEditable ? { edit, base in editNotebook(edit, base: base) } : nil)
                 .frame(minWidth: 200)
+                .alert("Cannot change the notebook", isPresented: Binding(get: { notebookEditError != nil },
+                                                                          set: { if !$0 { notebookEditError = nil } })) {
+                    Button("OK") { notebookEditError = nil }
+                } message: {
+                    Text(notebookEditError ?? "")
+                }
         } else { preview }
     }
 
@@ -520,6 +547,36 @@ struct WorkspaceDocumentView: View {
         if document.markdownMode != .split || !revealCoordinator.replace([edit]) {
             document.text = (document.text as NSString).replacingCharacters(in: edit.range, with: edit.text)
         }
+    }
+
+    private var showsNotebookCells: Bool {
+        document.kind != .file && NotebookDocument.supports(document.path) && notebookDiffMode == .cells
+    }
+
+    /// A cell edit made in the notebook preview, against the text it was rendered from (an edit
+    /// to a page about to be replaced is dropped). Like a checkbox in a Markdown preview, it is
+    /// unsaved; in Split it goes through the editor, and in Preview through the window's undo.
+    private func editNotebook(_ edit: NotebookEdit, base: String) {
+        guard document.kind == .file, !document.isLoading, document.text == base else { return }
+        let replacement: NotebookEditing.Replacement?
+        do { replacement = try NotebookEditing.replacement(for: edit, in: base) }
+        catch { notebookEditError = error.localizedDescription; return }
+        guard let replacement else { return }
+        if document.markdownMode == .split, revealCoordinator.replace([(replacement.range, replacement.text)]) { return }
+        let text = (base as NSString).replacingCharacters(in: replacement.range, with: replacement.text)
+        document.text = text
+        if let undoManager {
+            NotebookUndo.register(undoManager, current: text, previous: base, name: edit.actionName,
+                                  replace: onReplaceText)
+        }
+    }
+
+    /// ⌘Z or ⇧⌘Z pressed in a notebook preview, outside a cell being edited.
+    private func undoNotebookEdit(redo: Bool) {
+        if document.markdownMode == .split, revealCoordinator.undo(redo: redo) { return }
+        guard let undoManager else { return }
+        if redo { if undoManager.canRedo { undoManager.redo() } }
+        else if undoManager.canUndo { undoManager.undo() }
     }
 
     /// A block double-clicked in the preview: shows the source beside it at the block's line.
@@ -727,6 +784,15 @@ final class EditorRevealCoordinator: TextViewCoordinator {
 
     func scrollSelectionToVisible() { controller?.textView.scrollSelectionToVisible() }
 
+    /// Undoes or redoes the editor's last change, for ⌘Z pressed in a preview beside it.
+    /// Returns false when no editor is shown.
+    @discardableResult
+    func undo(redo: Bool) -> Bool {
+        guard let undo = controller?.textView._undoManager else { return false }
+        if redo { undo.redo() } else { undo.undo() }
+        return true
+    }
+
     /// Puts text the document read again from disk into the editor, replacing only the part that
     /// differs, so the cursors and the scroll position stay where they were as far as possible.
     /// The replacement can be undone, as in VS Code.
@@ -904,5 +970,21 @@ private extension Array {
             if predicate(self[middle]) { high = middle } else { low = middle + 1 }
         }
         return low
+    }
+}
+
+/// Undo for edits made outside the editor, such as a notebook cell changed in its preview. Each
+/// step puts the text back only while the document still has the text the step left, so undoing
+/// after the document changed some other way does nothing rather than losing that change.
+enum NotebookUndo {
+    private static let target = NSObject()
+
+    static func register(_ manager: UndoManager, current: String, previous: String, name: String,
+                         replace: @escaping (String, String) -> Bool) {
+        manager.registerUndo(withTarget: target) { [weak manager] _ in
+            guard replace(current, previous), let manager else { return }
+            register(manager, current: previous, previous: current, name: name, replace: replace)
+        }
+        manager.setActionName(name)
     }
 }

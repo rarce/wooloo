@@ -11,6 +11,8 @@ struct NotebookDocument: Encodable, Sendable {
 
     let identity = UUID()
     private(set) var previewJSON = ""
+    /// The JSON this was parsed from, so an edit made in the preview applies only to that text.
+    private(set) var sourceText = ""
 
     let cells: [Cell]
     let language: String
@@ -26,6 +28,8 @@ struct NotebookDocument: Encodable, Sendable {
         let executionCount: Int?
         let outputs: [Output]
         let attachments: [String: [Representation]]
+        /// False when the preview truncated the source, which editing it there would lose.
+        let editable: Bool
     }
 
     struct Output: Encodable, Sendable {
@@ -166,12 +170,13 @@ struct NotebookDocument: Encodable, Sendable {
                 if let bundle = data as? [String: Any] { attachments[name] = representations(bundle) }
             }
             return Cell(id: id, kind: kind, source: previewSource.text, executionCount: integer(raw["execution_count"]),
-                        outputs: outputs, attachments: attachments)
+                        outputs: outputs, attachments: attachments, editable: !previewSource.truncated)
         }
         var document = NotebookDocument(cells: cells, language: String(language.prefix(100)),
                                         kernel: (kernelInfo["display_name"] as? String).map { String($0.prefix(200)) },
                                         warnings: Array(warnings.prefix(100)), images: images)
         document.previewJSON = String(decoding: try JSONEncoder().encode(document), as: UTF8.self)
+        document.sourceText = text
         return document
     }
 
