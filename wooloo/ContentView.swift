@@ -903,8 +903,8 @@ private struct DestinationContentView: View {
             openDocument(.file, path: path, at: location)
         }, onScroll: { position, anchor in
             documentStore.recordScroll(id, position: position, anchor: anchor)
-        }, onReplaceText: { expected, text in
-            documentStore.replaceText(id, expected: expected, with: text)
+        }, onReplaceText: { range, expected, text in
+            documentStore.replaceText(id, in: range, expected: expected, with: text)
         }, commandTarget: window.editor, isFocused: focused)
         .id(id)
     }

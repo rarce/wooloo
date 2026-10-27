@@ -52,7 +52,7 @@ struct NotebookDiffView<Fallback: View>: View {
         }
         .task(id: "\(source.path)|\(source.commit ?? "")|\(source.scope)|\(text.hashValue)") {
             let key = (source, text)
-            let result = try? await WorkspaceFiles.blocking(at: key.0.location, priority: .userInitiated) { () -> NotebookDiff? in
+            let result = await WorkspaceFiles.blocking(at: key.0.location, priority: .userInitiated) { () -> NotebookDiff? in
                 if let snapshots = key.0.snapshots {
                     return NotebookDiff.compare(old: snapshots.old, new: snapshots.new)
                 }
@@ -61,7 +61,7 @@ struct NotebookDiffView<Fallback: View>: View {
                 return NotebookDiff.compare(old: sides.old, new: sides.new, patch: key.1)
             }
             guard !Task.isCancelled else { return }
-            diff = result ?? nil
+            diff = result
             failed = diff == nil
             onFallback(failed)
             expanded = []

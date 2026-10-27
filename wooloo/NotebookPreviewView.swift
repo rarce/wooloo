@@ -17,7 +17,7 @@ struct NotebookPreviewView: View {
     var onFindCommand: (String, Bool, Bool) -> Void = { _, _, _ in }
     /// Applies a cell edit made in the preview to the JSON the notebook was rendered from, and
     /// returns whether it did; nil leaves the preview read only.
-    var onEdit: ((NotebookEdit, String) -> Bool)?
+    var onEdit: ((NotebookEdit, String) async -> Bool)?
     @State private var notebook: NotebookDocument?
     @State private var error: String?
 
@@ -71,7 +71,7 @@ struct NotebookWebView: NSViewRepresentable {
     let onOpenFile: (String) -> Void
     let onSearchText: ([String]) -> Void
     let onFindCommand: (String, Bool, Bool) -> Void
-    var onEdit: ((NotebookEdit, String) -> Bool)?
+    var onEdit: ((NotebookEdit, String) async -> Bool)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -203,11 +203,15 @@ struct NotebookWebView: NSViewRepresentable {
             case "escape": owner.onFindCommand("escape", false, false)
             case "edit":
                 guard let onEdit = owner.onEdit else { return }
-                // An edit that changes nothing renders the page again, which closes a cell editor
-                // waiting for it and puts back a cell type the notebook kept.
-                if let edit = Self.edit(body, in: owner.notebook), onEdit(edit, owner.notebook.sourceText) { return }
-                webView?.callAsyncJavaScript("window.notebook.restore(token)", arguments: ["token": revision],
-                                            in: nil, in: .page, completionHandler: { _ in })
+                let edit = Self.edit(body, in: owner.notebook), base = owner.notebook.sourceText, token = revision
+                Task { @MainActor [weak self] in
+                    if let edit, await onEdit(edit, base) { return }
+                    // An edit that changes nothing renders the page again, which closes a cell editor
+                    // waiting for it and puts back a cell type the notebook kept.
+                    guard let self, self.revision == token else { return }
+                    self.webView?.callAsyncJavaScript("window.notebook.restore(token)", arguments: ["token": token],
+                                                      in: nil, in: .page, completionHandler: { _ in })
+                }
             default: break
             }
         }

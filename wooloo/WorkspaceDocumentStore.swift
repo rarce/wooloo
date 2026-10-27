@@ -246,15 +246,16 @@ final class WorkspaceDocumentStore: ObservableObject {
         documents[index].recordScroll(position, anchor: anchor)
     }
 
-    /// Puts `text` in a document while its text is still `expected`, as undoing an edit made
-    /// outside its editor does; a shown editor takes the new text as from a reload. False when
-    /// the document is closed or its text changed since, so an undo never loses later edits.
+    /// Replaces `range` of a document's text with `text` while the range still holds `expected`,
+    /// as undoing an edit made outside its editor does; a shown editor takes the new text as from
+    /// a reload. False when the document is closed or that part changed since, so an undo never
+    /// loses later edits.
     @discardableResult
-    func replaceText(_ id: String, expected: String, with text: String) -> Bool {
-        guard let index = documents.firstIndex(where: { $0.id == id }), documents[index].text == expected else {
-            return false
-        }
-        documents[index].text = text
+    func replaceText(_ id: String, in range: NSRange, expected: String, with text: String) -> Bool {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return false }
+        let current = documents[index].text as NSString
+        guard NSMaxRange(range) <= current.length, current.substring(with: range) == expected else { return false }
+        documents[index].text = current.replacingCharacters(in: range, with: text)
         documents[index].diskReload = UUID()
         return true
     }

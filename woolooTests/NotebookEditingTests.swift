@@ -133,25 +133,47 @@ final class NotebookEditingTests: XCTestCase {
     func testUndoAndRedoRestoreTextOnlyWhileTheDocumentStillHasIt() {
         let manager = UndoManager()
         manager.groupsByEvent = false
-        var text = "after"
-        let replace: (String, String) -> Bool = { expected, new in
-            guard text == expected else { return false }
-            text = new
+        var text = "[a, after, z]"
+        let replace: (NSRange, String, String) -> Bool = { range, expected, new in
+            let current = text as NSString
+            guard NSMaxRange(range) <= current.length, current.substring(with: range) == expected else { return false }
+            text = current.replacingCharacters(in: range, with: new)
             return true
         }
         manager.beginUndoGrouping()
-        NotebookUndo.register(manager, current: "after", previous: "before", name: "Edit Cell", replace: replace)
+        NotebookUndo.register(manager, range: NSRange(location: 4, length: 5), current: "after", previous: "before",
+                              name: "Edit Cell", replace: replace)
         manager.endUndoGrouping()
         XCTAssertEqual(manager.undoActionName, "Edit Cell")
         manager.undo()
-        XCTAssertEqual(text, "before")
+        XCTAssertEqual(text, "[a, before, z]")
         XCTAssertTrue(manager.canRedo)
         manager.redo()
-        XCTAssertEqual(text, "after")
-        // Changed some other way since: undo leaves it alone.
-        text = "typed"
+        XCTAssertEqual(text, "[a, after, z]")
+        // A change after the edited part keeps the step; one that moves or changes it does not.
+        text = "[a, after, z, y]"
         manager.undo()
-        XCTAssertEqual(text, "typed")
+        XCTAssertEqual(text, "[a, before, z, y]")
+        manager.redo()
+        text = "[b, a, after, z, y]"
+        manager.undo()
+        XCTAssertEqual(text, "[b, a, after, z, y]")
+    }
+
+    func testTheStoreUndoesOnlyWhileTheRangeStillHoldsTheEdit() {
+        let store = WorkspaceDocumentStore()
+        let location = WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test", workspaceID: "test",
+                                             workspaceLabel: "Notebook test", root: "/private/tmp")
+        var document = WorkspaceDocument(location: location, path: "n.ipynb", kind: .file)
+        document.text = "[a, after]"
+        store.documents = [document]
+        let id = document.id
+        XCTAssertFalse(store.replaceText(id, in: NSRange(location: 4, length: 5), expected: "other", with: "before"))
+        XCTAssertFalse(store.replaceText(id, in: NSRange(location: 8, length: 5), expected: "after", with: "before"))
+        XCTAssertFalse(store.replaceText("missing", in: NSRange(location: 4, length: 5), expected: "after", with: "before"))
+        XCTAssertEqual(store.document(id)?.text, "[a, after]")
+        XCTAssertTrue(store.replaceText(id, in: NSRange(location: 4, length: 5), expected: "after", with: "before"))
+        XCTAssertEqual(store.document(id)?.text, "[a, before]")
     }
 
     // MARK: WebKit
