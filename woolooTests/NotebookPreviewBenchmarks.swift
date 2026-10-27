@@ -490,6 +490,15 @@ final class NotebookPreviewInteractionTests: XCTestCase {
         XCTAssertTrue(back)
         let top = try await value("document.querySelector('[aria-label=\"markdown cell 1\"]').getBoundingClientRect().top", as: Double.self)
         XCTAssertLessThan(top ?? .infinity, 200, "The first cell must be at the top again, not pushed down by a slot")
+        // The match's cell left the document; back on screen, its highlights are there again.
+        let lastLeft = try await eventually("!\(last)")
+        XCTAssertTrue(lastLeft)
+        _ = try await web.evaluateJavaScript("window.scrollTo(0, document.documentElement.scrollHeight)")
+        let highlighted = try await eventually("""
+            !!\(last) && Array.from(CSS.highlights.get('notebook-current') || []).map(range => range.toString()).join() === 'needle599'
+                && Array.from(CSS.highlights.get('notebook-find') || []).map(range => range.toString()).join() === 'needle599,needle599'
+            """)
+        XCTAssertTrue(highlighted)
     }
 
     func testFindRevealsCollapsedTableOutsideTheViewportAfterResize() async throws {
