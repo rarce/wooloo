@@ -28,7 +28,6 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 
 ## Notebook preview
 
-- [ ] Virtualize large notebook cell/output DOMs if profiling shows that the bounded static preview still pauses during loading or searching. Not yet profiled: measure on an idle machine (`scripts/notebook-bench.sh`) before deciding.
 - [ ] Cells whose source the preview truncates can be moved, retyped or deleted from the cell toolbar, but their source can be edited only in Source view.
 
 ## Testing

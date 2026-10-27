@@ -48,14 +48,14 @@ enum NotebookPreviewFixtures {
         get throws {
             let prose = (0..<20).map { cell("markdown", $0, source: "## Section \($0)\n\nA paragraph with **emphasis**, `code` and [a link](https://example.invalid).") }
             let tables = (0..<10).map { cell("markdown", $0, source: "## Section \($0)\n\n" + MarkdownTableFixtures.table(rows: 8, columns: 4, number: $0)) }
-            let mixed = (0..<100).map { index in
+            func mixed(_ count: Int) -> [[String: Any]] { (0..<count).map { index in
                 if index.isMultiple(of: 2) {
                     return cell("markdown", index, source: "## Analysis \(index)\n\nSaved **evidence** and $E=mc^2$.\n\n$$\\int_0^1 x^2\\,dx=\\frac13$$")
                 }
                 return cell("code", index, source: "def evidence_\(index)(values):\n    return [value * 2 for value in values if value > 0]\n\nprint(evidence_\(index)([1, 2, 3]))", outputs: [
                     ["output_type": "stream", "name": "stdout", "text": "[2, 4, 6]\n"],
                     display(["application/json": "\(index)", "text/plain": "Saved result \(index)"])])
-            }
+            } }
             let stream = (0..<60_000).map { "Saved row \($0): keep source and evidence together.\n" }.joined()
             let plots = (0..<12).map { cell("code", $0, source: "display(saved_plot_\($0))", outputs: [
                 display(["image/png": plotPNG, "text/plain": "Saved plot \($0)"])]) }
@@ -64,7 +64,9 @@ enum NotebookPreviewFixtures {
                 make("markdown-tables", cells: tables, tables: 10),
                 make("html-tall-table", cells: [cell("code", 0, source: "dataframe", outputs: [display(["text/html": htmlTable(rows: 100, columns: 4), "text/plain": "100 rows × 4 columns"])])], tables: 1),
                 make("html-wide-table", cells: [cell("code", 0, source: "dataframe", outputs: [display(["text/html": htmlTable(rows: 12, columns: 12), "text/plain": "12 rows × 12 columns"])])], tables: 1),
-                make("many-cells", cells: mixed),
+                make("many-cells", cells: mixed(100)),
+                // As many cells as a notebook may have (`NotebookDocument.maximumCells`).
+                make("max-cells", cells: mixed(NotebookDocument.maximumCells)),
                 make("large-output", cells: [cell("code", 0, source: "print(saved_log)", outputs: [["output_type": "stream", "name": "stdout", "text": stream]])]),
                 make("saved-images", cells: plots, images: 12),
             ]
@@ -147,7 +149,7 @@ final class NotebookPreviewHarness {
         let deadline = Date().addingTimeInterval(30)
         repeat {
             if let web = Self.findWebView(in: host), probe.searchText?.isEmpty == false,
-               (try? await web.evaluateJavaScript("document.querySelectorAll('.cell').length")) as? Int == workload.cells {
+               (try? await web.evaluateJavaScript("Number(document.getElementById('notebook').dataset.cells)")) as? Int == workload.cells {
                 webView = web
                 return web
             }
@@ -245,10 +247,16 @@ final class NotebookPreviewBenchmarks: XCTestCase {
                     XCTAssertEqual(first.size.width, 1000, accuracy: 1)
                     samples["first-render", default: []].append(milliseconds(since: start))
                     rememberViewport("first-render", harness.viewport)
-                    let counts = try await web.evaluateJavaScript("({cells:document.querySelectorAll('.cell').length,tables:document.querySelectorAll('table').length,images:document.images.length,nodes:document.querySelectorAll('*').length})") as? [String: Int]
-                    XCTAssertEqual(counts?["cells"], workload.cells)
-                    XCTAssertEqual(counts?["tables"], workload.tables)
-                    XCTAssertEqual(counts?["images"], workload.images)
+                    let counts = try await web.evaluateJavaScript("({cells:document.querySelectorAll('.cell').length,slots:document.querySelectorAll('.cell-slot').length,tables:document.querySelectorAll('table').length,images:document.images.length,nodes:document.querySelectorAll('*').length})") as? [String: Int]
+                    // Large notebooks keep only the cells near the viewport in the document.
+                    if counts?["slots"] == 0 {
+                        XCTAssertEqual(counts?["cells"], workload.cells)
+                        XCTAssertEqual(counts?["tables"], workload.tables)
+                        XCTAssertEqual(counts?["images"], workload.images)
+                    } else {
+                        XCTAssertEqual(counts?["slots"], workload.cells)
+                        XCTAssertLessThan(counts?["cells"] ?? .max, workload.cells)
+                    }
                     nodeCount = counts?["nodes"] ?? 0
                     start = DispatchTime.now().uptimeNanoseconds
                     harness.window.setContentSize(NSSize(width: 780, height: 800))
@@ -432,6 +440,65 @@ final class NotebookPreviewInteractionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         } while Date() < deadline
         XCTAssertEqual(actual, ["Start👩🏽‍💻éEnd", "Start👩🏽‍💻éEnd"])
+    }
+
+    func testLargeNotebooksKeepOnlyCellsNearTheViewportAndFindEveryCell() async throws {
+        let cells = (0..<600).map { index in
+            index.isMultiple(of: 2)
+                ? NotebookPreviewFixtures.cell("markdown", index, source: "## Cell \(index)\n\nSaved needle\(index) evidence.")
+                : NotebookPreviewFixtures.cell("code", index, source: "print('needle\(index)')", outputs: [
+                    ["output_type": "stream", "name": "stdout", "text": "needle\(index)\n"]])
+        }
+        let workload = try NotebookPreviewFixtures.make("virtual", cells: cells)
+        let harness = NotebookPreviewHarness(workload, style: .theme)
+        defer { harness.close() }
+        let web = try await harness.ready()
+        _ = try await harness.capture(web)
+        func value<T>(_ script: String, as type: T.Type = T.self) async throws -> T? {
+            try await web.evaluateJavaScript(script) as? T
+        }
+        func eventually(_ script: String) async throws -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            repeat {
+                if try await value(script, as: Bool.self) == true { return true }
+                try await Task.sleep(for: .milliseconds(20))
+            } while Date() < deadline
+            return false
+        }
+        let slots = try await value("document.querySelectorAll('.cell-slot').length", as: Int.self)
+        XCTAssertEqual(slots, 600)
+        let shown = try await value("document.querySelectorAll('.cell').length", as: Int.self) ?? 0
+        XCTAssertGreaterThan(shown, 0)
+        XCTAssertLessThan(shown, 100)
+        // Find reads every cell, also those outside the document, and reveals the last one.
+        let find = DocumentFindModel(); find.open(replace: false, query: "needle599")
+        find.update(text: workload.source, target: .preview, anchor: nil, previewTextNodes: harness.probe.searchText ?? [])
+        XCTAssertEqual(find.count, 2)
+        harness.find(find.previewMatches, current: find.current)
+        let last = "document.querySelector('[aria-label=\"code cell 600\"]')"
+        let revealed = try await eventually("""
+            !!\(last) && \(last).isConnected && \(last).getBoundingClientRect().bottom > 0
+                && \(last).getBoundingClientRect().top < innerHeight
+                && Array.from(CSS.highlights.get('notebook-current') || []).map(range => range.toString()).join() === 'needle599'
+            """)
+        XCTAssertTrue(revealed)
+        // Cells scrolled far away leave the document, and come back when scrolled to.
+        let left = try await eventually("!document.querySelector('[aria-label=\"markdown cell 1\"]')")
+        XCTAssertTrue(left)
+        _ = try await web.evaluateJavaScript("window.scrollTo(0, 0)")
+        let back = try await eventually("!!document.querySelector('[aria-label=\"markdown cell 1\"]')")
+        XCTAssertTrue(back)
+        let top = try await value("document.querySelector('[aria-label=\"markdown cell 1\"]').getBoundingClientRect().top", as: Double.self)
+        XCTAssertLessThan(top ?? .infinity, 200, "The first cell must be at the top again, not pushed down by a slot")
+        // The match's cell left the document; back on screen, its highlights are there again.
+        let lastLeft = try await eventually("!\(last)")
+        XCTAssertTrue(lastLeft)
+        _ = try await web.evaluateJavaScript("window.scrollTo(0, document.documentElement.scrollHeight)")
+        let highlighted = try await eventually("""
+            !!\(last) && Array.from(CSS.highlights.get('notebook-current') || []).map(range => range.toString()).join() === 'needle599'
+                && Array.from(CSS.highlights.get('notebook-find') || []).map(range => range.toString()).join() === 'needle599,needle599'
+            """)
+        XCTAssertTrue(highlighted)
     }
 
     func testFindRevealsCollapsedTableOutsideTheViewportAfterResize() async throws {
