@@ -226,7 +226,9 @@ public final class TreeSitterState {
         var updatedRanges = IndexSet()
 
         for (languageName, ranges) in languageRanges {
-            guard let treeSitterLanguage = TreeSitterLanguage(rawValue: languageName) else {
+            // The bundled Markdown query uses the grammar name, while the enum uses camel case.
+            let languageID = languageName == "markdown_inline" ? "markdownInline" : languageName
+            guard let treeSitterLanguage = TreeSitterLanguage(rawValue: languageID) else {
                 continue
             }
 

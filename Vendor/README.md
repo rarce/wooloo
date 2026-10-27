@@ -14,6 +14,9 @@ Their source files are unchanged except for these changes in CodeEditSourceEdito
 - `styleScrollView()` clips the scroll view, because `GutterView` turns off clipping on its floating container and its background otherwise covers the tabs and header above the editor when the text scrolls.
 - `GutterView.lineChanges` draws Git change bars (added, modified, deleted, staged as outlines) at the gutter's leading edge, and `TextViewController.gutterView` is public so the app can set them.
 - Tabs stop every `tabWidth` spaces: `attributesFor` includes the paragraph style upstream builds but never applies, and `applyParagraphStyle()` rebuilds it and sets it on the text when the view loads and when the font or tab width changes. Upstream draws tabs at AppKit's default 28 pt stops.
+- Markdown capture names map to document colors and bold/italic fonts. The `markdown_inline` injection alias loads inline syntax, and disjoint highlight runs preserve heading styles beneath inline captures and nested emphasis.
+- `TreeSitterClient.querySymbols` returns immutable UTF-16 symbol snapshots from the existing incremental tree under its executor. Revision checks reject outdated trees; the app shares the result between Outline and breadcrumbs without an additional parser or language server.
+- `StyledRangeStore.coalesceRunAfter` checks that a following run exists before reading it, preventing a crash when deleting the final character of highlighted text without a trailing newline.
 
 For editor performance, CodeEditTextView's vertical scroll anchors use row-tree geometry instead of
 Core Text caret offsets, which can scan every cluster of a multi-megabyte unwrapped row during

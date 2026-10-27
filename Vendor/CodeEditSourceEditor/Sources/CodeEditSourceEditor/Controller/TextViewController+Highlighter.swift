@@ -5,7 +5,7 @@
 //  Created by Khan Winter on 10/14/23.
 //
 
-import Foundation
+import AppKit
 import SwiftTreeSitter
 
 extension TextViewController {
@@ -28,8 +28,15 @@ extension TextViewController {
 
 extension TextViewController: ThemeAttributesProviding {
     public func attributesFor(_ capture: CaptureName?) -> [NSAttributedString.Key: Any] {
-        [
-            .font: font,
+        var syntaxFont = font
+        if capture == .textTitle || capture == .textStrong || capture == .textStrongEmphasis {
+            syntaxFont = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+        }
+        if capture == .textEmphasis || capture == .textStrongEmphasis {
+            syntaxFont = NSFontManager.shared.convert(syntaxFont, toHaveTrait: .italicFontMask)
+        }
+        return [
+            .font: syntaxFont,
             .foregroundColor: theme.colorFor(capture),
             .kern: textView.kern,
             // wooloo patch: tab stops every `tabWidth` spaces, which upstream builds but never applies.

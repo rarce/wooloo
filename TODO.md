@@ -21,7 +21,7 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 ## Go to File and command palette
 
 - [ ] Over SSH, tabs of a location other than the explorer's are checked only on app activation and after Git and file operations, not on the explorer's poll. The Overwrite alert, banner and reload in a shown editor are not covered by UI tests.
-- [ ] Symbol search in the open file (⇧⌘O) and across the Space (⌘T), or as `@` and `#` prefixes in Go to File. Postponed until there is a document outline panel to share its symbols with.
+- [ ] Symbol search in the open file (⇧⌘O) and across the Space (⌘T), or as `@` and `#` prefixes in Go to File. The file outline now exposes a shared immutable symbol model; reuse it for open-file search before adding any workspace index.
 - [ ] Over SSH, a linked folder found after the walk's first 55,000 links, once its files fill `folderWalkMaximumRecords`, or once the time is up, still shows as a file. Describing every listed link would cost about 1.5 s more on one CPU for 200,000 links, and 200,000 linked folders with 90-character names would print about 38 MB, past the 32 MB output limit.
 - [ ] The SSH walk looks at links with `readlink` and `[ -d ]`, which follow them: a link into a hung network mount stalls it until the SSH timeout, as on `main`. Past the first 5,000 links it stops once the time is up, but one stalled `[ -d ]` cannot be interrupted.
 - [ ] When the SSH walk is cut at `maximumFiles`, whether the skipped folders of the folders read in that batch are listed depends on whether its next `find` starts before the cut is marked. Locally, those found before the cut in each folder are listed. Either way the walk is truncated.
