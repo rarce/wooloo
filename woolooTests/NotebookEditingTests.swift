@@ -133,25 +133,54 @@ final class NotebookEditingTests: XCTestCase {
     func testUndoAndRedoRestoreTextOnlyWhileTheDocumentStillHasIt() {
         let manager = UndoManager()
         manager.groupsByEvent = false
-        var text = "after"
-        let replace: (String, String) -> Bool = { expected, new in
-            guard text == expected else { return false }
-            text = new
-            return true
+        var text = "[a, after, z]", revision = 1
+        let replace: (Int, NSRange, String) -> Int? = { expected, range, new in
+            guard revision == expected else { return nil }
+            text = (text as NSString).replacingCharacters(in: range, with: new)
+            revision += 1
+            return revision
         }
         manager.beginUndoGrouping()
-        NotebookUndo.register(manager, current: "after", previous: "before", name: "Edit Cell", replace: replace)
+        NotebookUndo.register(manager, revision: 1, range: NSRange(location: 4, length: 5), current: "after", previous: "before",
+                              name: "Edit Cell", replace: replace)
         manager.endUndoGrouping()
         XCTAssertEqual(manager.undoActionName, "Edit Cell")
         manager.undo()
-        XCTAssertEqual(text, "before")
+        XCTAssertEqual(text, "[a, before, z]")
         XCTAssertTrue(manager.canRedo)
         manager.redo()
-        XCTAssertEqual(text, "after")
-        // Changed some other way since: undo leaves it alone.
-        text = "typed"
+        XCTAssertEqual(text, "[a, after, z]")
+        // Changed some other way since, even where the step's range is empty: undo leaves it alone.
+        text = "[b, a, after, z]"; revision += 1
         manager.undo()
-        XCTAssertEqual(text, "typed")
+        XCTAssertEqual(text, "[b, a, after, z]")
+    }
+
+    func testTheStoreUndoesOnlyWhileTheTextIsUnchanged() {
+        let store = WorkspaceDocumentStore()
+        let location = WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test", workspaceID: "test",
+                                             workspaceLabel: "Notebook test", root: "/private/tmp")
+        var document = WorkspaceDocument(location: location, path: "n.ipynb", kind: .file)
+        document.text = "[a, after]"
+        store.documents = [document]
+        let id = document.id, revision = document.textRevision
+        XCTAssertNil(store.replaceText(id, in: NSRange(location: 4, length: 5), with: "before", ifRevision: revision + 1))
+        XCTAssertNil(store.replaceText(id, in: NSRange(location: 8, length: 5), with: "before", ifRevision: revision))
+        XCTAssertNil(store.replaceText("missing", in: NSRange(location: 4, length: 5), with: "before", ifRevision: revision))
+        XCTAssertEqual(store.document(id)?.text, "[a, after]")
+        let next = store.replaceText(id, in: NSRange(location: 4, length: 5), with: "before", ifRevision: revision)
+        XCTAssertEqual(store.document(id)?.text, "[a, before]")
+        XCTAssertEqual(next, store.document(id)?.textRevision)
+        XCTAssertNotEqual(next, revision)
+        // An empty range is no exception.
+        XCTAssertNil(store.replaceText(id, in: NSRange(location: 1, length: 0), with: "x, ", ifRevision: revision))
+    }
+
+    func testOutcomesCarryTheNewTextOrTheFailure() throws {
+        let outcome = try XCTUnwrap(NotebookEditing.outcome(for: .delete(cell: 0), in: F.original).get())
+        XCTAssertEqual(outcome.text, F.deleteFirst)
+        XCTAssertNil(try NotebookEditing.outcome(for: .move(cell: 0, offset: -1), in: F.original).get())
+        XCTAssertThrowsError(try NotebookEditing.outcome(for: .delete(cell: 9), in: F.original).get())
     }
 
     // MARK: WebKit
@@ -176,7 +205,7 @@ final class NotebookEditingTests: XCTestCase {
                                    theme: WoolooTheme.all[0], typography: WoolooTypography(), matches: [],
                                    currentMatch: nil, revealRequest: 0, onOpenFile: { _ in },
                                    onSearchText: { _ in }, onFindCommand: { key, shift, _ in commands.append(key + (shift ? "+shift" : "")) },
-                                   onEdit: { edits.append(($0, $1)); return false })
+                                   onEdit: { edit, base, _ in edits.append((edit, base)); return false })
         let host = NSHostingView(rootView: view)
         window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 650),
                           styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -262,6 +291,14 @@ final class NotebookEditingTests: XCTestCase {
         _ = try await page.evaluateJavaScript("document.querySelector('.cell').dispatchEvent(new KeyboardEvent('keydown', {key: 'z', metaKey: true, shiftKey: true, bubbles: true}))")
         for _ in 0..<100 where commands.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(commands, ["z+shift"])
+        // Edits sent together are applied one at a time, in the order sent.
+        _ = try await page.evaluateJavaScript("""
+            { const cells = document.querySelectorAll('.cell');
+              cells[2].querySelector('[aria-label="Delete the cell"]').click();
+              cells[0].querySelector('[aria-label="Move the cell down"]').click(); }
+            """)
+        try await waitForEdits(5)
+        XCTAssertEqual(edits.suffix(2).map(\.0), [.delete(cell: 2), .move(cell: 0, offset: 1)])
     }
 
     func testAReadOnlyPreviewHasNoCellToolbar() async throws {

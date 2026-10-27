@@ -15,9 +15,9 @@ struct NotebookPreviewView: View {
     var revealRequest = 0
     var onSearchText: ([String]) -> Void = { _ in }
     var onFindCommand: (String, Bool, Bool) -> Void = { _, _, _ in }
-    /// Applies a cell edit made in the preview to the JSON the notebook was rendered from, and
-    /// returns whether it did; nil leaves the preview read only.
-    var onEdit: ((NotebookEdit, String) -> Bool)?
+    /// Applies a cell edit made in the preview, worked out against the JSON the notebook was
+    /// rendered from, and returns whether it did; nil leaves the preview read only.
+    var onEdit: ((NotebookEdit, String, NotebookEditing.Outcome) -> Bool)?
     @State private var notebook: NotebookDocument?
     @State private var error: String?
 
@@ -71,7 +71,7 @@ struct NotebookWebView: NSViewRepresentable {
     let onOpenFile: (String) -> Void
     let onSearchText: ([String]) -> Void
     let onFindCommand: (String, Bool, Bool) -> Void
-    var onEdit: ((NotebookEdit, String) -> Bool)?
+    var onEdit: ((NotebookEdit, String, NotebookEditing.Outcome) -> Bool)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -113,6 +113,7 @@ struct NotebookWebView: NSViewRepresentable {
         private var lastFind = ""
         private var lastReveal = -1
         private(set) var revision = ""
+        private var editing: Task<Void, Never>?
 
         init(_ owner: NotebookWebView) { self.owner = owner }
 
@@ -202,12 +203,27 @@ struct NotebookWebView: NSViewRepresentable {
                 owner.onFindCommand(body["key"] as? String ?? "", body["shift"] as? Bool ?? false, body["option"] as? Bool ?? false)
             case "escape": owner.onFindCommand("escape", false, false)
             case "edit":
-                guard let onEdit = owner.onEdit else { return }
-                // An edit that changes nothing renders the page again, which closes a cell editor
-                // waiting for it and puts back a cell type the notebook kept.
-                if let edit = Self.edit(body, in: owner.notebook), onEdit(edit, owner.notebook.sourceText) { return }
-                webView?.callAsyncJavaScript("window.notebook.restore(token)", arguments: ["token": revision],
-                                            in: nil, in: .page, completionHandler: { _ in })
+                guard owner.onEdit != nil else { return }
+                let edit = Self.edit(body, in: owner.notebook), base = owner.notebook.sourceText, token = revision
+                // Edits are worked out off the main thread, which a notebook of several megabytes
+                // would pause, one at a time in the order sent: a later edit made on the same page
+                // finds the notebook changed by an earlier one and is dropped.
+                let previous = editing
+                editing = Task { @MainActor [weak self] in
+                    await previous?.value
+                    var outcome: NotebookEditing.Outcome?
+                    if let edit {
+                        outcome = await Task.detached(priority: .userInitiated) { NotebookEditing.outcome(for: edit, in: base) }.value
+                    }
+                    // The current owner, not the one the message came to: its document may have moved.
+                    guard let self else { return }
+                    if let edit, let outcome, let onEdit = self.owner.onEdit, onEdit(edit, base, outcome) { return }
+                    // An edit that changes nothing renders the page again, which closes a cell editor
+                    // waiting for it and puts back a cell type the notebook kept.
+                    guard self.revision == token else { return }
+                    self.webView?.callAsyncJavaScript("window.notebook.restore(token)", arguments: ["token": token],
+                                                      in: nil, in: .page, completionHandler: { _ in })
+                }
             default: break
             }
         }

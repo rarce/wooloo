@@ -42,6 +42,18 @@ enum NotebookEditing {
         }
     }
 
+    /// An edit worked out off the main thread: the replacement and the whole new text, nil
+    /// when the edit changes nothing, or why it cannot be made.
+    typealias Outcome = Result<(replacement: Replacement, text: String)?, Error>
+
+    static func outcome(for edit: NotebookEdit, in text: String) -> Outcome {
+        Result {
+            try replacement(for: edit, in: text).map {
+                ($0, (text as NSString).replacingCharacters(in: $0.range, with: $0.text))
+            }
+        }
+    }
+
     /// The replacement that makes `edit`, or nil when it changes nothing. `makeID` names new
     /// cells in notebooks whose format (4.5 and later) gives cells an ID.
     static func replacement(for edit: NotebookEdit, in text: String,

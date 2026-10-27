@@ -82,9 +82,14 @@ struct WorkspaceDocument: Identifiable {
     var originalPath: String?
     var text = "" {
         didSet {
-            if kind == .file, text != oldValue { metadata = EditorDocumentMetadata(text) }
+            guard kind == .file, text != oldValue else { return }
+            textRevision &+= 1
+            metadata = EditorDocumentMetadata(text)
         }
     }
+    /// Changes whenever a file's text does, so an undo step can tell in constant time that the
+    /// text is still the one it left.
+    private(set) var textRevision = 0
     private(set) var metadata = EditorDocumentMetadata()
     var savedText = ""
     var version: String?
@@ -170,10 +175,11 @@ struct WorkspaceDocumentView: View {
     /// Records where the editor is scrolled. The document store looks the document up by id:
     /// `document`, a binding to its index, can outlive that index when a tab before it closes.
     var onScroll: (CGPoint, EditorScrollAnchor?) -> Void = { _, _ in }
-    /// Puts the second text in the document while it still has the first, by id like
-    /// `onScroll`; false when it changed since. Undo of a cell edit made in a notebook preview
-    /// goes through it, so it never overwrites later edits.
-    var onReplaceText: (String, String) -> Bool = { _, _ in false }
+    /// Replaces a range of the document's text while its `textRevision` is still the one given,
+    /// by id like `onScroll`, and returns the new revision; nil when the text changed since. Undo
+    /// of a cell edit made in a notebook preview goes through it, so it never overwrites other
+    /// changes.
+    var onReplaceText: (Int, NSRange, String) -> Int? = { _, _, _ in nil }
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
     /// Whether this document's panel has focus. With split panels several documents show at
@@ -793,7 +799,7 @@ struct WorkspaceDocumentView: View {
                                     else if key == "f" { openFind(replace: option) }
                                     else if key == "g" { find.isVisible ? find.move(shift ? -1 : 1) : openFind(replace: false) }
                                     else if key == "z" { undoNotebookEdit(redo: shift) }
-                                }, onEdit: document.isEditable ? { edit, base in editNotebook(edit, base: base) } : nil)
+                                }, onEdit: document.isEditable ? { applyNotebookEdit($0, base: $1, outcome: $2) } : nil)
                 .frame(minWidth: 200)
                 .alert("Cannot change the notebook", isPresented: Binding(get: { notebookEditError != nil },
                                                                           set: { if !$0 { notebookEditError = nil } })) {
@@ -831,22 +837,28 @@ struct WorkspaceDocumentView: View {
     /// A cell edit made in the notebook preview, against the text it was rendered from (an edit
     /// to a page about to be replaced is dropped). Like a checkbox in a Markdown preview, it is
     /// unsaved; in Split it goes through the editor, and in Preview through the window's undo.
-    /// Returns whether the notebook changed.
-    private func editNotebook(_ edit: NotebookEdit, base: String) -> Bool {
+    /// `outcome` was worked out off the main thread; returns whether the notebook changed.
+    private func applyNotebookEdit(_ edit: NotebookEdit, base: String, outcome: NotebookEditing.Outcome) -> Bool {
         guard document.kind == .file, !document.isLoading, document.text == base else { return false }
-        let replacement: NotebookEditing.Replacement?
-        do { replacement = try NotebookEditing.replacement(for: edit, in: base) }
-        catch { notebookEditError = error.localizedDescription; return false }
-        guard let replacement else { return false }
+        let replacement: NotebookEditing.Replacement, text: String
+        do {
+            guard let value = try outcome.get() else { return false }
+            (replacement, text) = value
+        } catch {
+            notebookEditError = error.localizedDescription
+            return false
+        }
         if document.markdownMode == .split, let shown = revealCoordinator.text {
             // The range is in `base`; an editor showing other text would take it elsewhere.
             return shown == base && revealCoordinator.replace([(replacement.range, replacement.text)])
         }
-        let text = (base as NSString).replacingCharacters(in: replacement.range, with: replacement.text)
         document.text = text
         if let undoManager {
-            NotebookUndo.register(undoManager, current: text, previous: base, name: edit.actionName,
-                                  replace: onReplaceText)
+            // Only the changed part is kept, not the whole notebook for every step.
+            NotebookUndo.register(undoManager, revision: document.textRevision,
+                                  range: NSRange(location: replacement.range.location, length: (replacement.text as NSString).length),
+                                  current: replacement.text, previous: (base as NSString).substring(with: replacement.range),
+                                  name: edit.actionName, replace: onReplaceText)
         }
         return true
     }
@@ -1264,17 +1276,19 @@ private extension Array {
     }
 }
 
-/// Undo for edits made outside the editor, such as a notebook cell changed in its preview. Each
-/// step puts the text back only while the document still has the text the step left, so undoing
-/// after the document changed some other way does nothing rather than losing that change.
+/// Undo for edits made outside the editor, such as a notebook cell changed in its preview. A
+/// step keeps only the part it changed: `range` holds `current`, which `previous` replaced. It
+/// puts `previous` back only while the text is still at `revision`, the one the step left, so
+/// undoing after the document changed some other way does nothing rather than losing that change.
 enum NotebookUndo {
     private static let target = NSObject()
 
-    static func register(_ manager: UndoManager, current: String, previous: String, name: String,
-                         replace: @escaping (String, String) -> Bool) {
+    static func register(_ manager: UndoManager, revision: Int, range: NSRange, current: String, previous: String,
+                         name: String, replace: @escaping (Int, NSRange, String) -> Int?) {
         manager.registerUndo(withTarget: target) { [weak manager] _ in
-            guard replace(current, previous), let manager else { return }
-            register(manager, current: previous, previous: current, name: name, replace: replace)
+            guard let next = replace(revision, range, previous), let manager else { return }
+            register(manager, revision: next, range: NSRange(location: range.location, length: (previous as NSString).length),
+                     current: previous, previous: current, name: name, replace: replace)
         }
         manager.setActionName(name)
     }
