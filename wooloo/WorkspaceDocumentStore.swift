@@ -246,6 +246,19 @@ final class WorkspaceDocumentStore: ObservableObject {
         documents[index].recordScroll(position, anchor: anchor)
     }
 
+    /// Puts `text` in a document while its text is still `expected`, as undoing an edit made
+    /// outside its editor does; a shown editor takes the new text as from a reload. False when
+    /// the document is closed or its text changed since, so an undo never loses later edits.
+    @discardableResult
+    func replaceText(_ id: String, expected: String, with text: String) -> Bool {
+        guard let index = documents.firstIndex(where: { $0.id == id }), documents[index].text == expected else {
+            return false
+        }
+        documents[index].text = text
+        documents[index].diskReload = UUID()
+        return true
+    }
+
     func document(_ id: String) -> WorkspaceDocument? {
         documents.first { $0.id == id }
     }

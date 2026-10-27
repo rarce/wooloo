@@ -141,6 +141,10 @@
 		C3000000000000000000004A /* SurfaceLayersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000004B /* SurfaceLayersTests.swift */; };
 		A1000000000000000000AD01 /* NotebookDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AD02 /* NotebookDocument.swift */; };
 		A1000000000000000000AD03 /* NotebookPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AD04 /* NotebookPreviewView.swift */; };
+		F7E100000000000000000007 /* NotebookEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E100000000000000000008 /* NotebookEditingTests.swift */; };
+		F7E100000000000000000005 /* NotebookDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E100000000000000000006 /* NotebookDiffView.swift */; };
+		F7E100000000000000000003 /* NotebookDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E100000000000000000004 /* NotebookDiff.swift */; };
+		F7E100000000000000000001 /* NotebookEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E100000000000000000002 /* NotebookEditing.swift */; };
 		C3000000000000000000AD01 /* NotebookTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000AD02 /* NotebookTests.swift */; };
 		A1000000000000000000AD05 /* NotebookAssets in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AD06 /* NotebookAssets */; };
 		A1000000000000000000AD07 /* NotebookPreview in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AD08 /* NotebookPreview */; };
@@ -293,6 +297,10 @@
 		C3000000000000000000004B /* SurfaceLayersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceLayersTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000AD02 /* NotebookDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookDocument.swift; sourceTree = "<group>"; };
 		A1000000000000000000AD04 /* NotebookPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookPreviewView.swift; sourceTree = "<group>"; };
+		F7E100000000000000000008 /* NotebookEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookEditingTests.swift; sourceTree = "<group>"; };
+		F7E100000000000000000006 /* NotebookDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookDiffView.swift; sourceTree = "<group>"; };
+		F7E100000000000000000004 /* NotebookDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookDiff.swift; sourceTree = "<group>"; };
+		F7E100000000000000000002 /* NotebookEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookEditing.swift; sourceTree = "<group>"; };
 		C3000000000000000000AD02 /* NotebookTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000AD06 /* NotebookAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = NotebookAssets; sourceTree = "<group>"; };
 		A1000000000000000000AD08 /* NotebookPreview */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor/NotebookPreview; sourceTree = "<group>"; };
@@ -349,6 +357,9 @@
 				D91000000000000000000001 /* EditorSyntax.swift */,
 				A1000000000000000000AD06 /* NotebookAssets */,
 				A1000000000000000000AD04 /* NotebookPreviewView.swift */,
+				F7E100000000000000000006 /* NotebookDiffView.swift */,
+				F7E100000000000000000004 /* NotebookDiff.swift */,
+				F7E100000000000000000002 /* NotebookEditing.swift */,
 				A1000000000000000000AE02 /* PDFPreviewView.swift */,
 				A1000000000000000000B002 /* ImagePreviewView.swift */,
 				A1000000000000000000AD02 /* NotebookDocument.swift */,
@@ -460,6 +471,7 @@
 				C30000000000000000000057 /* WorkspaceDocumentStoreTests.swift */,
 				C3000000000000000000AF02 /* WorkspaceSessionPersistenceTests.swift */,
 				C3000000000000000000AD02 /* NotebookTests.swift */,
+				F7E100000000000000000008 /* NotebookEditingTests.swift */,
 				C3000000000000000000AE02 /* PDFPreviewTests.swift */,
 				C3000000000000000000B002 /* ImagePreviewTests.swift */,
 				C30000000000000000000053 /* WorkspaceRepositoryModelTests.swift */,
@@ -634,6 +646,9 @@
 				D91000000000000000000002 /* ConfigurationHighlighter.swift in Sources */,
 				D91000000000000000000000 /* EditorSyntax.swift in Sources */,
 				A1000000000000000000AD03 /* NotebookPreviewView.swift in Sources */,
+				F7E100000000000000000005 /* NotebookDiffView.swift in Sources */,
+				F7E100000000000000000003 /* NotebookDiff.swift in Sources */,
+				F7E100000000000000000001 /* NotebookEditing.swift in Sources */,
 				A1000000000000000000AE01 /* PDFPreviewView.swift in Sources */,
 				A1000000000000000000B001 /* ImagePreviewView.swift in Sources */,
 				A1000000000000000000AD01 /* NotebookDocument.swift in Sources */,
@@ -734,6 +749,7 @@
 				C30000000000000000000056 /* WorkspaceDocumentStoreTests.swift in Sources */,
 				C3000000000000000000AF01 /* WorkspaceSessionPersistenceTests.swift in Sources */,
 				C3000000000000000000AD01 /* NotebookTests.swift in Sources */,
+				F7E100000000000000000007 /* NotebookEditingTests.swift in Sources */,
 				C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */,
 				C3000000000000000000B001 /* ImagePreviewTests.swift in Sources */,
 				C30000000000000000000052 /* WorkspaceRepositoryModelTests.swift in Sources */,
