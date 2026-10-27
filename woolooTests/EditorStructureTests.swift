@@ -171,22 +171,30 @@ final class EditorStructureTests: XCTestCase {
             window.isReleasedWhenClosed = false
             window.contentView = host
             host.layoutSubtreeIfNeeded()
-            try await Task.sleep(for: .milliseconds(700))
-            host.layoutSubtreeIfNeeded()
-            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-            host.cacheDisplay(in: host.bounds, to: bitmap)
             // NSHostingView does not expose its SwiftUI AX subtree in an offscreen test
             // window. Inspect only the rendered breadcrumb strip: names in source code or
-            // the outline cannot accidentally satisfy this assertion.
-            let image = try XCTUnwrap(bitmap.cgImage)
-            let scale = CGFloat(image.width) / host.bounds.width
-            let breadcrumb = try XCTUnwrap(image.cropping(to: CGRect(x: 0, y: 34 * scale,
-                                                                      width: CGFloat(image.width), height: 26 * scale)))
-            let recognition = VNRecognizeTextRequest()
-            recognition.recognitionLevel = .accurate
-            recognition.usesLanguageCorrection = false
-            try VNImageRequestHandler(cgImage: breadcrumb).perform([recognition])
-            let visible = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+            // the outline cannot accidentally satisfy this assertion. The symbols are indexed
+            // after a debounce, later on a slower machine, so look again until they show.
+            var bitmap: NSBitmapImageRep
+            var visible = ""
+            var attempts = 0
+            repeat {
+                attempts += 1
+                try await Task.sleep(for: .milliseconds(attempts == 1 ? 700 : 250))
+                host.layoutSubtreeIfNeeded()
+                bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let image = try XCTUnwrap(bitmap.cgImage)
+                let scale = CGFloat(image.width) / host.bounds.width
+                let breadcrumb = try XCTUnwrap(image.cropping(to: CGRect(x: 0, y: 34 * scale,
+                                                                          width: CGFloat(image.width), height: 26 * scale)))
+                let recognition = VNRecognizeTextRequest()
+                recognition.recognitionLevel = .accurate
+                recognition.usesLanguageCorrection = false
+                try VNImageRequestHandler(cgImage: breadcrumb).perform([recognition])
+                visible = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+            } while attempts < 20 && (visible.range(of: #"\bGreeter\b"#, options: .regularExpression) == nil
+                                      || visible.range(of: #"\bgreet\b"#, options: .regularExpression) == nil)
             XCTAssertNotNil(visible.range(of: #"\bGreeter\b"#, options: .regularExpression), visible)
             XCTAssertNotNil(visible.range(of: #"\bgreet\b"#, options: .regularExpression), visible)
             let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
