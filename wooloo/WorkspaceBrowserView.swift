@@ -156,7 +156,10 @@ struct WorkspaceBrowserView: View {
     }
 
     private var explorer: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // Looked up in the Herdr snapshot: once per body.
+        let location = location
+        let shown = location.map { model.shown(for: $0) }
+        return VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("EXPLORER")
                     .font(.system(size: typography.secondary, weight: .semibold))
@@ -194,16 +197,13 @@ struct WorkspaceBrowserView: View {
 
             if explorerTab == "history" || explorerTab == "branches" {
                 repository
-            } else if model.isLoading || (location != nil && model.listedIdentity != location?.identity && model.error == nil) {
-                // Never another Space's tree under this one's name while its listing loads.
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = model.error {
+            } else if case .error(let error) = shown {
                 Text(error)
                     .font(.system(size: typography.body))
                     .foregroundStyle(theme.warning)
                     .padding(11)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else if let listing = model.listing, let location {
+            } else if case .listing(let listing) = shown, let location {
                 let shownTree = model.shownTree(listing, location: location)
                 let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
                                                uniquingKeysWith: { first, _ in first })
@@ -297,12 +297,15 @@ struct WorkspaceBrowserView: View {
                 .focusEffectDisabled()
                 .focused($treeFocused)
                 .id(model.treeIdentity(location))
+            } else if location != nil {
+                // Never another Space's tree or error under this one's name while its listing loads.
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 hint("Select a Space to browse")
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            if let location, model.listedIdentity == location.identity, model.listing?.hasGit == true {
+            if let location, model.listing?.hasGit == true {
                 Divider()
                 WorkspaceGitBar(location: location, reloadToken: model.listingVersion,
                                 changes: model.showsChanges ? model.listing?.changes ?? [] : nil,
