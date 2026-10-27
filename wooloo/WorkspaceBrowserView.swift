@@ -194,7 +194,8 @@ struct WorkspaceBrowserView: View {
 
             if explorerTab == "history" || explorerTab == "branches" {
                 repository
-            } else if model.isLoading {
+            } else if model.isLoading || (location != nil && model.listedIdentity != location?.identity && model.error == nil) {
+                // Never another Space's tree under this one's name while its listing loads.
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = model.error {
                 Text(error)
@@ -301,12 +302,12 @@ struct WorkspaceBrowserView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            if let location, model.listing?.hasGit == true {
+            if let location, model.listedIdentity == location.identity, model.listing?.hasGit == true {
                 Divider()
                 WorkspaceGitBar(location: location, reloadToken: model.listingVersion,
                                 changes: model.showsChanges ? model.listing?.changes ?? [] : nil,
                                 onChange: {
-                                    loadListing(quietly: true)
+                                    loadListing()
                                 },
                                 onOpenWorktree: onOpenWorktree,
                                 onError: { model.operationError = $0 },
@@ -922,8 +923,8 @@ struct WorkspaceBrowserView: View {
         loadListing()
     }
 
-    private func loadListing(quietly: Bool = false) {
-        model.loadListing(at: location, quietly: quietly)
+    private func loadListing() {
+        model.loadListing(at: location)
     }
 }
 

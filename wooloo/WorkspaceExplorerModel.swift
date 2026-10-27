@@ -167,13 +167,16 @@ final class WorkspaceExplorerModel: ObservableObject {
         error = nil
     }
 
-    /// Loads the files and changes of `location`; `quietly` keeps the tree shown instead of a spinner,
-    /// as does reloading the location already shown (e.g. after a save).
+    /// Loads the files and changes of `location`. Reloading the location already shown (e.g. after a
+    /// save, a Git operation or a poll) keeps its tree instead of a spinner; any other location shows
+    /// a spinner until its own listing arrives, so another Space's tree never stays under its name.
     @discardableResult
-    func loadListing(at location: WorkspaceFileLocation?, quietly: Bool = false) -> Task<Void, Never>? {
+    func loadListing(at location: WorkspaceFileLocation?) -> Task<Void, Never>? {
         // A superseded view task can enter after cancellation with its old (possibly nil) location.
         guard !Task.isCancelled else { return nil }
-        let isReload = listing != nil && self.location?.identity == location?.identity
+        // By the listing shown, not the one last asked for: a refresh while a slow SSH Space loads
+        // asks for the same location again, but the tree shown is still the previous Space's.
+        let isReload = listing != nil && listedIdentity == location?.identity
         if self.location?.identity != location?.identity {
             locationGeneration += 1
             // A filesystem call can remain blocked after cancellation. A new Space must not wait
@@ -185,7 +188,7 @@ final class WorkspaceExplorerModel: ObservableObject {
         self.location = location
         listingRequest += 1
         guard location != nil else { clearListing(); isLoading = false; return nil }
-        isLoading = !quietly && !isReload
+        isLoading = !isReload
         error = nil
         // Requests for the same location share its worker, which performs a follow-up load.
         if let listingTask { return listingTask }
@@ -352,7 +355,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     func refreshIfNeeded() {
         guard needsRefresh, applicationIsActive, draft == nil, let location = monitoredLocation else { return }
         needsRefresh = false
-        loadListing(at: location, quietly: true)
+        loadListing(at: location)
     }
 
     private func eventsAffectListing(_ events: [WorkspaceFileWatcher.Event], at location: WorkspaceFileLocation) -> Bool {
@@ -507,7 +510,7 @@ final class WorkspaceExplorerModel: ObservableObject {
             }
             // Reload in place, so staging does not blank the tree behind a spinner.
             if reloads, self.location?.identity == location.identity {
-                await loadListing(at: location, quietly: true)?.value
+                await loadListing(at: location)?.value
             }
         }
         lastOperation = task
