@@ -86,6 +86,8 @@ final class ContentWindowModel: ObservableObject {
     let quickOpen: QuickOpenModel
     /// The shown document's editor, for editor commands from the palette.
     let editor = EditorCommandTarget()
+    /// The focused editor's symbols, for `@` in Go to File (⇧⌘O).
+    let symbols = EditorSymbolTarget()
     /// The explorer's Files and Changes trees, for their file commands from the palette.
     let explorer = ExplorerCommandTarget()
     /// A tab dragged in the tab bar; only the tabs observe it, so hovering redraws only them.
@@ -246,7 +248,16 @@ struct ContentCommands {
                 window.commandPalette.dismiss()
                 let current = focusedDocumentID.flatMap(documents.document)
                 window.quickOpen.present(at: explorerLocation, recents: documents.recentPaths(at: explorerLocation),
-                                         current: current?.location == explorerLocation ? current?.path : nil)
+                                         current: current?.location == explorerLocation ? current?.path : nil,
+                                         symbols: window.symbols.currentSymbols())
+            }
+        case .goToSymbol:
+            if window.quickOpen.isPresented, window.quickOpen.isSymbolSearch {
+                window.quickOpen.move(1)
+            } else if let document = focusedDocumentID.flatMap(documents.document), document.kind == .file {
+                window.commandPalette.dismiss()
+                window.quickOpen.present(at: document.location, recents: documents.recentPaths(at: document.location),
+                                         current: document.path, symbols: window.symbols.currentSymbols(), query: "@")
             }
         case .editor(let command):
             guard WoolooCommandItem.named(command.rawValue)?.isAvailable(availability) == true else { return }
@@ -322,6 +333,11 @@ struct ContentCommands {
     @discardableResult
     func openQuickOpenSelection() -> Task<Void, Never>? {
         let quickOpen = window.quickOpen
+        if let match = quickOpen.selectedSymbol {
+            quickOpen.dismiss(restoringFocus: false)
+            window.symbols.navigate(to: match.symbol.symbol)
+            return nil
+        }
         guard let location = quickOpen.location else { return nil }
         let query = QuickOpenQuery(quickOpen.query)
         let reveal = query.line.map { line in

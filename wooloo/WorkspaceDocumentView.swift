@@ -182,6 +182,8 @@ struct WorkspaceDocumentView: View {
     var onReplaceText: (Int, NSRange, String) -> Int? = { _, _, _ in nil }
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
+    /// Receives Go to File's symbol search (⇧⌘O) while this document is focused.
+    var symbolTarget: EditorSymbolTarget?
     /// Whether this document's panel has focus. With split panels several documents show at
     /// once; only the focused one takes the editor commands and ⌘S, ⌘F and ⌘G.
     var isFocused = true
@@ -404,15 +406,26 @@ struct WorkspaceDocumentView: View {
         }
         .onChange(of: find.current) { _, _ in syncEditorMatches() }
         .onChange(of: find.revealRequest) { _, _ in revealFindMatch() }
-        .onAppear { if isFocused { commandTarget?.register(commandToken) { run($0) } } }
-        .onDisappear { commandTarget?.unregister(commandToken) }
+        .onAppear { if isFocused { registerTargets() } }
+        .onDisappear { unregisterTargets() }
         .onChange(of: isFocused) { _, focused in
-            if focused {
-                commandTarget?.register(commandToken) { run($0) }
-            } else {
-                commandTarget?.unregister(commandToken)
-            }
+            if focused { registerTargets() } else { unregisterTargets() }
         }
+    }
+
+    private func registerTargets() {
+        commandTarget?.register(commandToken) { run($0) }
+        // Read when Go to File opens, so the symbols and lines are those of the text then.
+        let (structure, document) = (structure, $document)
+        symbolTarget?.register(commandToken, symbols: {
+            let metadata = document.wrappedValue.metadata
+            return QuickOpenSymbol.flatten(structure.symbols) { metadata.position(at: $0).line }
+        }, navigate: { navigateToSymbol($0) })
+    }
+
+    private func unregisterTargets() {
+        commandTarget?.unregister(commandToken)
+        symbolTarget?.unregister(commandToken)
     }
 
     /// An editor command from the command palette.

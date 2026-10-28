@@ -21,7 +21,7 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 ## Go to File and command palette
 
 - [ ] The Overwrite alert ContentView shows when saving over a newer file is not covered by a UI test; what its buttons do is (`ContentCommandsTests`, `WorkspaceDocumentStoreTests`).
-- [ ] Symbol search in the open file (⇧⌘O) and across the Space (⌘T), or as `@` and `#` prefixes in Go to File. The file outline now exposes a shared immutable symbol model; reuse it for open-file search before adding any workspace index.
+- [ ] Symbol search across the Space (⌘T, or `#` in Go to File) needs a workspace index; ⇧⌘O and `@` search only the focused file's outline symbols.
 - [ ] Over SSH, a linked folder the walk did not describe (past its first 55,000 links, once its files fill `folderWalkMaximumRecords`, or once the time is up) shows as a file until it is opened, from the explorer or Go to File: its tab then closes and the explorer shows it as a folder (`WorkspaceFiles.folderOpenedAsFile`). Describing every listed link would cost about 1.5 s more on one CPU for 200,000 links, and 200,000 linked folders with 90-character names would print about 38 MB, past the 32 MB output limit.
 - [ ] The SSH walk stops waiting for a look at links stalled in a hung network mount after `folderWalkLinkBudget`, but the stalled `readlink` or `[ -d ]` stays on the remote machine until the mount answers.
 

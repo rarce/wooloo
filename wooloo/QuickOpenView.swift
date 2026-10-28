@@ -36,7 +36,7 @@ private struct QuickOpenPanel: View {
                     .foregroundStyle(theme.accent)
                 PickerField(text: $model.query, placeholder: "Go to file…", font: .systemFont(ofSize: typography.emphasis),
                             onMove: { model.move($0) }, onSubmit: onOpen, onCancel: { model.dismiss() })
-                if model.isIndexing { ProgressView().controlSize(.small) }
+                if model.isIndexing && !model.isSymbolSearch { ProgressView().controlSize(.small) }
             }
             .padding(.horizontal, 11)
             .frame(height: typography.metric(36))
@@ -67,9 +67,13 @@ private struct QuickOpenPanel: View {
 
     private var emptyMessage: String {
         if let error = model.error { return error }
+        if model.isSymbolSearch {
+            if model.symbols.isEmpty { return "No symbols in the file open in the editor." }
+            return "No matching symbols"
+        }
         if model.isIndexing { return "Reading files…" }
         if QuickOpenQuery(model.query).terms.isEmpty {
-            return "Type part of a file name or path. Add :line to go to a line."
+            return "Type part of a file name or path. Add :line to go to a line, or start with @ for a symbol."
         }
         return "No matching files"
     }
@@ -78,6 +82,15 @@ private struct QuickOpenPanel: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    ForEach(Array(model.symbolResults.enumerated()), id: \.element.symbol.symbol.id) { index, match in
+                        symbolRow(match, selected: index == model.selection)
+                            .id(Self.symbolRowID(match))
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                model.selection = index
+                                onOpen()
+                            }
+                    }
                     ForEach(Array(model.results.enumerated()), id: \.element.path) { index, match in
                         row(match, selected: index == model.selection)
                             .contentShape(Rectangle())
@@ -103,6 +116,8 @@ private struct QuickOpenPanel: View {
             .onChange(of: model.selection) { _, _ in
                 if let match = model.selectedMatch {
                     proxy.scrollTo(match.path)
+                } else if let match = model.selectedSymbol {
+                    proxy.scrollTo(Self.symbolRowID(match))
                 } else if model.selectedCreatePath != nil {
                     proxy.scrollTo(Self.createRowID)
                 }
@@ -112,6 +127,36 @@ private struct QuickOpenPanel: View {
 
     /// Not a valid path, so it cannot clash with a file row's.
     private static let createRowID = "/create"
+
+    /// Symbols are identified by where they start; a path cannot start with "/".
+    private static func symbolRowID(_ match: QuickOpenSymbolMatch) -> String { "/symbol/\(match.symbol.symbol.id)" }
+
+    private func symbolRow(_ match: QuickOpenSymbolMatch, selected: Bool) -> some View {
+        let symbol = match.symbol.symbol
+        return HStack(spacing: 7) {
+            Image(systemName: symbol.kind == "heading" ? "number" : symbol.kind == "type" ? "cube" : "function")
+                .font(.system(size: typography.secondary))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(highlighted(symbol.name, from: 0, match.positions))
+                .font(.system(size: typography.body))
+                .lineLimit(1)
+                .layoutPriority(1)
+            Text(match.symbol.container.joined(separator: " › "))
+                .font(.system(size: typography.secondary))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.head)
+            Spacer(minLength: 0)
+            Text(":\(match.symbol.line)")
+                .font(.system(size: typography.caption).monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: rowHeight)
+        .background(selected ? theme.rowSelected : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+        .help((match.symbol.container + [symbol.name]).joined(separator: " › "))
+    }
 
     private func createRow(_ path: String, selected: Bool) -> some View {
         HStack(spacing: 7) {

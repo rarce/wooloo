@@ -260,6 +260,8 @@ struct WoolooCommandItem: Identifiable, Equatable {
         .init("help", "Help", "Keyboard Shortcuts"),
         .init("command_palette", "View", "Command Palette…", KeyboardShortcut("p", modifiers: [.command, .shift])),
         .init("quick_open", "File", "Go to File…", KeyboardShortcut("p", modifiers: .command), requires: .files),
+        .init("go_to_symbol", "File", "Go to Symbol in File…", KeyboardShortcut("o", modifiers: [.command, .shift]),
+              requires: .fileDocument),
         .init("new_workspace", "Space", "New Space", KeyboardShortcut("n", modifiers: [.command, .shift]),
               requires: .connected),
         .init("new_tab", "Space", "New Tab", KeyboardShortcut("t", modifiers: .command), requires: .space),
