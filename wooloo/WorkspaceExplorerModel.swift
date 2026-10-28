@@ -124,8 +124,11 @@ final class WorkspaceExplorerModel: ObservableObject {
     @Published private(set) var ignoredContentsVersion = 0
     /// The location of the last listing asked for.
     private(set) var location: WorkspaceFileLocation?
-    /// The location `listing` belongs to; the previous Space's stays shown while the next loads.
+    /// The location `listing` belongs to. The previous Space's is kept while the next loads, but
+    /// never shown for it; see `shown(for:)`.
     @Published private(set) var listedIdentity: String?
+    /// The location whose last listing failed with `error`.
+    @Published private(set) var failedIdentity: String?
     /// The last operation started, with the reload that follows it, for tests to wait on.
     private(set) var lastOperation: Task<Void, Never>?
     private let treeCache = WorkspaceTreeCache()
@@ -165,15 +168,37 @@ final class WorkspaceExplorerModel: ObservableObject {
         listing = nil
         listedIdentity = nil
         error = nil
+        failedIdentity = nil
     }
 
-    /// Loads the files and changes of `location`; `quietly` keeps the tree shown instead of a spinner,
-    /// as does reloading the location already shown (e.g. after a save).
+    enum Shown {
+        case loading
+        case listing(WorkspaceFileListing)
+        case error(String)
+    }
+
+    private func shown(forIdentity identity: String?) -> Bool {
+        (listing != nil && listedIdentity == identity) || (error != nil && failedIdentity == identity)
+    }
+
+    /// What the explorer shows for `location`: its own listing, or why it could not be read, and a
+    /// spinner otherwise, so another Space's tree or error never shows under its name.
+    func shown(for location: WorkspaceFileLocation) -> Shown {
+        if let error, failedIdentity == location.identity { return .error(error) }
+        if let listing, listedIdentity == location.identity { return .listing(listing) }
+        return .loading
+    }
+
+    /// Loads the files and changes of `location`. Reloading the location already shown (e.g. after a
+    /// save, a Git operation or a poll) keeps its tree, or the error its last load gave, instead of a
+    /// spinner; any other location shows a spinner until its own listing arrives.
     @discardableResult
-    func loadListing(at location: WorkspaceFileLocation?, quietly: Bool = false) -> Task<Void, Never>? {
+    func loadListing(at location: WorkspaceFileLocation?) -> Task<Void, Never>? {
         // A superseded view task can enter after cancellation with its old (possibly nil) location.
         guard !Task.isCancelled else { return nil }
-        let isReload = listing != nil && self.location?.identity == location?.identity
+        // By the listing shown, not the one last asked for: a refresh while a slow SSH Space loads
+        // asks for the same location again, but the tree shown is still the previous Space's.
+        let isReload = shown(forIdentity: location?.identity)
         if self.location?.identity != location?.identity {
             locationGeneration += 1
             // A filesystem call can remain blocked after cancellation. A new Space must not wait
@@ -185,8 +210,8 @@ final class WorkspaceExplorerModel: ObservableObject {
         self.location = location
         listingRequest += 1
         guard location != nil else { clearListing(); isLoading = false; return nil }
-        isLoading = !quietly && !isReload
-        error = nil
+        isLoading = !isReload
+        if failedIdentity != location?.identity { error = nil; failedIdentity = nil }
         // Requests for the same location share its worker, which performs a follow-up load.
         if let listingTask { return listingTask }
         let token = UUID()
@@ -237,10 +262,14 @@ final class WorkspaceExplorerModel: ObservableObject {
         case .success(let (value, builtTree, kept, contents)):
             listing = value
             listedIdentity = location.identity
+            error = nil
+            failedIdentity = nil
             ignoredContents = contents
             tree.pruneCreated(location: location.identity, exists: exists)
             filesTree = (builtTree, kept)
-        case .failure(let failure): error = failure.localizedDescription
+        case .failure(let failure):
+            error = failure.localizedDescription
+            failedIdentity = location.identity
         }
         isLoading = false
         listingVersion += 1
@@ -352,7 +381,7 @@ final class WorkspaceExplorerModel: ObservableObject {
     func refreshIfNeeded() {
         guard needsRefresh, applicationIsActive, draft == nil, let location = monitoredLocation else { return }
         needsRefresh = false
-        loadListing(at: location, quietly: true)
+        loadListing(at: location)
     }
 
     private func eventsAffectListing(_ events: [WorkspaceFileWatcher.Event], at location: WorkspaceFileLocation) -> Bool {
@@ -507,7 +536,7 @@ final class WorkspaceExplorerModel: ObservableObject {
             }
             // Reload in place, so staging does not blank the tree behind a spinner.
             if reloads, self.location?.identity == location.identity {
-                await loadListing(at: location, quietly: true)?.value
+                await loadListing(at: location)?.value
             }
         }
         lastOperation = task

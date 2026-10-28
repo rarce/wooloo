@@ -43,8 +43,8 @@ final class WorkspaceExplorerModelTests: XCTestCase {
 
     private var files: String { "\(repo.identity)|files" }
 
-    private func load(_ location: WorkspaceFileLocation? = nil, quietly: Bool = false) async {
-        await model.loadListing(at: location ?? repo, quietly: quietly)?.value
+    private func load(_ location: WorkspaceFileLocation? = nil) async {
+        await model.loadListing(at: location ?? repo)?.value
     }
 
     private func openFile(_ location: WorkspaceFileLocation, _ path: String, _ preview: Bool) {
@@ -473,15 +473,71 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertTrue(listing.changes.isEmpty)
     }
 
-    func testQuietReloadKeepsTheTreeShown() async throws {
+    func testReloadShowsNewFilesWithoutASpinner() async throws {
         await load()
         try sandbox.write(["b.txt": "x\n"], in: "repo")
-        let task = model.loadListing(at: repo, quietly: true)
-        XCTAssertFalse(model.isLoading, "A quiet reload shows no spinner")
+        let task = model.loadListing(at: repo)
+        XCTAssertFalse(model.isLoading, "A reload shows no spinner")
         XCTAssertNotNil(model.listing, "The old listing stays until the new one arrives")
         await task?.value
         XCTAssertTrue(model.listing?.files.contains("b.txt") == true)
         XCTAssertEqual(model.listingVersion, 2)
+    }
+
+    /// Switching to a slow Space (an SSH machine under load): a refresh of the new Space before its
+    /// listing arrives, as from the Git bar or a poll, must not show the previous Space's tree.
+    func testRefreshingASpaceStillLoadingKeepsTheSpinner() async throws {
+        await load()
+        let next = sandbox.location("other")
+        let started = expectation(description: "Slow read started")
+        let release = DispatchSemaphore(value: 0)
+        let reading = repo!
+        let lock = NSLock()
+        var reads = 0
+        model.readListing = { location in
+            // Only the first read of the new Space is slow; the refresh's follow-up read is not.
+            if location.identity == next.identity, lock.withLock({ reads += 1; return reads == 1 }) {
+                started.fulfill()
+                release.wait()
+            }
+            return WorkspaceFileListing(files: [location.workspaceID + ".txt"], changes: [], hasGit: false, totalFiles: 1)
+        }
+        let task = model.loadListing(at: next)
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertTrue(model.isLoading)
+        let refresh = model.loadListing(at: next)
+        XCTAssertTrue(model.isLoading, "The tree shown is still the previous Space's")
+        XCTAssertEqual(model.listedIdentity, reading.identity)
+        release.signal()
+        await task?.value
+        await refresh?.value
+        XCTAssertFalse(model.isLoading)
+        XCTAssertEqual(model.listedIdentity, next.identity)
+        XCTAssertEqual(model.listing?.files, ["other.txt"])
+    }
+
+    /// A Space that cannot be listed keeps showing why while it is tried again, as by a poll, and
+    /// neither its error nor its tree shows for another Space.
+    func testShownIsAlwaysTheSpacesOwnListingOrError() async throws {
+        await load()
+        let other = sandbox.location("other")
+        guard case .listing = model.shown(for: repo) else { return XCTFail("The listing of the Space shown") }
+        guard case .loading = model.shown(for: other) else { return XCTFail("Another Space's tree must not show") }
+        model.readListing = { _ in throw WorkspaceFileError.message("unreachable") }
+        await load(other)
+        guard case .error(let message) = model.shown(for: other) else { return XCTFail("The failed Space's error") }
+        XCTAssertTrue(message.contains("unreachable"))
+        // Back on the first Space, its own tree shows, not the other Space's error.
+        guard case .listing(let kept) = model.shown(for: repo) else { return XCTFail("Another Space's error must not show") }
+        XCTAssertFalse(kept.files.isEmpty)
+        let retry = model.loadListing(at: other)
+        XCTAssertFalse(model.isLoading, "Trying again keeps the error rather than a spinner")
+        guard case .error = model.shown(for: other) else { return XCTFail("The error stays while trying again") }
+        await retry?.value
+        model.readListing = WorkspaceFiles.listing
+        await load(other)
+        guard case .listing = model.shown(for: other) else { return XCTFail("A listing replaces the error") }
+        XCTAssertNil(model.error)
     }
 
     /// Reloading the location already shown, as after a save, keeps the tree instead of a spinner.
