@@ -118,6 +118,11 @@ struct WorkspaceBrowserView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             model.setApplicationActive(false)
         }
+        .onReceive(NotificationCenter.default.publisher(for: WorkspaceFiles.folderOpenedAsFile)) { notification in
+            guard let identity = notification.object as? String,
+                  let path = notification.userInfo?["path"] as? String else { return }
+            model.showLinkedFolder(path, atLocation: identity)
+        }
         .onChange(of: model.draft != nil) { _, editing in
             if !editing { model.refreshIfNeeded() }
         }

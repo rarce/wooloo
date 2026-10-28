@@ -26,6 +26,9 @@ extension WorkspaceFiles {
     static let folderWalkMaximumDepth = 12
     /// Seconds the walk of a folder outside a repository spends after reading the root; tests replace it.
     static var folderWalkBudget: TimeInterval = 2
+    /// Seconds the SSH walk waits for each look at links, which follow them: a link into a hung
+    /// network mount would otherwise hold the walk until the SSH timeout. Tests replace it.
+    static var folderWalkLinkBudget: TimeInterval = 5
     /// Folders the walk outside a repository lists without reading, as Git lists ignored folders,
     /// unless ignored files are asked for. `.git` is never read.
     static let folderWalkSkippedFolders = ["node_modules", ".build", "DerivedData", "__pycache__", ".venv"]
@@ -344,7 +347,9 @@ extension WorkspaceFiles {
     ///   found until then are kept.
     /// - Anywhere, the root included, the walk stops once it found more than `maximumFiles` files
     ///   and is then truncated; over SSH, after `folderWalkMaximumFileRecords` records. Over SSH
-    ///   only, skipped folders past `folderWalkMaximumRecords` records in all are left out.
+    ///   only, skipped folders past `folderWalkMaximumRecords` records in all are left out, and a
+    ///   walk cut this way lists the skipped folders of every folder in the batch it was reading;
+    ///   on this Mac, those found before the cut in each folder.
     ///
     /// Each level is read by `find` on the folders the previous one found, 256 folders per batch.
     /// A watchdog marks the time as up and stops the `find` running then, so neither a slow level
@@ -359,6 +364,19 @@ extension WorkspaceFiles {
     /// these records pass through a second `head`, which stops at `folderWalkMaximumRecords`. The
     /// first `maximumLinks` links found are described in full, cut or not, and the next
     /// `folderWalkMaximumFolderLinks` only when they are linked folders, without their targets.
+    /// `bounded <file> <command>` runs a look at links in the background into a file and prints
+    /// what it wrote once it finishes, or once `folderWalkLinkBudget` seconds have passed: `wait`
+    /// returns when the shell gets a signal it traps, which a timer sends. A `[ -d ]` or
+    /// `readlink` stalled in a hung network mount cannot be interrupted, but the walk no longer
+    /// waits for it: it writes into the file, not into SSH's output, so SSH ends without it.
+    private static var boundedFunction: String {
+        // At least a second: a timer that fired before `wait` started would not interrupt it.
+        let seconds = max(Int(folderWalkLinkBudget.rounded(.up)), 1)
+        return #"bounded() { me=$(exec sh -c 'echo "$PPID"'); trap : USR1; ( eval "$2" ) > "$1" 2> /dev/null < /dev/null & j=$!; "#
+            + #"( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "# + String(seconds)
+            + #" & s=$!; wait "$s"; kill -USR1 "$me" ) > /dev/null 2>&1 & k=$!; wait "$j"; kill "$k" 2>/dev/null; wait "$k"; cat "$1"; }; "#
+    }
+
     static func folderWalkScript(readingSkipped: Bool, links: Bool, maximumLinks: Int = folderWalkMaximumLinks) -> String {
         let skipped = readingSkipped ? [] : folderWalkSkippedFolders
         let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
@@ -367,10 +385,11 @@ extension WorkspaceFiles {
         // started in the background and its process ID left in "$t/pid" for the watchdog, which
         // marks the time as up ("$t/late") before reading that file, while `run_find` writes it
         // before checking the mark, so one of them always stops it. The batch then ends with
-        // status 255, as it does once `head` has cut the walk ("$t/cut"). (Not `r`, which some
+        // status 255, as it does once `head` has cut the walk ("$t/cut"), unless its first argument
+        // is "-", which the find of skipped folders passes to run even then. (Not `r`, which some
         // shells, such as mksh, define as an alias.) No find runs a command with -exec: a command
         // it started would outlive it and print after the walk.
-        var batch = #"run_find() { [ ! -e "$t/cut" ] || exit 255; if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
+        var batch = #"run_find() { if [ "$1" = - ]; then shift; elif [ -e "$t/cut" ]; then exit 255; fi; if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
             + #"[ -e "$t/late" ] && kill "$p" 2>/dev/null; wait "$p"; : > "$t/pid"; [ ! -e "$t/late" ] || exit 255; }; "#
             + #"if [ "$d" -gt 1 ] && [ -e "$t/late" ]; then exit 255; fi; "#
         // Links are collected first, so a walk cut in a huge folder still has those it lists there;
@@ -383,12 +402,14 @@ extension WorkspaceFiles {
                 + " | " + swap + #" >> "$t/links"; "#
         }
         batch += "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
-            + "run_find " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
+        // Skipped folders are collected after the files, also once `head` has cut the walk, so a
+        // walk cut at `maximumFiles` lists those of every folder it was reading when cut.
         if !skipped.isEmpty {
-            batch += "run_find " + entries + #" -type d \( "#
+            batch += "run_find - " + entries + #" -type d \( "#
                 + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
                 + #" \) -print0 2>/dev/null >> "$t/skipped"; "#
         }
+        batch += "run_find " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
         batch += "exit 0"
         let check = entries + unskipped + " -print 2>/dev/null | head -n 1; exit 0"
         // `sleep` takes whole seconds in POSIX, so the budget is rounded up. The watchdog stops its
@@ -401,6 +422,7 @@ extension WorkspaceFiles {
                 + #": > "$t/late"; read p < "$t/pid" && kill "$p" ) > /dev/null 2>&1 & w=$!; "#
         // In the C locale, `tr` passes bytes that are not UTF-8 through unchanged.
         var script = #"LC_ALL=C; export LC_ALL; cd "$1" || exit 1; t=$(mktemp -d) || exit 1; w=; trap '[ -n "$w" ] && kill "$w" 2>/dev/null && wait "$w"; rm -rf "$t"' EXIT; "#
+            + boundedFunction
             + "b=" + quote(batch) + "; c=" + quote(check) + "; d=1; export t d; "
             + #": > "$t/pid"; "# + watchdog
             + #"printf '.\0' > "$t/level"; : > "$t/links"; : > "$t/skipped"; "#
@@ -417,9 +439,10 @@ extension WorkspaceFiles {
         if links {
             // Within the walk's time limit: `[ -d ]` follows each link, which can be slow.
             let folderLinks = #"for p do [ ! -e "$t/late" ] || break; p=./${p#./}; [ -L "$p" ] && [ -d "$p" ] && printf '%s\0' "$p"; done; exit 0"#
-            records += #"printf 'wooloo-linked-folders\n'; [ -s "$t/links" ] && "# + swap + #" < "$t/links" | tail -n +"#
-                + String(maximumLinks + 1) + " | head -n " + String(folderWalkMaximumFolderLinks) + " | " + swap
-                + " | xargs -0 sh -c " + quote(folderLinks) + " sh | " + swap + "; "
+            let examine = swap + #" < "$t/links" | tail -n +"# + String(maximumLinks + 1) + " | head -n "
+                + String(folderWalkMaximumFolderLinks) + " | " + swap + " | xargs -0 sh -c " + quote(folderLinks) + " sh"
+            records += #"printf 'wooloo-linked-folders\n'; [ -s "$t/links" ] && bounded "$t/linked-folders" "# + quote(examine)
+                + " | " + swap + "; "
         }
         if !skipped.isEmpty {
             records += #"printf 'wooloo-skipped\n'; "# + swap + #" < "$t/skipped"; printf '\nwooloo-files\n'; "#
@@ -427,8 +450,9 @@ extension WorkspaceFiles {
         // Bound every section together, including metadata, before SSH's strict output limit.
         script += "{ { " + records + "} | head -n " + String(folderWalkMaximumRecords) + " | " + swap + "; "
         if links {
-            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && "# + swap + #" < "$t/links" | head -n "#
-                + String(maximumLinks) + " | " + swap + " | xargs -0 sh -c " + quote(symbolicLinkMetadataScript) + " sh; "
+            let describe = swap + #" < "$t/links" | head -n "# + String(maximumLinks) + " | " + swap
+                + " | xargs -0 sh -c " + quote(symbolicLinkMetadataScript) + " sh"
+            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && bounded "$t/link-metadata" "# + quote(describe) + "; "
         }
         return script + "} | head -c " + String(folderWalkMaximumBytes) + "; exit 0"
     }

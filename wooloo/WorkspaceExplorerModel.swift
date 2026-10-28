@@ -135,6 +135,9 @@ final class WorkspaceExplorerModel: ObservableObject {
     private var listingTask: Task<Void, Never>?
     private var listingWorkerToken: UUID?
     private var listingRequest = 0
+    /// Linked folders the SSH walk listed as files, found when one was opened, by location
+    /// identity; they are folders in later listings too.
+    private var foundLinkedFolders: [String: Set<String>] = [:]
     private var locationGeneration = 0
     /// Injectable so concurrency and SSH polling can be checked without a live server.
     var readListing: (WorkspaceFileLocation) throws -> WorkspaceFileListing = WorkspaceFiles.listing
@@ -240,11 +243,18 @@ final class WorkspaceExplorerModel: ObservableObject {
         let expanded = tree.expandedFolders(in: "\(location.identity)|files")
         let exists = { Self.folderExists($0, at: location) }
         let readListing = readListing
+        let foundFolders = foundLinkedFolders[location.identity] ?? []
         // The Files tree is built here too, so a large Space is not sorted on the main thread.
         let result = await WorkspaceFiles.blocking(at: location) {
             Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>, [String: WorkspaceFolderContents]) in
                 WorkspaceFiles.forgetRecentResults(at: location)
-                let listing = try readListing(location)
+                var listing = try readListing(location)
+                if !foundFolders.isEmpty {
+                    let files = Set(listing.files)
+                    for path in foundFolders where files.contains(path) && listing.symbolicLinks[path] == nil {
+                        listing.symbolicLinks[path] = WorkspaceSymbolicLink(target: "", isDirectory: true)
+                    }
+                }
                 let kept = created.filter(exists)
                 // Expanded ignored and linked folders and nested repositories are read again, so
                 // they stay open across reloads.
@@ -482,6 +492,19 @@ final class WorkspaceExplorerModel: ObservableObject {
             }
             ignoredContentsVersion += 1
         }
+    }
+
+    /// A file of the listing that turned out to be a linked folder when it was opened, as one
+    /// the SSH walk did not describe (`folderWalkMaximumLinks`): it becomes a folder and opens.
+    @discardableResult
+    func showLinkedFolder(_ path: String, atLocation identity: String) -> Task<Void, Never>? {
+        foundLinkedFolders[identity, default: []].insert(path)
+        guard let location, location.identity == identity, listedIdentity == identity,
+              listing?.symbolicLinks[path] == nil, listing?.files.contains(path) == true else { return nil }
+        listing?.symbolicLinks[path] = WorkspaceSymbolicLink(target: "", isDirectory: true)
+        tree.reveal(path, in: "\(identity)|files")
+        tree.expanded.insert("\(identity)|files|" + path)
+        return readIgnoredFolders([path], at: location)
     }
 
     /// Folders that cannot be read, such as one deleted since, are left out.

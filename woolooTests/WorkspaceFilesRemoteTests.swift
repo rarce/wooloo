@@ -655,6 +655,27 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertFalse(try WorkspaceFiles.quickOpenFiles(at: remote("few")).truncated)
     }
 
+    /// A walk cut at `maximumFiles` lists the skipped folders of the folders it was reading
+    /// however soon `head` cuts it: they are collected before the files.
+    func testRemoteWalkCutAtTheMaximumListsTheSkippedFoldersItWasReading() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        defer { WorkspaceFiles.maximumFiles = maximum }
+        WorkspaceFiles.maximumFiles = 5
+        // More names than `tr` buffers, so `head` sees them while the walk runs.
+        try sandbox.write(["keep.txt": "x\n"], in: "cut")
+        try sandbox.sh("mkdir -p node_modules/a .venv/b; for i in $(seq 1 3000); do : > file-with-a-long-name-to-fill-the-pipe-$i.txt; done", in: "cut")
+        // Its `find` of files waits after printing, so `head` has cut the walk before the next one.
+        try sandbox.write(["shims/find": """
+            #!/bin/sh
+            case " $* " in *" -type f "*) /usr/bin/find "$@"; sleep 0.3; exit 0;; esac
+            exec /usr/bin/find "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/find")
+        let listing = try WorkspaceFiles.listing(at: remote("cut"))
+        XCTAssertTrue(listing.truncated)
+        XCTAssertEqual(Set(listing.ignored.directories), [".venv", "node_modules"])
+    }
+
     /// Over SSH, skipped folders are printed after the files, so many of them do not cut the walk
     /// before `maximumFiles` files. Past `folderWalkMaximumRecords` in all, the skipped folders
     /// are left out; every file was read, so the walk is not partial.
@@ -746,6 +767,62 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                        "Once the time is up, only the links described in full")
     }
 
+    /// A linked folder the walk listed as a file, as past its first `folderWalkMaximumLinks`
+    /// links, is told apart when opened: its tab closes, and the explorer shows it as a folder,
+    /// also in later listings.
+    @MainActor
+    func testALinkedFolderOpenedAsAFileShowsAsAFolder() async throws {
+        try sandbox.write(["f.txt": "x\n", "sub/g.txt": "x\n"], in: "undescribed")
+        try sandbox.sh("ln -s sub folder", in: "undescribed")
+        let location = remote("undescribed")
+        let store = WorkspaceDocumentStore(persistence: nil)
+        let posted = expectation(forNotification: WorkspaceFiles.folderOpenedAsFile, object: nil) {
+            $0.object as? String == location.identity && $0.userInfo?["path"] as? String == "folder"
+        }
+        store.open(.file, path: "folder", at: location, preview: true)
+        await fulfillment(of: [posted], timeout: 5)
+        XCTAssertTrue(store.documents.isEmpty, "The tab of the folder is closed")
+
+        let model = WorkspaceExplorerModel()
+        defer { model.stopMonitoring() }
+        model.readListing = { _ in
+            WorkspaceFileListing(files: ["f.txt", "folder", "sub/g.txt"], changes: [], hasGit: false, totalFiles: 3)
+        }
+        await model.loadListing(at: location)?.value
+        await model.showLinkedFolder("folder", atLocation: location.identity)?.value
+        XCTAssertEqual(model.ignoredContents["folder"]?.files, ["folder/g.txt"])
+        XCTAssertTrue(model.tree.expanded.contains("\(location.identity)|files|folder"))
+        WorkspaceFiles.forgetRecentResults()
+        await model.loadListing(at: location)?.value
+        XCTAssertEqual(model.listing?.symbolicLinks["folder"]?.isDirectory, true, "Still a folder after a reload")
+        XCTAssertEqual(model.ignoredContents["folder"]?.files, ["folder/g.txt"], "Read again, as it is open")
+    }
+
+    /// A link into a hung network mount stalls whatever follows it; the walk waits for its look at
+    /// links only `folderWalkLinkBudget` seconds, then ends with the files it found, so SSH
+    /// answers long before its timeout.
+    func testRemoteWalkDoesNotWaitForALinkThatHangs() throws {
+        let budget = WorkspaceFiles.folderWalkLinkBudget
+        defer { WorkspaceFiles.folderWalkLinkBudget = budget }
+        WorkspaceFiles.folderWalkLinkBudget = 1
+        try sandbox.write(["f.txt": "x\n"], in: "hung")
+        try sandbox.sh("ln -s f.txt fine; ln -s f.txt hung", in: "hung")
+        // `readlink` of the link named "hung" never returns, as in a hung mount.
+        let stalled = sandbox.path("stalled.pid")
+        defer { try? sandbox.sh("[ ! -s '\(stalled)' ] || kill $(cat '\(stalled)') 2>/dev/null; true") }
+        try sandbox.write(["shims/readlink": """
+            #!/bin/sh
+            case "$1" in *hung) echo $$ > '\(stalled)'; exec sleep 30;; esac
+            exec /usr/bin/readlink "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/readlink")
+        let start = Date()
+        let listing = try WorkspaceFiles.listing(at: remote("hung"))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 4, "The walk must not wait for the stalled link")
+        XCTAssertEqual(Set(listing.files), ["f.txt", "fine", "hung"])
+        XCTAssertTrue(listing.symbolicLinks["hung"]?.target.isEmpty ?? true, "The stalled link is not described")
+    }
+
     /// The walk's `tr` runs in the C locale: in a UTF-8 one, BSD `tr` stops at a name that is not
     /// UTF-8, and the records after it would run together.
     func testRemoteWalkPassesNamesThatAreNotUTF8() throws {
@@ -764,7 +841,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
     }
 
     /// Once `head` cut the walk, the next `find` ends it, even in the folder being read: a write
-    /// into the pipe may not fail for a while, since `tr` buffers it. Here every `find` of folders
+    /// into the pipe may not fail for a while, since `tr` buffers it. Here every `find` of folders to read
     /// takes 2 s, and the one of files waits 0.3 s after printing, by when `head` has cut the walk.
     func testRemoteWalkStopsSoonAfterItIsCut() throws {
         let maximum = WorkspaceFiles.maximumFiles
@@ -780,6 +857,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         try sandbox.write(["shims/find": """
             #!/bin/sh
             case " $* " in
+            *" ( -name node_modules "*) ;;
             *" -type d "*) sleep 2;;
             *" -type f "*) /usr/bin/find "$@"; sleep 0.3; exit 0;;
             esac

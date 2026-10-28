@@ -346,10 +346,16 @@ struct WorkspaceRepositoryListing {
 
 enum WorkspaceFileError: LocalizedError {
     case message(String)
+    /// A file to read is a folder, such as a linked folder listed as a file.
+    case folder
+
+    static let folderMessage = "Is a folder"
 
     var errorDescription: String? {
-        if case .message(let value) = self { return value }
-        return nil
+        switch self {
+        case .message(let value): value
+        case .folder: Self.folderMessage
+        }
     }
 }
 
@@ -464,10 +470,18 @@ enum WorkspaceFiles {
     static func readData(_ path: String, at location: WorkspaceFileLocation, limit: Int) throws -> Data {
         let data: Data
         if let machine = location.machine {
-            let script = try remoteFilePrelude(path, at: location)
+            let script = try remoteFilePrelude(path, at: location, rejectingFolders: true)
                 + "size=$(wc -c < \"$file\"); [ \"$size\" -le \(limit) ] || { echo 'File is too large' >&2; exit 75; }; cat \"$file\""
-            data = try ssh(machine, script, limit: limit)
+            do {
+                data = try ssh(machine, script, limit: limit)
+            } catch WorkspaceFileError.message(let message) where message.hasSuffix(WorkspaceFileError.folderMessage) {
+                throw WorkspaceFileError.folder
+            }
         } else {
+            if (try? validateRelativePath(path)) != nil, (try? URL(fileURLWithPath: location.absolutePath(path))
+                .resolvingSymlinksInPath().resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                throw WorkspaceFileError.folder
+            }
             let url = try localFileURL(path, root: location.root)
             let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
             guard size <= limit else { throw WorkspaceFileError.message("File is too large") }
@@ -656,10 +670,14 @@ enum WorkspaceFiles {
         return url
     }
 
-    private static func remoteFilePrelude(_ path: String, at location: WorkspaceFileLocation) throws -> String {
+    /// `rejectingFolders` tells a folder apart, before checking where it is, since a linked
+    /// folder elsewhere still shows as one in the explorer.
+    private static func remoteFilePrelude(_ path: String, at location: WorkspaceFileLocation,
+                                          rejectingFolders: Bool = false) throws -> String {
         try validateRelativePath(path)
         return "root=$(realpath \(quote(location.root))) || exit 70; "
             + "file=$(realpath \(quote(location.root + "/" + path))) || exit 71; "
+            + (rejectingFolders ? "[ ! -d \"$file\" ] || { echo \(quote(WorkspaceFileError.folderMessage)) >&2; exit 79; }; " : "")
             + "case \"$file\" in \"$root\"/*) ;; *) echo 'File is outside the selected Space' >&2; exit 72;; esac; "
             + "[ -f \"$file\" ] || exit 73; "
     }
