@@ -180,6 +180,15 @@ struct NotebookDocument: Encodable, Sendable {
         return document
     }
 
+    /// The whole source of the cell at `index` in `sourceText`, which the preview may have
+    /// truncated; nil when it is not that cell's. Parses the JSON: call it off the main thread.
+    func fullSource(cell index: Int, id: String) -> String? {
+        guard cells.indices.contains(index), cells[index].id == id,
+              let root = try? JSONSerialization.jsonObject(with: Data(sourceText.utf8)) as? [String: Any],
+              let rawCells = root["cells"] as? [[String: Any]], rawCells.count == cells.count else { return nil }
+        return Self.multiline(rawCells[index]["source"])
+    }
+
     static func multiline(_ value: Any?) -> String? {
         if let text = value as? String { return text }
         if let lines = value as? [String] { return lines.joined() }

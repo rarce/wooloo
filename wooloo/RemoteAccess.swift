@@ -116,6 +116,7 @@ enum RemoteAccessHostKeys {
 /// Which sign-in methods this Mac's SSH server offers a client that arrives the way tunnel
 /// clients do: `cloudflared` connects to `localhost:22`, so sshd sees every tunnel client as a
 /// connection from this Mac, and a probe from here meets the same `Match Address` rules.
+/// `user` names the account checked, or the accounts, joined, after `combined`.
 enum RemoteAccessSSHCheck: Equatable {
     /// Only key-based methods, such as `publickey`, for `user`.
     case keysOnly(user: String, methods: [String])
@@ -138,12 +139,42 @@ enum RemoteAccessSSHCheck: Equatable {
         if case .acceptsNoCredential = self { true } else { false }
     }
 
+    var acceptsPasswords: Bool {
+        if case .acceptsPasswords = self { true } else { false }
+    }
+
+    /// The checks of several accounts as one, the least safe first: an account let in without
+    /// a credential, then those accepting passwords, then one that could not be checked. Only
+    /// when every account is key-only is the server.
+    static func combined(_ checks: [RemoteAccessSSHCheck]) -> RemoteAccessSSHCheck {
+        var keys: [(user: String, methods: [String])] = []
+        var passwords: [(user: String, methods: [String])] = []
+        var unknown: String?
+        for check in checks {
+            switch check {
+            case .acceptsNoCredential: return check
+            case .acceptsPasswords(let user, let methods): passwords.append((user, methods))
+            case .unknown(let reason): unknown = unknown ?? reason
+            case .keysOnly(let user, let methods): keys.append((user, methods))
+            }
+        }
+        func union(_ found: [(user: String, methods: [String])]) -> [String] {
+            found.flatMap(\.methods).reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
+        }
+        if !passwords.isEmpty {
+            return .acceptsPasswords(user: passwords.map(\.user).joined(separator: ", "), methods: union(passwords))
+        }
+        if let unknown { return .unknown(reason: unknown) }
+        guard !keys.isEmpty else { return .unknown(reason: "no account to check") }
+        return .keysOnly(user: keys.map(\.user).joined(separator: ", "), methods: union(keys))
+    }
+
     /// What the check found, for the settings and the confirmation.
     var summary: String {
         switch self {
         case .keysOnly(let user, let methods):
             "Checked: this Mac's SSH server offers \(user) only key sign-in (\(methods.joined(separator: ", "))) "
-                + "to connections like the tunnel's. Other accounts on this Mac were not checked."
+                + "to connections like the tunnel's. Accounts from a network directory were not checked."
         case .acceptsPasswords(let user, let methods):
             "Checked: this Mac's SSH server accepts a password for \(user) (\(methods.joined(separator: ", "))). "
                 + "Anyone who reaches the tunnel's address can try to guess it."
@@ -195,6 +226,67 @@ enum RemoteAccessSSHProbe {
         } catch {
             return result(user: user, failure: error.localizedDescription)
         }
+    }
+
+    /// Checks every account allowed to sign in over SSH (`RemoteAccessSSHAccounts`), since a
+    /// tunnel client may try any of them, at the same time. Accounts that cannot be listed make
+    /// the server unknown rather than checked through the signed-in account alone.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    static func checkAccounts(ssh: String = "/usr/bin/ssh",
+                              accounts: () -> [String]? = { RemoteAccessSSHAccounts.allowed() }) -> RemoteAccessSSHCheck {
+        guard let users = accounts() else { return .unknown(reason: "the accounts allowed to use SSH could not be listed") }
+        let lock = NSLock()
+        nonisolated(unsafe) var checks = Array(repeating: RemoteAccessSSHCheck.unknown(reason: "not checked"), count: users.count)
+        DispatchQueue.concurrentPerform(iterations: users.count) { index in
+            let check = check(user: users[index], ssh: ssh)
+            lock.withLock { checks[index] = check }
+        }
+        return .combined(checks)
+    }
+}
+
+/// The local accounts this Mac's SSH server lets sign in: Remote Login's "Allow access for"
+/// list is the `com.apple.access_ssh` group, nested groups included, and without the group
+/// every account is allowed. Accounts from a network directory are not listed.
+enum RemoteAccessSSHAccounts {
+    static let group = "com.apple.access_ssh"
+
+    /// The people's accounts in `dscl . -list /Users UniqueID`: IDs from 501, as macOS gives
+    /// them, and no `_` service accounts.
+    static func localUsers(_ listing: String) -> [String] {
+        listing.split(separator: "\n").compactMap { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count == 2, let id = Int(fields[1]), id >= 501, !fields[0].hasPrefix("_") else { return nil }
+            return String(fields[0])
+        }
+    }
+
+    /// The accounts to check, the signed-in one included when it is allowed; nil when the
+    /// accounts or the groups could not be listed. An account whose membership could not be
+    /// learned is checked, as is the signed-in account when no account is allowed.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    static func allowed(current: String = NSUserName(), dscl: String = "/usr/bin/dscl",
+                        dseditgroup: String = "/usr/sbin/dseditgroup") -> [String]? {
+        func list(_ path: String) -> String? {
+            (try? WorkspaceFiles.run(dscl, [".", "-list", path] + (path == "/Users" ? ["UniqueID"] : []),
+                                     limit: 1_000_000, timeout: 10, label: "remote-access-ssh-accounts"))
+                .map { String(decoding: $0, as: UTF8.self) }
+        }
+        guard let listing = list("/Users"), let groups = list("/Groups") else { return nil }
+        var users = localUsers(listing)
+        if !users.contains(current) { users.insert(current, at: 0) }
+        guard groups.split(separator: "\n").contains(where: { $0.trimmingCharacters(in: .whitespaces) == group }) else {
+            return users
+        }
+        let allowed = users.filter { user in
+            // `dseditgroup` answers "yes …" or "no …"; its status alone does not tell "no" from a failure.
+            let answer = (try? WorkspaceFiles.run("/bin/sh", ["-c", "\"$0\" -o checkmember -m \"$1\" \"$2\"; exit 0",
+                                                              dseditgroup, user, group],
+                                                  limit: 16_000, timeout: 10, label: "remote-access-ssh-accounts"))
+                .map { String(decoding: $0, as: UTF8.self) } ?? ""
+            return !answer.hasPrefix("no ")
+        }
+        return allowed.isEmpty ? [current] : allowed
     }
 }
 
@@ -280,7 +372,9 @@ enum RemoteAccessSystem {
 /// run Herdr's own commands. The tunnel belongs to wooloo: it stops when wooloo quits.
 /// Before publishing, it checks which sign-in methods sshd offers (`RemoteAccessSSHCheck`):
 /// a verified key-only server starts at once; otherwise the user must confirm, and a start at
-/// launch, which nobody is there to confirm, does not happen. It never changes sshd's settings.
+/// launch, which nobody is there to confirm, does not happen. While the tunnel runs, sshd is
+/// checked again every `recheckInterval`, so a server changed to accept passwords stops a
+/// tunnel nobody confirmed. It never changes sshd's settings.
 @MainActor
 final class RemoteAccessModel: ObservableObject {
     static let shared = RemoteAccessModel()
@@ -318,11 +412,19 @@ final class RemoteAccessModel: ObservableObject {
     /// Whether the running tunnel was started on the user's word rather than a key-only check.
     @Published private(set) var startedWithoutVerifiedKeys = false
 
+    /// Whether the status must say the tunnel runs without verified key-only SSH: it was started
+    /// on the user's word, or a later check could not verify it.
+    var runsWithoutVerifiedKeys: Bool {
+        startedWithoutVerifiedKeys || sshCheck.map { !$0.isVerifiedKeysOnly } ?? false
+    }
+
     private let defaults: UserDefaults
     private let tokens: RemoteAccessTokenStore
     private let executable: () -> String?
     private let isPublished: @Sendable (String) -> Bool
     private let checkSSHSignIn: @Sendable () -> RemoteAccessSSHCheck
+    private let recheckInterval: Duration
+    private var recheck: Task<Void, Never>?
     private var process: Process?
     /// Callbacks from an earlier process are ignored.
     private var generation = 0
@@ -339,8 +441,10 @@ final class RemoteAccessModel: ObservableObject {
     init(defaults: UserDefaults = .standard, tokens: RemoteAccessTokenStore = .keychain,
          executable: @escaping () -> String? = RemoteAccessSystem.cloudflared,
          isPublished: @escaping @Sendable (String) -> Bool = { RemoteAccessSystem.isPublished($0) },
-         checkSSHSignIn: @escaping @Sendable () -> RemoteAccessSSHCheck = { RemoteAccessSSHProbe.check() }) {
+         checkSSHSignIn: @escaping @Sendable () -> RemoteAccessSSHCheck = { RemoteAccessSSHProbe.checkAccounts() },
+         recheckInterval: Duration = .seconds(300)) {
         self.defaults = defaults
+        self.recheckInterval = recheckInterval
         self.tokens = tokens
         self.executable = executable
         self.isPublished = isPublished
@@ -370,14 +474,15 @@ final class RemoteAccessModel: ObservableObject {
         hasToken = !trimmed.isEmpty
     }
 
-    /// Whether Remote Login is on and, if so, which sign-in methods sshd offers.
-    func checkSSH() {
+    /// Whether Remote Login is on and, if so, which sign-in methods sshd offers, unless
+    /// `signIn` is false, as just after a start checked them.
+    func checkSSH(signIn: Bool = true) {
         let checkSSHSignIn = checkSSHSignIn
         Task {
             // nil when cancelled.
             guard let accepts = await BlockingWork.run({ Optional(RemoteAccessSystem.acceptsSSH()) }) else { return }
             if acceptsSSH != accepts { acceptsSSH = accepts }
-            guard accepts, let check = await BlockingWork.run({ Optional(checkSSHSignIn()) }) else { return }
+            guard accepts, signIn, let check = await BlockingWork.run({ Optional(checkSSHSignIn()) }) else { return }
             if sshCheck != check { sshCheck = check }
         }
     }
@@ -536,14 +641,40 @@ final class RemoteAccessModel: ObservableObject {
             self.process = process
             startedWithoutVerifiedKeys = !verified
             state = .starting
-            checkSSH()
+            checkSSH(signIn: false)
+            recheckWhileActive(generation: generation)
         } catch {
             state = .failed("Could not start cloudflared: \(error.localizedDescription)")
         }
     }
 
+    /// Checks sshd again while this tunnel runs. A server that now lets anyone in stops it, as
+    /// does one accepting passwords unless the user confirmed that; a check that fails, as while
+    /// sshd restarts, only updates `sshCheck`.
+    private func recheckWhileActive(generation: Int) {
+        recheck?.cancel()
+        let interval = recheckInterval
+        let checkSSHSignIn = checkSSHSignIn
+        recheck = Task { [weak self] in
+            while true {
+                do { try await Task.sleep(for: interval) } catch { return }
+                guard let self, self.generation == generation, self.isActive,
+                      let check = await BlockingWork.run({ Optional(checkSSHSignIn()) }),
+                      self.generation == generation, self.isActive else { return }
+                if self.sshCheck != check { self.sshCheck = check }
+                if check.refusesStart || (check.acceptsPasswords && !self.startedWithoutVerifiedKeys) {
+                    self.stop()
+                    self.state = .failed("Stopped: \(check.summary)")
+                    return
+                }
+            }
+        }
+    }
+
     func stop() {
         generation += 1
+        recheck?.cancel()
+        recheck = nil
         startedWithoutVerifiedKeys = false
         process?.terminate()
         process = nil

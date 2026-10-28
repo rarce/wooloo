@@ -504,7 +504,7 @@ struct HerdrSettingsView: View {
                 Toggle("Start the tunnel when wooloo opens", isOn: $remoteAccess.startsAtLaunch)
             }
         }
-        .onAppear(perform: remoteAccess.checkSSH)
+        .onAppear { remoteAccess.checkSSH() }
     }
 
     private func warning(_ text: String) -> some View {

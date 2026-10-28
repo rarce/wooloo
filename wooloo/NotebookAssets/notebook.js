@@ -19,7 +19,7 @@
         return true;
     });
     const priority = ["text/html", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "text/markdown", "text/latex", "application/json", "text/plain"];
-    let revision = "", imagePrefix = "", imageCounter = 0, svgCounter = 0, groups = [], pendingImages = new Map(), editable = false, rendering = false, last = null;
+    let revision = "", pendingSource = null, imagePrefix = "", imageCounter = 0, svgCounter = 0, groups = [], pendingImages = new Map(), editable = false, rendering = false, last = null;
     // Every cell's section, in order, whether or not it is in the document; see `mount`.
     let sections = [], observer = null, mounted = new Set(), lastFind = null, activeFind = [], finding = false;
     // Above this many cells only the cells near the viewport stay in the document: the rest wait,
@@ -322,12 +322,15 @@
     // renders the notebook again; nothing here changes the document on its own.
     const edit = (body) => post(Object.assign({kind:"edit", revision}, body));
     const beginEdit = (section, cell, cellIndex) => {
-        if (!editable || !cell.editable || section.querySelector("textarea.cell-editor")) return;
+        if (!editable || section.querySelector("textarea.cell-editor")) return;
+        // The preview truncated this source: the app sends all of it, and the editor opens then.
+        if (!cell.editable && !cell.whole) {pendingSource = {section, cell, cellIndex};post({kind:"fullSource", revision, cell:cellIndex, id:cell.id});return;}
         const editor = node("textarea", undefined, "cell-editor");
         editor.value = cell.source;editor.spellcheck = false;editor.setAttribute("aria-label", `Source of cell ${cellIndex+1}`);
         const hint = node("div", "⌘↩ or click outside to apply · Esc to cancel", "cell-editor-hint");
         const hidden = Array.from(section.children).filter(child => !child.classList.contains("cell-tools") && !child.classList.contains("cell-label"));
-        const fit = () => {editor.style.height = "auto";editor.style.height = (editor.scrollHeight + 2) + "px";};
+        // A source too long for the preview keeps a fixed height: measuring megabytes per key would stall typing.
+        const fit = cell.whole ? () => {editor.style.height = "70vh";} : () => {editor.style.height = "auto";editor.style.height = (editor.scrollHeight + 2) + "px";};
         // A textarea turns "\r\n" and "\r" into "\n": compare without them, and write a changed
         // source back with the line breaks it had.
         const breaks = cell.source.includes("\r\n") ? "\r\n" : "\n", original = cell.source.replace(/\r\n?/g, "\n");
@@ -338,7 +341,7 @@
             if (save && !rendering && editor.value !== original) {
                 // Kept on screen until the new render replaces the cell, or a refused edit restores it.
                 editor.readOnly = true;hint.textContent = "Applying…";
-                edit({op:"source", cell:cellIndex, id:cell.id, text:breaks === "\n" ? editor.value : editor.value.replace(/\n/g, breaks)});
+                edit({op:"source", cell:cellIndex, id:cell.id, whole:Boolean(cell.whole), text:breaks === "\n" ? editor.value : editor.value.replace(/\n/g, breaks)});
             } else {
                 editor.remove();hint.remove();hidden.forEach(child => child.hidden = false);
             }
@@ -360,8 +363,8 @@
             element.disabled = Boolean(disabled);element.addEventListener("click", event => {event.stopPropagation();action();});
             bar.append(element);
         };
-        button("Edit", cell.editable ? "Edit the cell's source" : "The source is too long to edit here; use Source view",
-               () => beginEdit(section, cell, cellIndex), !cell.editable);
+        button("Edit", cell.editable ? "Edit the cell's source" : "Edit the cell's whole source, which the preview truncates",
+               () => beginEdit(section, cell, cellIndex));
         const kind = node("select");kind.title = "Cell type";kind.setAttribute("aria-label", "Cell type");
         for (const value of ["code", "markdown", "raw"]) {
             const option = node("option", value === "markdown" ? "Markdown" : value[0].toUpperCase() + value.slice(1));option.value = value;kind.append(option);
@@ -462,6 +465,20 @@
                 sections.forEach(section => observer.observe(section.cellSlot));
             } else if (anchorSection) window.scrollBy(0, anchorSection.getBoundingClientRect().top - offset);
             collectSearch();setFind([],null,false);
+        },
+        // The whole source of a truncated cell, asked for by `beginEdit`, for the cell still shown.
+        // A null `text` means the app could not read it.
+        fullSource(token, cellIndex, id, text) {
+            const pending = pendingSource;
+            if (token !== revision || !pending || pending.cellIndex !== cellIndex || pending.cell.id !== id) return;
+            pendingSource = null;
+            if (!sections.includes(pending.section)) return;
+            if (text === null) {
+                pending.section.querySelector(".cell-editor-hint")?.remove();
+                pending.section.append(node("div", "The whole source could not be read; edit it in Source view", "cell-editor-hint"));
+                return;
+            }
+            beginEdit(pending.section, Object.assign({}, pending.cell, {source:text, whole:true}), cellIndex);
         },
         // Shows the notebook as it was rendered again, after an edit the app did not make.
         restore(token) {

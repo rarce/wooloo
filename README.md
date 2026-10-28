@@ -88,11 +88,12 @@ The [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connect
 
 What wooloo checks before starting the tunnel, and what it does not:
 
-- **Checked:** that something answers on `localhost:22`, and which sign-in methods sshd offers your account. wooloo runs `ssh` to `127.0.0.1` offering no credential (no key, agent or password), and sshd answers with the methods it would accept. `cloudflared` also connects from this Mac, so sshd treats tunnel clients like this check. The attempt may appear in sshd's log as a failed sign-in.
+- **Checked:** that something answers on `localhost:22`, and which sign-in methods sshd offers each local account allowed to use SSH (Remote Login's "Allow access for" list, the `com.apple.access_ssh` group, or every account when it allows all users). For each, wooloo runs `ssh` to `127.0.0.1` offering no credential (no key, agent or password), and sshd answers with the methods it would accept. `cloudflared` also connects from this Mac, so sshd treats tunnel clients like this check. Each attempt may appear in sshd's log as a failed sign-in. The server counts as key-only only when every account is; accounts that cannot be listed count as methods that could not be learned.
 - **Key-only** (for example only `publickey`): the tunnel starts.
 - **Passwords accepted** (`password` or `keyboard-interactive`), **or the methods could not be learned:** nothing is published until you choose **Start Anyway**. That is your decision, not a check, and the status keeps saying the tunnel runs without verified key-only SSH.
 - **Sign-in without any credential:** wooloo refuses to publish.
-- **Not checked:** other accounts on this Mac (sshd's `Match User` rules can differ per account), whether Cloudflare Access protects a named tunnel, changes to sshd after the tunnel started, and the strength of your keys or passwords.
+- **Checked again** every five minutes while the tunnel runs. A server that now accepts passwords stops a tunnel started after a key-only check; one that lets anyone in stops any tunnel.
+- **Not checked:** accounts from a network directory, whether Cloudflare Access protects a named tunnel, and the strength of your keys or passwords.
 - **Start the tunnel when wooloo opens** starts it only after a key-only check, since nobody is there to confirm anything else.
 
 - Needs `cloudflared` (`brew install cloudflared`) and Remote Login (System Settings → General → Sharing).

@@ -212,7 +212,18 @@ private struct DestinationContentView: View {
             documentStore.checkDisk()
         }
         .onReceive(Self.diskChanges) { checkDisk(after: $0) }
-        .task { await documentStore.pollRemoteDisk(isActive: { NSApp.isActive }) }
+        // The poll skips a hidden window; one shown again is checked at once, as on activation.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { notification in
+            guard let shown = notification.object as? NSWindow, shown === destinations.nativeWindow,
+                  shown.occlusionState.contains(.visible), NSApp.isActive else { return }
+            documentStore.checkDisk()
+        }
+        // A window minimized, on another desktop or covered by others has no tab anyone is reading.
+        .task {
+            await documentStore.pollRemoteDisk(isActive: { [destinations] in
+                NSApp.isActive && destinations.nativeWindow?.occlusionState.contains(.visible) != false
+            })
+        }
     }
 
     private var windowSheets: some View {
@@ -1315,22 +1326,18 @@ private struct DestinationContentView: View {
     }
 
     private var overwriteAlert: some View {
-        Color.clear.alert("“\(overwriteTarget?.title ?? "")” changed on disk", isPresented: Binding(
-            get: { overwriteTarget != nil },
+        let target = commands.overwriteTarget
+        return Color.clear.alert(target.map(DocumentOverwriteChoice.title) ?? "", isPresented: Binding(
+            get: { target != nil },
             // Each button, Cancel also for Escape, settles its own document.
             set: { _ in }
-        ), presenting: overwriteTarget) { document in
-            Button("Overwrite") { commands.overwriteDocument(document.id) }
-            Button("Reload", role: .destructive) { documentStore.revert(document.id) }
-            Button("Cancel", role: .cancel) { documentStore.cancelOverwrite(document.id) }
+        ), presenting: target) { document in
+            ForEach(DocumentOverwriteChoice.allCases, id: \.self) { choice in
+                Button(choice.title, role: choice.role) { commands.resolveOverwrite(document.id, choice) }
+            }
         } message: { _ in
-            Text("The file is newer than the version you edited. Overwrite it with your version, or reload it and discard your edits?")
+            Text(DocumentOverwriteChoice.message)
         }
-    }
-
-    /// A document whose save would overwrite a newer file on disk, to ask about.
-    private var overwriteTarget: WorkspaceDocument? {
-        documentStore.documents.first(where: \.asksToOverwrite)
     }
 
     private func saveDocument(_ id: String) {

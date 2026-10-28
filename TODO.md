@@ -4,7 +4,6 @@
 
 - [ ] Before shipping binaries, turn on the hardened runtime (`ENABLE_HARDENED_RUNTIME`), sign with a Developer ID and notarize. Check that the test bundle still loads, since library validation may reject an ad hoc signed bundle. Keep the Sparkle EdDSA key: with it, installed ad hoc copies accept the first Developer ID update.
 - [ ] Keep Remote Access's Keychain item readable across updates. The named-tunnel token (`dev.wooloo.remote-access`) is in the login keychain, whose access list trusts the app by its designated requirement; an ad hoc signature's requirement is its cdhash, which changes with every build. Each Sparkle update therefore asks again for Keychain access when Remote Access starts at launch, and an unattended Mac keeps the tunnel down until someone answers. A Developer ID signature gives a stable requirement (team and bundle identifier). Until then, the release workflow appends a note to every release's notes and update dialog, and the README and Remote Access settings say so.
-- [ ] Remote Access checks sshd's sign-in methods only for the signed-in account, from localhost. A check per account allowed to use SSH (`dscl`/`com.apple.access_ssh`) and a re-check while the tunnel runs would cover sshd changes made later.
 - [ ] UI tests for the QUOTAS consent alert and the Remote Access confirmation: `AgentQuotaActivation` and `RemoteAccessModel` are tested, the SwiftUI alert and buttons that call them are not.
 
 ## Terminal performance
@@ -20,14 +19,9 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 
 ## Go to File and command palette
 
-- [ ] The Overwrite alert ContentView shows when saving over a newer file is not covered by a UI test; what its buttons do is (`ContentCommandsTests`, `WorkspaceDocumentStoreTests`).
 - [ ] Symbol search across the Space (⌘T, or `#` in Go to File) needs a workspace index; ⇧⌘O and `@` search only the focused file's outline symbols.
 - [ ] Over SSH, a linked folder the walk did not describe (past its first 55,000 links, once its files fill `folderWalkMaximumRecords`, or once the time is up) shows as a file until it is opened, from the explorer or Go to File: its tab then closes and the explorer shows it as a folder (`WorkspaceFiles.folderOpenedAsFile`). Describing every listed link would cost about 1.5 s more on one CPU for 200,000 links, and 200,000 linked folders with 90-character names would print about 38 MB, past the 32 MB output limit.
 - [ ] The SSH walk stops waiting for a look at links stalled in a hung network mount after `folderWalkLinkBudget`, but the stalled `readlink` or `[ -d ]` stays on the remote machine until the mount answers.
-
-## Notebook preview
-
-- [ ] Cells whose source the preview truncates can be moved, retyped or deleted from the cell toolbar, but their source can be edited only in Source view.
 
 ## Testing
 

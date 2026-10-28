@@ -115,8 +115,8 @@ struct RemoteAccessStatusView: View {
         case .needsConfirmation(let check): check.summary
         case .starting: "Connecting to Cloudflare and publishing the address…"
         case .running(let hostname):
-            model.startedWithoutVerifiedKeys
-                ? "On at \(hostname), started without verified key-only SSH"
+            model.runsWithoutVerifiedKeys
+                ? "On at \(hostname), without verified key-only SSH"
                 : "On at \(hostname)"
         case .failed(let message): message
         }
@@ -126,7 +126,7 @@ struct RemoteAccessStatusView: View {
         switch model.state {
         case .stopped: "circle"
         case .checking, .starting: "arrow.triangle.2.circlepath"
-        case .running: model.startedWithoutVerifiedKeys ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
+        case .running: model.runsWithoutVerifiedKeys ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
         case .needsConfirmation, .failed: "exclamationmark.triangle.fill"
         }
     }
@@ -134,7 +134,7 @@ struct RemoteAccessStatusView: View {
     private var color: Color {
         switch model.state {
         case .stopped, .checking, .starting: theme.subtext
-        case .running: model.startedWithoutVerifiedKeys ? theme.warning : theme.success
+        case .running: model.runsWithoutVerifiedKeys ? theme.warning : theme.success
         case .needsConfirmation, .failed: theme.warning
         }
     }
@@ -162,7 +162,7 @@ struct RemoteAccessIndicator: View {
 
     private var color: Color {
         switch model.state {
-        case .running: model.startedWithoutVerifiedKeys ? theme.warning : theme.success
+        case .running: model.runsWithoutVerifiedKeys ? theme.warning : theme.success
         case .failed, .needsConfirmation: theme.warning
         case .stopped, .checking, .starting: theme.subtext
         }
@@ -171,7 +171,7 @@ struct RemoteAccessIndicator: View {
     private var help: String {
         switch model.state {
         case .running(let hostname):
-            model.startedWithoutVerifiedKeys ? "Remote access on at \(hostname), without verified key-only SSH"
+            model.runsWithoutVerifiedKeys ? "Remote access on at \(hostname), without verified key-only SSH"
                 : "Remote access on at \(hostname)"
         case .failed(let message): "Remote access stopped: \(message)"
         case .needsConfirmation: "Remote access is waiting for your confirmation"
