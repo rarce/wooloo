@@ -906,7 +906,7 @@ private struct DestinationContentView: View {
             documentStore.recordScroll(id, position: position, anchor: anchor)
         }, onReplaceText: { revision, range, text in
             documentStore.replaceText(id, in: range, with: text, ifRevision: revision)
-        }, commandTarget: window.editor, isFocused: focused)
+        }, commandTarget: window.editor, symbolTarget: window.symbols, isFocused: focused)
         .id(id)
     }
 

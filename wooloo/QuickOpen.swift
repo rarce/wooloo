@@ -1,4 +1,5 @@
 import AppKit
+import CodeEditSourceEditor
 import Foundation
 
 /// What was typed in Go to File: space-separated terms that must all match a path, then an
@@ -28,6 +29,14 @@ struct QuickOpenQuery: Equatable {
         terms = rest.split(whereSeparator: \.isWhitespace).map(String.init)
         line = numbers.first
         column = numbers.count > 1 ? numbers[1] : nil
+    }
+
+    /// Terms alone, without a position.
+    init(terms: [String]) {
+        text = terms.joined(separator: " ")
+        self.terms = terms
+        line = nil
+        column = nil
     }
 }
 
@@ -78,6 +87,36 @@ struct QuickOpenMatch: Equatable, Sendable {
     let positions: [Int]
     /// Shown recently in the Space; recent matches are listed first.
     let isRecent: Bool
+}
+
+/// A symbol of the file open in the editor, which `@` in Go to File (⇧⌘O) searches, from the
+/// outline's symbol model.
+struct QuickOpenSymbol: Equatable, Sendable {
+    let symbol: SourceSymbol
+    /// The names of the symbols it is in, outermost first.
+    let container: [String]
+    /// 1-based.
+    let line: Int
+
+    /// Every symbol, each before those inside it, in the order of the file. `line` gives the
+    /// line of a UTF-16 offset.
+    static func flatten(_ symbols: [SourceSymbol], line: (Int) -> Int) -> [QuickOpenSymbol] {
+        var result: [QuickOpenSymbol] = []
+        func add(_ symbols: [SourceSymbol], in container: [String]) {
+            for symbol in symbols {
+                result.append(QuickOpenSymbol(symbol: symbol, container: container, line: line(symbol.selectionRange.location)))
+                add(symbol.children, in: container + [symbol.name])
+            }
+        }
+        add(symbols, in: [])
+        return result
+    }
+}
+
+struct QuickOpenSymbolMatch: Equatable, Sendable {
+    let symbol: QuickOpenSymbol
+    /// UTF-8 offsets in the symbol's name of the matched characters.
+    let positions: [Int]
 }
 
 /// Fuzzy path matching for Go to File. Each query term must appear in the path in order, not
@@ -215,6 +254,26 @@ enum QuickOpenMatcher {
         return score
     }
 
+    /// Symbols whose name has every space-separated term of `query`, best first, as file names
+    /// are matched; every symbol in the file's order when there is no term.
+    static func match(symbolQuery query: String, in symbols: [QuickOpenSymbol]) -> [QuickOpenSymbolMatch] {
+        let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !terms.isEmpty else { return symbols.map { QuickOpenSymbolMatch(symbol: $0, positions: []) } }
+        let names = symbols.map(\.symbol.name)
+        guard let matches = match(QuickOpenQuery(terms: terms), in: QuickOpenIndex(names), recents: [],
+                                  limit: symbols.count) else { return [] }
+        // Symbols with the same name, such as several `init`s, score the same: they are listed
+        // in the file's order.
+        var byName: [String: [Int]] = [:]
+        for (offset, name) in names.enumerated() { byName[name, default: []].append(offset) }
+        var taken: [String: Int] = [:]
+        return matches.map { match in
+            let next = taken[match.path, default: 0]
+            taken[match.path] = next + 1
+            return QuickOpenSymbolMatch(symbol: symbols[byName[match.path]![next]], positions: match.positions)
+        }
+    }
+
     private static func isSeparator(_ byte: UInt8) -> Bool {
         byte == UInt8(ascii: "_") || byte == UInt8(ascii: "-") || byte == UInt8(ascii: ".") || byte == UInt8(ascii: " ")
     }
@@ -232,6 +291,8 @@ final class QuickOpenModel: ObservableObject {
         didSet { if query != oldValue { refresh() } }
     }
     @Published private(set) var results: [QuickOpenMatch] = []
+    /// What a query starting with `@` found among `symbols`.
+    @Published private(set) var symbolResults: [QuickOpenSymbolMatch] = []
     @Published var selection = 0
     @Published private(set) var isIndexing = false
     /// True when the Space has more files than the listing keeps.
@@ -258,6 +319,8 @@ final class QuickOpenModel: ObservableObject {
     private let defaults: UserDefaults
 
     private var recents: [String] = []
+    /// The symbols of the file open when Go to File opened.
+    private(set) var symbols: [QuickOpenSymbol] = []
     private var index: QuickOpenIndex?
     private var indexIdentity: String?
     private var loadGeneration = 0
@@ -270,17 +333,26 @@ final class QuickOpenModel: ObservableObject {
         includesIgnored = defaults.bool(forKey: Self.includesIgnoredKey)
     }
 
-    var selectedMatch: QuickOpenMatch? { results.indices.contains(selection) ? results[selection] : nil }
+    /// A query starting with `@` searches the symbols of the open file, as ⇧⌘O does.
+    var isSymbolSearch: Bool { query.hasPrefix("@") }
+    var selectedMatch: QuickOpenMatch? {
+        !isSymbolSearch && results.indices.contains(selection) ? results[selection] : nil
+    }
+    var selectedSymbol: QuickOpenSymbolMatch? {
+        isSymbolSearch && symbolResults.indices.contains(selection) ? symbolResults[selection] : nil
+    }
     /// The path to create when the create row is selected.
-    var selectedCreatePath: String? { selection == results.count ? createPath : nil }
-    /// Matches plus the create row.
-    var rowCount: Int { results.count + (createPath == nil ? 0 : 1) }
+    var selectedCreatePath: String? { !isSymbolSearch && selection == results.count ? createPath : nil }
+    /// Matches plus the create row, or the symbols found.
+    var rowCount: Int { isSymbolSearch ? symbolResults.count : results.count + (createPath == nil ? 0 : 1) }
 
     private func identity(_ location: WorkspaceFileLocation) -> String { "\(location.identity)|\(includesIgnored)" }
 
     /// Opens on a location. `recents` are its files shown most recently first; `current`, the
-    /// one shown now, goes last so that ⌘P ↩ switches back to the previous file.
-    func present(at location: WorkspaceFileLocation, recents: [String], current: String?) {
+    /// one shown now, goes last so that ⌘P ↩ switches back to the previous file. `symbols` are
+    /// those of the file in the editor, for `query` "@".
+    func present(at location: WorkspaceFileLocation, recents: [String], current: String?,
+                 symbols: [QuickOpenSymbol] = [], query initialQuery: String = "") {
         previousResponder = NSApp?.keyWindow?.firstResponder
         if identity(location) != indexIdentity {
             index = nil
@@ -292,9 +364,10 @@ final class QuickOpenModel: ObservableObject {
         }
         self.location = location
         self.recents = recents.filter { $0 != current } + (current.map { [$0] } ?? [])
+        self.symbols = symbols
         error = nil
         isPresented = true
-        if query.isEmpty { refresh() } else { query = "" }
+        if query == initialQuery { refresh() } else { query = initialQuery }
         loadIndex(location)
     }
 
@@ -366,6 +439,15 @@ final class QuickOpenModel: ObservableObject {
         matchTask?.cancel()
         matchGeneration += 1
         let generation = matchGeneration
+        if isSymbolSearch {
+            let selectedID = keepingSelection ? selectedSymbol?.symbol.symbol.id : nil
+            symbolResults = QuickOpenMatcher.match(symbolQuery: String(query.dropFirst()), in: symbols)
+            results = []
+            createPath = nil
+            selection = selectedID.flatMap { id in symbolResults.firstIndex { $0.symbol.symbol.id == id } } ?? 0
+            return
+        }
+        if !symbolResults.isEmpty { symbolResults = [] }
         let selectedPath = keepingSelection ? selectedMatch?.path : nil
         let query = QuickOpenQuery(self.query)
         let recents = recents

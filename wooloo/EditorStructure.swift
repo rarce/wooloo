@@ -206,6 +206,35 @@ final class EditorStructureModel: ObservableObject, @preconcurrency TextViewCoor
     deinit { pending?.cancel() }
 }
 
+/// Where Go to File finds the focused editor's symbols for `@` (⇧⌘O) and sends the one chosen.
+/// The focused document view registers itself, as with `EditorCommandTarget`.
+@MainActor
+final class EditorSymbolTarget {
+    private var owner: UUID?
+    private var symbols: (() -> [QuickOpenSymbol])?
+    private var navigate: ((SourceSymbol) -> Void)?
+
+    /// `owner` identifies the view, so a view going away does not unregister its replacement.
+    func register(_ owner: UUID, symbols: @escaping () -> [QuickOpenSymbol],
+                  navigate: @escaping (SourceSymbol) -> Void) {
+        self.owner = owner
+        self.symbols = symbols
+        self.navigate = navigate
+    }
+
+    func unregister(_ owner: UUID) {
+        guard self.owner == owner else { return }
+        self.owner = nil
+        symbols = nil
+        navigate = nil
+    }
+
+    /// The focused editor's symbols now; none without one.
+    func currentSymbols() -> [QuickOpenSymbol] { symbols?() ?? [] }
+
+    func navigate(to symbol: SourceSymbol) { navigate?(symbol) }
+}
+
 /// Controlled expansion reveals the cursor's ancestors without requiring every symbol in a
 /// large file to be expanded. Users can still collapse a branch until the active path changes.
 struct EditorOutlineRow: View {
