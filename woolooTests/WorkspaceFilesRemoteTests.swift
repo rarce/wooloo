@@ -124,16 +124,23 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         try sandbox.write(["notes.md": "first\n"], in: "hidden")
         let location = remote("hidden")
         let store = WorkspaceDocumentStore(persistence: nil)
-        store.documents = [try await openTab("notes.md", at: location, space: "elsewhere")]
-        try sandbox.sh("rm -f ssh.log")
+        // An older version, so the poll's first check, once it ends, shows as a reload.
+        var document = try await openTab("notes.md", at: location, space: "elsewhere")
+        document.text = "zero\n"
+        document.savedText = "zero\n"
+        document.version = "0"
+        store.documents = [document]
         let poll = Task {
             await store.pollRemoteDisk(every: .milliseconds(50), hiddenInterval: .seconds(60), isActive: { true })
         }
         defer { poll.cancel() }
-        try await Task.sleep(for: .milliseconds(150))
+        let deadline = Date().addingTimeInterval(5)
+        while store.documents[0].text != "first\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(store.documents[0].text, "first\n", "Checked when the poll started")
+        try sandbox.sh("rm -f ssh.log")
         try sandbox.write(["notes.md": "second\n"], in: "hidden")
         try await Task.sleep(for: .milliseconds(500))
-        XCTAssertEqual(try invocations().count, 1, "Checked once when the poll started")
+        XCTAssertEqual(try invocations().count, 0, "Not checked again within `hiddenInterval`")
         XCTAssertEqual(store.documents[0].text, "first\n")
     }
 
