@@ -751,6 +751,20 @@ final class WorkspaceDocumentStore: ObservableObject {
         return Task { for task in tasks { await task.value } }
     }
 
+    /// No file events come from an SSH machine, and the explorer's poll covers only its own
+    /// Space: this compares open files at every SSH location with disk every `interval` while
+    /// `isActive`, for as long as the caller's task runs. A location still being checked, as on
+    /// a slow machine, is skipped rather than queued.
+    func pollRemoteDisk(every interval: Duration = .seconds(3),
+                        isActive: @escaping @MainActor () -> Bool) async {
+        while !Task.isCancelled {
+            do { try await Task.sleep(for: interval) } catch { return }
+            guard isActive() else { continue }
+            let remote = Set(documents.filter { Self.followsDisk($0) && !$0.location.isLocal }.map(\.location.identity))
+            for identity in remote where diskChecks[identity] == nil { checkDisk(location: identity) }
+        }
+    }
+
     private func checkDisk(location identity: String) -> Task<Void, Never> {
         queuedDiskChecks.insert(identity)
         if let running = diskChecks[identity] { return running }

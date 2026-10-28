@@ -43,6 +43,33 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return log.split(separator: "\u{1e}").map { $0.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init) }
     }
 
+    /// A tab of an SSH Space follows its file without the explorer showing that Space: a clean
+    /// tab reloads, and nothing is read while the app is inactive.
+    @MainActor
+    func testOpenRemoteFilesFollowTheDiskWhileTheAppIsActive() async throws {
+        try sandbox.write(["notes.md": "first\n"], in: "other")
+        let location = remote("other")
+        let contents = try await WorkspaceFiles.blocking(at: location) { try WorkspaceFiles.read("notes.md", at: location) }
+        var document = WorkspaceDocument(location: location, path: "notes.md", kind: .file)
+        document.text = contents.text
+        document.savedText = contents.text
+        document.version = contents.version
+        document.isLoading = false
+        let store = WorkspaceDocumentStore(persistence: nil)
+        store.documents = [document]
+        var active = false
+        let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { active }) }
+        defer { poll.cancel() }
+        try sandbox.write(["notes.md": "second\n"], in: "other")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(store.documents[0].text, "first\n", "Inactive: nothing is read")
+        active = true
+        let deadline = Date().addingTimeInterval(5)
+        while store.documents[0].text != "second\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(store.documents[0].text, "second\n")
+        XCTAssertFalse(store.documents[0].isDirty)
+    }
+
     func testGitHubReadsUseTheRemoteCLIAndExplicitRepository() async throws {
         try sandbox.repository("repo")
         try sandbox.sh("git remote add origin https://github.com/team/app.git", in: "repo")

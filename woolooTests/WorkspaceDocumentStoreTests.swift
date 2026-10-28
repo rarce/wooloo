@@ -1,5 +1,7 @@
 import XCTest
 import Combine
+import CodeEditTextView
+import SwiftUI
 @testable import wooloo
 
 /// Open document tabs against a disposable repository: preview tabs, loading, saving and closing.
@@ -341,6 +343,42 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.diskState, .current)
         XCTAssertEqual(reloaded.version, WorkspaceFiles.gitBlobHash(Data("from elsewhere\n".utf8)))
         XCTAssertNotNil(reloaded.diskReload)
+    }
+
+    /// The editor shown for a tab, as ContentView shows it: a clean tab's new text from disk
+    /// replaces the editor's, and an edited tab keeps the edits in the editor under the banner.
+    func testAShownEditorTakesTheTextFromDiskOnlyWhenClean() async throws {
+        struct Shown: View {
+            @ObservedObject var store: WorkspaceDocumentStore
+            var body: some View { WorkspaceDocumentView(document: $store.documents[0], onSave: {}) }
+        }
+        let opened = await open("a.txt")
+        XCTAssertNotNil(opened)
+        let host = NSHostingView(rootView: Shown(store: store))
+        host.frame = NSRect(x: 0, y: 0, width: 700, height: 300)
+        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        func editor() -> TextView? {
+            func find(_ view: NSView) -> TextView? { (view as? TextView) ?? view.subviews.lazy.compactMap(find).first }
+            return find(host)
+        }
+        await wait("The editor shows") { editor() != nil }
+        let shown = try XCTUnwrap(editor())
+
+        try sandbox.write(["a.txt": "from elsewhere\n"], in: "repo")
+        await checkDisk()
+        await wait("The editor takes the new text") { shown.string == "from elsewhere\n" }
+        XCTAssertFalse(store.documents[0].isDirty)
+
+        shown.replaceCharacters(in: NSRange(location: 0, length: 0), with: "mine ")
+        await wait("The edit reaches the tab") { store.documents[0].isDirty }
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        await checkDisk()
+        await wait("The tab is marked changed") { store.documents[0].diskState != .current }
+        XCTAssertEqual(shown.string, "mine from elsewhere\n", "Edits stay in the editor")
+        XCTAssertEqual(store.documents[0].text, "mine from elsewhere\n")
     }
 
     /// This Mac's open files are watched one by one, so a change is followed without waiting for
