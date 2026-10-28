@@ -135,8 +135,9 @@ final class WorkspaceExplorerModel: ObservableObject {
     private var listingTask: Task<Void, Never>?
     private var listingWorkerToken: UUID?
     private var listingRequest = 0
-    /// Files tree rows being read as folders before they are opened; see `openFile`.
-    private var folderChecks: Set<String> = []
+    /// Linked folders the SSH walk listed as files, found when one was opened, by location
+    /// identity; they are folders in later listings too.
+    private var foundLinkedFolders: [String: Set<String>] = [:]
     private var locationGeneration = 0
     /// Injectable so concurrency and SSH polling can be checked without a live server.
     var readListing: (WorkspaceFileLocation) throws -> WorkspaceFileListing = WorkspaceFiles.listing
@@ -242,11 +243,18 @@ final class WorkspaceExplorerModel: ObservableObject {
         let expanded = tree.expandedFolders(in: "\(location.identity)|files")
         let exists = { Self.folderExists($0, at: location) }
         let readListing = readListing
+        let foundFolders = foundLinkedFolders[location.identity] ?? []
         // The Files tree is built here too, so a large Space is not sorted on the main thread.
         let result = await WorkspaceFiles.blocking(at: location) {
             Result { () -> (WorkspaceFileListing, WorkspaceTree, Set<String>, [String: WorkspaceFolderContents]) in
                 WorkspaceFiles.forgetRecentResults(at: location)
-                let listing = try readListing(location)
+                var listing = try readListing(location)
+                if !foundFolders.isEmpty {
+                    let files = Set(listing.files)
+                    for path in foundFolders where files.contains(path) && listing.symbolicLinks[path] == nil {
+                        listing.symbolicLinks[path] = WorkspaceSymbolicLink(target: "", isDirectory: true)
+                    }
+                }
                 let kept = created.filter(exists)
                 // Expanded ignored and linked folders and nested repositories are read again, so
                 // they stay open across reloads.
@@ -486,31 +494,17 @@ final class WorkspaceExplorerModel: ObservableObject {
         }
     }
 
-    /// Opens a file of the Files tree. Over SSH, the walk can list a linked folder it did not
-    /// describe as a file (`WorkspaceFolderWalk.undescribedLinks`); when it may have, the row is
-    /// read as a folder first, and opened as one when it is, until the next listing.
+    /// A file of the listing that turned out to be a linked folder when it was opened, as one
+    /// the SSH walk did not describe (`folderWalkMaximumLinks`): it becomes a folder and opens.
     @discardableResult
-    func openFile(_ path: String, at location: WorkspaceFileLocation, preview: Bool,
-                  open: @escaping (WorkspaceFileLocation, String, Bool) -> Void) -> Task<Void, Never>? {
-        guard !location.isLocal, !showsChanges, let listing, listing.linksMayBeUndescribed,
-              listedIdentity == location.identity, listing.symbolicLinks[path] == nil,
-              !ignoredContents.values.contains(where: { $0.symbolicLinks[path] != nil }) else {
-            open(location, path, preview)
-            return nil
-        }
-        // A double click opens the row a second time while the first look runs.
-        guard folderChecks.insert(path).inserted else { return nil }
-        let version = listingVersion
-        return Task {
-            let contents = try? await WorkspaceFiles.blocking(at: location) { try WorkspaceFiles.folderContents(path, at: location) }
-            folderChecks.remove(path)
-            guard self.location?.identity == location.identity else { return }
-            guard var contents, listingVersion == version else { return open(location, path, preview) }
-            contents.symbolicLinks[path] = WorkspaceSymbolicLink(target: "", isDirectory: true)
-            ignoredContents[path] = contents
-            ignoredContentsVersion += 1
-            tree.expanded.insert(treeIdentity(location) + "|" + path)
-        }
+    func showLinkedFolder(_ path: String, atLocation identity: String) -> Task<Void, Never>? {
+        foundLinkedFolders[identity, default: []].insert(path)
+        guard let location, location.identity == identity, listedIdentity == identity,
+              listing?.symbolicLinks[path] == nil, listing?.files.contains(path) == true else { return nil }
+        listing?.symbolicLinks[path] = WorkspaceSymbolicLink(target: "", isDirectory: true)
+        tree.reveal(path, in: "\(identity)|files")
+        tree.expanded.insert("\(identity)|files|" + path)
+        return readIgnoredFolders([path], at: location)
     }
 
     /// Folders that cannot be read, such as one deleted since, are left out.

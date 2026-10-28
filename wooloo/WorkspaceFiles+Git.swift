@@ -224,6 +224,11 @@ extension WorkspaceFiles {
     /// documents compare themselves with the disk.
     static let filesDidChange = Notification.Name("WorkspaceFiles.filesDidChange")
 
+    /// Posted on the main queue when a file tab turned out to be a folder, as a linked folder the
+    /// SSH walk listed as a file; the object is the location's identity, "path" its path. The
+    /// tab is closed and the explorer shows the folder.
+    static let folderOpenedAsFile = Notification.Name("WorkspaceFiles.folderOpenedAsFile")
+
     /// A file's text at HEAD and in the index, for the editor's change bars. Nil when that version
     /// doesn't exist or isn't UTF-8 text.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")

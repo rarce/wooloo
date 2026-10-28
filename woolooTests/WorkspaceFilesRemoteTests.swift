@@ -586,7 +586,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
     }
 
     /// The watchdog can also stop the `find` of skipped folders: those it printed whole are kept,
-    /// and nothing it started prints after the walk. The folder's files, read after it, are not.
+    /// and nothing it started prints after the walk.
     func testRemoteWalkStoppedWhileListingSkippedFoldersKeepsTheWholeOnes() throws {
         defer { WorkspaceFiles.folderWalkBudget = 2 }
         try sandbox.write(["top.txt": "x\n", "big/real.txt": "x\n", "big/node_modules/m.js": "x\n"], in: "huge")
@@ -595,7 +595,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let started = Date()
         let listing = try WorkspaceFiles.listing(at: remote("huge"))
         XCTAssertLessThan(Date().timeIntervalSince(started), 8)
-        XCTAssertEqual(listing.files, ["top.txt"])
+        XCTAssertEqual(listing.files, ["big/real.txt", "top.txt"])
         XCTAssertEqual(listing.ignored.directories, ["big/node_modules"])
         XCTAssertTrue(listing.partial)
     }
@@ -752,7 +752,6 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let walk = try linkedWalk("links", maximumLinks: 3)
         XCTAssertLessThan(walk.skippedFolders.count, 1_100, "The records ran out in the skipped folders")
         XCTAssertFalse(walk.partial, "Every file was read")
-        XCTAssertFalse(walk.undescribedLinks, "Every link was looked at")
         let links = walk.symbolicLinks
         let full = links.filter { !$0.value.target.isEmpty }
         XCTAssertEqual(full.count, 3, "\(links)")
@@ -764,32 +763,39 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                        "Only folders are described past the first three")
 
         WorkspaceFiles.folderWalkBudget = 0
-        let late = try linkedWalk("links", maximumLinks: 3)
-        XCTAssertEqual(late.symbolicLinks.count, 3, "Once the time is up, only the links described in full")
-        XCTAssertTrue(late.undescribedLinks)
+        XCTAssertEqual(try linkedWalk("links", maximumLinks: 3).symbolicLinks.count, 3,
+                       "Once the time is up, only the links described in full")
     }
 
-    /// The explorer reads a file row of a walk that may have left links undescribed as a folder
-    /// before opening it: a linked folder is then expanded instead, and a file opened.
+    /// A linked folder the walk listed as a file, as past its first `folderWalkMaximumLinks`
+    /// links, is told apart when opened: its tab closes, and the explorer shows it as a folder,
+    /// also in later listings.
     @MainActor
-    func testExplorerOpensAnUndescribedLinkedFolderAsAFolder() async throws {
+    func testALinkedFolderOpenedAsAFileShowsAsAFolder() async throws {
         try sandbox.write(["f.txt": "x\n", "sub/g.txt": "x\n"], in: "undescribed")
         try sandbox.sh("ln -s sub folder", in: "undescribed")
         let location = remote("undescribed")
+        let store = WorkspaceDocumentStore(persistence: nil)
+        let posted = expectation(forNotification: WorkspaceFiles.folderOpenedAsFile, object: nil) {
+            $0.object as? String == location.identity && $0.userInfo?["path"] as? String == "folder"
+        }
+        store.open(.file, path: "folder", at: location, preview: true)
+        await fulfillment(of: [posted], timeout: 5)
+        XCTAssertTrue(store.documents.isEmpty, "The tab of the folder is closed")
+
         let model = WorkspaceExplorerModel()
         defer { model.stopMonitoring() }
         model.readListing = { _ in
-            WorkspaceFileListing(files: ["f.txt", "folder", "sub/g.txt"], changes: [], hasGit: false, totalFiles: 3,
-                                 linksMayBeUndescribed: true)
+            WorkspaceFileListing(files: ["f.txt", "folder", "sub/g.txt"], changes: [], hasGit: false, totalFiles: 3)
         }
         await model.loadListing(at: location)?.value
-        let opened = OpenedFiles()
-        await model.openFile("folder", at: location, preview: true) { _, path, _ in opened.paths.append(path) }?.value
-        XCTAssertEqual(opened.paths, [])
+        await model.showLinkedFolder("folder", atLocation: location.identity)?.value
         XCTAssertEqual(model.ignoredContents["folder"]?.files, ["folder/g.txt"])
-        XCTAssertTrue(model.tree.expanded.contains(model.treeIdentity(location) + "|folder"))
-        await model.openFile("f.txt", at: location, preview: true) { _, path, _ in opened.paths.append(path) }?.value
-        XCTAssertEqual(opened.paths, ["f.txt"])
+        XCTAssertTrue(model.tree.expanded.contains("\(location.identity)|files|folder"))
+        WorkspaceFiles.forgetRecentResults()
+        await model.loadListing(at: location)?.value
+        XCTAssertEqual(model.listing?.symbolicLinks["folder"]?.isDirectory, true, "Still a folder after a reload")
+        XCTAssertEqual(model.ignoredContents["folder"]?.files, ["folder/g.txt"], "Read again, as it is open")
     }
 
     /// A link into a hung network mount stalls whatever follows it; the walk waits for its look at
@@ -802,9 +808,11 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         try sandbox.write(["f.txt": "x\n"], in: "hung")
         try sandbox.sh("ln -s f.txt fine; ln -s f.txt hung", in: "hung")
         // `readlink` of the link named "hung" never returns, as in a hung mount.
+        let stalled = sandbox.path("stalled.pid")
+        defer { try? sandbox.sh("[ ! -s '\(stalled)' ] || kill $(cat '\(stalled)') 2>/dev/null; true") }
         try sandbox.write(["shims/readlink": """
             #!/bin/sh
-            case "$1" in *hung) exec sleep 30;; esac
+            case "$1" in *hung) echo $$ > '\(stalled)'; exec sleep 30;; esac
             exec /usr/bin/readlink "$@"
             """], in: ".")
         try sandbox.sh("chmod 755 shims/readlink")
@@ -813,8 +821,6 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 4, "The walk must not wait for the stalled link")
         XCTAssertEqual(Set(listing.files), ["f.txt", "fine", "hung"])
         XCTAssertTrue(listing.symbolicLinks["hung"]?.target.isEmpty ?? true, "The stalled link is not described")
-        XCTAssertTrue(listing.linksMayBeUndescribed)
-        try sandbox.sh("pkill -f 'sleep 30' || true")
     }
 
     /// The walk's `tr` runs in the C locale: in a UTF-8 one, BSD `tr` stops at a name that is not
@@ -1659,9 +1665,4 @@ final class WorkspaceHerdrCommandTests: XCTestCase {
         let modes: [WorkspaceCommitMode] = [.staged, .tracked, .all, .amend]
         XCTAssertEqual(modes.map(\.title), ["Commit", "Commit Tracked", "Commit All", "Amend"])
     }
-}
-
-@MainActor
-private final class OpenedFiles {
-    var paths: [String] = []
 }

@@ -545,6 +545,12 @@ final class WorkspaceDocumentStore: ObservableObject {
                     return .init(range: NSRange(location: start, length: min(max(position.range.length, 0), length - start)))
                 }
                 if content.patches[documents[index].diffScope] == nil { documents[index].diffScope = .all }
+            case .failure(WorkspaceFileError.folder) where kind == .file && document.version == nil
+                && !documents[index].isDirty:
+                // Never read, so nothing is lost: the explorer shows the folder instead.
+                close(id, force: true)
+                NotificationCenter.default.post(name: WorkspaceFiles.folderOpenedAsFile, object: location.identity,
+                                                userInfo: ["path": path])
             case .failure(let failure):
                 documents[index].error = failure.localizedDescription
             }

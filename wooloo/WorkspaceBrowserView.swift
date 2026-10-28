@@ -118,6 +118,11 @@ struct WorkspaceBrowserView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             model.setApplicationActive(false)
         }
+        .onReceive(NotificationCenter.default.publisher(for: WorkspaceFiles.folderOpenedAsFile)) { notification in
+            guard let identity = notification.object as? String,
+                  let path = notification.userInfo?["path"] as? String else { return }
+            model.showLinkedFolder(path, atLocation: identity)
+        }
         .onChange(of: model.draft != nil) { _, editing in
             if !editing { model.refreshIfNeeded() }
         }
@@ -531,7 +536,7 @@ struct WorkspaceBrowserView: View {
                 model.toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
             } else {
                 if model.showsChanges { onOpenDiff(location, node.path, true) }
-                else { model.openFile(node.path, at: location, preview: true, open: onOpenFile) }
+                else { onOpenFile(location, node.path, true) }
             }
         } label: {
             HStack(spacing: 6) {
@@ -587,7 +592,7 @@ struct WorkspaceBrowserView: View {
         .simultaneousGesture(TapGesture(count: 2).onEnded {
             guard !node.isDirectory, NSEvent.modifierFlags.isDisjoint(with: [.command, .shift]) else { return }
             if model.showsChanges { onOpenDiff(location, node.path, false) }
-            else { model.openFile(node.path, at: location, preview: false, open: onOpenFile) }
+            else { onOpenFile(location, node.path, false) }
         })
         .overlay(alignment: .trailing) {
             if let stageState { stageToggle(stageState, path: node.path, location: location) }
@@ -618,7 +623,7 @@ struct WorkspaceBrowserView: View {
                 } else {
                     Button("Open", systemImage: "doc.text") {
                         model.tree.selected = identity
-                        model.openFile(node.path, at: location, preview: false, open: onOpenFile)
+                        onOpenFile(location, node.path, false)
                     }
                     .keyboardShortcut(model.showsChanges ? nil : ExplorerFileCommand.open.shortcut)
                     .disabled(change?.kind == .deleted)
@@ -893,8 +898,7 @@ struct WorkspaceBrowserView: View {
     private func performFileCommand(_ command: ExplorerFileCommand) -> Bool {
         guard explorerTab == "files" || explorerTab == "changes" else { return false }
         return model.perform(command, open: { location, path, preview in
-            if model.showsChanges { onOpenDiff(location, path, preview) }
-            else { model.openFile(path, at: location, preview: preview, open: onOpenFile) }
+            if model.showsChanges { onOpenDiff(location, path, preview) } else { onOpenFile(location, path, preview) }
         }, findInFolder: onFindInFolder)
     }
 
