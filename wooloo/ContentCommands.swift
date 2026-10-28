@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// What the Rename alert renames.
 enum HerdrRenameTarget: Equatable {
@@ -34,6 +35,33 @@ enum HerdrCloseTarget: Equatable {
         case .pane(let id): return "Close Pane \(id)?"
         }
     }
+}
+
+/// The buttons of the alert a save over a newer file shows, in order.
+enum DocumentOverwriteChoice: CaseIterable {
+    case overwrite
+    case reload
+    case cancel
+
+    var title: String {
+        switch self {
+        case .overwrite: return "Overwrite"
+        case .reload: return "Reload"
+        case .cancel: return "Cancel"
+        }
+    }
+
+    /// Reload discards the edits; Cancel also answers Escape.
+    var role: ButtonRole? {
+        switch self {
+        case .overwrite: return nil
+        case .reload: return .destructive
+        case .cancel: return .cancel
+        }
+    }
+
+    static func title(_ document: WorkspaceDocument) -> String { "“\(document.title)” changed on disk" }
+    static let message = "The file is newer than the version you edited. Overwrite it with your version, or reload it and discard your edits?"
 }
 
 extension HerdrStore {
@@ -413,6 +441,20 @@ struct ContentCommands {
     /// Saves a document over the newer file on disk, as its save asked.
     func overwriteDocument(_ id: String) {
         documents.overwrite(id) { [window] in window.fileRefreshVersion += 1 }
+    }
+
+    /// A document whose save would overwrite a newer file on disk, to ask about.
+    var overwriteTarget: WorkspaceDocument? {
+        documents.documents.first(where: \.asksToOverwrite)
+    }
+
+    /// Settles a document's save over a newer file as its alert's button does.
+    func resolveOverwrite(_ id: String, _ choice: DocumentOverwriteChoice) {
+        switch choice {
+        case .overwrite: overwriteDocument(id)
+        case .reload: documents.revert(id)
+        case .cancel: documents.cancelOverwrite(id)
+        }
     }
 
     /// Saves the Save As sheet's untitled document at the path typed, relative to the Space

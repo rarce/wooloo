@@ -548,6 +548,32 @@ final class ContentCommandsTests: XCTestCase {
         XCTAssertEqual(documents.documents.first?.asksToOverwrite, false)
     }
 
+    /// The alert asks about the document whose save would overwrite a newer file; Reload
+    /// discards the edits and Cancel, also Escape, keeps them unsaved.
+    func testTheOverwriteAlertsButtonsReloadOrKeepTheEdits() async throws {
+        XCTAssertEqual(DocumentOverwriteChoice.allCases.map(\.title), ["Overwrite", "Reload", "Cancel"])
+        XCTAssertEqual(DocumentOverwriteChoice.allCases.map(\.role), [nil, .destructive, .cancel])
+        let id = try await openDocument(edited: true)
+        XCTAssertNil(commands.overwriteTarget)
+        try sandbox.write(["a.txt": "theirs\n"], in: "repo")
+        commands.saveDocument(id)
+        await waitUntil("asks") { commands.overwriteTarget?.id == id }
+        XCTAssertEqual(commands.overwriteTarget.map(DocumentOverwriteChoice.title), "“a.txt” changed on disk")
+
+        commands.resolveOverwrite(id, .cancel)
+        XCTAssertNil(commands.overwriteTarget)
+        XCTAssertEqual(documents.documents.first?.text, "edited\n", "Cancel keeps the edits")
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "theirs\n")
+
+        commands.saveDocument(id)
+        await waitUntil("asks again") { commands.overwriteTarget?.id == id }
+        commands.resolveOverwrite(id, .reload)
+        await waitUntil("reloaded") { documents.documents.first?.text == "theirs\n" }
+        XCTAssertNil(commands.overwriteTarget)
+        XCTAssertFalse(documents.documents.first?.isDirty ?? true)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "theirs\n")
+    }
+
     // MARK: Window and effects
 
     func testWindowCommandsChangeTheWindowsState() async {

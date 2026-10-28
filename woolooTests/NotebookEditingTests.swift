@@ -126,6 +126,12 @@ final class NotebookEditingTests: XCTestCase {
         XCTAssertFalse(truncated.cells[0].editable)
         XCTAssertNil(C.edit(["op": "source", "cell": 0, "id": "long", "text": "y"], in: truncated))
         XCTAssertEqual(truncated.sourceText, long)
+        // Unless the page was given the whole source to edit.
+        XCTAssertEqual(truncated.fullSource(cell: 0, id: "long"), String(repeating: "x", count: NotebookDocument.maximumTextCharacters + 1))
+        XCTAssertNil(truncated.fullSource(cell: 0, id: "other"))
+        XCTAssertNil(truncated.fullSource(cell: 1, id: "long"))
+        XCTAssertEqual(C.edit(["op": "source", "cell": 0, "id": "long", "whole": true, "text": "y"], in: truncated),
+                       .setSource(cell: 0, text: "y"))
     }
 
     // MARK: Undo
@@ -299,6 +305,58 @@ final class NotebookEditingTests: XCTestCase {
             """)
         try await waitForEdits(5)
         XCTAssertEqual(edits.suffix(2).map(\.0), [.delete(cell: 2), .move(cell: 0, offset: 1)])
+    }
+
+    /// A cell whose source the preview truncated opens in the editor with all of its source,
+    /// which the app sends, and applying it replaces the whole source.
+    func testATruncatedCellIsEditedWhole() async throws {
+        let location = WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test", workspaceID: "test",
+                                             workspaceLabel: "Notebook test", root: "/private/tmp")
+        let whole = String(repeating: "x", count: NotebookDocument.maximumTextCharacters) + "end"
+        let text = try NotebookParsingTests.source(cells: [NotebookParsingTests.cell("code", source: whole, id: "long")])
+        let model = try NotebookDocument.parse(text)
+        XCTAssertFalse(model.cells[0].editable)
+        var edits: [NotebookEdit] = []
+        let view = NotebookWebView(notebook: model, path: "edit.ipynb", location: location,
+                                   theme: WoolooTheme.all[0], typography: WoolooTypography(), matches: [],
+                                   currentMatch: nil, revealRequest: 0, onOpenFile: { _ in },
+                                   onSearchText: { _ in }, onFindCommand: { _, _, _ in },
+                                   onEdit: { edit, _, _ in edits.append(edit); return false })
+        let host = NSHostingView(rootView: view)
+        window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 650),
+                          styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window?.isReleasedWhenClosed = false
+        window?.contentView = host
+        window?.makeKeyAndOrderFront(nil)
+        func findWebView(_ view: NSView) -> WKWebView? {
+            if let webView = view as? WKWebView { return webView }
+            return view.subviews.lazy.compactMap(findWebView).first
+        }
+        var web: WKWebView?
+        for _ in 0..<200 {
+            if let found = findWebView(host),
+               (try? await found.evaluateJavaScript("document.querySelectorAll('.cell-tools').length")) as? Int == 1 {
+                web = found
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let page = try XCTUnwrap(web)
+        _ = try await page.evaluateJavaScript("document.querySelector('.cell-tools button').click()")
+        var shown: Int?
+        for _ in 0..<200 {
+            shown = try await page.evaluateJavaScript("document.querySelector('textarea.cell-editor')?.value.length ?? -1") as? Int
+            if shown != -1 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(shown, whole.count, "The editor has the whole source, not the preview's")
+        _ = try await page.evaluateJavaScript("""
+            { const editor = document.querySelector('textarea.cell-editor');
+              editor.value = editor.value.replace(/end$/, 'done');
+              editor.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', metaKey: true, bubbles: true})); }
+            """)
+        for _ in 0..<200 where edits.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(edits, [.setSource(cell: 0, text: String(repeating: "x", count: NotebookDocument.maximumTextCharacters) + "done")])
     }
 
     func testAReadOnlyPreviewHasNoCellToolbar() async throws {

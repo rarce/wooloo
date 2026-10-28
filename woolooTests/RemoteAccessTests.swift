@@ -306,6 +306,66 @@ final class RemoteAccessTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 
+    /// Every account allowed to use SSH is checked: one accepting passwords or unchecked
+    /// keeps the server from counting as key-only.
+    func testTheChecksOfEveryAccountCombine() {
+        let me = RemoteAccessSSHCheck.keysOnly(user: "me", methods: ["publickey"])
+        let other = RemoteAccessSSHCheck.keysOnly(user: "other", methods: ["publickey", "hostbased"])
+        let passwords = RemoteAccessSSHCheck.acceptsPasswords(user: "guest", methods: ["password"])
+        XCTAssertEqual(RemoteAccessSSHCheck.combined([me, other]),
+                       .keysOnly(user: "me, other", methods: ["publickey", "hostbased"]))
+        XCTAssertEqual(RemoteAccessSSHCheck.combined([me, passwords, .unknown(reason: "x")]), passwords)
+        XCTAssertEqual(RemoteAccessSSHCheck.combined([me, .unknown(reason: "x")]), .unknown(reason: "x"))
+        XCTAssertEqual(RemoteAccessSSHCheck.combined([passwords, .acceptsNoCredential(user: "open")]),
+                       .acceptsNoCredential(user: "open"))
+        XCTAssertEqual(RemoteAccessSSHCheck.combined([]), .unknown(reason: "no account to check"))
+    }
+
+    /// People's accounts only, and only those Remote Login allows when it limits access.
+    func testTheAccountsAllowedToUseSSH() throws {
+        XCTAssertEqual(RemoteAccessSSHAccounts.localUsers("_www 70\nroot 0\nnobody -2\nme 501\n_hidden 600\nother 502\n"),
+                       ["me", "other"])
+        func tool(_ name: String, _ body: String) throws -> String {
+            let url = directory.appendingPathComponent(name)
+            try ("#!/bin/sh\n" + body + "\n").write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+            return url.path
+        }
+        let users = "printf 'root 0\\nme 501\\nother 502\\nguest 503\\n'"
+        let open = try tool("dscl-open", "[ \"$2\" = -list ] && \(users) && exit 0; exit 56")
+        let limited = try tool("dscl-limited", "[ \"$2\" = -list ] && \(users); exit 0")
+        let members = try tool("dseditgroup", "[ \"$4\" = other ] || [ \"$4\" = me ]")
+        let nobody = try tool("dseditgroup-none", "exit 1")
+        XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "me", dscl: open, dseditgroup: nobody),
+                       ["me", "other", "guest"], "Without the group every account is allowed")
+        XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "me", dscl: limited, dseditgroup: members), ["me", "other"])
+        XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "admin", dscl: limited, dseditgroup: nobody), ["admin"],
+                       "The signed-in account is checked when nothing else is known")
+    }
+
+    /// A key-only server changed to accept passwords stops the tunnel nobody confirmed for it;
+    /// one the user confirmed keeps running.
+    func testARecheckFindingPasswordsStopsAnUnconfirmedTunnel() async throws {
+        let passwords = RemoteAccessSSHCheck.acceptsPasswords(user: "me", methods: ["password"])
+        let found = Locked(keysOnly)
+        let model = makeModel(script: markedTunnel(directory.appendingPathComponent("ran")),
+                              check: { found.value }, recheckInterval: .milliseconds(100))
+        model.start()
+        try await waitFor { model.state == .running(hostname: "fake-host.trycloudflare.com") }
+        found.value = passwords
+        try await waitFor { model.state == .failed("Stopped: \(passwords.summary)") }
+        XCTAssertEqual(model.sshCheck, passwords)
+
+        model.start()
+        try await waitFor { model.state == .needsConfirmation(passwords) }
+        model.startDespiteCheck()
+        try await waitFor { model.state == .running(hostname: "fake-host.trycloudflare.com") }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(model.state, .running(hostname: "fake-host.trycloudflare.com"), "The user confirmed passwords")
+        found.value = .acceptsNoCredential(user: "me")
+        try await waitFor { if case .failed = model.state { true } else { false } }
+    }
+
     // MARK: Helpers
 
     private var memoryTokens: RemoteAccessTokenStore {
@@ -318,12 +378,12 @@ final class RemoteAccessTests: XCTestCase {
     private func makeModel(script: String,
                            check: @escaping @Sendable () -> RemoteAccessSSHCheck = {
                                .keysOnly(user: "me", methods: ["publickey"])
-                           }) -> RemoteAccessModel {
+                           }, recheckInterval: Duration = .seconds(300)) -> RemoteAccessModel {
         let url = directory.appendingPathComponent("cloudflared-\(UUID().uuidString)")
         try? ("#!/bin/sh\n" + script + "\n").write(to: url, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return RemoteAccessModel(defaults: defaults, tokens: memoryTokens, executable: { url.path },
-                                 isPublished: { _ in true }, checkSSHSignIn: check)
+                                 isPublished: { _ in true }, checkSSHSignIn: check, recheckInterval: recheckInterval)
     }
 
     /// A fake `cloudflared` that leaves `marker` behind once it runs, then registers a quick tunnel.

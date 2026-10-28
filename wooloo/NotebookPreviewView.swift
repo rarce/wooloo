@@ -202,6 +202,17 @@ struct NotebookWebView: NSViewRepresentable {
             case "findCommand":
                 owner.onFindCommand(body["key"] as? String ?? "", body["shift"] as? Bool ?? false, body["option"] as? Bool ?? false)
             case "escape": owner.onFindCommand("escape", false, false)
+            case "fullSource":
+                // A source the preview truncated, asked for to edit it whole.
+                guard owner.onEdit != nil, let index = body["cell"] as? Int, let id = body["id"] as? String else { return }
+                let notebook = owner.notebook, token = revision
+                Task { @MainActor [weak self] in
+                    let text = await Task.detached(priority: .userInitiated) { notebook.fullSource(cell: index, id: id) }.value
+                    guard let self, self.revision == token, let text else { return }
+                    self.webView?.callAsyncJavaScript("window.notebook.fullSource(token, cell, id, text)",
+                                                      arguments: ["token": token, "cell": index, "id": id, "text": text],
+                                                      in: nil, in: .page, completionHandler: { _ in })
+                }
             case "edit":
                 guard owner.onEdit != nil else { return }
                 let edit = Self.edit(body, in: owner.notebook), base = owner.notebook.sourceText, token = revision
@@ -236,7 +247,8 @@ struct NotebookWebView: NSViewRepresentable {
             let identified = cells.indices.contains(index) && body["id"] as? String == cells[index].id
             switch operation {
             case "source":
-                guard identified, cells[index].editable, let text = body["text"] as? String,
+                // A truncated source is replaced only from an editor that was given all of it.
+                guard identified, cells[index].editable || body["whole"] as? Bool == true, let text = body["text"] as? String,
                       text.utf8.count <= NotebookDocument.maximumFileBytes else { return nil }
                 return .setSource(cell: index, text: text)
             case "kind":
