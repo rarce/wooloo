@@ -212,6 +212,7 @@ private struct DestinationContentView: View {
             documentStore.checkDisk()
         }
         .onReceive(Self.diskChanges) { checkDisk(after: $0) }
+        .task { await documentStore.pollRemoteDisk(isActive: { NSApp.isActive }) }
     }
 
     private var windowSheets: some View {
