@@ -70,6 +70,73 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertFalse(store.documents[0].isDirty)
     }
 
+    private func openTab(_ path: String, at location: WorkspaceFileLocation, space: String? = nil) async throws -> WorkspaceDocument {
+        let contents = try await WorkspaceFiles.blocking(at: location) { try WorkspaceFiles.read(path, at: location) }
+        var document = WorkspaceDocument(space: space, location: location, path: path, kind: .file)
+        document.text = contents.text
+        document.savedText = contents.text
+        document.version = contents.version
+        document.isLoading = false
+        return document
+    }
+
+    /// A reload slower than the poll is not started again, which would drop it, by every poll.
+    @MainActor
+    func testARemoteReloadSlowerThanThePollFinishes() async throws {
+        try sandbox.write(["notes.md": "first\n"], in: "slow-read")
+        let location = remote("slow-read")
+        let store = WorkspaceDocumentStore(persistence: nil)
+        store.documents = [try await openTab("notes.md", at: location)]
+        try sandbox.write(["notes.md": "second\n", "shims/cat": """
+            #!/bin/sh
+            /bin/sleep 0.4
+            exec /bin/cat "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/cat; mv notes.md slow-read/notes.md")
+        let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { true }) }
+        defer { poll.cancel() }
+        let deadline = Date().addingTimeInterval(5)
+        while store.documents[0].text != "second\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(store.documents[0].text, "second\n")
+    }
+
+    /// A machine that cannot be reached is tried again ever less often, not on every poll.
+    @MainActor
+    func testThePollBacksOffFromAnUnreachableLocation() async throws {
+        try sandbox.write(["notes.md": "x\n"], in: "gone")
+        let location = remote("gone")
+        let store = WorkspaceDocumentStore(persistence: nil)
+        store.documents = [try await openTab("notes.md", at: location)]
+        try sandbox.sh("rm -rf gone; rm -f ssh.log")
+        let poll = Task {
+            await store.pollRemoteDisk(every: .milliseconds(50), maximumRetryDelay: .milliseconds(400), isActive: { true })
+        }
+        try await Task.sleep(for: .milliseconds(1_000))
+        poll.cancel()
+        let attempts = try invocations().count
+        XCTAssertGreaterThan(attempts, 1)
+        XCTAssertLessThanOrEqual(attempts, 7, "About 18 without backing off")
+    }
+
+    /// Tabs of a Space not shown are checked every `hiddenInterval`, not on every poll.
+    @MainActor
+    func testTabsOfHiddenSpacesAreCheckedLessOften() async throws {
+        try sandbox.write(["notes.md": "first\n"], in: "hidden")
+        let location = remote("hidden")
+        let store = WorkspaceDocumentStore(persistence: nil)
+        store.documents = [try await openTab("notes.md", at: location, space: "elsewhere")]
+        try sandbox.sh("rm -f ssh.log")
+        let poll = Task {
+            await store.pollRemoteDisk(every: .milliseconds(50), hiddenInterval: .seconds(60), isActive: { true })
+        }
+        defer { poll.cancel() }
+        try await Task.sleep(for: .milliseconds(150))
+        try sandbox.write(["notes.md": "second\n"], in: "hidden")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(try invocations().count, 1, "Checked once when the poll started")
+        XCTAssertEqual(store.documents[0].text, "first\n")
+    }
+
     func testGitHubReadsUseTheRemoteCLIAndExplicitRepository() async throws {
         try sandbox.repository("repo")
         try sandbox.sh("git remote add origin https://github.com/team/app.git", in: "repo")
