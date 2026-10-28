@@ -102,6 +102,8 @@ struct WorkspaceFileListing {
     var partial = false
     /// True when the walk of a folder outside a repository stopped at `maximumFiles` files.
     var truncated = false
+    /// True when a listed link may be a folder the SSH walk did not describe (`WorkspaceFolderWalk`).
+    var linksMayBeUndescribed = false
 }
 
 /// The files of a folder outside a Git repository, as `WorkspaceFiles.folderWalk` reads them.
@@ -117,6 +119,11 @@ struct WorkspaceFolderWalk: Equatable {
     /// True when more than `WorkspaceFiles.maximumFiles` files were found.
     var truncated = false
     var symbolicLinks: [String: WorkspaceSymbolicLink] = [:]
+    /// True when the SSH walk left links it listed undescribed, so a linked folder may show as a
+    /// file: past its first `folderWalkMaximumLinks + folderWalkMaximumFolderLinks` links, when it
+    /// ran out of time or records while looking at them, or when a look took longer than
+    /// `folderWalkLinkBudget`.
+    var undescribedLinks = false
 }
 
 struct WorkspaceSymbolicLink: Equatable {

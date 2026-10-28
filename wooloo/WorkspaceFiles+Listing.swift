@@ -22,10 +22,15 @@ extension WorkspaceFiles {
     /// own tests, about 7 µs each on one CPU, to list the linked folders among them, without
     /// their targets; a linked folder found after these shows as a file.
     static let folderWalkMaximumFolderLinks = 50_000
+    /// The SSH walk's last record when it left links it listed undescribed.
+    private static let folderWalkUndescribedLinksMarker = "wooloo-undescribed-links"
     /// How many folders down the walk of a folder outside a repository reads.
     static let folderWalkMaximumDepth = 12
     /// Seconds the walk of a folder outside a repository spends after reading the root; tests replace it.
     static var folderWalkBudget: TimeInterval = 2
+    /// Seconds the SSH walk waits for each look at links, which follow them: a link into a hung
+    /// network mount would otherwise hold the walk until the SSH timeout. Tests replace it.
+    static var folderWalkLinkBudget: TimeInterval = 5
     /// Folders the walk outside a repository lists without reading, as Git lists ignored folders,
     /// unless ignored files are asked for. `.git` is never read.
     static let folderWalkSkippedFolders = ["node_modules", ".build", "DerivedData", "__pycache__", ".venv"]
@@ -46,7 +51,7 @@ extension WorkspaceFiles {
         WorkspaceFileListing(files: walk.files, changes: [], hasGit: false, totalFiles: walk.files.count,
                              ignored: WorkspaceIgnoredEntries(gitEntries: walk.skippedFolders.map { $0 + "/" }),
                              symbolicLinks: walk.symbolicLinks, partial: walk.partial || walk.truncated,
-                             truncated: walk.truncated)
+                             truncated: walk.truncated, linksMayBeUndescribed: walk.undescribedLinks)
     }
 
     /// The files of a folder outside a repository, which may be as large as /private/tmp, for the
@@ -79,8 +84,15 @@ extension WorkspaceFiles {
         let sections = folderWalkSections(output.data)
         var walk = finished(folderWalk(records: sections.records), readingSkipped: false)
         walk.truncated = walk.truncated || output.truncated
+        var metadata = nulStrings(sections.linkMetadata)
+        // A complete description ends with its kind, never with the marker.
+        if metadata.last == folderWalkUndescribedLinksMarker {
+            metadata.removeLast()
+            walk.undescribedLinks = true
+        }
+        walk.undescribedLinks = walk.undescribedLinks || output.truncated
         let listed = Set(walk.files)
-        walk.symbolicLinks = walk.symbolicLinks.merging(parseSymbolicLinks(sections.linkMetadata)) { _, full in full }
+        walk.symbolicLinks = walk.symbolicLinks.merging(parseSymbolicLinks(metadata)) { _, full in full }
             .filter { listed.contains($0.key) }
         return walk
     }
@@ -300,6 +312,8 @@ extension WorkspaceFiles {
             lastIsFile = isFile
         }
         endFiles(complete: false)
+        // Linked folders cut at `folderWalkMaximumRecords`: those after them are not listed.
+        if section == .linkedFolders { walk.undescribedLinks = true }
         // Skipped folders cut at `folderWalkMaximumRecords`: the last may be one the time limit cut
         // short. The files were all read, so the walk is not partial for that.
         if section == .skippedFolders, !walk.skippedFolders.isEmpty { walk.skippedFolders.removeLast() }
@@ -344,7 +358,9 @@ extension WorkspaceFiles {
     ///   found until then are kept.
     /// - Anywhere, the root included, the walk stops once it found more than `maximumFiles` files
     ///   and is then truncated; over SSH, after `folderWalkMaximumFileRecords` records. Over SSH
-    ///   only, skipped folders past `folderWalkMaximumRecords` records in all are left out.
+    ///   only, skipped folders past `folderWalkMaximumRecords` records in all are left out, and a
+    ///   walk cut this way lists the skipped folders of every folder in the batch it was reading;
+    ///   on this Mac, those found before the cut in each folder.
     ///
     /// Each level is read by `find` on the folders the previous one found, 256 folders per batch.
     /// A watchdog marks the time as up and stops the `find` running then, so neither a slow level
@@ -359,6 +375,20 @@ extension WorkspaceFiles {
     /// these records pass through a second `head`, which stops at `folderWalkMaximumRecords`. The
     /// first `maximumLinks` links found are described in full, cut or not, and the next
     /// `folderWalkMaximumFolderLinks` only when they are linked folders, without their targets.
+    /// `bounded <file> <command>` runs a look at links in the background into a file and prints
+    /// what it wrote once it finishes, or once `folderWalkLinkBudget` seconds have passed: `wait`
+    /// returns when the shell gets a signal it traps, which a timer sends. A `[ -d ]` or
+    /// `readlink` stalled in a hung network mount cannot be interrupted, but the walk no longer
+    /// waits for it: it writes into the file, not into SSH's output, so SSH ends without it.
+    /// The walk ends with `folderWalkUndescribedLinksMarker` when it left links undescribed this
+    /// way, ran out of time while looking at them, or found as many as it looks at.
+    private static var boundedFunction: String {
+        let seconds = Int(folderWalkLinkBudget.rounded(.up))
+        return #"bounded() { me=$(exec sh -c 'echo "$PPID"'); trap : USR1; ( eval "$2" ) > "$1" 2> /dev/null < /dev/null & j=$!; "#
+            + #"( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "# + String(max(seconds, 0))
+            + #" & s=$!; wait "$s"; : > "$t/undescribed"; kill -USR1 "$me" ) > /dev/null 2>&1 & k=$!; wait "$j"; kill "$k" 2>/dev/null; wait "$k"; cat "$1"; }; "#
+    }
+
     static func folderWalkScript(readingSkipped: Bool, links: Bool, maximumLinks: Int = folderWalkMaximumLinks) -> String {
         let skipped = readingSkipped ? [] : folderWalkSkippedFolders
         let unskipped = skipped.map { " ! -name " + quote($0) }.joined()
@@ -382,13 +412,15 @@ extension WorkspaceFiles {
             batch += "run_find " + entries + " -type l -print0 2>/dev/null | " + swap + " | head -n " + String(examinedLinks)
                 + " | " + swap + #" >> "$t/links"; "#
         }
-        batch += "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
-            + "run_find " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
+        // Skipped folders are collected before the files, so a walk cut at `maximumFiles` lists
+        // those of every folder it was reading when cut, whenever `head` cuts it.
         if !skipped.isEmpty {
             batch += "run_find " + entries + #" -type d \( "#
                 + skipped.map { "-name " + quote($0) }.joined(separator: " -o ")
                 + #" \) -print0 2>/dev/null >> "$t/skipped"; "#
         }
+        batch += "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
+            + "run_find " + entries + " -type d" + unskipped + #" -print0 2>/dev/null >> "$t/next"; "#
         batch += "exit 0"
         let check = entries + unskipped + " -print 2>/dev/null | head -n 1; exit 0"
         // `sleep` takes whole seconds in POSIX, so the budget is rounded up. The watchdog stops its
@@ -401,6 +433,7 @@ extension WorkspaceFiles {
                 + #": > "$t/late"; read p < "$t/pid" && kill "$p" ) > /dev/null 2>&1 & w=$!; "#
         // In the C locale, `tr` passes bytes that are not UTF-8 through unchanged.
         var script = #"LC_ALL=C; export LC_ALL; cd "$1" || exit 1; t=$(mktemp -d) || exit 1; w=; trap '[ -n "$w" ] && kill "$w" 2>/dev/null && wait "$w"; rm -rf "$t"' EXIT; "#
+            + boundedFunction
             + "b=" + quote(batch) + "; c=" + quote(check) + "; d=1; export t d; "
             + #": > "$t/pid"; "# + watchdog
             + #"printf '.\0' > "$t/level"; : > "$t/links"; : > "$t/skipped"; "#
@@ -416,10 +449,13 @@ extension WorkspaceFiles {
         // drops it.
         if links {
             // Within the walk's time limit: `[ -d ]` follows each link, which can be slow.
-            let folderLinks = #"for p do [ ! -e "$t/late" ] || break; p=./${p#./}; [ -L "$p" ] && [ -d "$p" ] && printf '%s\0' "$p"; done; exit 0"#
-            records += #"printf 'wooloo-linked-folders\n'; [ -s "$t/links" ] && "# + swap + #" < "$t/links" | tail -n +"#
-                + String(maximumLinks + 1) + " | head -n " + String(folderWalkMaximumFolderLinks) + " | " + swap
-                + " | xargs -0 sh -c " + quote(folderLinks) + " sh | " + swap + "; "
+            let folderLinks = #"for p do [ ! -e "$t/late" ] || { : > "$t/undescribed"; break; }; p=./${p#./}; [ -L "$p" ] && [ -d "$p" ] && printf '%s\0' "$p"; done; exit 0"#
+            let examine = swap + #" < "$t/links" | tail -n +"# + String(maximumLinks + 1) + " | head -n "
+                + String(folderWalkMaximumFolderLinks) + " | " + swap + " | xargs -0 sh -c " + quote(folderLinks) + " sh"
+            // A folder can hold more links than the walk looks at, and `head` drops the rest.
+            let counted = #"[ $(tr -dc '\000' < "$t/links" | wc -c) -lt "# + String(examinedLinks) + #" ] || : > "$t/undescribed"; "#
+            records += #"printf 'wooloo-linked-folders\n'; "# + counted + #"[ -s "$t/links" ] && bounded "$t/linked-folders" "# + quote(examine)
+                + " | " + swap + "; "
         }
         if !skipped.isEmpty {
             records += #"printf 'wooloo-skipped\n'; "# + swap + #" < "$t/skipped"; printf '\nwooloo-files\n'; "#
@@ -427,8 +463,10 @@ extension WorkspaceFiles {
         // Bound every section together, including metadata, before SSH's strict output limit.
         script += "{ { " + records + "} | head -n " + String(folderWalkMaximumRecords) + " | " + swap + "; "
         if links {
-            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && "# + swap + #" < "$t/links" | head -n "#
-                + String(maximumLinks) + " | " + swap + " | xargs -0 sh -c " + quote(symbolicLinkMetadataScript) + " sh; "
+            let describe = swap + #" < "$t/links" | head -n "# + String(maximumLinks) + " | " + swap
+                + " | xargs -0 sh -c " + quote(symbolicLinkMetadataScript) + " sh"
+            script += #"printf 'wooloo-symbolic-links\0'; [ -s "$t/links" ] && bounded "$t/link-metadata" "# + quote(describe) + "; "
+                + #"[ ! -e "$t/undescribed" ] || printf '%s\0' "# + folderWalkUndescribedLinksMarker + "; "
         }
         return script + "} | head -c " + String(folderWalkMaximumBytes) + "; exit 0"
     }
@@ -507,7 +545,10 @@ extension WorkspaceFiles {
 
     // Shared by the WorkspaceFiles implementation files.
     static func parseSymbolicLinks(_ data: Data) -> [String: WorkspaceSymbolicLink] {
-        let entries = nulStrings(data)
+        parseSymbolicLinks(nulStrings(data))
+    }
+
+    private static func parseSymbolicLinks(_ entries: [String]) -> [String: WorkspaceSymbolicLink] {
         var links: [String: WorkspaceSymbolicLink] = [:]
         for index in stride(from: 0, to: entries.count - entries.count % 3, by: 3) {
             links[entries[index]] = WorkspaceSymbolicLink(target: entries[index + 1], isDirectory: entries[index + 2] == "d")

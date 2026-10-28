@@ -531,7 +531,7 @@ struct WorkspaceBrowserView: View {
                 model.toggleDirectory(identity, path: node.path, isExpanded: isExpanded, location: location)
             } else {
                 if model.showsChanges { onOpenDiff(location, node.path, true) }
-                else { onOpenFile(location, node.path, true) }
+                else { model.openFile(node.path, at: location, preview: true, open: onOpenFile) }
             }
         } label: {
             HStack(spacing: 6) {
@@ -587,7 +587,7 @@ struct WorkspaceBrowserView: View {
         .simultaneousGesture(TapGesture(count: 2).onEnded {
             guard !node.isDirectory, NSEvent.modifierFlags.isDisjoint(with: [.command, .shift]) else { return }
             if model.showsChanges { onOpenDiff(location, node.path, false) }
-            else { onOpenFile(location, node.path, false) }
+            else { model.openFile(node.path, at: location, preview: false, open: onOpenFile) }
         })
         .overlay(alignment: .trailing) {
             if let stageState { stageToggle(stageState, path: node.path, location: location) }
@@ -618,7 +618,7 @@ struct WorkspaceBrowserView: View {
                 } else {
                     Button("Open", systemImage: "doc.text") {
                         model.tree.selected = identity
-                        onOpenFile(location, node.path, false)
+                        model.openFile(node.path, at: location, preview: false, open: onOpenFile)
                     }
                     .keyboardShortcut(model.showsChanges ? nil : ExplorerFileCommand.open.shortcut)
                     .disabled(change?.kind == .deleted)
@@ -893,7 +893,8 @@ struct WorkspaceBrowserView: View {
     private func performFileCommand(_ command: ExplorerFileCommand) -> Bool {
         guard explorerTab == "files" || explorerTab == "changes" else { return false }
         return model.perform(command, open: { location, path, preview in
-            if model.showsChanges { onOpenDiff(location, path, preview) } else { onOpenFile(location, path, preview) }
+            if model.showsChanges { onOpenDiff(location, path, preview) }
+            else { model.openFile(path, at: location, preview: preview, open: onOpenFile) }
         }, findInFolder: onFindInFolder)
     }
 
