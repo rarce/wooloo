@@ -208,9 +208,10 @@ struct NotebookWebView: NSViewRepresentable {
                 let notebook = owner.notebook, token = revision
                 Task { @MainActor [weak self] in
                     let text = await Task.detached(priority: .userInitiated) { notebook.fullSource(cell: index, id: id) }.value
-                    guard let self, self.revision == token, let text else { return }
+                    guard let self, self.revision == token else { return }
                     self.webView?.callAsyncJavaScript("window.notebook.fullSource(token, cell, id, text)",
-                                                      arguments: ["token": token, "cell": index, "id": id, "text": text],
+                                                      arguments: ["token": token, "cell": index, "id": id,
+                                                                  "text": text as Any? ?? NSNull()],
                                                       in: nil, in: .page, completionHandler: { _ in })
                 }
             case "edit":

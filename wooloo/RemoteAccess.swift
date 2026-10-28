@@ -229,10 +229,19 @@ enum RemoteAccessSSHProbe {
     }
 
     /// Checks every account allowed to sign in over SSH (`RemoteAccessSSHAccounts`), since a
-    /// tunnel client may try any of them.
+    /// tunnel client may try any of them, at the same time. Accounts that cannot be listed make
+    /// the server unknown rather than checked through the signed-in account alone.
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
-    static func checkAccounts(ssh: String = "/usr/bin/ssh") -> RemoteAccessSSHCheck {
-        .combined(RemoteAccessSSHAccounts.allowed().map { check(user: $0, ssh: ssh) })
+    static func checkAccounts(ssh: String = "/usr/bin/ssh",
+                              accounts: () -> [String]? = { RemoteAccessSSHAccounts.allowed() }) -> RemoteAccessSSHCheck {
+        guard let users = accounts() else { return .unknown(reason: "the accounts allowed to use SSH could not be listed") }
+        let lock = NSLock()
+        nonisolated(unsafe) var checks = Array(repeating: RemoteAccessSSHCheck.unknown(reason: "not checked"), count: users.count)
+        DispatchQueue.concurrentPerform(iterations: users.count) { index in
+            let check = check(user: users[index], ssh: ssh)
+            lock.withLock { checks[index] = check }
+        }
+        return .combined(checks)
     }
 }
 
@@ -252,21 +261,30 @@ enum RemoteAccessSSHAccounts {
         }
     }
 
-    /// The signed-in account is always included, and alone when nothing else can be learned.
+    /// The accounts to check, the signed-in one included when it is allowed; nil when the
+    /// accounts or the groups could not be listed. An account whose membership could not be
+    /// learned is checked, as is the signed-in account when no account is allowed.
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func allowed(current: String = NSUserName(), dscl: String = "/usr/bin/dscl",
-                        dseditgroup: String = "/usr/sbin/dseditgroup") -> [String] {
-        let listing = (try? WorkspaceFiles.run(dscl, [".", "-list", "/Users", "UniqueID"], limit: 1_000_000,
-                                               timeout: 10, label: "remote-access-ssh-accounts"))
-            .map { String(decoding: $0, as: UTF8.self) } ?? ""
+                        dseditgroup: String = "/usr/sbin/dseditgroup") -> [String]? {
+        func list(_ path: String) -> String? {
+            (try? WorkspaceFiles.run(dscl, [".", "-list", path] + (path == "/Users" ? ["UniqueID"] : []),
+                                     limit: 1_000_000, timeout: 10, label: "remote-access-ssh-accounts"))
+                .map { String(decoding: $0, as: UTF8.self) }
+        }
+        guard let listing = list("/Users"), let groups = list("/Groups") else { return nil }
         var users = localUsers(listing)
         if !users.contains(current) { users.insert(current, at: 0) }
-        let restricted = (try? WorkspaceFiles.run(dscl, [".", "-read", "/Groups/\(group)", "RecordName"], limit: 16_000,
-                                                  timeout: 10, label: "remote-access-ssh-accounts")) != nil
-        guard restricted else { return users }
+        guard groups.split(separator: "\n").contains(where: { $0.trimmingCharacters(in: .whitespaces) == group }) else {
+            return users
+        }
         let allowed = users.filter { user in
-            (try? WorkspaceFiles.run(dseditgroup, ["-o", "checkmember", "-m", user, group], limit: 16_000,
-                                     timeout: 10, label: "remote-access-ssh-accounts")) != nil
+            // `dseditgroup` answers "yes …" or "no …"; its status alone does not tell "no" from a failure.
+            let answer = (try? WorkspaceFiles.run("/bin/sh", ["-c", "\"$0\" -o checkmember -m \"$1\" \"$2\"; exit 0",
+                                                              dseditgroup, user, group],
+                                                  limit: 16_000, timeout: 10, label: "remote-access-ssh-accounts"))
+                .map { String(decoding: $0, as: UTF8.self) } ?? ""
+            return !answer.hasPrefix("no ")
         }
         return allowed.isEmpty ? [current] : allowed
     }
@@ -394,6 +412,12 @@ final class RemoteAccessModel: ObservableObject {
     /// Whether the running tunnel was started on the user's word rather than a key-only check.
     @Published private(set) var startedWithoutVerifiedKeys = false
 
+    /// Whether the status must say the tunnel runs without verified key-only SSH: it was started
+    /// on the user's word, or a later check could not verify it.
+    var runsWithoutVerifiedKeys: Bool {
+        startedWithoutVerifiedKeys || sshCheck.map { !$0.isVerifiedKeysOnly } ?? false
+    }
+
     private let defaults: UserDefaults
     private let tokens: RemoteAccessTokenStore
     private let executable: () -> String?
@@ -450,14 +474,15 @@ final class RemoteAccessModel: ObservableObject {
         hasToken = !trimmed.isEmpty
     }
 
-    /// Whether Remote Login is on and, if so, which sign-in methods sshd offers.
-    func checkSSH() {
+    /// Whether Remote Login is on and, if so, which sign-in methods sshd offers, unless
+    /// `signIn` is false, as just after a start checked them.
+    func checkSSH(signIn: Bool = true) {
         let checkSSHSignIn = checkSSHSignIn
         Task {
             // nil when cancelled.
             guard let accepts = await BlockingWork.run({ Optional(RemoteAccessSystem.acceptsSSH()) }) else { return }
             if acceptsSSH != accepts { acceptsSSH = accepts }
-            guard accepts, let check = await BlockingWork.run({ Optional(checkSSHSignIn()) }) else { return }
+            guard accepts, signIn, let check = await BlockingWork.run({ Optional(checkSSHSignIn()) }) else { return }
             if sshCheck != check { sshCheck = check }
         }
     }
@@ -616,7 +641,7 @@ final class RemoteAccessModel: ObservableObject {
             self.process = process
             startedWithoutVerifiedKeys = !verified
             state = .starting
-            checkSSH()
+            checkSSH(signIn: false)
             recheckWhileActive(generation: generation)
         } catch {
             state = .failed("Could not start cloudflared: \(error.localizedDescription)")

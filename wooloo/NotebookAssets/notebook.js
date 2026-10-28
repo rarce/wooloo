@@ -329,7 +329,8 @@
         editor.value = cell.source;editor.spellcheck = false;editor.setAttribute("aria-label", `Source of cell ${cellIndex+1}`);
         const hint = node("div", "⌘↩ or click outside to apply · Esc to cancel", "cell-editor-hint");
         const hidden = Array.from(section.children).filter(child => !child.classList.contains("cell-tools") && !child.classList.contains("cell-label"));
-        const fit = () => {editor.style.height = "auto";editor.style.height = (editor.scrollHeight + 2) + "px";};
+        // A source too long for the preview keeps a fixed height: measuring megabytes per key would stall typing.
+        const fit = cell.whole ? () => {editor.style.height = "70vh";} : () => {editor.style.height = "auto";editor.style.height = (editor.scrollHeight + 2) + "px";};
         // A textarea turns "\r\n" and "\r" into "\n": compare without them, and write a changed
         // source back with the line breaks it had.
         const breaks = cell.source.includes("\r\n") ? "\r\n" : "\n", original = cell.source.replace(/\r\n?/g, "\n");
@@ -466,10 +467,17 @@
             collectSearch();setFind([],null,false);
         },
         // The whole source of a truncated cell, asked for by `beginEdit`, for the cell still shown.
+        // A null `text` means the app could not read it.
         fullSource(token, cellIndex, id, text) {
-            const pending = pendingSource;pendingSource = null;
-            if (token !== revision || !pending || pending.cellIndex !== cellIndex || pending.cell.id !== id
-                || !sections.some(section => section === pending.section)) return;
+            const pending = pendingSource;
+            if (token !== revision || !pending || pending.cellIndex !== cellIndex || pending.cell.id !== id) return;
+            pendingSource = null;
+            if (!sections.includes(pending.section)) return;
+            if (text === null) {
+                pending.section.querySelector(".cell-editor-hint")?.remove();
+                pending.section.append(node("div", "The whole source could not be read; edit it in Source view", "cell-editor-hint"));
+                return;
+            }
             beginEdit(pending.section, Object.assign({}, pending.cell, {source:text, whole:true}), cellIndex);
         },
         // Shows the notebook as it was rendered again, after an edit the app did not make.

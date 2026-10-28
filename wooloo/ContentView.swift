@@ -212,6 +212,12 @@ private struct DestinationContentView: View {
             documentStore.checkDisk()
         }
         .onReceive(Self.diskChanges) { checkDisk(after: $0) }
+        // The poll skips a hidden window; one shown again is checked at once, as on activation.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { notification in
+            guard let shown = notification.object as? NSWindow, shown === destinations.nativeWindow,
+                  shown.occlusionState.contains(.visible), NSApp.isActive else { return }
+            documentStore.checkDisk()
+        }
         // A window minimized, on another desktop or covered by others has no tab anyone is reading.
         .task {
             await documentStore.pollRemoteDisk(isActive: { [destinations] in

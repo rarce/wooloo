@@ -332,15 +332,29 @@ final class RemoteAccessTests: XCTestCase {
             return url.path
         }
         let users = "printf 'root 0\\nme 501\\nother 502\\nguest 503\\n'"
-        let open = try tool("dscl-open", "[ \"$2\" = -list ] && \(users) && exit 0; exit 56")
-        let limited = try tool("dscl-limited", "[ \"$2\" = -list ] && \(users); exit 0")
-        let members = try tool("dseditgroup", "[ \"$4\" = other ] || [ \"$4\" = me ]")
-        let nobody = try tool("dseditgroup-none", "exit 1")
+        let groups = "printf 'admin\\ncom.apple.access_ssh\\nstaff\\n'"
+        let open = try tool("dscl-open", "[ \"$3\" = /Users ] && \(users) && exit 0; printf 'admin\\n'")
+        let limited = try tool("dscl-limited", "[ \"$3\" = /Users ] && \(users) && exit 0; \(groups)")
+        let broken = try tool("dscl-broken", "[ \"$3\" = /Users ] && \(users) && exit 0; exit 1")
+        let members = try tool("dseditgroup", """
+            case "$4" in other|me) echo "yes $4 is a member of $5" ;; guest) echo "no $4 is NOT a member of $5"; exit 67 ;;
+            *) echo "Unable to find the user record"; exit 64 ;; esac
+            """)
+        let nobody = try tool("dseditgroup-none", "echo \"no $4 is NOT a member of $5\"; exit 67")
+        let failing = try tool("dseditgroup-failing", "exit 64")
         XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "me", dscl: open, dseditgroup: nobody),
                        ["me", "other", "guest"], "Without the group every account is allowed")
         XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "me", dscl: limited, dseditgroup: members), ["me", "other"])
-        XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "admin", dscl: limited, dseditgroup: nobody), ["admin"],
-                       "The signed-in account is checked when nothing else is known")
+        XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "admin", dscl: limited, dseditgroup: members),
+                       ["admin", "me", "other"], "An account whose membership is not known is checked")
+        XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "me", dscl: limited, dseditgroup: failing),
+                       ["me", "other", "guest"], "Membership checks that fail check every account")
+        XCTAssertEqual(RemoteAccessSSHAccounts.allowed(current: "me", dscl: limited, dseditgroup: nobody), ["me"],
+                       "The signed-in account is checked when no account is allowed")
+        XCTAssertNil(RemoteAccessSSHAccounts.allowed(current: "me", dscl: broken, dseditgroup: members))
+        XCTAssertEqual(RemoteAccessSSHProbe.checkAccounts(ssh: "/usr/bin/false", accounts: { nil }),
+                       .unknown(reason: "the accounts allowed to use SSH could not be listed"),
+                       "Accounts that cannot be listed are not checked through the signed-in one alone")
     }
 
     /// A key-only server changed to accept passwords stops the tunnel nobody confirmed for it;
@@ -355,6 +369,18 @@ final class RemoteAccessTests: XCTestCase {
         found.value = passwords
         try await waitFor { model.state == .failed("Stopped: \(passwords.summary)") }
         XCTAssertEqual(model.sshCheck, passwords)
+
+        // A recheck that cannot verify the server keeps the tunnel, no longer shown as verified.
+        found.value = keysOnly
+        model.start()
+        try await waitFor { model.state == .running(hostname: "fake-host.trycloudflare.com") }
+        XCTAssertFalse(model.runsWithoutVerifiedKeys)
+        found.value = .unknown(reason: "timed out")
+        try await waitFor { model.sshCheck == .unknown(reason: "timed out") }
+        XCTAssertEqual(model.state, .running(hostname: "fake-host.trycloudflare.com"))
+        XCTAssertTrue(model.runsWithoutVerifiedKeys)
+        model.stop()
+        found.value = passwords
 
         model.start()
         try await waitFor { model.state == .needsConfirmation(passwords) }
