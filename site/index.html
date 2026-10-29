@@ -194,9 +194,10 @@
             <h3>Files and an editor, on the right</h3>
             <ul>
               <li>Browse local or SSH Spaces with Git status colors, drag and drop, and undo.</li>
-              <li>Jump with Go to File (⌘P), and search and replace across the project.</li>
-              <li>Edit with syntax highlighting, change bars and multiple cursors.</li>
-              <li>Preview Markdown with Mermaid diagrams, Jupyter notebooks, images and PDFs.</li>
+              <li>Open files follow changes on disk, on this Mac or over SSH.</li>
+              <li>Jump with Go to File (⌘P) or Go to Symbol (⇧⌘O), and search and replace across the project.</li>
+              <li>Edit with syntax highlighting, an outline and breadcrumbs, change bars and multiple cursors.</li>
+              <li>Preview Markdown with Mermaid diagrams, images and PDFs, and edit Jupyter notebooks cell by cell.</li>
             </ul>
           </article>
           <article class="area" data-area="git">
@@ -204,7 +205,7 @@
             <h3>Git, below the files</h3>
             <ul>
               <li>Stage changes, write the message and commit from the Changes tree.</li>
-              <li>Review unified or split diffs with syntax colors.</li>
+              <li>Review unified or split diffs with syntax colors, and notebook diffs cell by cell.</li>
               <li>Browse history and branches, and add worktrees. Removing one with uncommitted work is refused.</li>
             </ul>
           </article>
@@ -232,7 +233,7 @@
         </div>
         <div class="card">
           <h3>Remote access, if you want it</h3>
-          <p>Publishes this Mac's SSH server through a Cloudflare Tunnel. Off by default. wooloo checks whether SSH still accepts passwords and asks before publishing if it does, but never changes your SSH settings. <a href="https://github.com/rarce/wooloo#remote-access">Read this first</a>.</p>
+          <p>Publishes this Mac's SSH server through a Cloudflare Tunnel. Off by default. wooloo checks whether SSH accepts passwords for any account allowed to log in, asks before publishing if it does, and checks again while the tunnel runs. It never changes your SSH settings. <a href="https://github.com/rarce/wooloo#remote-access">Read this first</a>.</p>
         </div>
       </div>
     </div>
