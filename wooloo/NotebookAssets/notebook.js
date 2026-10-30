@@ -26,6 +26,32 @@
     // fully built, in slots of their measured or estimated height. With 4,096 cells, WebKit's
     // style, layout and painting of every cell took several seconds, and resizing a quarter second.
     const virtualizeAbove = 200, nearViewport = 1500;
+    // A cell's place on the page: its slot when the page has slots, which holds it once mounted.
+    const cellBox = section => section.cellSlot ?? section;
+    // The cell at the top of the viewport and how far its top is from the viewport's, by a binary
+    // search over the cells in order.
+    const topCell = () => {
+        let low = 0, high = sections.length;
+        while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (cellBox(sections[middle]).getBoundingClientRect().bottom > 0) high = middle;else low = middle + 1;
+        }
+        if (low >= sections.length) return null;
+        return {section:sections[low], offset:cellBox(sections[low]).getBoundingClientRect().top};
+    };
+    const cellTop = section => cellBox(section).isConnected ? cellBox(section).getBoundingClientRect().top : null;
+    // A cell scrolled back to by `render` stays at its offset while images and outputs above it
+    // load and grow. Any scroll that moves it, by wheel, scroll bar, keys or find, lets it go;
+    // content growing does not scroll the page, and keeping the cell in place does not move it.
+    let pinned = null;
+    const holdPinned = () => {
+        if (!pinned) return;
+        const top = cellTop(pinned.section);
+        if (top === null) pinned = null;
+        else if (Math.abs(top - pinned.offset) >= 1) window.scrollBy(0, top - pinned.offset);
+    };
+    new ResizeObserver(holdPinned).observe(root);
+    for (const name of ["mousedown", "keydown"]) window.addEventListener(name, () => {pinned = null;}, {passive:true, capture:true});
     const node = (tag, text, className) => {
         const element = document.createElement(tag);
         if (text !== undefined) element.textContent = text;
@@ -381,10 +407,11 @@
         return bar;
     };
     window.notebook = {
-        render(data, token, palette, canEdit) {
+        // `start` is where the document's preview was left, for a page that shows no cells yet.
+        render(data, token, palette, canEdit, start) {
             editable = Boolean(canEdit);last = {data, palette, canEdit};
-            const anchor = Array.from(root.querySelectorAll(".cell")).find(cell => cell.getBoundingClientRect().bottom > 0);
-            const anchorID = anchor?.id, offset = anchor?.getBoundingClientRect().top;
+            const anchor = topCell();
+            const anchorID = anchor ? anchor.section.id : start?.cell, offset = anchor ? anchor.offset : start?.offset;
             const collapsed = new Set(sections.flatMap(section => Array.from(section.querySelectorAll("details[data-output]")))
                 .filter(item => !item.open).map(item => item.dataset.output));
             observer?.disconnect();observer = null;sections = [];mounted = new Set();lastFind = null;activeFind = [];
@@ -451,19 +478,17 @@
                 // blank frame; the observer then keeps the cells near the viewport in the document.
                 if (anchorSection) window.scrollBy(0, anchorSection.cellSlot.getBoundingClientRect().top - offset);
                 // The first slot on screen, wherever the page is scrolled: the slots have their
-                // heights, so this is one layout and a binary search.
-                let low = 0, high = sections.length;
-                while (low < high) {
-                    const middle = (low + high) >>> 1;
-                    if (sections[middle].cellSlot.getBoundingClientRect().bottom > 0) high = middle;else low = middle + 1;
-                }
-                for (let index = Math.min(low, sections.length - 1); index < sections.length; index++) {
+                // heights, so this is one layout and `topCell`'s binary search.
+                const first = topCell();
+                const low = first ? sections.indexOf(first.section) : sections.length - 1;
+                for (let index = Math.max(low, 0); index < sections.length; index++) {
                     if (sections[index].cellSlot.getBoundingClientRect().top > innerHeight + nearViewport) break;
                     update([sections[index].cellSlot], []);
                 }
                 observer = new IntersectionObserver(observe, {rootMargin: `${nearViewport}px 0px`});
                 sections.forEach(section => observer.observe(section.cellSlot));
             } else if (anchorSection) window.scrollBy(0, anchorSection.getBoundingClientRect().top - offset);
+            pinned = anchorSection ? {section:anchorSection, offset} : null;
             collectSearch();setFind([],null,false);
         },
         // The whole source of a truncated cell, asked for by `beginEdit`, for the cell still shown.
@@ -493,6 +518,22 @@
         },
         find:setFind
     };
+    // Tells the app which cell is at the top every frame or so while the page scrolls, so a preview
+    // made again for the document starts there.
+    let scrollReport = null;
+    window.addEventListener("scroll", () => {
+        if (pinned) {
+            const top = cellTop(pinned.section);
+            if (top === null || Math.abs(top - pinned.offset) >= 1) pinned = null;
+        }
+        if (scrollReport !== null) return;
+        // A timer, not an animation frame, which a page not on screen never gets.
+        scrollReport = setTimeout(() => {
+            scrollReport = null;
+            const top = topCell();
+            if (top) post({kind:"scroll", revision, cell:top.section.id, offset:top.offset});
+        }, 16);
+    }, {passive:true});
     root.addEventListener("click", event => {
         const link = event.target.closest("a");if (!link) return;
         event.preventDefault();const target = link.getAttribute("href") || "";

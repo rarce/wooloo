@@ -180,6 +180,8 @@ struct WorkspaceDocumentView: View {
     /// of a cell edit made in a notebook preview goes through it, so it never overwrites other
     /// changes.
     var onReplaceText: (Int, NSRange, String) -> Int? = { _, _, _ in nil }
+    /// Where the document's Markdown or notebook preview is scrolled, kept by the document store.
+    var previewScroll: PreviewScrollMemory?
     /// Receives the command palette's editor commands while this document is shown.
     var commandTarget: EditorCommandTarget?
     /// Receives Go to File's symbol search (⇧⌘O) while this document is focused.
@@ -791,7 +793,8 @@ struct WorkspaceDocumentView: View {
         return MarkdownPreviewView(text: document.text, path: document.path, location: document.location,
                                    onOpenFile: { actions.openFile($0) }, highlight: previewHighlight,
                                    focus: previewFocus, onToggleTask: { actions.toggleTask($0, $1) },
-                                   onRevealLine: { actions.revealLine($0) })
+                                   onRevealLine: { actions.revealLine($0) },
+                                   scroll: previewScroll)
             .equatable()
             .frame(minWidth: 200)
     }
@@ -801,6 +804,7 @@ struct WorkspaceDocumentView: View {
         if NotebookDocument.supports(document.path) {
             NotebookPreviewView(text: document.text, path: document.path, location: document.location,
                                 onOpenFile: onOpenFile, style: previewStyle,
+                                scroll: previewScroll,
                                 matches: find.isVisible && findTarget == .preview ? find.previewMatches : [],
                                 currentMatch: find.current, revealRequest: find.revealRequest,
                                 onSearchText: { text in
