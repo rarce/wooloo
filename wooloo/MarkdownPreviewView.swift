@@ -1,4 +1,5 @@
 import SwiftUI
+import Markdown
 import MarkdownView
 import BeautifulMermaid
 
@@ -51,10 +52,13 @@ struct MarkdownPreviewView: View, Equatable {
     var onToggleTask: ((_ line: Int, _ checked: Bool) -> Void)?
     /// Shows the source at a 1-based line, on double-click of a block.
     var onRevealLine: ((Int) -> Void)?
+    /// Where the document's preview was scrolled, kept while its tab is not shown.
+    var scroll: PreviewScrollMemory?
 
     @Environment(\.woolooTheme) private var theme
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
     @State private var width: CGFloat = 0
+    @State private var scrollStart = MarkdownPreviewScrollStart()
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         MainActor.assumeIsolated {
@@ -62,6 +66,7 @@ struct MarkdownPreviewView: View, Equatable {
                 && lhs.highlight == rhs.highlight && lhs.focus == rhs.focus
                 && (lhs.onToggleTask == nil) == (rhs.onToggleTask == nil)
                 && (lhs.onRevealLine == nil) == (rhs.onRevealLine == nil)
+                && lhs.scroll === rhs.scroll
         }
     }
 
@@ -80,6 +85,18 @@ struct MarkdownPreviewView: View, Equatable {
                 }
             }
         }
+    }
+
+    /// The block at the top of the preview. Read and written through the memory, not state:
+    /// scrolling past a block then does not run this body, which parses the whole document. The
+    /// first read restores the saved block; later ones leave a shown preview where it is.
+    private var topBlock: Binding<MarkdownBlockAnchor?> {
+        let (scroll, text, start) = (scroll, text, scrollStart)
+        return Binding(get: {
+            guard !start.taken else { return scroll?.shownMarkdownBlock }
+            start.taken = true
+            return scroll?.restoredMarkdownBlock(in: text)
+        }, set: { scroll?.setMarkdownBlock($0, in: text) })
     }
 
     private var themed: some View {
@@ -101,6 +118,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .frame(maxWidth: 900, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
+        .scrollPosition(id: topBlock, anchor: .top)
         .background(theme.contentBackground)
     }
 
@@ -138,6 +156,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .padding(compact ? 12 : 32)
                 .frame(maxWidth: .infinity)
         }
+        .scrollPosition(id: topBlock, anchor: .top)
         .background(theme.sidebarBackground.overlay(Color.black.opacity(theme.isDark ? 0 : 0.05)))
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
     }
@@ -417,6 +436,72 @@ private struct MarkdownDocumentFonts: MarkdownFontGroup {
     var tableBody: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
     var inlineMath: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
     var displayMath: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
+}
+
+/// Where a document's Markdown or notebook preview is scrolled, kept by its document store
+/// while the tab is not shown or shows the source. Not published: following the scroll updates no view.
+@MainActor
+final class PreviewScrollMemory {
+    struct NotebookTop: Equatable {
+        /// The element ID of the cell at the top of the preview.
+        var cell: String
+        /// How far the cell's top is from the viewport's.
+        var offset: Double
+    }
+
+    var notebookTop: NotebookTop?
+    private var markdownBlock: MarkdownBlockAnchor?
+    /// The text `markdownBlock` indexes into.
+    private var markdownText = ""
+
+    /// The top-level block a new preview of `text` starts at: the saved one, moved to where it now
+    /// is when blocks were added or removed above it since.
+    func restoredMarkdownBlock(in text: String) -> MarkdownBlockAnchor? {
+        if let block = markdownBlock, text != markdownText {
+            markdownBlock = Self.block(block, from: markdownText, to: text)
+            markdownText = text
+        }
+        return markdownBlock
+    }
+
+    /// The block a shown preview has at its top, as is: a preview beside the source keeps its
+    /// place while blocks above change, rather than jumping to the top of a block.
+    var shownMarkdownBlock: MarkdownBlockAnchor? { markdownBlock }
+
+    func setMarkdownBlock(_ block: MarkdownBlockAnchor?, in text: String) {
+        markdownBlock = block
+        markdownText = text
+    }
+
+    /// The block of `new` that is `block` of `old`: the same occurrence of a block with the same
+    /// source, or else the nearest such block, the one at its index, or the last. Internal for tests.
+    nonisolated static func block(_ block: MarkdownBlockAnchor, from old: String, to new: String) -> MarkdownBlockAnchor? {
+        let before = sources(of: old), after = sources(of: new)
+        guard !after.isEmpty else { return nil }
+        let fallback = MarkdownBlockAnchor(index: min(block.index, after.count - 1))
+        guard before.indices.contains(block.index), let content = before[block.index] else { return fallback }
+        let occurrence = before[..<block.index].count { $0 == content }
+        let same = after.indices.filter { after[$0] == content }
+        if same.indices.contains(occurrence) { return MarkdownBlockAnchor(index: same[occurrence]) }
+        return same.min { abs($0 - block.index) < abs($1 - block.index) }.map(MarkdownBlockAnchor.init) ?? fallback
+    }
+
+    /// The source lines of each top-level block, in order.
+    nonisolated private static func sources(of text: String) -> [Substring?] {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        return Document(parsing: text).children.map { block in
+            guard let range = block.range else { return nil }
+            let first = range.lowerBound.line - 1, last = min(range.upperBound.line, lines.count) - 1
+            guard first >= 0, first <= last else { return nil }
+            return lines[first...last].joined(separator: "\n")[...]
+        }
+    }
+}
+
+/// Whether a shown Markdown preview has taken its starting block from the scroll memory.
+@MainActor
+final class MarkdownPreviewScrollStart {
+    var taken = false
 }
 
 /// A preview's callbacks, kept by its document view and updated on each of that view's

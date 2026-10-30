@@ -65,13 +65,21 @@ private struct MarkdownDocumentBlocks: View {
     }
 
     var body: some View {
-        AnyView(LazyVStack(alignment: .leading, spacing: configuration.blockSpacing) {
+        stack
+        .environment(\.markdownMathContext, mathContext)
+        .environment(\.markdownElementRenderers, elementRenderers)
+    }
+
+    // wooloo patch: the stack is a scroll target layout, so a host's `scrollPosition(id:)` follows
+    // and restores the top block by its `MarkdownBlockAnchor`.
+    private var stack: AnyView {
+        let blocks = LazyVStack(alignment: .leading, spacing: configuration.blockSpacing) {
             ForEach(document.children.map { Block(markup: $0) }) { block in
                 content(for: block)
             }
-        })
-        .environment(\.markdownMathContext, mathContext)
-        .environment(\.markdownElementRenderers, elementRenderers)
+        }
+        if #available(macOS 14.0, iOS 17.0, *) { return AnyView(blocks.scrollTargetLayout()) }
+        return AnyView(blocks)
     }
 
     private func content(for block: Block) -> some View {

@@ -14,8 +14,11 @@ final class WorkspaceDocumentStore: ObservableObject {
         didSet {
             schedulePersistence()
             watchOpenFiles()
+            forgetClosedPreviewScrolls()
         }
     }
+    /// Where each open document's preview is scrolled, by backup identity. Not published.
+    private var previewScrolls: [UUID: PreviewScrollMemory] = [:]
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
     @Published var activeID: String? {
         didSet {
@@ -237,6 +240,23 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     var visibleDocuments: [WorkspaceDocument] {
         documents.filter { $0.space == space }
+    }
+
+    /// The scroll memory of an open document's Markdown or notebook preview.
+    func previewScroll(for backupID: UUID) -> PreviewScrollMemory {
+        if let memory = previewScrolls[backupID] { return memory }
+        let memory = PreviewScrollMemory()
+        previewScrolls[backupID] = memory
+        return memory
+    }
+
+    /// Closing a tab, or a preview tab showing another file, ends its document's memory.
+    /// Runs on every change of `documents`, keystrokes included: it allocates nothing, and only
+    /// Markdown and notebook documents have a memory.
+    private func forgetClosedPreviewScrolls() {
+        for id in previewScrolls.keys where !documents.contains(where: { $0.backupID == id }) {
+            previewScrolls[id] = nil
+        }
     }
 
     /// Where a document's editor is scrolled; changes the documents only when it moved.
