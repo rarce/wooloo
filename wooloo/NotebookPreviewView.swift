@@ -10,6 +10,8 @@ struct NotebookPreviewView: View {
     let location: WorkspaceFileLocation
     let onOpenFile: (String) -> Void
     var style: MarkdownPreviewStyle = .theme
+    /// Where the document's preview was scrolled, kept while its tab is not shown.
+    var scroll: PreviewScrollMemory?
     var matches: [MarkdownFindMatch] = []
     var currentMatch: Int?
     var revealRequest = 0
@@ -35,8 +37,8 @@ struct NotebookPreviewView: View {
             } else if let notebook {
                 NotebookWebView(notebook: notebook, path: path, location: location,
                                 theme: style == .document ? .markdownDocument : theme, typography: typography,
-                                matches: matches, currentMatch: currentMatch, revealRequest: revealRequest,
-                                onOpenFile: onOpenFile, onSearchText: onSearchText, onFindCommand: onFindCommand,
+                                scroll: scroll, matches: matches, currentMatch: currentMatch,
+                                revealRequest: revealRequest, onOpenFile: onOpenFile, onSearchText: onSearchText, onFindCommand: onFindCommand,
                                 onEdit: onEdit)
             } else {
                 ProgressView("Preparing notebook…").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -65,6 +67,7 @@ struct NotebookWebView: NSViewRepresentable {
     let location: WorkspaceFileLocation
     let theme: WoolooTheme
     let typography: WoolooTypography
+    var scroll: PreviewScrollMemory?
     var matches: [MarkdownFindMatch]
     var currentMatch: Int?
     var revealRequest: Int
@@ -132,9 +135,13 @@ struct NotebookWebView: NSViewRepresentable {
                 revision = UUID().uuidString.lowercased()
                 resources.replace(images: owner.notebook.images, location: owner.location, documentPath: owner.path, revision: revision)
                 lastFind = ""
-                webView.callAsyncJavaScript("window.notebook.render(JSON.parse(payload), token, palette, editable)",
+                // A new page starts where the document's preview was left; a page rendered again
+                // keeps its own place.
+                let start: Any = owner.scroll?.notebookCell.map { ["cell": $0, "offset": owner.scroll?.notebookOffset ?? 0] }
+                    ?? NSNull()
+                webView.callAsyncJavaScript("window.notebook.render(JSON.parse(payload), token, palette, editable, start)",
                                             arguments: ["payload": json, "token": revision, "palette": palette,
-                                                        "editable": editable],
+                                                        "editable": editable, "start": start],
                                             in: nil, in: .page, completionHandler: { _ in })
             }
             updateFind()
@@ -199,6 +206,11 @@ struct NotebookWebView: NSViewRepresentable {
                 webView?.callAsyncJavaScript("window.notebook.image(id, url, token)",
                                             arguments: ["id": id, "url": url as Any? ?? NSNull(), "token": revision],
                                             in: nil, in: .page, completionHandler: { _ in })
+            case "scroll":
+                guard let cell = body["cell"] as? String, cell.utf8.count <= 4_096,
+                      let offset = body["offset"] as? Double, offset.isFinite else { return }
+                owner.scroll?.notebookCell = cell
+                owner.scroll?.notebookOffset = offset
             case "findCommand":
                 owner.onFindCommand(body["key"] as? String ?? "", body["shift"] as? Bool ?? false, body["option"] as? Bool ?? false)
             case "escape": owner.onFindCommand("escape", false, false)

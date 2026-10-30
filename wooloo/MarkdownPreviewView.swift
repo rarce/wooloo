@@ -51,6 +51,8 @@ struct MarkdownPreviewView: View, Equatable {
     var onToggleTask: ((_ line: Int, _ checked: Bool) -> Void)?
     /// Shows the source at a 1-based line, on double-click of a block.
     var onRevealLine: ((Int) -> Void)?
+    /// Where the document's preview was scrolled, kept while its tab is not shown.
+    var scroll: PreviewScrollMemory?
 
     @Environment(\.woolooTheme) private var theme
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
@@ -62,6 +64,7 @@ struct MarkdownPreviewView: View, Equatable {
                 && lhs.highlight == rhs.highlight && lhs.focus == rhs.focus
                 && (lhs.onToggleTask == nil) == (rhs.onToggleTask == nil)
                 && (lhs.onRevealLine == nil) == (rhs.onRevealLine == nil)
+                && lhs.scroll === rhs.scroll
         }
     }
 
@@ -80,6 +83,13 @@ struct MarkdownPreviewView: View, Equatable {
                 }
             }
         }
+    }
+
+    /// The block at the top of the preview. Read and written through the memory, not state:
+    /// scrolling past a block then does not run this body, which parses the whole document.
+    private var topBlock: Binding<MarkdownBlockAnchor?> {
+        let scroll = scroll
+        return Binding(get: { scroll?.markdownBlock }, set: { scroll?.markdownBlock = $0 })
     }
 
     private var themed: some View {
@@ -101,6 +111,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .frame(maxWidth: 900, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
+        .scrollPosition(id: topBlock, anchor: .top)
         .background(theme.contentBackground)
     }
 
@@ -138,6 +149,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .padding(compact ? 12 : 32)
                 .frame(maxWidth: .infinity)
         }
+        .scrollPosition(id: topBlock, anchor: .top)
         .background(theme.sidebarBackground.overlay(Color.black.opacity(theme.isDark ? 0 : 0.05)))
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
     }
@@ -417,6 +429,29 @@ private struct MarkdownDocumentFonts: MarkdownFontGroup {
     var tableBody: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
     var inlineMath: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
     var displayMath: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
+}
+
+/// Where a document's Markdown or notebook preview is scrolled, kept by document while its tab
+/// is not shown or shows the source. Not published: following the scroll updates no view.
+@MainActor
+final class PreviewScrollMemory {
+    /// The top-level Markdown block at the top of the preview.
+    var markdownBlock: MarkdownBlockAnchor?
+    /// The notebook cell at the top of the preview, and how far its top is from the viewport's.
+    var notebookCell: String?
+    var notebookOffset = 0.0
+
+    private static var memories: [UUID: PreviewScrollMemory] = [:]
+
+    /// The memory of the document with this backup identity.
+    static func memory(for document: UUID) -> PreviewScrollMemory {
+        if let memory = memories[document] { return memory }
+        let memory = PreviewScrollMemory()
+        memories[document] = memory
+        return memory
+    }
+
+    static func forget(_ document: UUID) { memories[document] = nil }
 }
 
 /// A preview's callbacks, kept by its document view and updated on each of that view's

@@ -26,6 +26,7 @@
     // fully built, in slots of their measured or estimated height. With 4,096 cells, WebKit's
     // style, layout and painting of every cell took several seconds, and resizing a quarter second.
     const virtualizeAbove = 200, nearViewport = 1500;
+    const topCell = () => Array.from(root.querySelectorAll(".cell")).find(cell => cell.getBoundingClientRect().bottom > 0);
     const node = (tag, text, className) => {
         const element = document.createElement(tag);
         if (text !== undefined) element.textContent = text;
@@ -381,10 +382,11 @@
         return bar;
     };
     window.notebook = {
-        render(data, token, palette, canEdit) {
+        // `start` is where the document's preview was left, for a page that shows no cells yet.
+        render(data, token, palette, canEdit, start) {
             editable = Boolean(canEdit);last = {data, palette, canEdit};
-            const anchor = Array.from(root.querySelectorAll(".cell")).find(cell => cell.getBoundingClientRect().bottom > 0);
-            const anchorID = anchor?.id, offset = anchor?.getBoundingClientRect().top;
+            const anchor = topCell();
+            const anchorID = anchor ? anchor.id : start?.cell, offset = anchor ? anchor.getBoundingClientRect().top : start?.offset;
             const collapsed = new Set(sections.flatMap(section => Array.from(section.querySelectorAll("details[data-output]")))
                 .filter(item => !item.open).map(item => item.dataset.output));
             observer?.disconnect();observer = null;sections = [];mounted = new Set();lastFind = null;activeFind = [];
@@ -493,6 +495,16 @@
         },
         find:setFind
     };
+    // Tells the app which cell is at the top, once scrolling pauses, so a preview made again
+    // for the document starts there.
+    let scrollReport = null;
+    window.addEventListener("scroll", () => {
+        clearTimeout(scrollReport);
+        scrollReport = setTimeout(() => {
+            const cell = topCell();
+            if (cell) post({kind:"scroll", revision, cell:cell.id, offset:cell.getBoundingClientRect().top});
+        }, 150);
+    }, {passive:true});
     root.addEventListener("click", event => {
         const link = event.target.closest("a");if (!link) return;
         event.preventDefault();const target = link.getAttribute("href") || "";

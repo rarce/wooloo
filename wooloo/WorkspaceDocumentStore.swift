@@ -711,6 +711,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         let key = WorkspaceSessionPersistence.key(for: documents[index].space)
         discardedBySpace[key, default: []].insert(documents[index].backupID)
         closedBeforeRestoration.insert(id)
+        PreviewScrollMemory.forget(documents[index].backupID)
         documents.remove(at: index)
         if diskComparison?.documentID == id { diskComparison = nil }
         if activeID == id { activeID = nil }

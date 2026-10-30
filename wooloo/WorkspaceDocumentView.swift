@@ -791,7 +791,8 @@ struct WorkspaceDocumentView: View {
         return MarkdownPreviewView(text: document.text, path: document.path, location: document.location,
                                    onOpenFile: { actions.openFile($0) }, highlight: previewHighlight,
                                    focus: previewFocus, onToggleTask: { actions.toggleTask($0, $1) },
-                                   onRevealLine: { actions.revealLine($0) })
+                                   onRevealLine: { actions.revealLine($0) },
+                                   scroll: PreviewScrollMemory.memory(for: document.backupID))
             .equatable()
             .frame(minWidth: 200)
     }
@@ -801,6 +802,7 @@ struct WorkspaceDocumentView: View {
         if NotebookDocument.supports(document.path) {
             NotebookPreviewView(text: document.text, path: document.path, location: document.location,
                                 onOpenFile: onOpenFile, style: previewStyle,
+                                scroll: PreviewScrollMemory.memory(for: document.backupID),
                                 matches: find.isVisible && findTarget == .preview ? find.previewMatches : [],
                                 currentMatch: find.current, revealRequest: find.revealRequest,
                                 onSearchText: { text in
