@@ -26,32 +26,32 @@
     // fully built, in slots of their measured or estimated height. With 4,096 cells, WebKit's
     // style, layout and painting of every cell took several seconds, and resizing a quarter second.
     const virtualizeAbove = 200, nearViewport = 1500;
-    // The cell at the top of the viewport and how far its top is from the viewport's: a binary
-    // search over the cells in order, measuring each by its slot when the page has slots.
+    // A cell's place on the page: its slot when the page has slots, which holds it once mounted.
+    const cellBox = section => section.cellSlot ?? section;
+    // The cell at the top of the viewport and how far its top is from the viewport's, by a binary
+    // search over the cells in order.
     const topCell = () => {
-        const box = section => section.cellSlot ?? section;
         let low = 0, high = sections.length;
         while (low < high) {
             const middle = (low + high) >>> 1;
-            if (box(sections[middle]).getBoundingClientRect().bottom > 0) high = middle;else low = middle + 1;
+            if (cellBox(sections[middle]).getBoundingClientRect().bottom > 0) high = middle;else low = middle + 1;
         }
         if (low >= sections.length) return null;
-        return {section:sections[low], offset:box(sections[low]).getBoundingClientRect().top};
+        return {section:sections[low], offset:cellBox(sections[low]).getBoundingClientRect().top};
     };
+    const cellTop = section => cellBox(section).isConnected ? cellBox(section).getBoundingClientRect().top : null;
     // A cell scrolled back to by `render` stays at its offset while images and outputs above it
-    // load and grow, until the user scrolls, clicks or types, or find moves the page.
+    // load and grow. Any scroll that moves it, by wheel, scroll bar, keys or find, lets it go;
+    // content growing does not scroll the page, and keeping the cell in place does not move it.
     let pinned = null;
     const holdPinned = () => {
         if (!pinned) return;
-        const top = topCellTop(pinned.section);
-        if (top !== null && Math.abs(top - pinned.offset) >= 1) window.scrollBy(0, top - pinned.offset);
-    };
-    const topCellTop = section => {
-        const element = section.cellSlot ?? section;
-        return element.isConnected ? element.getBoundingClientRect().top : null;
+        const top = cellTop(pinned.section);
+        if (top === null) pinned = null;
+        else if (Math.abs(top - pinned.offset) >= 1) window.scrollBy(0, top - pinned.offset);
     };
     new ResizeObserver(holdPinned).observe(root);
-    for (const name of ["wheel", "mousedown", "keydown", "touchstart"]) window.addEventListener(name, () => {pinned = null;}, {passive:true, capture:true});
+    for (const name of ["mousedown", "keydown"]) window.addEventListener(name, () => {pinned = null;}, {passive:true, capture:true});
     const node = (tag, text, className) => {
         const element = document.createElement(tag);
         if (text !== undefined) element.textContent = text;
@@ -291,7 +291,7 @@
             ranges.push(range);
             if (match.index === selected) {
                 active.push(range);element.classList.add("find-active");activeFind.push(element);
-                if (reveal) {pinned = null;for (let parent = element.parentElement; parent; parent = parent.parentElement) {if (parent.tagName === "DETAILS") parent.open = true;}show(element);element.scrollIntoView({block:"center"});}
+                if (reveal) {for (let parent = element.parentElement; parent; parent = parent.parentElement) {if (parent.tagName === "DETAILS") parent.open = true;}show(element);element.scrollIntoView({block:"center"});}
             }
         }
         if (CSS.highlights && window.Highlight) {
@@ -478,13 +478,10 @@
                 // blank frame; the observer then keeps the cells near the viewport in the document.
                 if (anchorSection) window.scrollBy(0, anchorSection.cellSlot.getBoundingClientRect().top - offset);
                 // The first slot on screen, wherever the page is scrolled: the slots have their
-                // heights, so this is one layout and a binary search.
-                let low = 0, high = sections.length;
-                while (low < high) {
-                    const middle = (low + high) >>> 1;
-                    if (sections[middle].cellSlot.getBoundingClientRect().bottom > 0) high = middle;else low = middle + 1;
-                }
-                for (let index = Math.min(low, sections.length - 1); index < sections.length; index++) {
+                // heights, so this is one layout and `topCell`'s binary search.
+                const first = topCell();
+                const low = first ? sections.indexOf(first.section) : sections.length - 1;
+                for (let index = Math.max(low, 0); index < sections.length; index++) {
                     if (sections[index].cellSlot.getBoundingClientRect().top > innerHeight + nearViewport) break;
                     update([sections[index].cellSlot], []);
                 }
@@ -521,18 +518,21 @@
         },
         find:setFind
     };
-    // Tells the app which cell is at the top, at most every 100 ms while the page scrolls and once
-    // after it stops, so a preview made again for the document starts there.
-    let scrollReport = null, lastReport = 0;
-    const reportScroll = () => {
-        scrollReport = null;lastReport = performance.now();
-        const top = topCell();
-        if (top) post({kind:"scroll", revision, cell:top.section.id, offset:top.offset});
-    };
+    // Tells the app which cell is at the top every frame or so while the page scrolls, so a preview
+    // made again for the document starts there.
+    let scrollReport = null;
     window.addEventListener("scroll", () => {
+        if (pinned) {
+            const top = cellTop(pinned.section);
+            if (top === null || Math.abs(top - pinned.offset) >= 1) pinned = null;
+        }
         if (scrollReport !== null) return;
-        const wait = 100 - (performance.now() - lastReport);
-        if (wait <= 0) reportScroll();else scrollReport = setTimeout(reportScroll, wait);
+        // A timer, not an animation frame, which a page not on screen never gets.
+        scrollReport = setTimeout(() => {
+            scrollReport = null;
+            const top = topCell();
+            if (top) post({kind:"scroll", revision, cell:top.section.id, offset:top.offset});
+        }, 16);
     }, {passive:true});
     root.addEventListener("click", event => {
         const link = event.target.closest("a");if (!link) return;

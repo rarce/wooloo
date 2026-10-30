@@ -242,7 +242,6 @@ final class WorkspaceDocumentStore: ObservableObject {
         documents.filter { $0.space == space }
     }
 
-    /// Where a document's editor is scrolled; changes the documents only when it moved.
     /// The scroll memory of an open document's Markdown or notebook preview.
     func previewScroll(for backupID: UUID) -> PreviewScrollMemory {
         if let memory = previewScrolls[backupID] { return memory }
@@ -252,14 +251,15 @@ final class WorkspaceDocumentStore: ObservableObject {
     }
 
     /// Closing a tab, or a preview tab showing another file, ends its document's memory.
+    /// Runs on every change of `documents`, keystrokes included: it allocates nothing, and only
+    /// Markdown and notebook documents have a memory.
     private func forgetClosedPreviewScrolls() {
-        guard !previewScrolls.isEmpty else { return }
-        let open = Set(documents.map(\.backupID))
-        if previewScrolls.keys.contains(where: { !open.contains($0) }) {
-            previewScrolls = previewScrolls.filter { open.contains($0.key) }
+        for id in previewScrolls.keys where !documents.contains(where: { $0.backupID == id }) {
+            previewScrolls[id] = nil
         }
     }
 
+    /// Where a document's editor is scrolled; changes the documents only when it moved.
     func recordScroll(_ id: String, position: CGPoint, anchor: EditorScrollAnchor?) {
         guard let index = documents.firstIndex(where: { $0.id == id }),
               documents[index].scrollPosition != position || documents[index].scrollAnchor != anchor else { return }

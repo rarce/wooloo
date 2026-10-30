@@ -58,6 +58,7 @@ struct MarkdownPreviewView: View, Equatable {
     @Environment(\.woolooTheme) private var theme
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
     @State private var width: CGFloat = 0
+    @State private var scrollStart = MarkdownPreviewScrollStart()
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         MainActor.assumeIsolated {
@@ -87,10 +88,15 @@ struct MarkdownPreviewView: View, Equatable {
     }
 
     /// The block at the top of the preview. Read and written through the memory, not state:
-    /// scrolling past a block then does not run this body, which parses the whole document.
+    /// scrolling past a block then does not run this body, which parses the whole document. The
+    /// first read restores the saved block; later ones leave a shown preview where it is.
     private var topBlock: Binding<MarkdownBlockAnchor?> {
-        let (scroll, text) = (scroll, text)
-        return Binding(get: { scroll?.markdownBlock(in: text) }, set: { scroll?.setMarkdownBlock($0, in: text) })
+        let (scroll, text, start) = (scroll, text, scrollStart)
+        return Binding(get: {
+            guard !start.taken else { return scroll?.shownMarkdownBlock }
+            start.taken = true
+            return scroll?.restoredMarkdownBlock(in: text)
+        }, set: { scroll?.setMarkdownBlock($0, in: text) })
     }
 
     private var themed: some View {
@@ -448,45 +454,54 @@ final class PreviewScrollMemory {
     /// The text `markdownBlock` indexes into.
     private var markdownText = ""
 
-    /// The top-level block at the top of the preview of `text`. After the text changed, the same
-    /// block where it now is: blocks added or removed above it change its index.
-    func markdownBlock(in text: String) -> MarkdownBlockAnchor? {
-        guard let block = markdownBlock else { return nil }
-        if text != markdownText {
+    /// The top-level block a new preview of `text` starts at: the saved one, moved to where it now
+    /// is when blocks were added or removed above it since.
+    func restoredMarkdownBlock(in text: String) -> MarkdownBlockAnchor? {
+        if let block = markdownBlock, text != markdownText {
             markdownBlock = Self.block(block, from: markdownText, to: text)
             markdownText = text
         }
         return markdownBlock
     }
 
+    /// The block a shown preview has at its top, as is: a preview beside the source keeps its
+    /// place while blocks above change, rather than jumping to the top of a block.
+    var shownMarkdownBlock: MarkdownBlockAnchor? { markdownBlock }
+
     func setMarkdownBlock(_ block: MarkdownBlockAnchor?, in text: String) {
         markdownBlock = block
         markdownText = text
     }
 
-    /// The block of `new` that is `block` of `old`: the one with the same content nearest its
-    /// index, or else the one at its index, or the last. Internal for tests.
+    /// The block of `new` that is `block` of `old`: the same occurrence of a block with the same
+    /// source, or else the nearest such block, the one at its index, or the last. Internal for tests.
     nonisolated static func block(_ block: MarkdownBlockAnchor, from old: String, to new: String) -> MarkdownBlockAnchor? {
-        let before = Array(Document(parsing: old).children)
-        let after = Array(Document(parsing: new).children)
+        let before = sources(of: old), after = sources(of: new)
         guard !after.isEmpty else { return nil }
-        guard before.indices.contains(block.index) else {
-            return MarkdownBlockAnchor(index: min(block.index, after.count - 1))
-        }
-        let content = source(of: before[block.index], in: old)
-        let same = after.indices.filter { source(of: after[$0], in: new) == content }
-        let index = same.min { abs($0 - block.index) < abs($1 - block.index) } ?? min(block.index, after.count - 1)
-        return MarkdownBlockAnchor(index: index)
+        let fallback = MarkdownBlockAnchor(index: min(block.index, after.count - 1))
+        guard before.indices.contains(block.index), let content = before[block.index] else { return fallback }
+        let occurrence = before[..<block.index].count { $0 == content }
+        let same = after.indices.filter { after[$0] == content }
+        if same.indices.contains(occurrence) { return MarkdownBlockAnchor(index: same[occurrence]) }
+        return same.min { abs($0 - block.index) < abs($1 - block.index) }.map(MarkdownBlockAnchor.init) ?? fallback
     }
 
-    /// The source lines a block spans.
-    nonisolated private static func source(of block: any Markup, in text: String) -> Substring? {
-        guard let range = block.range else { return nil }
+    /// The source lines of each top-level block, in order.
+    nonisolated private static func sources(of text: String) -> [Substring?] {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        let first = range.lowerBound.line - 1, last = min(range.upperBound.line, lines.count) - 1
-        guard first >= 0, first <= last else { return nil }
-        return lines[first...last].joined(separator: "\n")[...]
+        return Document(parsing: text).children.map { block in
+            guard let range = block.range else { return nil }
+            let first = range.lowerBound.line - 1, last = min(range.upperBound.line, lines.count) - 1
+            guard first >= 0, first <= last else { return nil }
+            return lines[first...last].joined(separator: "\n")[...]
+        }
     }
+}
+
+/// Whether a shown Markdown preview has taken its starting block from the scroll memory.
+@MainActor
+final class MarkdownPreviewScrollStart {
+    var taken = false
 }
 
 /// A preview's callbacks, kept by its document view and updated on each of that view's

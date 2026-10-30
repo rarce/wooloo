@@ -32,13 +32,26 @@ final class PreviewScrollMemoryTests: XCTestCase {
         XCTAssertNil(PreviewScrollMemory.block(second, from: old, to: ""))
     }
 
-    func testTheMemoryRemapsOnlyWhenTheTextChanged() {
+    func testANewPreviewRemapsTheSavedBlockAndAShownOneKeepsIt() {
         let memory = PreviewScrollMemory()
         let text = "A.\n\nB.\n\nC.\n"
-        XCTAssertNil(memory.markdownBlock(in: text))
+        XCTAssertNil(memory.restoredMarkdownBlock(in: text))
         memory.setMarkdownBlock(MarkdownBlockAnchor(index: 2), in: text)
-        XCTAssertEqual(memory.markdownBlock(in: text), MarkdownBlockAnchor(index: 2))
-        XCTAssertEqual(memory.markdownBlock(in: "Z.\n\n" + text), MarkdownBlockAnchor(index: 3))
+        XCTAssertEqual(memory.restoredMarkdownBlock(in: text), MarkdownBlockAnchor(index: 2))
+        // Split view: the source changes under a shown preview, which stays where it is.
+        XCTAssertEqual(memory.shownMarkdownBlock, MarkdownBlockAnchor(index: 2))
+        XCTAssertEqual(memory.restoredMarkdownBlock(in: "Z.\n\n" + text), MarkdownBlockAnchor(index: 3))
+    }
+
+    func testARepeatedBlockKeepsItsOccurrence() {
+        let section = (0..<4).map { "### Parameters\n\nText \($0)." }.joined(separator: "\n\n")
+        // The third heading, at 4, with three new blocks near the start.
+        let moved = PreviewScrollMemory.block(MarkdownBlockAnchor(index: 4), from: section,
+                                              to: "One.\n\nTwo.\n\nThree.\n\n" + section)
+        XCTAssertEqual(moved, MarkdownBlockAnchor(index: 7))
+        // The second of two rules, with a block inserted between them.
+        XCTAssertEqual(PreviewScrollMemory.block(MarkdownBlockAnchor(index: 2), from: "---\n\nA.\n\n---\n",
+                                                 to: "---\n\nA.\n\nB.\n\n---\n"), MarkdownBlockAnchor(index: 3))
     }
 
     func testAMarkdownPreviewMadeAgainStartsWhereTheLastOneWasScrolled() throws {
@@ -59,7 +72,7 @@ final class PreviewScrollMemoryTests: XCTestCase {
                 first.scroll.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: wheel)))
             }
             settle(first.view)
-            let top = try XCTUnwrap(memory.markdownBlock(in: text), "\(style): scrolling must record the top block")
+            let top = try XCTUnwrap(memory.shownMarkdownBlock, "\(style): scrolling must record the top block")
             XCTAssertGreaterThan(top.index, 5)
             let scrolled = first.scroll.documentVisibleRect.minY
             window?.close()
