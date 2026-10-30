@@ -137,8 +137,8 @@ struct NotebookWebView: NSViewRepresentable {
                 lastFind = ""
                 // A new page starts where the document's preview was left; a page rendered again
                 // keeps its own place.
-                let start: Any = owner.scroll?.notebookCell.map { ["cell": $0, "offset": owner.scroll?.notebookOffset ?? 0] }
-                    ?? NSNull()
+                var start: Any = NSNull()
+                if let top = owner.scroll?.notebookTop { start = ["cell": top.cell, "offset": top.offset] }
                 webView.callAsyncJavaScript("window.notebook.render(JSON.parse(payload), token, palette, editable, start)",
                                             arguments: ["payload": json, "token": revision, "palette": palette,
                                                         "editable": editable, "start": start],
@@ -209,8 +209,7 @@ struct NotebookWebView: NSViewRepresentable {
             case "scroll":
                 guard let cell = body["cell"] as? String, cell.utf8.count <= 4_096,
                       let offset = body["offset"] as? Double, offset.isFinite else { return }
-                owner.scroll?.notebookCell = cell
-                owner.scroll?.notebookOffset = offset
+                owner.scroll?.notebookTop = .init(cell: cell, offset: offset)
             case "findCommand":
                 owner.onFindCommand(body["key"] as? String ?? "", body["shift"] as? Bool ?? false, body["option"] as? Bool ?? false)
             case "escape": owner.onFindCommand("escape", false, false)

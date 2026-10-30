@@ -26,7 +26,32 @@
     // fully built, in slots of their measured or estimated height. With 4,096 cells, WebKit's
     // style, layout and painting of every cell took several seconds, and resizing a quarter second.
     const virtualizeAbove = 200, nearViewport = 1500;
-    const topCell = () => Array.from(root.querySelectorAll(".cell")).find(cell => cell.getBoundingClientRect().bottom > 0);
+    // The cell at the top of the viewport and how far its top is from the viewport's: a binary
+    // search over the cells in order, measuring each by its slot when the page has slots.
+    const topCell = () => {
+        const box = section => section.cellSlot ?? section;
+        let low = 0, high = sections.length;
+        while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (box(sections[middle]).getBoundingClientRect().bottom > 0) high = middle;else low = middle + 1;
+        }
+        if (low >= sections.length) return null;
+        return {section:sections[low], offset:box(sections[low]).getBoundingClientRect().top};
+    };
+    // A cell scrolled back to by `render` stays at its offset while images and outputs above it
+    // load and grow, until the user scrolls, clicks or types, or find moves the page.
+    let pinned = null;
+    const holdPinned = () => {
+        if (!pinned) return;
+        const top = topCellTop(pinned.section);
+        if (top !== null && Math.abs(top - pinned.offset) >= 1) window.scrollBy(0, top - pinned.offset);
+    };
+    const topCellTop = section => {
+        const element = section.cellSlot ?? section;
+        return element.isConnected ? element.getBoundingClientRect().top : null;
+    };
+    new ResizeObserver(holdPinned).observe(root);
+    for (const name of ["wheel", "mousedown", "keydown", "touchstart"]) window.addEventListener(name, () => {pinned = null;}, {passive:true, capture:true});
     const node = (tag, text, className) => {
         const element = document.createElement(tag);
         if (text !== undefined) element.textContent = text;
@@ -266,7 +291,7 @@
             ranges.push(range);
             if (match.index === selected) {
                 active.push(range);element.classList.add("find-active");activeFind.push(element);
-                if (reveal) {for (let parent = element.parentElement; parent; parent = parent.parentElement) {if (parent.tagName === "DETAILS") parent.open = true;}show(element);element.scrollIntoView({block:"center"});}
+                if (reveal) {pinned = null;for (let parent = element.parentElement; parent; parent = parent.parentElement) {if (parent.tagName === "DETAILS") parent.open = true;}show(element);element.scrollIntoView({block:"center"});}
             }
         }
         if (CSS.highlights && window.Highlight) {
@@ -386,7 +411,7 @@
         render(data, token, palette, canEdit, start) {
             editable = Boolean(canEdit);last = {data, palette, canEdit};
             const anchor = topCell();
-            const anchorID = anchor ? anchor.id : start?.cell, offset = anchor ? anchor.getBoundingClientRect().top : start?.offset;
+            const anchorID = anchor ? anchor.section.id : start?.cell, offset = anchor ? anchor.offset : start?.offset;
             const collapsed = new Set(sections.flatMap(section => Array.from(section.querySelectorAll("details[data-output]")))
                 .filter(item => !item.open).map(item => item.dataset.output));
             observer?.disconnect();observer = null;sections = [];mounted = new Set();lastFind = null;activeFind = [];
@@ -466,6 +491,7 @@
                 observer = new IntersectionObserver(observe, {rootMargin: `${nearViewport}px 0px`});
                 sections.forEach(section => observer.observe(section.cellSlot));
             } else if (anchorSection) window.scrollBy(0, anchorSection.getBoundingClientRect().top - offset);
+            pinned = anchorSection ? {section:anchorSection, offset} : null;
             collectSearch();setFind([],null,false);
         },
         // The whole source of a truncated cell, asked for by `beginEdit`, for the cell still shown.
@@ -495,15 +521,18 @@
         },
         find:setFind
     };
-    // Tells the app which cell is at the top, once scrolling pauses, so a preview made again
-    // for the document starts there.
-    let scrollReport = null;
+    // Tells the app which cell is at the top, at most every 100 ms while the page scrolls and once
+    // after it stops, so a preview made again for the document starts there.
+    let scrollReport = null, lastReport = 0;
+    const reportScroll = () => {
+        scrollReport = null;lastReport = performance.now();
+        const top = topCell();
+        if (top) post({kind:"scroll", revision, cell:top.section.id, offset:top.offset});
+    };
     window.addEventListener("scroll", () => {
-        clearTimeout(scrollReport);
-        scrollReport = setTimeout(() => {
-            const cell = topCell();
-            if (cell) post({kind:"scroll", revision, cell:cell.id, offset:cell.getBoundingClientRect().top});
-        }, 150);
+        if (scrollReport !== null) return;
+        const wait = 100 - (performance.now() - lastReport);
+        if (wait <= 0) reportScroll();else scrollReport = setTimeout(reportScroll, wait);
     }, {passive:true});
     root.addEventListener("click", event => {
         const link = event.target.closest("a");if (!link) return;

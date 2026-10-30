@@ -1,4 +1,5 @@
 import SwiftUI
+import Markdown
 import MarkdownView
 import BeautifulMermaid
 
@@ -88,8 +89,8 @@ struct MarkdownPreviewView: View, Equatable {
     /// The block at the top of the preview. Read and written through the memory, not state:
     /// scrolling past a block then does not run this body, which parses the whole document.
     private var topBlock: Binding<MarkdownBlockAnchor?> {
-        let scroll = scroll
-        return Binding(get: { scroll?.markdownBlock }, set: { scroll?.markdownBlock = $0 })
+        let (scroll, text) = (scroll, text)
+        return Binding(get: { scroll?.markdownBlock(in: text) }, set: { scroll?.setMarkdownBlock($0, in: text) })
     }
 
     private var themed: some View {
@@ -431,27 +432,61 @@ private struct MarkdownDocumentFonts: MarkdownFontGroup {
     var displayMath: any CustomCTFontConvertible { NSFont.systemFont(ofSize: size) }
 }
 
-/// Where a document's Markdown or notebook preview is scrolled, kept by document while its tab
-/// is not shown or shows the source. Not published: following the scroll updates no view.
+/// Where a document's Markdown or notebook preview is scrolled, kept by its document store
+/// while the tab is not shown or shows the source. Not published: following the scroll updates no view.
 @MainActor
 final class PreviewScrollMemory {
-    /// The top-level Markdown block at the top of the preview.
-    var markdownBlock: MarkdownBlockAnchor?
-    /// The notebook cell at the top of the preview, and how far its top is from the viewport's.
-    var notebookCell: String?
-    var notebookOffset = 0.0
-
-    private static var memories: [UUID: PreviewScrollMemory] = [:]
-
-    /// The memory of the document with this backup identity.
-    static func memory(for document: UUID) -> PreviewScrollMemory {
-        if let memory = memories[document] { return memory }
-        let memory = PreviewScrollMemory()
-        memories[document] = memory
-        return memory
+    struct NotebookTop: Equatable {
+        /// The element ID of the cell at the top of the preview.
+        var cell: String
+        /// How far the cell's top is from the viewport's.
+        var offset: Double
     }
 
-    static func forget(_ document: UUID) { memories[document] = nil }
+    var notebookTop: NotebookTop?
+    private var markdownBlock: MarkdownBlockAnchor?
+    /// The text `markdownBlock` indexes into.
+    private var markdownText = ""
+
+    /// The top-level block at the top of the preview of `text`. After the text changed, the same
+    /// block where it now is: blocks added or removed above it change its index.
+    func markdownBlock(in text: String) -> MarkdownBlockAnchor? {
+        guard let block = markdownBlock else { return nil }
+        if text != markdownText {
+            markdownBlock = Self.block(block, from: markdownText, to: text)
+            markdownText = text
+        }
+        return markdownBlock
+    }
+
+    func setMarkdownBlock(_ block: MarkdownBlockAnchor?, in text: String) {
+        markdownBlock = block
+        markdownText = text
+    }
+
+    /// The block of `new` that is `block` of `old`: the one with the same content nearest its
+    /// index, or else the one at its index, or the last. Internal for tests.
+    nonisolated static func block(_ block: MarkdownBlockAnchor, from old: String, to new: String) -> MarkdownBlockAnchor? {
+        let before = Array(Document(parsing: old).children)
+        let after = Array(Document(parsing: new).children)
+        guard !after.isEmpty else { return nil }
+        guard before.indices.contains(block.index) else {
+            return MarkdownBlockAnchor(index: min(block.index, after.count - 1))
+        }
+        let content = source(of: before[block.index], in: old)
+        let same = after.indices.filter { source(of: after[$0], in: new) == content }
+        let index = same.min { abs($0 - block.index) < abs($1 - block.index) } ?? min(block.index, after.count - 1)
+        return MarkdownBlockAnchor(index: index)
+    }
+
+    /// The source lines a block spans.
+    nonisolated private static func source(of block: any Markup, in text: String) -> Substring? {
+        guard let range = block.range else { return nil }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let first = range.lowerBound.line - 1, last = min(range.upperBound.line, lines.count) - 1
+        guard first >= 0, first <= last else { return nil }
+        return lines[first...last].joined(separator: "\n")[...]
+    }
 }
 
 /// A preview's callbacks, kept by its document view and updated on each of that view's

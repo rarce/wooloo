@@ -14,8 +14,11 @@ final class WorkspaceDocumentStore: ObservableObject {
         didSet {
             schedulePersistence()
             watchOpenFiles()
+            forgetClosedPreviewScrolls()
         }
     }
+    /// Where each open document's preview is scrolled, by backup identity. Not published.
+    private var previewScrolls: [UUID: PreviewScrollMemory] = [:]
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
     @Published var activeID: String? {
         didSet {
@@ -240,6 +243,23 @@ final class WorkspaceDocumentStore: ObservableObject {
     }
 
     /// Where a document's editor is scrolled; changes the documents only when it moved.
+    /// The scroll memory of an open document's Markdown or notebook preview.
+    func previewScroll(for backupID: UUID) -> PreviewScrollMemory {
+        if let memory = previewScrolls[backupID] { return memory }
+        let memory = PreviewScrollMemory()
+        previewScrolls[backupID] = memory
+        return memory
+    }
+
+    /// Closing a tab, or a preview tab showing another file, ends its document's memory.
+    private func forgetClosedPreviewScrolls() {
+        guard !previewScrolls.isEmpty else { return }
+        let open = Set(documents.map(\.backupID))
+        if previewScrolls.keys.contains(where: { !open.contains($0) }) {
+            previewScrolls = previewScrolls.filter { open.contains($0.key) }
+        }
+    }
+
     func recordScroll(_ id: String, position: CGPoint, anchor: EditorScrollAnchor?) {
         guard let index = documents.firstIndex(where: { $0.id == id }),
               documents[index].scrollPosition != position || documents[index].scrollAnchor != anchor else { return }
@@ -711,7 +731,6 @@ final class WorkspaceDocumentStore: ObservableObject {
         let key = WorkspaceSessionPersistence.key(for: documents[index].space)
         discardedBySpace[key, default: []].insert(documents[index].backupID)
         closedBeforeRestoration.insert(id)
-        PreviewScrollMemory.forget(documents[index].backupID)
         documents.remove(at: index)
         if diskComparison?.documentID == id { diskComparison = nil }
         if activeID == id { activeID = nil }
