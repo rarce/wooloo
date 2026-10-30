@@ -28,8 +28,20 @@ final class HangWatchdogTests: XCTestCase {
         XCTAssertEqual(stall.step(at: 3, answeredAt: nil, interval: 1), .capture)
         XCTAssertEqual(stall.step(at: 4, answeredAt: 3.5, interval: 1), .recovered(after: 3.5))
         XCTAssertEqual(stall.step(at: 7, answeredAt: nil, interval: 1), .wait)
-        XCTAssertEqual(stall.step(at: 8, answeredAt: 7.5, interval: 1), .recovered(after: 3.5))
+        XCTAssertEqual(stall.step(at: 8, answeredAt: 7.5, interval: 1), .ping)
         XCTAssertEqual(stall.step(at: 70, answeredAt: nil, interval: 1), .capture)
+    }
+
+    func testAStallThatBeganDuringTheCooldownIsCapturedWhenItEnds() {
+        var stall = HangWatchdog.Stall(threshold: 3, cooldown: 60)
+        XCTAssertEqual(stall.step(at: 0, answeredAt: nil, interval: 1), .ping)
+        XCTAssertEqual(stall.step(at: 3, answeredAt: nil, interval: 1), .capture)
+        XCTAssertEqual(stall.step(at: 4, answeredAt: 3.5, interval: 1), .recovered(after: 3.5))
+        // Stuck for good from 30 on.
+        XCTAssertEqual(stall.step(at: 33, answeredAt: nil, interval: 1), .wait)
+        XCTAssertEqual(stall.step(at: 62.5, answeredAt: nil, interval: 1), .wait)
+        XCTAssertEqual(stall.step(at: 63, answeredAt: nil, interval: 1), .capture)
+        XCTAssertEqual(stall.step(at: 120, answeredAt: nil, interval: 1), .wait)
     }
 
     func testReportNamesAreInUTC() {

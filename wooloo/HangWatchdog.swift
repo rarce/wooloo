@@ -108,8 +108,19 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
         // A `sample` that never finishes must not stop the watchdog for the rest of the session.
         let deadline = ProcessInfo.processInfo.systemUptime + sampleLimit
         while sample.isRunning, ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval: 0.1) }
-        if sample.isRunning { sample.terminate() }
-        guard manager.fileExists(atPath: report.path) else { return nil }
+        // SIGTERM, then SIGKILL 2 s later, as `WorkspaceFiles.run` stops a command.
+        if sample.isRunning {
+            sample.terminate()
+            Thread.sleep(forTimeInterval: 2)
+            if sample.isRunning { kill(sample.processIdentifier, SIGKILL) }
+            sample.waitUntilExit()
+        }
+        // A `sample` that failed or was stopped leaves an empty or partial report, which would
+        // only push real ones out.
+        guard sample.terminationReason == .exit, sample.terminationStatus == 0 else {
+            try? manager.removeItem(at: report)
+            return nil
+        }
         chmod(report.path, 0o600)
         Self.prune(directory, keeping: Self.keptReports)
         return report
@@ -188,8 +199,9 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
                 return .ping
             }
             guard !stalled, now - sent >= threshold else { return .wait }
-            stalled = true
+            // A stall that began during the cooldown is captured once it ends, if still stuck.
             if let lastCapture, now - lastCapture < cooldown { return .wait }
+            stalled = true
             lastCapture = now
             return .capture
         }
