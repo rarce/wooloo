@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Darwin
 
 /// Records where the main thread is stuck when the app stops responding. A background thread
@@ -18,13 +18,24 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
     /// Seconds an unanswered ping waits before the main thread counts as stuck. The spinning
     /// cursor appears after about two.
     private let threshold: TimeInterval = 3
+    /// Seconds after a capture before another stall is sampled, so a run of stalls neither slows
+    /// the app further nor pushes the first report out.
+    private let cooldown: TimeInterval = 60
+    /// Seconds between pings while the app is active, and while it is in the background.
+    private let activeInterval: TimeInterval = 1
+    private let inactiveInterval: TimeInterval = 5
+    /// Seconds `sample` may take, symbolication included, before it is stopped.
+    private let sampleLimit: TimeInterval = 30
     private let lock = NSLock()
-    private var answered = false
+    /// System uptime when the main thread ran the last ping, nil until it does.
+    private var answeredAt: TimeInterval?
+    private var active = true
     private var started = false
 
-    /// Starts watching, except while hosting tests or with `WOOLOO_DISABLE_HANG_WATCHDOG` set.
+    /// Starts watching, except while hosting tests, under a debugger or with
+    /// `WOOLOO_DISABLE_HANG_WATCHDOG` set.
     func start() {
-        guard !WoolooApp.isHostingTests,
+        guard !WoolooApp.isHostingTests, !Self.isDebugged,
               ProcessInfo.processInfo.environment["WOOLOO_DISABLE_HANG_WATCHDOG"] == nil else { return }
         let first = lock.withLock {
             defer { started = true }
@@ -38,18 +49,19 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
     }
 
     private func run() {
-        var stall = Stall(threshold: threshold)
+        var stall = Stall(threshold: threshold, cooldown: cooldown)
         var report: URL?
         while true {
             // System uptime stops while the Mac sleeps, so sleep is not a hang.
             let now = ProcessInfo.processInfo.systemUptime
-            switch stall.step(at: now, answered: lock.withLock { answered }) {
+            let (answeredAt, active) = lock.withLock { (self.answeredAt, self.active) }
+            switch stall.step(at: now, answeredAt: answeredAt, interval: active ? activeInterval : inactiveInterval) {
             case .wait:
                 break
             case .ping:
                 ping()
             case .capture:
-                // A debugger stopped at a breakpoint stops the main thread too.
+                // A debugger attached later and stopped at a breakpoint stops the main thread too.
                 if !Self.isDebugged { report = capture() }
             case .recovered(let seconds):
                 if let report { Self.append("The main thread answered again after \(Int(seconds.rounded())) s.\n", to: report) }
@@ -61,8 +73,12 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
     }
 
     private func ping() {
-        lock.withLock { answered = false }
-        DispatchQueue.main.async { [self] in lock.withLock { answered = true } }
+        lock.withLock { answeredAt = nil }
+        DispatchQueue.main.async { [self] in
+            let now = ProcessInfo.processInfo.systemUptime
+            let active = MainActor.assumeIsolated { NSApp?.isActive ?? true }
+            lock.withLock { (answeredAt, self.active) = (now, active) }
+        }
     }
 
     /// Samples the whole process for two seconds into a new report, readable only by this user.
@@ -72,8 +88,12 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
         do {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true,
                                         attributes: [.posixPermissions: 0o700])
+            // A folder that already existed keeps its own permissions otherwise.
+            try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         } catch { return nil }
         let report = directory.appending(path: Self.reportName(for: Date()))
+        // Created first, so the report is never readable by others while `sample` writes it.
+        guard manager.createFile(atPath: report.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return nil }
         let sample = Process()
         sample.executableURL = URL(filePath: "/usr/bin/sample")
         sample.arguments = [String(getpid()), "2", "-file", report.path]
@@ -81,8 +101,14 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
         sample.standardError = FileHandle.nullDevice
         do {
             try sample.run()
-            sample.waitUntilExit()
-        } catch { return nil }
+        } catch {
+            try? manager.removeItem(at: report)
+            return nil
+        }
+        // A `sample` that never finishes must not stop the watchdog for the rest of the session.
+        let deadline = ProcessInfo.processInfo.systemUptime + sampleLimit
+        while sample.isRunning, ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        if sample.isRunning { sample.terminate() }
         guard manager.fileExists(atPath: report.path) else { return nil }
         chmod(report.path, 0o600)
         Self.prune(directory, keeping: Self.keptReports)
@@ -92,6 +118,8 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
     static func reportName(for date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        // UTC, so names keep sorting by age across time zones and clock changes.
+        formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "yyyy-MM-dd-HHmmss"
         return "hang-\(formatter.string(from: date)).txt"
     }
@@ -124,32 +152,45 @@ nonisolated final class HangWatchdog: @unchecked Sendable {
     struct Stall {
         enum Step: Equatable {
             case wait, ping, capture
-            /// The main thread answered a ping it had been stuck on, after about this many seconds.
+            /// The main thread answered a ping it had been stuck on, after this many seconds.
             case recovered(after: TimeInterval)
         }
 
         let threshold: TimeInterval
-        /// When the ping not yet answered was sent.
+        let cooldown: TimeInterval
+        /// When the last ping was sent.
         private var sent: TimeInterval?
-        private var captured = false
+        /// Whether the ping not yet answered counted as a stall.
+        private var stalled = false
+        private var lastCapture: TimeInterval?
 
-        init(threshold: TimeInterval) { self.threshold = threshold }
+        init(threshold: TimeInterval, cooldown: TimeInterval) {
+            self.threshold = threshold
+            self.cooldown = cooldown
+        }
 
-        /// `answered` says whether the main thread ran the last ping. After `.ping` and
-        /// `.recovered` the caller sends a new one.
-        mutating func step(at now: TimeInterval, answered: Bool) -> Step {
+        /// `answeredAt` is when the main thread ran the last ping, nil if it has not; `interval`
+        /// is how long an answered ping waits before the next. After `.ping` and `.recovered` the
+        /// caller sends a new one.
+        mutating func step(at now: TimeInterval, answeredAt: TimeInterval?, interval: TimeInterval) -> Step {
             guard let sent else {
                 self.sent = now
                 return .ping
             }
-            if answered {
-                let wasCaptured = captured
+            if let answeredAt {
+                if stalled {
+                    stalled = false
+                    self.sent = now
+                    return .recovered(after: answeredAt - sent)
+                }
+                guard now - sent >= interval else { return .wait }
                 self.sent = now
-                captured = false
-                return wasCaptured ? .recovered(after: now - sent) : .ping
+                return .ping
             }
-            guard !captured, now - sent >= threshold else { return .wait }
-            captured = true
+            guard !stalled, now - sent >= threshold else { return .wait }
+            stalled = true
+            if let lastCapture, now - lastCapture < cooldown { return .wait }
+            lastCapture = now
             return .capture
         }
     }

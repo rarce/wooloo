@@ -2,24 +2,38 @@ import XCTest
 @testable import wooloo
 
 final class HangWatchdogTests: XCTestCase {
-    func testAMainThreadThatAnswersIsPingedAgainAndNeverCaptured() {
-        var stall = HangWatchdog.Stall(threshold: 3)
-        XCTAssertEqual(stall.step(at: 0, answered: false), .ping)
-        for second in 1...10 {
-            XCTAssertEqual(stall.step(at: TimeInterval(second), answered: true), .ping)
-        }
+    func testAMainThreadThatAnswersIsPingedEveryIntervalAndNeverCaptured() {
+        var stall = HangWatchdog.Stall(threshold: 3, cooldown: 60)
+        XCTAssertEqual(stall.step(at: 0, answeredAt: nil, interval: 1), .ping)
+        XCTAssertEqual(stall.step(at: 0.5, answeredAt: 0.1, interval: 1), .wait)
+        XCTAssertEqual(stall.step(at: 1, answeredAt: 0.1, interval: 1), .ping)
+        // In the background, less often.
+        XCTAssertEqual(stall.step(at: 3, answeredAt: 1.1, interval: 5), .wait)
+        XCTAssertEqual(stall.step(at: 6, answeredAt: 1.1, interval: 5), .ping)
     }
 
-    func testAStuckMainThreadIsCapturedOnceThenReportedWhenItAnswers() {
-        var stall = HangWatchdog.Stall(threshold: 3)
-        XCTAssertEqual(stall.step(at: 0, answered: false), .ping)
-        XCTAssertEqual(stall.step(at: 2.5, answered: false), .wait)
-        XCTAssertEqual(stall.step(at: 3, answered: false), .capture)
-        XCTAssertEqual(stall.step(at: 20, answered: false), .wait)
-        XCTAssertEqual(stall.step(at: 21, answered: true), .recovered(after: 21))
-        // A later stall is a new one.
-        XCTAssertEqual(stall.step(at: 21.5, answered: false), .wait)
-        XCTAssertEqual(stall.step(at: 24, answered: false), .capture)
+    func testAStuckMainThreadIsCapturedOnceThenReportedWhenItAnswered() {
+        var stall = HangWatchdog.Stall(threshold: 3, cooldown: 60)
+        XCTAssertEqual(stall.step(at: 0, answeredAt: nil, interval: 1), .ping)
+        XCTAssertEqual(stall.step(at: 2.5, answeredAt: nil, interval: 1), .wait)
+        XCTAssertEqual(stall.step(at: 3, answeredAt: nil, interval: 1), .capture)
+        XCTAssertEqual(stall.step(at: 20, answeredAt: nil, interval: 1), .wait)
+        // The time the main thread answered, not when the watchdog looked after sampling.
+        XCTAssertEqual(stall.step(at: 21, answeredAt: 3.2, interval: 1), .recovered(after: 3.2))
+    }
+
+    func testStallsSoonAfterACaptureAreNotSampled() {
+        var stall = HangWatchdog.Stall(threshold: 3, cooldown: 60)
+        XCTAssertEqual(stall.step(at: 0, answeredAt: nil, interval: 1), .ping)
+        XCTAssertEqual(stall.step(at: 3, answeredAt: nil, interval: 1), .capture)
+        XCTAssertEqual(stall.step(at: 4, answeredAt: 3.5, interval: 1), .recovered(after: 3.5))
+        XCTAssertEqual(stall.step(at: 7, answeredAt: nil, interval: 1), .wait)
+        XCTAssertEqual(stall.step(at: 8, answeredAt: 7.5, interval: 1), .recovered(after: 3.5))
+        XCTAssertEqual(stall.step(at: 70, answeredAt: nil, interval: 1), .capture)
+    }
+
+    func testReportNamesAreInUTC() {
+        XCTAssertEqual(HangWatchdog.reportName(for: Date(timeIntervalSince1970: 0)), "hang-1970-01-01-000000.txt")
     }
 
     func testPruningKeepsTheNewestReportsOnly() throws {
