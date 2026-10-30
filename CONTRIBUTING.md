@@ -55,8 +55,14 @@ Maintainers release by tag; `.github/workflows/release.yml` does the rest.
 2. Optionally write the notes in `docs/releases/vX.Y.Z.md`; otherwise GitHub generates them from the merged pull requests. They appear in the release and in the update dialog.
 3. Once CI has passed on that commit of `main`, push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow refuses a commit that is not on `main` or has not passed CI.
 
-The workflow builds the universal app, publishes `wooloo-X.Y.Z.zip` and `appcast.xml`, and installed copies find the update through `https://github.com/rarce/wooloo/releases/latest/download/appcast.xml`. Every release must therefore carry `appcast.xml`; do not publish releases by hand. A fix to an older line (0.2.1 after 0.3.0) is published without becoming the latest release, so it does not replace the feed.
+The workflow builds the universal app, publishes `wooloo-X.Y.Z.zip`, `appcast.xml` and `wooloo-X.Y.Z.dSYM.zip` (the build's debug symbols), and installed copies find the update through `https://github.com/rarce/wooloo/releases/latest/download/appcast.xml`. Every release must therefore carry `appcast.xml`; do not publish releases by hand. A fix to an older line (0.2.1 after 0.3.0) is published without becoming the latest release, so it does not replace the feed.
 
 Only Release builds check for updates (`WOOLOO_UPDATES` compilation condition): Debug builds and tests never do, and `WOOLOO_DISABLE_UPDATES=1` turns the updater off in a Release build, as `scripts/terminal-e2e.sh` does.
 
 The archive and the feed are signed with an EdDSA key whose public half is `SUPublicEDKey` in `wooloo/Info.plist`. The private key is the `SPARKLE_PRIVATE_KEY` repository secret, with a copy in the maintainer's Keychain (account `wooloo`, Sparkle's `generate_keys`). Losing it means installed copies can no longer be updated; `scripts/release-appcast.sh` signs a local build with the Keychain copy to try a release without CI.
+
+## Crash and hang reports
+
+macOS writes a crash report to `~/Library/Logs/DiagnosticReports/wooloo-*.ips`. When the app stops responding for 3 seconds, `HangWatchdog` saves a `sample` of its threads to `~/Library/Logs/wooloo/Hangs/hang-*.txt`; the main thread's stack shows where it was stuck. Both stay on the Mac until the user shares them.
+
+To read the frames of a release build, unzip that release's `wooloo-X.Y.Z.dSYM.zip` and symbolicate against it, for example `atos -o wooloo.app.dSYM/Contents/Resources/DWARF/wooloo -arch arm64 -l <load address> <address>`. Opening an `.ips` in Console, or dragging it into Xcode's Devices and Simulators window, also uses a dSYM that Spotlight finds.

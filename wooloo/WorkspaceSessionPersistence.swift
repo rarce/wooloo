@@ -362,6 +362,11 @@ final class WorkspaceSessionRegistry {
 final class WoolooAppDelegate: NSObject, NSApplicationDelegate {
     private var isFlushing = false
 
+    /// Before the first window and restored Spaces are built, so a hang there is recorded too.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        HangWatchdog.shared.start()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppUpdater.shared.start()
         if !WoolooApp.isHostingTests, RemoteAccessModel.shared.startsAtLaunch { RemoteAccessModel.shared.startAtLaunch() }
