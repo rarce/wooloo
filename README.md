@@ -115,6 +115,8 @@ The wooloo app has no analytics or telemetry. (The website, wooloo.dev, counts v
 - Anthropic's and OpenAI's unofficial usage endpoints, when you turn on QUOTAS;
 - Cloudflare, when you turn on Remote Access.
 
+If wooloo stops responding for a few seconds, it records where it was stuck (a `sample` of its own threads) in `~/Library/Logs/wooloo/Hangs`, keeping the last 20. These reports stay on your Mac; attach one to an issue if you want to share it.
+
 ## Requirements
 
 - **To run:** macOS 14 or later, Apple silicon or Intel. Herdr 0.9.5 is included in the app; an existing Herdr 0.9 or later installation can also be used. Git is optional, for the Git features.

@@ -363,6 +363,7 @@ final class WoolooAppDelegate: NSObject, NSApplicationDelegate {
     private var isFlushing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        HangWatchdog.shared.start()
         AppUpdater.shared.start()
         if !WoolooApp.isHostingTests, RemoteAccessModel.shared.startsAtLaunch { RemoteAccessModel.shared.startAtLaunch() }
     }

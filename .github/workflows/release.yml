@@ -108,11 +108,22 @@ jobs:
           codesign --verify --deep --strict "$app"
           mkdir -p build/release
           ditto -c -k --sequesterRsrc --keepParent "$app" "build/release/wooloo-$VERSION.zip"
+          # The debug symbols of this exact build, to symbolicate crash and hang reports from it.
+          dsym="$app.dSYM"
+          app_uuids=$(dwarfdump --uuid "$app/Contents/MacOS/wooloo" | awk '{print $2}' | sort)
+          dsym_uuids=$(dwarfdump --uuid "$dsym" | awk '{print $2}' | sort)
+          if [ -z "$app_uuids" ] || [ "$app_uuids" != "$dsym_uuids" ]; then
+            echo "::error::$dsym does not match the wooloo binary"
+            exit 1
+          fi
+          ditto -c -k --keepParent "$dsym" "build/release/wooloo-$VERSION.dSYM.zip"
 
       - uses: actions/upload-artifact@v6
         with:
           name: wooloo-archive
-          path: build/release/wooloo-${{ env.VERSION }}.zip
+          path: |
+            build/release/wooloo-${{ env.VERSION }}.zip
+            build/release/wooloo-${{ env.VERSION }}.dSYM.zip
           if-no-files-found: error
 
   publish:
@@ -198,4 +209,5 @@ jobs:
             make_latest=false
           fi
           gh release create "$GITHUB_REF_NAME" "build/release/$archive" build/release/appcast.xml \
+            "build/release/wooloo-$VERSION.dSYM.zip" \
             --verify-tag --title "wooloo $VERSION" --notes-file build/release/body.md --latest="$make_latest"
