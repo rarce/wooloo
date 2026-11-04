@@ -188,6 +188,7 @@ struct DocumentFindBar: View {
     let onReplaceAll: () -> Void
     /// Puts a cursor on every match in the editor.
     var onSelectAll: (() -> Void)?
+    var onClose: (() -> Void)?
 
     @FocusState private var focusedField: Field?
 
@@ -224,7 +225,7 @@ struct DocumentFindBar: View {
                         .keyboardShortcut(.return, modifiers: .option)
                         .disabled(model.count == 0)
                 }
-                Button("Done") { model.close() }
+                Button("Done", action: close)
                     .controlSize(.small)
                     .help("Close the find bar (Esc)")
             }
@@ -248,7 +249,11 @@ struct DocumentFindBar: View {
         .padding(.vertical, 6)
         .onAppear { focusedField = .query }
         .onChange(of: model.focusRequest) { _, _ in focusedField = .query }
-        .onExitCommand { model.close() }
+        .onExitCommand(perform: close)
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { model.close() }
     }
 
     private var counter: String {

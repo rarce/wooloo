@@ -21,6 +21,17 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         sandbox.tearDown()
     }
 
+    func testTabTitlesDistinguishHomonymousFilesWithTheirDiffs() {
+        let documents = ["a/Config.swift", "b/Config.swift"].flatMap { path in
+            [WorkspaceDocumentKind.file, .change].map { WorkspaceDocument(location: repo, path: path, kind: $0) }
+        }
+        let titles = documents.map { $0.tabTitle(among: documents) }
+        XCTAssertEqual(Set(titles).count, 4)
+        XCTAssertTrue(titles[0].contains("a"))
+        XCTAssertTrue(titles[2].contains("b"))
+        XCTAssertEqual(documents[0].tabTitle(among: [documents[0]]), "Config.swift")
+    }
+
     /// Waits until no document is loading or saving.
     private func settle() async {
         for _ in 0..<500 where store.documents.contains(where: { $0.isLoading || $0.isSaving }) {

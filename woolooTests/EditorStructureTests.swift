@@ -146,6 +146,83 @@ final class EditorStructureTests: XCTestCase {
     }
 
     @MainActor
+    func testDocumentToolbarKeepsFilenameInTabsAndFitsNarrowPanels() async throws {
+        for width in [900, 360] {
+            var document = WorkspaceDocument(location: WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test",
+                workspaceID: "toolbar", workspaceLabel: "Toolbar", root: "/private/tmp"), path: "README.md", kind: .file)
+            document.text = "# Welcome\n\nEditor toolbar fixture.\n"
+            document.savedText = document.text
+            document.isLoading = false
+            for mode in [MarkdownDisplayMode.preview, .source] {
+                document.markdownMode = mode
+                let view = WorkspaceDocumentView(document: Binding(get: { document }, set: { document = $0 }), onSave: {})
+                let host = NSHostingView(rootView: view.environment(\.colorScheme, .dark))
+                host.frame = NSRect(x: 0, y: 0, width: width, height: 480)
+                let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.contentView = host
+                defer { window.close() }
+                try await Task.sleep(for: .milliseconds(700))
+                host.layoutSubtreeIfNeeded()
+                XCTAssertEqual(host.bounds.width, CGFloat(width), accuracy: 1)
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let image = try XCTUnwrap(bitmap.cgImage)
+                let scale = CGFloat(image.width) / host.bounds.width
+                let toolbar = try XCTUnwrap(image.cropping(to: CGRect(x: 0, y: 0,
+                    width: CGFloat(image.width), height: 33 * scale)))
+                let recognition = VNRecognizeTextRequest()
+                try VNImageRequestHandler(cgImage: toolbar).perform([recognition])
+                let visible = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                XCTAssertFalse(visible.contains("README"), "Filename belongs in the tab: \(visible)")
+                XCTAssertTrue(visible.contains("Save"), "Saving must stay accessible: \(visible)")
+                let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                try png.write(to: URL(fileURLWithPath: "/private/tmp/wooloo-toolbar-\(width)-\(mode.rawValue).png"))
+                let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+                attachment.name = "Document toolbar \(width) \(mode.rawValue)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+    }
+
+    @MainActor
+    func testNotebookDiffToolbarOffersOverflowInVeryNarrowPanel() async throws {
+        let suite = "wooloo-toolbar-overflow-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(NotebookDiffMode.json.rawValue, forKey: NotebookDiffMode.storageKey)
+        var document = WorkspaceDocument(location: WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test",
+            workspaceID: "toolbar", workspaceLabel: "Toolbar", root: "/private/tmp"), path: "analysis.ipynb", kind: .change)
+        document.isLoading = false
+        document.diffPatches = [.all: "", .staged: "", .unstaged: ""]
+        let view = WorkspaceDocumentView(document: Binding(get: { document }, set: { document = $0 }), onSave: {})
+        let host = NSHostingView(rootView: view.defaultAppStorage(defaults).environment(\.colorScheme, .dark))
+        host.frame = NSRect(x: 0, y: 0, width: 200, height: 480)
+        let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(700))
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let image = try XCTUnwrap(bitmap.cgImage)
+        // Vision misses this short menu title when given only a shallow toolbar crop.
+        // The empty diff body contains no Tools text, so recognizing the full image is unambiguous.
+        let recognition = VNRecognizeTextRequest()
+        recognition.recognitionLanguages = ["en-US"]
+        recognition.usesLanguageCorrection = false
+        recognition.customWords = ["Tools"]
+        recognition.minimumTextHeight = 0
+        try VNImageRequestHandler(cgImage: image).perform([recognition])
+        let visible = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+        XCTAssertTrue(visible.contains("Tools"), "Controls must collapse into an accessible menu: \(visible)")
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: "/private/tmp/wooloo-toolbar-notebook-overflow.png"))
+    }
+
+    @MainActor
     func testStructureEditorLayouts() async throws {
         var document = WorkspaceDocument(location: WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test", workspaceID: "outline", workspaceLabel: "Outline", root: "/private/tmp"), path: "Sources/Navigation.swift", kind: .file)
         document.text = """
@@ -186,8 +263,8 @@ final class EditorStructureTests: XCTestCase {
                 host.cacheDisplay(in: host.bounds, to: bitmap)
                 let image = try XCTUnwrap(bitmap.cgImage)
                 let scale = CGFloat(image.width) / host.bounds.width
-                let breadcrumb = try XCTUnwrap(image.cropping(to: CGRect(x: 0, y: 34 * scale,
-                                                                          width: CGFloat(image.width), height: 26 * scale)))
+                let breadcrumb = try XCTUnwrap(image.cropping(to: CGRect(x: 0, y: 0,
+                                                                          width: CGFloat(image.width), height: 33 * scale)))
                 let recognition = VNRecognizeTextRequest()
                 recognition.recognitionLevel = .accurate
                 recognition.usesLanguageCorrection = false
