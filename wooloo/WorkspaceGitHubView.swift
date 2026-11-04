@@ -148,6 +148,10 @@ final class WorkspaceGitHubModel: ObservableObject {
             if repositories.count >= 12, repositories[key] == nil { repositories.removeAll(); cache.removeAll() }
             repositories[key] = repo
             repository = repo
+            if refresh && !includeItems {
+                // Totals refreshed without lists: fetch both lists again on expansion.
+                cache = cache.filter { !$0.key.hasPrefix(key + "|") }
+            }
             let cacheKey = key + "|" + repo.url + "|" + kind.rawValue
             items = cache[cacheKey]
             guard includeItems else { return }
