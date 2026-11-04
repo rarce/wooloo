@@ -386,6 +386,8 @@ struct PanelTab: Identifiable, Equatable {
     let id: String
     let title: String
     let icon: String
+    var count: Int? = nil
+    var displayTitle: String { title + (count.map { " (\($0.formatted()))" } ?? "") }
 
     static let explorer = [
         PanelTab(id: "files", title: "Files", icon: "doc.text"),
@@ -407,7 +409,7 @@ struct PanelTabStrip: View {
 
     private func width(_ tab: PanelTab) -> CGFloat {
         let font = NSFont.systemFont(ofSize: typography.secondary, weight: .semibold)
-        return ceil((tab.title as NSString).size(withAttributes: [.font: font]).width) + 38
+        return ceil((tab.displayTitle as NSString).size(withAttributes: [.font: font]).width) + 38
     }
 
     func visibleTabs(in width: CGFloat) -> [PanelTab] {
@@ -430,7 +432,7 @@ struct PanelTabStrip: View {
             HStack(spacing: 0) {
                 ForEach(visible) { tab in
                     Button { selection = tab.id } label: {
-                        Label(tab.title, systemImage: tab.icon)
+                        Label(tab.displayTitle, systemImage: tab.icon)
                             .font(.system(size: typography.secondary, weight: selection == tab.id ? .semibold : .regular))
                             .foregroundStyle(selection == tab.id ? Color.primary : .secondary)
                             .frame(width: width(tab), height: typography.metric(32))
@@ -448,7 +450,7 @@ struct PanelTabStrip: View {
                     Menu {
                         ForEach(tabs) { tab in
                             Button { selection = tab.id } label: {
-                                Label(tab.title, systemImage: selection == tab.id ? "checkmark" : tab.icon)
+                                Label(tab.displayTitle, systemImage: selection == tab.id ? "checkmark" : tab.icon)
                             }
                         }
                     } label: {

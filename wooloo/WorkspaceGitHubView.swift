@@ -5,6 +5,13 @@ struct WorkspaceGitHubRepository: Decodable, Equatable, Sendable {
     let nameWithOwner: String
     let url: String
     let hasIssuesEnabled: Bool
+    struct Count: Decodable, Equatable, Sendable { let totalCount: Int }
+    var issues: Count? = nil
+    var pullRequests: Count? = nil
+
+    func count(_ kind: WorkspaceGitHubKind) -> Int? {
+        kind == .issues ? (hasIssuesEnabled ? issues?.totalCount : 0) : pullRequests?.totalCount
+    }
 }
 
 struct WorkspaceGitHubItem: Decodable, Identifiable, Equatable, Sendable {
@@ -54,7 +61,7 @@ enum WorkspaceGitHub {
         [ -n "$(git remote)" ] || { echo 'WOOL_GH_NO_REMOTE' >&2; exit 3; }
         """
         let data = try WorkspaceFiles.shell(preflight + "\n" + command([
-            "repo", "view", "--json", "nameWithOwner,url,hasIssuesEnabled"
+            "repo", "view", "--json", "nameWithOwner,url,hasIssuesEnabled,issues,pullRequests"
         ]), at: location, limit: 64_000)
         return try JSONDecoder().decode(WorkspaceGitHubRepository.self, from: data)
     }
@@ -117,7 +124,7 @@ final class WorkspaceGitHubModel: ObservableObject {
         location.identity + "|" + (location.machine?.target ?? "local")
     }
 
-    func load(_ location: WorkspaceFileLocation?, kind: WorkspaceGitHubKind, refresh: Bool = false) async {
+    func load(_ location: WorkspaceFileLocation?, kind: WorkspaceGitHubKind, refresh: Bool = false, includeItems: Bool = true) async {
         let request = UUID()
         generation = request
         self.kind = kind
@@ -129,7 +136,7 @@ final class WorkspaceGitHubModel: ObservableObject {
         let previous = repositories[key]
         repository = previous
         items = previous.flatMap { cache[key + "|" + $0.url + "|" + kind.rawValue] }
-        if !refresh, previous != nil, items != nil { isLoading = false; return }
+        if !refresh, previous != nil, (!includeItems || items != nil) { isLoading = false; return }
         isLoading = true
         defer { if generation == request { isLoading = false } }
         do {
@@ -143,6 +150,7 @@ final class WorkspaceGitHubModel: ObservableObject {
             repository = repo
             let cacheKey = key + "|" + repo.url + "|" + kind.rawValue
             items = cache[cacheKey]
+            guard includeItems else { return }
             if kind == .issues, !repo.hasIssuesEnabled { items = []; return }
             let entries = try await loadItems(location, kind, repo)
             guard !Task.isCancelled, generation == request else { return }
@@ -168,6 +176,18 @@ struct WorkspaceGitHubView: View {
     private var kind: WorkspaceGitHubKind { WorkspaceGitHubKind(rawValue: selectedTab) ?? .issues }
     private var loadKey: String { "\(location.map(WorkspaceGitHubModel.contextKey) ?? "none")|\(selectedTab)|\(isCollapsed)|\(reload)" }
 
+    private func count(_ kind: WorkspaceGitHubKind) -> Int? {
+        guard model.context == location.map(WorkspaceGitHubModel.contextKey) else { return nil }
+        return model.repository?.count(kind)
+    }
+
+    private var tabs: [PanelTab] {
+        PanelTab.github.map { tab in
+            PanelTab(id: tab.id, title: tab.title, icon: tab.icon,
+                     count: WorkspaceGitHubKind(rawValue: tab.id).flatMap { count($0) })
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
@@ -183,20 +203,31 @@ struct WorkspaceGitHubView: View {
                 .buttonStyle(.plain)
                 .help(isCollapsed ? "Show GitHub" : "Hide GitHub")
                 Spacer(minLength: 0)
+                ForEach(WorkspaceGitHubKind.allCases, id: \.rawValue) { kind in
+                    if let count = count(kind) {
+                        Label(count.formatted(), systemImage: kind == .issues ? "circle.dotted" : "arrow.triangle.pull")
+                            .font(.system(size: typography.caption))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .help("\(count) open \(kind.noun)")
+                            .accessibilityLabel("\(count) open \(kind.noun)")
+                    }
+                }
                 Button { reload += 1 } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: typography.secondary))
                         .opacity(model.isLoading ? 0 : 1)
                         .overlay { if model.isLoading { ProgressView().controlSize(.mini) } }
                 }
                 .buttonStyle(.plain)
-                .disabled(model.isLoading || location == nil || isCollapsed)
+                .disabled(model.isLoading || location == nil)
                 .help("Refresh GitHub")
             }
             .padding(.horizontal, 11)
             .frame(height: typography.metric(35))
             if !isCollapsed {
                 Divider()
-                PanelTabStrip(tabs: PanelTab.github, selection: $selectedTab)
+                PanelTabStrip(tabs: tabs, selection: $selectedTab)
                 Divider()
                 if model.context == location.map(WorkspaceGitHubModel.contextKey), let repository = model.repository {
                     Text(repository.nameWithOwner)
@@ -211,10 +242,9 @@ struct WorkspaceGitHubView: View {
         }
         .background(theme.sidebarBackground)
         .task(id: loadKey) {
-            guard !isCollapsed else { return }
             let forceRefresh = reload != appliedReload
             appliedReload = reload
-            await model.load(location, kind: kind, refresh: forceRefresh)
+            await model.load(location, kind: kind, refresh: forceRefresh, includeItems: !isCollapsed)
         }
     }
 

@@ -72,6 +72,28 @@ final class WorkspaceGitHubTests: XCTestCase {
         XCTAssertEqual(model.context, WorkspaceGitHubModel.contextKey(location("/fast")))
     }
 
+    func testCollapsedPanelLoadsBothTotalsWithoutFetchingLists() async throws {
+        let fixture = GitHubReadFixture()
+        let repository = try JSONDecoder().decode(WorkspaceGitHubRepository.self, from: Data("""
+            {"nameWithOwner":"team/app","url":"https://github.com/team/app","hasIssuesEnabled":true,
+             "issues":{"totalCount":123},"pullRequests":{"totalCount":0}}
+            """.utf8))
+        let model = WorkspaceGitHubModel(loadRepository: { _ in repository }, loadItems: { location, kind, _ in
+            try await fixture.read(location, kind: kind)
+        })
+        await model.load(location(), kind: .issues, includeItems: false)
+        XCTAssertEqual(model.repository?.count(.issues), 123)
+        XCTAssertEqual(model.repository?.count(.prs), 0)
+        XCTAssertNil(model.items)
+        let requests = await fixture.requests
+        XCTAssertTrue(requests.isEmpty)
+        await model.load(location(), kind: .issues)
+        XCTAssertEqual(model.items?.count, 1)
+        XCTAssertEqual(model.repository?.count(.issues), 123)
+        await model.load(nil, kind: .issues, includeItems: false)
+        XCTAssertNil(model.repository)
+    }
+
     func testDisabledIssuesDoNotRequestIssueList() async {
         let fixture = GitHubReadFixture()
         let model = WorkspaceGitHubModel(loadRepository: { _ in
