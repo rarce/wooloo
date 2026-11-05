@@ -146,6 +146,10 @@ final class ContentPanelsTests: XCTestCase {
         commands.selectTab(first)
         XCTAssertEqual(documents.activeID, second, "The main panel keeps its document")
         XCTAssertEqual(window.focusedPanel, firstContent)
+        XCTAssertEqual(commands.focusedTabID, first, "The titlebar follows the focused split, not the main selection")
+        commands.focusPanel(.main)
+        XCTAssertEqual(commands.focusedTabID, second)
+        commands.focusPanel(firstContent)
 
         // Opening it some other way, as from the explorer, does the same.
         commands.focusPanel(.main)

@@ -44,6 +44,8 @@ private struct DestinationContentView: View {
     @ObservedObject private var herdr: HerdrStore
     @ObservedObject private var destinations: HerdrDestinations
     @StateObject private var window = ContentWindowModel()
+    @StateObject private var chrome = IntegratedWindowChrome()
+    @State private var tabContentWidth: CGFloat = 0
     @State private var hoveredTabID: String?
     @State private var shortcutMap = HerdrShortcutMap.load()
     @State private var shortcutPrefixActive = false
@@ -123,12 +125,16 @@ private struct DestinationContentView: View {
 
     private var windowContent: some View {
         GeometryReader { geometry in
-            if managesRuntime && runtime.showsSetup {
-                HerdrSetupView(runtime: runtime)
-            } else {
-                content(totalWidth: geometry.size.width)
+            VStack(spacing: 0) {
+                windowHeader
+                if managesRuntime && runtime.showsSetup {
+                    HerdrSetupView(runtime: runtime)
+                } else {
+                    content(totalWidth: geometry.size.width)
+                }
             }
         }
+        .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 850, minHeight: managesRuntime && runtime.showsSetup ? 580 : 380)
         .preferredColorScheme(theme.colorScheme)
         .environment(\.woolooTheme, theme)
@@ -144,6 +150,7 @@ private struct DestinationContentView: View {
             if managesRuntime { loadMachines() }
         }
         .background { DestinationWindowObserver(destinations: destinations).frame(width: 0, height: 0) }
+        .background { IntegratedWindowObserver(chrome: chrome).frame(width: 0, height: 0) }
         .onChange(of: runtime.showsSetup) { _, showsSetup in
             guard managesRuntime, herdr.machine == nil else { return }
             if showsSetup {
@@ -787,11 +794,6 @@ private struct DestinationContentView: View {
     private var mainContent: some View {
         VStack(spacing: 0) {
             if herdr.isConnected || !documents.isEmpty {
-                tabBar
-                    .frame(height: typography.metric(31))
-                    .background(barBackground)
-                Divider()
-
                 let layout = commands.panelLayout
                 // A tab made active while it has a side panel shows there; the redirect follows.
                 let mainShows = commands.mainPanelContent.flatMap { layout.contains($0) ? nil : $0 } ?? .main
@@ -998,88 +1000,184 @@ private struct DestinationContentView: View {
         return Color.primary.opacity(hasFocus ? 0.09 : 0.045)
     }
 
-    /// Terminal tabs, the Search tab and document tabs, then the new tab buttons. Double-clicking
-    /// the empty space after them opens an untitled file; a middle click closes a tab; terminal
-    /// and document tabs are dragged to reorder them within their group.
-    private var tabBar: some View {
-        GeometryReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    ForEach(Array(selectedTabs.enumerated()), id: \.element.id) { index, tab in
-                        terminalTab(tab, index: index)
-                    }
-                    if !documents.isEmpty || window.showsSearchTab {
-                        Divider().frame(height: typography.metric(17)).padding(.horizontal, 4)
-                            .frame(maxHeight: .infinity)
-                            .contentShape(Rectangle())
-                            .tabDropAtEnd(drag: window.tabDrag, [.terminal: terminalTabsEnd])
-                    }
-                    if window.showsSearchTab { searchTab }
-                    ForEach(Array(documents.enumerated()), id: \.element.id) { index, document in
-                        documentTab(document, index: index)
-                    }
-                    Button {
-                        commands.perform(.newTab)
-                    } label: {
-                        TabBarAddIcon(symbol: "terminal")
-                            .frame(width: 26, height: typography.metric(25))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("New Terminal Tab")
-                    .disabled(herdr.selectedWorkspaceID == nil)
-                    Button {
-                        commands.newUntitledFile()
-                    } label: {
-                        TabBarAddIcon(symbol: "doc")
-                            .frame(width: 26, height: typography.metric(25))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("New Untitled File (double-click the empty tab bar)")
-                    .disabled(explorerLocation == nil)
-                    // The rest of the bar: double-clicking it opens an untitled file, and a tab
-                    // dropped on it goes last in its group.
-                    Color.clear
-                        .frame(minWidth: 12, maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { commands.newUntitledFile() }
-                        .tabDropAtEnd(drag: window.tabDrag, [
-                            .terminal: terminalTabsEnd,
-                            .document: TabDropEnd(lastIndex: documents.count - 1, onMove: { documentStore.move($0, to: $1) })
-                        ])
-                }
-                .padding(.horizontal, 0)
-                .frame(minWidth: proxy.size.width, minHeight: proxy.size.height, alignment: .leading)
+    /// One titlebar across the window; tabs may use the space above the files sidebar, too.
+    private var windowHeader: some View {
+        HStack(spacing: 0) {
+            WindowDragRegion()
+                .frame(width: max(chrome.metrics.controlsWidth, window.showsSidebar ? sidebarWidth + 1 : 0))
+            if managesRuntime && runtime.showsSetup {
+                WindowDragRegion()
+            } else {
+                tabBar
             }
+            // Always keep somewhere to grab the window, even when the tabs overflow.
+            WindowDragRegion().frame(width: 44)
         }
-        .overlay {
-            TerminalPaneTabDropView(accent: NSColor(theme.accent), canDetach: { pane in
-                herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.paneID == pane }
-            }, detach: { pane in
-                guard herdr.detachPane(pane) else { return false }
-                activeDocumentID = nil
-                commands.focusPanel(.main)
-                return true
-            })
+        .frame(height: max(textScale.metric(30), chrome.metrics.minimumHeight))
+        .background(barBackground)
+        .overlay(alignment: .bottom) { Color.primary.opacity(0.08).frame(height: 1) }
+    }
+
+    private var focusedTabID: String? { commands.focusedTabID }
+
+    private func tabIsFocused(_ id: String) -> Bool { focusedTabID == id }
+
+    private func tabIsVisible(_ id: String) -> Bool {
+        if let content = commands.panelContent(forTab: id) {
+            return activeDocumentID == id || commands.panelLayout.contains(content)
+        }
+        return activeDocumentID == nil && herdr.selectedTabID == id
+    }
+
+    private func tabAccessibilityState(_ id: String) -> String {
+        tabIsFocused(id) ? "Focused" : tabIsVisible(id) ? "Visible in another panel" : "Hidden"
+    }
+
+    /// Terminal, Search and document tabs keep their independent drag groups. Creation and
+    /// the all-tabs menu stay outside the scroll view so overflow cannot hide those controls.
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            GeometryReader { viewport in
+                ScrollViewReader { scroll in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 0) {
+                            ForEach(Array(selectedTabs.enumerated()), id: \.element.id) { index, tab in
+                                terminalTab(tab, index: index).id(tab.tabID)
+                            }
+                            if !documents.isEmpty || window.showsSearchTab {
+                                Divider().frame(height: textScale.metric(17)).padding(.horizontal, 3)
+                                    .frame(maxHeight: .infinity)
+                                    .contentShape(Rectangle())
+                                    .tabDropAtEnd(drag: window.tabDrag, [.terminal: terminalTabsEnd])
+                            }
+                            if window.showsSearchTab { searchTab.id(WorkspaceSearchModel.tabID) }
+                            ForEach(Array(documents.enumerated()), id: \.element.id) { index, document in
+                                documentTab(document, index: index).id(document.id)
+                            }
+                            WindowDragRegion().frame(minWidth: 16, maxWidth: .infinity)
+                                .tabDropAtEnd(drag: window.tabDrag, [
+                                    .terminal: terminalTabsEnd,
+                                    .document: TabDropEnd(lastIndex: documents.count - 1, onMove: { documentStore.move($0, to: $1) })
+                                ])
+                        }
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { tabContentWidth = $0 }
+                        .frame(minWidth: viewport.size.width, maxHeight: .infinity, alignment: .leading)
+                    }
+                    .onChange(of: focusedTabID, initial: true) { _, id in
+                        if let id { scroll.scrollTo(id) }
+                    }
+                    .onChange(of: viewport.size.width) { _, _ in
+                        if let id = focusedTabID { scroll.scrollTo(id) }
+                    }
+                    .onChange(of: tabContentWidth) { _, _ in
+                        if let id = focusedTabID { scroll.scrollTo(id) }
+                    }
+                }
+                // This native pane-detach target covers only the scroll viewport, never the
+                // window controls, creation buttons or dedicated window drag region.
+                .overlay {
+                    TerminalPaneTabDropView(accent: NSColor(theme.accent), canDetach: { pane in
+                        herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.paneID == pane }
+                    }, detach: { pane in
+                        guard herdr.detachPane(pane) else { return false }
+                        activeDocumentID = nil
+                        commands.focusPanel(.main)
+                        return true
+                    })
+                }
+                .clipped()
+                .overlay(alignment: .trailing) {
+                    if tabContentWidth > viewport.size.width + 1 {
+                        Color.primary.opacity(0.12).frame(width: 1).allowsHitTesting(false)
+                    }
+                }
+            }
+            Button { commands.perform(.newTab) } label: {
+                TabBarAddIcon(symbol: "terminal").frame(width: 28, height: textScale.metric(30))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("New Terminal Tab")
+            .accessibilityLabel("New Terminal Tab")
+            .disabled(!herdr.isConnected || herdr.selectedWorkspaceID == nil)
+            Button { commands.newUntitledFile() } label: {
+                TabBarAddIcon(symbol: "doc").frame(width: 28, height: textScale.metric(30))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("New Untitled File")
+            .accessibilityLabel("New Untitled File")
+            .disabled(explorerLocation == nil)
+            allTabsMenu
         }
     }
 
-    private func tabCloseButton(visible: Bool, action: @escaping () -> Void) -> some View {
+    private func tabMenuTitle(_ title: String, id: String) -> String {
+        title + (tabIsVisible(id) && !tabIsFocused(id) ? " · Visible" : "")
+    }
+
+    private var allTabsMenu: some View {
+        Menu {
+            if !selectedTabs.isEmpty {
+                Section("Terminals") {
+                    ForEach(selectedTabs) { tab in
+                        Button { herdr.select(tabID: tab.tabID); activeDocumentID = nil; commands.focusPanel(.main) } label: {
+                            Label(tabMenuTitle(tab.label, id: tab.tabID), systemImage: tabIsFocused(tab.tabID) ? "checkmark" : "terminal")
+                        }
+                        .accessibilityLabel(terminalTabAccessibilityLabel(tab) + ", " + tabAccessibilityState(tab.tabID))
+                    }
+                }
+            }
+            if window.showsSearchTab {
+                Button { commands.selectTab(WorkspaceSearchModel.tabID) } label: {
+                    Label(tabMenuTitle(search.title, id: WorkspaceSearchModel.tabID),
+                          systemImage: tabIsFocused(WorkspaceSearchModel.tabID) ? "checkmark" : "magnifyingglass")
+                }
+            }
+            if !documents.isEmpty {
+                Section("Documents") {
+                    ForEach(documents) { document in
+                        Button { commands.selectTab(document.id) } label: {
+                            Label(tabMenuTitle(document.tabTitle(among: documents), id: document.id) + (document.isDirty ? " • Unsaved" : ""),
+                                  systemImage: tabIsFocused(document.id) ? "checkmark" : document.icon)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "chevron.down").frame(width: 24, height: textScale.metric(30))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .menuIndicator(.hidden)
+        .help("All Tabs")
+        .accessibilityLabel("All Tabs")
+        .disabled(selectedTabs.isEmpty && documents.isEmpty && !window.showsSearchTab)
+    }
+
+    private func tabCloseButton(title: String, visible: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(.system(size: typography.tiny))
-                .frame(width: 23, height: typography.metric(27))
+                .font(.system(size: textScale.tiny))
+                .frame(width: 22, height: textScale.metric(30))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(visible ? 1 : 0)
-        .allowsHitTesting(visible)
-        .accessibilityLabel("Close tab")
+        .opacity(visible ? 1 : 0.45)
+        .help("Close \(title)")
+        .accessibilityLabel("Close \(title)")
     }
 
     private var terminalTabsEnd: TabDropEnd {
         TabDropEnd(lastIndex: selectedTabs.count - 1, onMove: { herdr.moveTab($0, to: $1) })
+    }
+
+    private func terminalTabAccessibilityLabel(_ tab: HerdrTab) -> String {
+        let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot, contextID: herdr.contextID)
+        var label = "Terminal: \(tab.label)"
+        if marks.requests > 0 { label += ", \(marks.requests) attention requests" }
+        if marks.done > 0 { label += ", \(marks.done) completed" }
+        return label
     }
 
     private func terminalTab(_ tab: HerdrTab, index: Int) -> some View {
@@ -1091,21 +1189,28 @@ private struct DestinationContentView: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "terminal")
-                        .font(.system(size: typography.secondary))
-                    Text(tab.label).lineLimit(1)
+                        .font(.system(size: textScale.secondary))
+                    Text(tab.label).lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: textScale.base * 12)
                     let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot, contextID: herdr.contextID)
                     HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                 }
-                .font(.system(size: typography.body))
-                .padding(.horizontal, 10)
-                .frame(height: typography.metric(27))
+                .font(.system(size: textScale.body))
+                .padding(.leading, 8)
+                .padding(.trailing, 3)
+                .frame(height: textScale.metric(30))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            tabCloseButton(visible: hoveredTabID == tab.tabID || (activeDocumentID == nil && herdr.selectedTabID == tab.tabID)) { closeTerminalTab(tab) }
+            .accessibilityLabel(terminalTabAccessibilityLabel(tab))
+            .accessibilityValue(tabAccessibilityState(tab.tabID))
+            .accessibilityAddTraits(tabIsFocused(tab.tabID) ? .isSelected : [])
+            tabCloseButton(title: tab.label, visible: hoveredTabID == tab.tabID || tabIsFocused(tab.tabID)) { closeTerminalTab(tab) }
         }
-        .modifier(EditorTabStyle(selected: activeDocumentID == nil && herdr.selectedTabID == tab.tabID,
+        .modifier(EditorTabStyle(selected: tabIsFocused(tab.tabID),
                                  presence: tabBackground(nil, inMain: activeDocumentID == nil && herdr.selectedTabID == tab.tabID)))
+        .fixedSize(horizontal: true, vertical: false)
+        .help(tab.label)
         .onHover { hoveredTabID = $0 ? tab.tabID : nil }
         .onMiddleClick { closeTerminalTab(tab) }
         .contextMenu {
@@ -1156,18 +1261,23 @@ private struct DestinationContentView: View {
             Button { openSearch(replace: false) } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "magnifyingglass").foregroundStyle(theme.accent)
-                    Text(search.title).lineLimit(1).frame(maxWidth: 160)
+                    Text(search.title).lineLimit(1).truncationMode(.middle).frame(maxWidth: textScale.base * 12)
                 }
-                .font(.system(size: typography.body))
-                .padding(.leading, 9)
-                .frame(height: typography.metric(27))
+                .font(.system(size: textScale.body))
+                .padding(.leading, 8)
+                .padding(.trailing, 3)
+                .frame(height: textScale.metric(30))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            tabCloseButton(visible: hoveredTabID == WorkspaceSearchModel.tabID || activeDocumentID == WorkspaceSearchModel.tabID) { closeSearch() }
+            .accessibilityLabel("Search: \(search.title)")
+            .accessibilityValue(tabAccessibilityState(WorkspaceSearchModel.tabID))
+            .accessibilityAddTraits(tabIsFocused(WorkspaceSearchModel.tabID) ? .isSelected : [])
+            tabCloseButton(title: search.title, visible: hoveredTabID == WorkspaceSearchModel.tabID || tabIsFocused(WorkspaceSearchModel.tabID)) { closeSearch() }
         }
-        .modifier(EditorTabStyle(selected: activeDocumentID == WorkspaceSearchModel.tabID,
+        .modifier(EditorTabStyle(selected: tabIsFocused(WorkspaceSearchModel.tabID),
                                  presence: tabBackground(.search, inMain: activeDocumentID == WorkspaceSearchModel.tabID)))
+        .fixedSize(horizontal: true, vertical: false)
         .onHover { hoveredTabID = $0 ? WorkspaceSearchModel.tabID : nil }
         .help("Project Search")
         .onMiddleClick { closeSearch() }
@@ -1185,20 +1295,29 @@ private struct DestinationContentView: View {
                 HStack(spacing: 5) {
                     Image(systemName: document.icon)
                         .foregroundStyle(theme.accent)
-                    Text(document.tabTitle(among: documents)).lineLimit(1).italic(document.isPreview)
-                        .strikethrough(document.isDeletedOnDisk)
+                    Text(document.tabTitle(among: documents)).lineLimit(1).truncationMode(.middle)
+                        .italic(document.isPreview).strikethrough(document.isDeletedOnDisk)
+                        .frame(maxWidth: textScale.base * 12)
                     if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
                 }
-                .font(.system(size: typography.body))
-                .padding(.leading, 9)
-                .frame(height: typography.metric(27))
+                .font(.system(size: textScale.body))
+                .padding(.leading, 8)
+                .padding(.trailing, 3)
+                .frame(height: textScale.metric(30))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Document: \(document.tabTitle(among: documents))" +
+                                (document.isDirty ? ", unsaved changes" : "") +
+                                (document.isPreview ? ", preview" : "") +
+                                (document.isDeletedOnDisk ? ", deleted on disk" : ""))
+            .accessibilityValue(tabAccessibilityState(document.id))
+            .accessibilityAddTraits(tabIsFocused(document.id) ? .isSelected : [])
             .simultaneousGesture(TapGesture(count: 2).onEnded { keepDocumentOpen(document.id) })
-            tabCloseButton(visible: hoveredTabID == document.id || activeDocumentID == document.id) { closeDocument(document.id) }
+            tabCloseButton(title: document.tabTitle(among: documents), visible: hoveredTabID == document.id || tabIsFocused(document.id)) { closeDocument(document.id) }
         }
-        .modifier(EditorTabStyle(selected: activeDocumentID == document.id,
+        .modifier(EditorTabStyle(selected: tabIsFocused(document.id),
                                  presence: tabBackground(.document(document.backupID), inMain: activeDocumentID == document.id)))
+        .fixedSize(horizontal: true, vertical: false)
         .onHover { hoveredTabID = $0 ? document.id : nil }
         .help(document.isUntitled ? "\(document.title) · not saved yet"
               : "\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.location.absolutePath(document.path))")

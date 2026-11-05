@@ -22,6 +22,7 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 ### Agents and sessions
 
 - Spaces, tabs and split panes follow Herdr's [workspace, tab, pane and agent model](https://herdr.dev/docs/concepts/). Create, rename, close and zoom them from the sidebar, tab row, context menus, menu bar or command palette.
+- Compact tabs share the titlebar with the native window controls. New terminal and file buttons and an all-tabs menu stay reachable when tabs overflow; selecting a split panel reveals its tab. Drag an empty part of the titlebar to move the window, or double-click it to follow the macOS titlebar setting.
 - The Agents section shows every agent with its Space, tab, summary and status, and can be filtered to the selected Space.
 - Alerts when an agent finishes or needs input: Herdr's sounds, in-app toasts or system notifications, with unread marks until you look at the pane.
 - The connected host's CPU, memory, disk and uptime, local or over SSH.

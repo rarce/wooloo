@@ -20,6 +20,7 @@ struct WoolooApp: App {
                 ContentView()
             }
         }
+        .windowStyle(.hiddenTitleBar)
         .commands { WoolooCommands() }
     }
 }

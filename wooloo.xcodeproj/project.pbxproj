@@ -80,6 +80,7 @@
 		C30000000000000000000F05 /* AgentQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F06 /* AgentQuotaTests.swift */; };
 		A10000000000000000000F05 /* QuickOpen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F06 /* QuickOpen.swift */; };
 		A10000000000000000000F07 /* QuickOpenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F08 /* QuickOpenView.swift */; };
+		D52BAAE3586144B18F6325E8 /* IntegratedWindowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A05633E3E2B94F22B4B4FDA5 /* IntegratedWindowChrome.swift */; };
 		A1000000000000000000AB01 /* TabBarControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AB02 /* TabBarControls.swift */; };
 		A1000000000000000000AB03 /* TerminalTabDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AB04 /* TerminalTabDrop.swift */; };
 		A1000000000000000000AB05 /* ContentPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AB06 /* ContentPanels.swift */; };
@@ -94,6 +95,7 @@
 		C3D000000000000000000100 /* RemoteAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D100000000000000000100 /* RemoteAccessTests.swift */; };
 		AFE200000000000000000002 /* RemoteAccessLineBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE200000000000000000003 /* RemoteAccessLineBufferTests.swift */; };
 		C3D000000000000000000102 /* MobileSSHAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D100000000000000000102 /* MobileSSHAccessTests.swift */; };
+		8DFA5B3024E947D299999C0F /* IntegratedWindowChromeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBA8DB6C03C54F27BDBFE67F /* IntegratedWindowChromeTests.swift */; };
 		C30000000000000000000064 /* ContentCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000065 /* ContentCommandsTests.swift */; };
 		C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */; };
 		C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000073 /* HerdrSettingsModelTests.swift */; };
@@ -244,6 +246,7 @@
 		C30000000000000000000F06 /* AgentQuotaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000F06 /* QuickOpen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpen.swift; sourceTree = "<group>"; };
 		A10000000000000000000F08 /* QuickOpenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenView.swift; sourceTree = "<group>"; };
+		A05633E3E2B94F22B4B4FDA5 /* IntegratedWindowChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegratedWindowChrome.swift; sourceTree = "<group>"; };
 		A1000000000000000000AB02 /* TabBarControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarControls.swift; sourceTree = "<group>"; };
 		A1000000000000000000AB04 /* TerminalTabDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTabDrop.swift; sourceTree = "<group>"; };
 		A1000000000000000000AB06 /* ContentPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentPanels.swift; sourceTree = "<group>"; };
@@ -258,6 +261,7 @@
 		C3D100000000000000000100 /* RemoteAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessTests.swift; sourceTree = "<group>"; };
 		AFE200000000000000000003 /* RemoteAccessLineBufferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessLineBufferTests.swift; sourceTree = "<group>"; };
 		C3D100000000000000000102 /* MobileSSHAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSSHAccessTests.swift; sourceTree = "<group>"; };
+		DBA8DB6C03C54F27BDBFE67F /* IntegratedWindowChromeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegratedWindowChromeTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000065 /* ContentCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCommandsTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceExplorerModelTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000073 /* HerdrSettingsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModelTests.swift; sourceTree = "<group>"; };
@@ -412,6 +416,7 @@
 				A10000000000000000000F06 /* QuickOpen.swift */,
 				A10000000000000000000F08 /* QuickOpenView.swift */,
 				A1000000000000000000AB02 /* TabBarControls.swift */,
+				A05633E3E2B94F22B4B4FDA5 /* IntegratedWindowChrome.swift */,
 				A1000000000000000000AB04 /* TerminalTabDrop.swift */,
 				A1000000000000000000AB06 /* ContentPanels.swift */,
 				A10000000000000000000F0C /* CommandPalette.swift */,
@@ -467,6 +472,7 @@
 				C3000000000000000000D912 /* PreviewScrollMemoryTests.swift */,
 				C30000000000000000000F10 /* CommandPaletteTests.swift */,
 				C30000000000000000000065 /* ContentCommandsTests.swift */,
+				DBA8DB6C03C54F27BDBFE67F /* IntegratedWindowChromeTests.swift */,
 				C30000000000000000000069 /* WorkspaceExplorerModelTests.swift */,
 				C30000000000000000000073 /* HerdrSettingsModelTests.swift */,
 				C30000000000000000000075 /* EditorFindHighlightTests.swift */,
@@ -706,6 +712,7 @@
 				A10000000000000000000F05 /* QuickOpen.swift in Sources */,
 				A10000000000000000000F07 /* QuickOpenView.swift in Sources */,
 				A1000000000000000000AB01 /* TabBarControls.swift in Sources */,
+				D52BAAE3586144B18F6325E8 /* IntegratedWindowChrome.swift in Sources */,
 				A1000000000000000000AB03 /* TerminalTabDrop.swift in Sources */,
 				A1000000000000000000AB05 /* ContentPanels.swift in Sources */,
 				A10000000000000000000F0B /* CommandPalette.swift in Sources */,
@@ -751,6 +758,7 @@
 				C3000000000000000000D911 /* PreviewScrollMemoryTests.swift in Sources */,
 				C30000000000000000000F0F /* CommandPaletteTests.swift in Sources */,
 				C30000000000000000000064 /* ContentCommandsTests.swift in Sources */,
+				8DFA5B3024E947D299999C0F /* IntegratedWindowChromeTests.swift in Sources */,
 				C30000000000000000000068 /* WorkspaceExplorerModelTests.swift in Sources */,
 				C30000000000000000000072 /* HerdrSettingsModelTests.swift in Sources */,
 				C30000000000000000000074 /* EditorFindHighlightTests.swift in Sources */,
