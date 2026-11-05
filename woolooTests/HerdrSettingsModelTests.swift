@@ -452,6 +452,67 @@ final class HerdrRemoteSettingsTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("remote")), ["config.toml"])
     }
 
+    /// Use the bundled validator rather than the stub: Herdr checks relative sound paths
+    /// against HERDR_CONFIG_PATH's parent directory, including when that path is a symlink.
+    private func useBundledHerdrForValidation() throws {
+        let executable = HerdrRuntimePaths.bundledExecutable.path
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: executable), "The app must bundle Herdr for these tests")
+        try sandbox.write(["bin/herdr": """
+            #!/bin/sh
+            if [ "$1" = --session ]; then
+                [ "$3 $4" = 'remote-api-bridge --check' ] || exit 2
+                printf 'herdr-api-bridge-v1\\n'
+            else
+                exec \(WorkspaceFiles.quote(executable)) "$@"
+            fi
+            """], in: ".")
+    }
+
+    func testBundledHerdrAcceptsRelativeSoundsWhenSavingUnrelatedRemoteSettings() async throws {
+        try useBundledHerdrForValidation()
+        let sounds = ["path", "done_path", "request_path"]
+        let text = initial + "\n[ui.sound]\n" + sounds.map { "\($0) = \"sounds/\($0).mp3\"\n" }.joined()
+        try sandbox.write(["remote/config.toml": text], in: ".")
+        // config check verifies file presence; these fixtures are not played.
+        try sandbox.write(Dictionary(uniqueKeysWithValues: sounds.map { ("remote/sounds/\($0).mp3", "sound fixture") }), in: ".")
+        let model = await loadedModel()
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save(reload: false).value
+        XCTAssertEqual(model.outcome, .saved, model.message ?? "")
+        XCTAssertEqual(try readRemote(), text.replacingOccurrences(of: "pane_gaps = true", with: "pane_gaps = false"))
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("remote"))), ["config.toml", "sounds"])
+    }
+
+    func testBundledHerdrResolvesRelativeSoundsBesideConfiguredSymlink() async throws {
+        try useBundledHerdrForValidation()
+        let text = initial + "\n[ui.sound]\npath = \"sounds/notify.mp3\"\n"
+        try sandbox.write(["remote/config.toml": text, "remote/sounds/notify.mp3": "sound fixture"], in: ".")
+        try sandbox.sh("mkdir dotfiles; mv remote/config.toml dotfiles/herdr.toml; ln -s ../dotfiles/herdr.toml remote/config.toml")
+        let model = await loadedModel()
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save(reload: false).value
+        XCTAssertEqual(model.outcome, .saved, model.message ?? "")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: configPath), "../dotfiles/herdr.toml")
+        XCTAssertTrue(try readRemote().contains("pane_gaps = false"))
+        XCTAssertTrue(try readRemote().contains("path = \"sounds/notify.mp3\""))
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("remote"))), ["config.toml", "sounds"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("dotfiles")), ["herdr.toml"])
+    }
+
+    func testBundledHerdrStillRejectsMissingRelativeSoundsWithoutChangingRemoteConfig() async throws {
+        try useBundledHerdrForValidation()
+        let text = initial + "\n[ui.sound]\npath = \"sounds/missing.mp3\"\n"
+        try sandbox.write(["remote/config.toml": text], in: ".")
+        let model = await loadedModel()
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save(reload: false).value
+        XCTAssertFalse(model.messageIsSuccess)
+        XCTAssertTrue(model.hasChanges)
+        XCTAssertTrue(model.message?.contains("missing sound file") == true, model.message ?? "")
+        XCTAssertEqual(try readRemote(), text)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("remote")), ["config.toml"])
+    }
+
     func testExternalEditDuringValidationIsKept() async throws {
         let model = await loadedModel()
         try sandbox.write(["conflict": ""], in: ".")

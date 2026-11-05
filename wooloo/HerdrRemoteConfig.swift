@@ -61,7 +61,8 @@ struct HerdrRemoteConfig: Sendable {
         task_directory=$(dirname "$task_file")
         mkdir -p "$task_directory"
         task_temporary=$(mktemp -d "$task_directory/.wooloo-config.XXXXXX")
-        trap 'rm -rf "$task_temporary"' EXIT
+        task_validation=
+        trap 'if [ -n "$task_validation" ]; then rm -f "$task_validation"; fi; rm -rf "$task_temporary"' EXIT
         trap 'exit 1' HUP INT TERM
         IFS= read -r task_original || task_fail 'No original configuration was received.'
         printf '%s' "$task_original" | base64 -d > "$task_temporary/original"
@@ -76,7 +77,11 @@ struct HerdrRemoteConfig: Sendable {
         task_check_original
         if [ -f "$task_file" ]; then cp -p "$task_file" "$task_temporary/config.toml"; fi
         cat > "$task_temporary/config.toml"
-        HERDR_CONFIG_PATH="$task_temporary/config.toml" "$h" config check >&2
+        # Herdr resolves relative paths beside the configured path, even if it is a symlink.
+        # Keep the validation copy there and the atomic replacement beside the resolved target.
+        task_validation=$(mktemp "$(dirname "$task_config")/.wooloo-validate.XXXXXX")
+        cp "$task_temporary/config.toml" "$task_validation"
+        HERDR_CONFIG_PATH="$task_validation" "$h" config check >&2
         task_check_original
         mv -f "$task_temporary/config.toml" "$task_file"
         printf 'saved\n'
