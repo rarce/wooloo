@@ -37,6 +37,46 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                               workspaceLabel: name, root: sandbox.path(name))
     }
 
+    func testChangingSSHTargetWithTheSameProfileIDDoesNotReuseRepositoryCache() throws {
+        _ = try sandbox.repository("repo", files: ["a.txt": "original\n"])
+        let first = remote("repo")
+        let old = try WorkspaceFiles.repository(at: first)
+        try sandbox.sh("git commit --allow-empty -q -m Changed", in: "repo")
+        let nextMachine = HerdrMachineProfile(id: machine.id, label: machine.label, target: "other.example.test",
+                                             session: machine.session, enabled: true)
+        let next = remote("repo", machine: nextMachine)
+        XCTAssertNotEqual(first.identity, next.identity)
+        let fresh = try WorkspaceFiles.repository(at: next)
+        XCTAssertNotEqual(old.commits.first?.id, fresh.commits.first?.id)
+        XCTAssertEqual(fresh.commits.first?.subject, "Changed")
+        let renamed = remote("repo", machine: HerdrMachineProfile(id: machine.id, label: "Renamed", target: machine.target,
+                                                                  session: machine.session, enabled: false))
+        XCTAssertEqual(first.identity, renamed.identity)
+    }
+
+    @MainActor
+    func testDirtyFilesAndBackupsStayScopedToTheirOriginalSSHTarget() throws {
+        let first = remote("repo")
+        let next = remote("repo", machine: HerdrMachineProfile(id: machine.id, label: machine.label, target: "another-host",
+                                                              session: machine.session, enabled: true))
+        var document = WorkspaceDocument(space: machine.contextID(session: first.session) + "|repo",
+                                         location: first, path: "a.txt", kind: .file)
+        document.text = "unsaved original host"
+        document.savedText = "original"
+        document.isLoading = false
+        let store = WorkspaceDocumentStore(persistence: nil)
+        store.documents = [document]
+        XCTAssertTrue(store.hasUnsavedEdits(at: first, path: "a.txt"))
+        XCTAssertFalse(store.hasUnsavedEdits(at: next, path: "a.txt"))
+        let snapshot = WorkspaceDocumentSnapshot(document)
+        let restored = try JSONDecoder().decode(WorkspaceDocumentSnapshot.self, from: JSONEncoder().encode(snapshot)).document()
+        XCTAssertEqual(restored.backupID, document.backupID)
+        XCTAssertEqual(restored.id, document.id)
+        XCTAssertEqual(restored.space, document.space)
+        XCTAssertEqual(restored.location, first)
+        XCTAssertTrue(restored.isDirty)
+    }
+
     /// Arguments of each ssh invocation, oldest first.
     private func invocations() throws -> [[String]] {
         let log = (try? String(contentsOfFile: sandbox.path("ssh.log"), encoding: .utf8)) ?? ""

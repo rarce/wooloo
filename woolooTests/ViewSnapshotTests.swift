@@ -369,10 +369,10 @@ final class ViewSnapshotTests: XCTestCase {
             let identity = model.treeIdentity(location)
             for folder in folders { model.tree.expand(folder, in: identity) }
             model.tree.selected = identity + "|" + selected
-            let view = WorkspaceBrowserView(snapshot: snapshot, workspaceID: "repo", session: "test",
+            let view = WorkspaceBrowserView(location: WorkspaceFiles.location(snapshot: snapshot, workspaceID: "repo", session: "test", machine: nil),
                                             machine: nil, refreshVersion: 0,
                                             onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in }, onNewTab: { _ in },
-                                            onNewSpace: { _, _ in }, onLocationChange: { _ in },
+                                            onNewSpace: { _, _ in },
                                             onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in },
                                             onOpenCommitFile: { _, _, _ in }, model: model, explorerTab: changes ? "changes" : "files")
             // The Git bar under the tree loads its branch after the listing, out of the model's sight.
@@ -403,10 +403,10 @@ final class ViewSnapshotTests: XCTestCase {
         let model = WorkspaceExplorerModel()
         let identity = model.treeIdentity(location)
         for folder in ["build", "docs", "Sources", "Sources/App", "Sources/Core"] { model.tree.expand(folder, in: identity) }
-        let view = WorkspaceBrowserView(snapshot: snapshot, workspaceID: "repo", session: "test",
+        let view = WorkspaceBrowserView(location: WorkspaceFiles.location(snapshot: snapshot, workspaceID: "repo", session: "test", machine: nil),
                                         machine: nil, refreshVersion: 0,
                                         onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in }, onNewTab: { _ in },
-                                        onNewSpace: { _, _ in }, onLocationChange: { _ in },
+                                        onNewSpace: { _, _ in },
                                         onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in },
                                         onOpenCommitFile: { _, _, _ in }, model: model)
         var scrolled = false

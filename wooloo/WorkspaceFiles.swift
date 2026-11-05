@@ -9,6 +9,13 @@ struct HerdrMachineProfile: Codable, Hashable, Identifiable {
     let target: String
     let session: String
     let enabled: Bool
+
+    /// Shared by navigation and file operations; renaming a profile preserves its identity.
+    func contextID(session: String) -> String {
+        let targetHash = SHA256.hash(data: Data(target.utf8)).prefix(16)
+            .map { String(format: "%02x", $0) }.joined()
+        return "ssh:\(id)|\(session)|target:\(targetHash)"
+    }
 }
 
 struct WorkspaceFileLocation: Codable, Hashable {
@@ -18,12 +25,39 @@ struct WorkspaceFileLocation: Codable, Hashable {
     let workspaceLabel: String
     let root: String
 
-    var identity: String { "\(machine?.id ?? "local")|\(session)|\(workspaceID)|\(root)" }
+    var identity: String {
+        let destination = machine?.contextID(session: session) ?? "local|\(session)"
+        return "\(destination)|\(workspaceID)|\(root)"
+    }
     var machineLabel: String { machine?.label ?? "Local" }
     var isLocal: Bool { machine == nil }
 
     func absolutePath(_ relativePath: String) -> String {
         relativePath.isEmpty ? root : (root as NSString).appendingPathComponent(relativePath)
+    }
+}
+
+/// A window's file context, derived from Herdr rather than the lifetime of a sidebar.
+/// Space identity stays stable when its root changes; existing documents keep their own location.
+struct WorkspaceContext: Equatable {
+    let destinationID: String
+    let workspaceID: String?
+    let location: WorkspaceFileLocation?
+
+    var space: String? { workspaceID.map { "\(destinationID)|\($0)" } }
+    var fileIdentity: String? { location?.identity }
+
+    @MainActor
+    init(store: HerdrStore) {
+        destinationID = store.contextID
+        let selectedID = store.selectedWorkspaceID
+        workspaceID = selectedID
+        location = store.snapshot.flatMap { snapshot in
+            selectedID.flatMap {
+                WorkspaceFiles.location(snapshot: snapshot, workspaceID: $0,
+                                        session: store.sessionName, machine: store.machine)
+            }
+        }
     }
 }
 

@@ -733,6 +733,21 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         await wait("Read again") { !store.documents[0].isDirty && store.documents[0].text == "mine\n" }
     }
 
+    func testSaveFinishesOnItsOriginalDocumentAfterSwitchingSpace() async throws {
+        store.showSpace("first")
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "saved in original space\n")
+        store.save(document.id)
+        store.showSpace("second")
+        await settle()
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "saved in original space\n")
+        XCTAssertFalse(try XCTUnwrap(store.document(document.id)).isDirty)
+        XCTAssertEqual(store.space, "second")
+        XCTAssertTrue(store.visibleDocuments.isEmpty)
+        XCTAssertNil(store.activeID)
+    }
+
     /// Saving a tab other than the active one writes that tab's own text and leaves the active one alone.
     func testSavingAnInactiveTabWritesItsOwnText() async throws {
         let firstOpened = await open("a.txt")

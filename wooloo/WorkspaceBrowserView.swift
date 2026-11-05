@@ -4,9 +4,7 @@ import UniformTypeIdentifiers
 struct WorkspaceBrowserView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
-    let snapshot: HerdrSnapshot?
-    let workspaceID: String?
-    let session: String
+    let location: WorkspaceFileLocation?
     /// The SSH machine chosen in the session picker; nil browses this Mac.
     let machine: HerdrMachineProfile?
     let refreshVersion: Int
@@ -15,7 +13,6 @@ struct WorkspaceBrowserView: View {
     let onOpenDiff: (_ location: WorkspaceFileLocation, _ path: String, _ preview: Bool) -> Void
     let onNewTab: (String) -> Void
     let onNewSpace: (String, String) -> Void
-    let onLocationChange: (WorkspaceFileLocation?) -> Void
     let onFindInFolder: (WorkspaceFileLocation, String) -> Void
     /// Opens a worktree checkout's Space, given the repository's main checkout.
     let onOpenWorktree: (_ path: String, _ repository: String?) -> Void
@@ -26,6 +23,8 @@ struct WorkspaceBrowserView: View {
     var onOpenScopedDiff: (_ location: WorkspaceFileLocation, _ path: String, _ scope: WorkspaceDiffScope) -> Void = { _, _, _ in }
     /// Receives the command palette's file commands, listed while a tree has focus.
     var commandTarget: ExplorerCommandTarget?
+    /// Used only to mark worktrees that already have a Space; never determines file location.
+    var spaces: [HerdrWorkspace] = []
     @State private var commandToken = UUID()
 
     /// Not private so snapshot tests can open folders and select a row before it appears.
@@ -50,14 +49,8 @@ struct WorkspaceBrowserView: View {
     /// Where the rows start in the tree's content, below the root and its hints.
     @State private var rowsOffset: CGFloat = 0
 
-    private var location: WorkspaceFileLocation? {
-        guard let snapshot, let workspaceID else { return nil }
-        return WorkspaceFiles.location(snapshot: snapshot, workspaceID: workspaceID,
-                                       session: session, machine: machine)
-    }
-
     private var listingIdentity: String {
-        (location?.identity ?? "none|\(machine?.id ?? "local")|\(workspaceID ?? "")") + "|\(refreshVersion)"
+        "\(location?.identity ?? "none")|\(refreshVersion)"
     }
 
     var body: some View {
@@ -108,10 +101,6 @@ struct WorkspaceBrowserView: View {
         }
         .task(id: listingIdentity) { loadListing() }
         .task(id: location?.identity) { await model.monitor(at: location) }
-        .task(id: location?.identity) {
-            guard !Task.isCancelled else { return }
-            onLocationChange(location)
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.setApplicationActive(true)
         }
@@ -161,7 +150,6 @@ struct WorkspaceBrowserView: View {
     }
 
     private var explorer: some View {
-        // Looked up in the Herdr snapshot: once per body.
         let location = location
         let shown = location.map { model.shown(for: $0) }
         return VStack(alignment: .leading, spacing: 0) {
@@ -319,7 +307,7 @@ struct WorkspaceBrowserView: View {
                                 },
                                 onOpenWorktree: onOpenWorktree,
                                 onError: { model.operationError = $0 },
-                                spaces: snapshot?.workspaces ?? [])
+                                spaces: spaces)
             }
         }
         .background(theme.sidebarBackground)

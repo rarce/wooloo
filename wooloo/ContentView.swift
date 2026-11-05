@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var destinations: HerdrDestinations
     private let documents: WorkspaceDocumentStore?
     private let window: ContentWindowModel?
+    private let search: WorkspaceSearchModel?
     private let managesRuntime: Bool
     private let notifier: HerdrNotifier
 
@@ -14,21 +15,24 @@ struct ContentView: View {
         self.notifier = notifier
         documents = nil
         window = nil
+        search = nil
         managesRuntime = true
     }
 
-    init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil, window: ContentWindowModel? = nil) {
+    init(herdr: HerdrStore, documents: WorkspaceDocumentStore? = nil, window: ContentWindowModel? = nil,
+         search: WorkspaceSearchModel? = nil) {
         let notifier = HerdrNotifier()
         _destinations = StateObject(wrappedValue: HerdrDestinations(store: herdr, notifier: notifier, pool: nil))
         self.notifier = notifier
         self.documents = documents
         self.window = window
+        self.search = search
         managesRuntime = false
     }
 
     var body: some View {
         DestinationContentView(herdr: destinations.active, destinations: destinations,
-                               notifier: notifier, documents: documents, window: window,
+                               notifier: notifier, documents: documents, window: window, search: search,
                                managesRuntime: managesRuntime)
     }
 }
@@ -62,7 +66,8 @@ private struct DestinationContentView: View {
         return WorkspaceActiveFile(location: document.location, path: document.path)
     }
     @StateObject private var search = WorkspaceSearchModel()
-    @State private var explorerLocation: WorkspaceFileLocation?
+    private var workspaceContext: WorkspaceContext { WorkspaceContext(store: herdr) }
+    private var explorerLocation: WorkspaceFileLocation? { workspaceContext.location }
     @AppStorage("SidebarWidth") private var sidebarWidth = 206.0
     @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
     @AppStorage("AgentsInSelectedSpaceOnly") private var agentsInSelectedSpaceOnly = false
@@ -72,7 +77,7 @@ private struct DestinationContentView: View {
 
     @StateObject private var themes = ThemeStore()
     @ObservedObject private var notifier: HerdrNotifier
-    @State private var destinationContexts: [String: (WorkspaceFileLocation?, PanelContent)] = [:]
+    @State private var destinationPanels: [String: PanelContent] = [:]
     @AppStorage(WoolooTypography.baseKey) private var interfaceTextSize = WoolooTypography.defaultBase
     @AppStorage(WoolooTypography.codeKey) private var codeTextSize = WoolooTypography.defaultCode
     private var textScale: WoolooTypography {
@@ -106,13 +111,14 @@ private struct DestinationContentView: View {
     }
 
     init(herdr: HerdrStore, destinations: HerdrDestinations, notifier: HerdrNotifier,
-         documents: WorkspaceDocumentStore?, window: ContentWindowModel?, managesRuntime: Bool) {
+         documents: WorkspaceDocumentStore?, window: ContentWindowModel?, search: WorkspaceSearchModel?, managesRuntime: Bool) {
         self.herdr = herdr
         self.destinations = destinations
         self.notifier = notifier
         self.managesRuntime = managesRuntime
         if let documents { _documentStore = StateObject(wrappedValue: documents) }
         if let window { _window = StateObject(wrappedValue: window) }
+        if let search { _search = StateObject(wrappedValue: search) }
     }
 
     private var windowContent: some View {
@@ -189,19 +195,8 @@ private struct DestinationContentView: View {
         .onChange(of: activeDocumentID) { _, _ in destinations.acknowledgeVisiblePane() }
         .onChange(of: destinations.terminalRequestID) { _, _ in showSelectedSpace() }
         .onChange(of: herdr.surfaceLayout?.popupTerminalID) { _, terminalID in presentPopup(terminalID) }
-        .onChange(of: herdr.contextID) { old, new in
-            destinationContexts[old] = (explorerLocation, window.focusedPanel)
-            window.commandStore = herdr
-            window.tabDrag.cancel()
-            followsHerdrAgentView = true
-            explorerLocation = destinationContexts[new]?.0
-            search.setLocation(nil)
-            window.quickOpen.dismiss()
-            window.commandPalette.dismiss()
-        }
-        // Documents belong to the Space they were opened in.
-        .onChange(of: herdr.selectedWorkspaceID.map { "\(herdr.contextID)|\($0)" }, initial: true) { _, space in
-            showSelectedSpace()
+        .onChange(of: workspaceContext, initial: true) { old, new in
+            applyWorkspaceTransition(from: old, to: new)
         }
         // Editing a preview keeps it open, so later previews never replace unsaved work.
         .onChange(of: documents.contains { $0.isPreview && $0.isDirty }) { _, edited in
@@ -334,9 +329,7 @@ private struct DestinationContentView: View {
             if window.showsFilesSidebar {
                 SidebarResizeHandle(width: $filesSidebarWidth, defaultWidth: 244, edge: .trailing,
                                     range: 200...max(200, min(560, totalWidth - left - mainMinimum)))
-                WorkspaceBrowserView(snapshot: herdr.snapshot,
-                                     workspaceID: herdr.selectedWorkspaceID,
-                                     session: herdr.sessionName,
+                WorkspaceBrowserView(location: explorerLocation,
                                      machine: explorerMachine,
                                      refreshVersion: window.fileRefreshVersion,
                                      onOpenFile: { location, path, preview in
@@ -355,12 +348,8 @@ private struct DestinationContentView: View {
                                          activeDocumentID = nil
                                          destinations.createSpace(on: herdr, cwd: cwd, label: label)
                                      },
-                                     onLocationChange: { location in
-                                         guard destinations.active === herdr else { return }
-                                         explorerLocation = location
-                                         search.setLocation(location)
-                                     },
                                      onFindInFolder: { location, path in
+                                         guard canOpen(at: location) else { return }
                                          search.setLocation(location)
                                          search.options.include = path.isEmpty ? "" : path + "/**"
                                          search.showsFilters = !path.isEmpty
@@ -378,7 +367,8 @@ private struct DestinationContentView: View {
                                      onOpenScopedDiff: { location, path, scope in
                                          openDocument(.change, path: path, at: location, scope: scope)
                                      },
-                                     commandTarget: window.explorer)
+                                     commandTarget: window.explorer,
+                                     spaces: herdr.snapshot?.workspaces ?? [])
                     .frame(width: filesSidebarWidth)
             }
         }
@@ -693,8 +683,6 @@ private struct DestinationContentView: View {
                 window.requestedSessionName = destinations.lastLocal?.sessionName ?? HerdrStore.defaultSessionName
                 connect()
             }
-            explorerLocation = nil
-            search.setLocation(nil)
             window.showsSessionPicker = false
         } label: {
             HStack(spacing: 6) {
@@ -895,7 +883,7 @@ private struct DestinationContentView: View {
     }
 
     private var searchView: some View {
-        WorkspaceSearchView(model: search) { location, path, line, range in
+        WorkspaceSearchView(model: search, expectedContext: workspaceContext) { location, path, line, range in
             openDocument(.file, path: path, at: location,
                          reveal: WorkspaceDocumentReveal(line: line, range: range))
         }
@@ -911,8 +899,8 @@ private struct DestinationContentView: View {
             documentStore.keepEdits(id)
         }, onCompareDisk: {
             documentStore.compareWithDisk(id)
-        }, onOpenFile: { [location = documentStore.documents[index].location] path in
-            openDocument(.file, path: path, at: location)
+        }, onOpenFile: { [sourceID = documentStore.documents[index].backupID] path in
+            commands.openRelatedDocument(.file, path: path, sourceID: sourceID)
         }, onScroll: { position, anchor in
             documentStore.recordScroll(id, position: position, anchor: anchor)
         }, onReplaceText: { revision, range, text in
@@ -1308,6 +1296,7 @@ private struct DestinationContentView: View {
                               reveal: WorkspaceDocumentReveal? = nil,
                               commit: String? = nil, originalPath: String? = nil,
                               scope: WorkspaceDiffScope? = nil, preview: Bool = false) {
+        guard canOpen(at: location) else { return }
         documentStore.open(kind, path: path, at: location, reveal: reveal, commit: commit,
                            originalPath: originalPath, scope: scope, preview: preview)
     }
@@ -1348,7 +1337,7 @@ private struct DestinationContentView: View {
 
     private var commands: ContentCommands {
         ContentCommands(window: window, herdr: herdr, documents: documentStore, search: search,
-                        explorerLocation: explorerLocation,
+                        explorerLocation: explorerLocation, workspaceContext: workspaceContext,
                         effects: ContentCommandEffects(reloadAppConfig: {
                             shortcutMap = HerdrShortcutMap.load()
                             themes.reload()
@@ -1414,11 +1403,11 @@ private struct DestinationContentView: View {
             Button("Save", systemImage: "square.and.arrow.down") { saveDocument(document.id) }
                 .disabled(!document.canSave)
             Button("Open Changes", systemImage: "arrow.left.arrow.right") {
-                openDocument(.change, path: document.path, at: document.location)
+                commands.openRelatedDocument(.change, path: document.path, sourceID: document.backupID)
             }
         } else {
             Button("Open File", systemImage: "doc.text") {
-                openDocument(.file, path: document.path, at: document.location)
+                commands.openRelatedDocument(.file, path: document.path, sourceID: document.backupID)
             }
         }
         Divider()
@@ -1474,6 +1463,33 @@ private struct DestinationContentView: View {
         notifier.acknowledge(paneID: paneID, contextID: herdr.contextID)
     }
 
+    /// Applies navigation effects once, without waiting for any panel's asynchronous load.
+    private func applyWorkspaceTransition(from old: WorkspaceContext, to new: WorkspaceContext) {
+        search.currentFileIdentity = { [destinations] in
+            WorkspaceContext(store: destinations.active).fileIdentity
+        }
+        if old.destinationID != new.destinationID {
+            destinationPanels[old.destinationID] = window.focusedPanel
+            window.commandStore = herdr
+            followsHerdrAgentView = true
+        }
+        if old.destinationID != new.destinationID || old.space != new.space || documentStore.space != new.space {
+            window.tabDrag.cancel()
+            window.commandPalette.dismiss()
+            window.quickOpen.dismiss()
+            showSelectedSpace()
+        } else if old.fileIdentity != new.fileIdentity {
+            window.quickOpen.dismiss()
+        }
+        search.setLocation(new.location)
+    }
+
+    private func canOpen(at location: WorkspaceFileLocation) -> Bool {
+        let context = WorkspaceContext(store: destinations.active)
+        return destinations.active === herdr && context.space == documentStore.space
+            && context.fileIdentity == location.identity
+    }
+
     private func showSelectedSpace() {
         let space = herdr.selectedWorkspaceID.map { "\(herdr.contextID)|\($0)" }
         let legacy = herdr.machine != nil ? herdr.selectedWorkspaceID.map { "\(herdr.legacyContextID)|\($0)" } : nil
@@ -1482,7 +1498,7 @@ private struct DestinationContentView: View {
             documentStore.activeID = nil
             window.focusedPanel = .main
         } else {
-            window.focusedPanel = destinationContexts[herdr.contextID]?.1 ?? .main
+            window.focusedPanel = destinationPanels[herdr.contextID] ?? .main
         }
     }
 

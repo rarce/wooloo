@@ -159,6 +159,9 @@ struct ContentCommands {
     let search: WorkspaceSearchModel
     /// Where project search looks: the explorer's location.
     var explorerLocation: WorkspaceFileLocation?
+    /// Production commands validate their captured context against live navigation as well as
+    /// the document store. Tests of individual commands may supply their own file location.
+    var workspaceContext: WorkspaceContext?
     var effects = ContentCommandEffects()
     /// An action's Herdr key binding in Mac notation, shown in the command palette.
     var bindingLabel: (String) -> String? = { _ in nil }
@@ -172,12 +175,30 @@ struct ContentCommands {
         } ?? false
         return WoolooCommandAvailability(isConnected: herdr.isConnected, hasSpace: herdr.selectedWorkspace != nil,
                                          tabCount: herdr.selectedTabs.count, hasPane: herdr.selectedPaneID != nil && herdr.surfaceLayout?.popupTerminalID == nil,
-                                         hasFiles: explorerLocation != nil, hasFileDocument: hasFileDocument,
+                                         hasFiles: explorerLocation != nil && acceptsFileAction(at: explorerLocation), hasFileDocument: hasFileDocument,
                                          hasReadOnlyDocument: document?.isReadOnly ?? false,
                                          showsSource: showsSource,
                                          explorerActions: Set(ExplorerFileCommand.paletteCommands
                                              .filter(window.explorer.isAvailable).map(\.paletteAction)),
                                          canCheckForUpdates: effects.canCheckForUpdates())
+    }
+
+    private func acceptsFileAction(at location: WorkspaceFileLocation?) -> Bool {
+        guard let workspaceContext else { return true }
+        let current = WorkspaceContext(store: herdr)
+        return effects.isCurrentDestination() && current.space == workspaceContext.space
+            && documents.space == current.space && current.fileIdentity == workspaceContext.fileIdentity
+            && location?.identity == current.fileIdentity
+    }
+
+    /// A link or File/Changes action from an existing document follows that document's own
+    /// location, even after the Space's root moves. Its Space must still be current.
+    func openRelatedDocument(_ kind: WorkspaceDocumentKind, path: String, sourceID: UUID) {
+        guard effects.isCurrentDestination(),
+              let source = documents.documents.first(where: { $0.backupID == sourceID }),
+              source.space == documents.space else { return }
+        if workspaceContext != nil, WorkspaceContext(store: herdr).space != source.space { return }
+        documents.open(kind, path: path, at: source.location)
     }
 
     func perform(_ action: String) {
@@ -272,7 +293,7 @@ struct ContentCommands {
         case .quickOpen:
             if window.quickOpen.isPresented {
                 window.quickOpen.move(1)
-            } else if let explorerLocation {
+            } else if let explorerLocation, acceptsFileAction(at: explorerLocation) {
                 window.commandPalette.dismiss()
                 let current = focusedDocumentID.flatMap(documents.document)
                 window.quickOpen.present(at: explorerLocation, recents: documents.recentPaths(at: explorerLocation),
@@ -315,6 +336,7 @@ struct ContentCommands {
     /// with its folder as root, editable too; a folder on this Mac in Finder.
     @discardableResult
     func openTerminalFile(_ file: TerminalFileReference, paneID: String, resolved: WorkspaceTerminalPath? = nil) -> Task<Void, Never> {
+        guard acceptsFileAction(at: explorerLocation) else { return Task {} }
         let machine = herdr.machine
         let session = herdr.sessionName
         let space = explorerLocation
@@ -362,11 +384,20 @@ struct ContentCommands {
     func openQuickOpenSelection() -> Task<Void, Never>? {
         let quickOpen = window.quickOpen
         if let match = quickOpen.selectedSymbol {
+            if workspaceContext != nil {
+                guard acceptsFileAction(at: explorerLocation),
+                      focusedDocumentID.flatMap(documents.document)?.location == quickOpen.location else {
+                    quickOpen.dismiss()
+                    return nil
+                }
+            }
             quickOpen.dismiss(restoringFocus: false)
             window.symbols.navigate(to: match.symbol.symbol)
             return nil
         }
         guard let location = quickOpen.location else { return nil }
+        // Symbol search deliberately operates on an open document, including one outside the root.
+        guard acceptsFileAction(at: location) else { quickOpen.dismiss(); return nil }
         let query = QuickOpenQuery(quickOpen.query)
         let reveal = query.line.map { line in
             WorkspaceDocumentReveal(line: line, range: query.column.map { NSRange(location: max($0 - 1, 0), length: 0) })
@@ -379,7 +410,8 @@ struct ContentCommands {
                 let created = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
                     Result { try WorkspaceFiles.createFile(path, at: location, keepingExisting: keepingExisting) }
                 }
-                guard effects.isCurrentDestination(), documents.space == documentSpace else { return }
+                guard effects.isCurrentDestination(), documents.space == documentSpace,
+                      acceptsFileAction(at: location) else { return }
                 switch created {
                 case .success(let isNew):
                     quickOpen.dismiss(restoringFocus: false)
@@ -400,6 +432,7 @@ struct ContentCommands {
     /// it is shown, search learns which files have unsaved edits and reloads the documents a
     /// replace writes.
     func openSearch(replace: Bool) {
+        guard acceptsFileAction(at: explorerLocation) else { return }
         if !window.showsSearchTab {
             search.hasUnsavedEdits = { [documents] location, path in
                 documents.hasUnsavedEdits(at: location, path: path)
@@ -424,7 +457,7 @@ struct ContentCommands {
 
     /// Opens an empty "Untitled-N" tab at the explorer's location, where saving it starts.
     func newUntitledFile() {
-        guard let explorerLocation else { return }
+        guard let explorerLocation, acceptsFileAction(at: explorerLocation) else { return }
         documents.newUntitled(at: explorerLocation)
     }
 
