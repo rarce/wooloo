@@ -20,8 +20,10 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// Where each open document's preview is scrolled, by backup identity. Not published.
     private var previewScrolls: [UUID: PreviewScrollMemory] = [:]
     /// The active document, or `WorkspaceSearchModel.tabID`; nil shows the terminals.
+    private(set) var navigationRevision: UInt64 = 0
     @Published var activeID: String? {
         didSet {
+            if oldValue != activeID { navigationRevision &+= 1 }
             if let activeID, let document = document(activeID), document.kind == .file, !document.isUntitled {
                 remember(document)
             }
@@ -97,8 +99,8 @@ final class WorkspaceDocumentStore: ObservableObject {
                 }
             }
         }
+        WorkspaceSessionRegistry.shared.register(self)
         if persistence != nil {
-            WorkspaceSessionRegistry.shared.register(self)
             restoreSpace(nil)
         }
     }
@@ -192,6 +194,18 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// Exposed for deterministic restoration/quit checks; ordinary editing need not wait.
     func waitForRestoration() async {
         for task in Array(restorations.values) { await task.value }
+    }
+
+    /// A terminal transfer must not remove a Space before its buffers have been restored.
+    func canReleaseSpace(_ sourceSpace: String) async -> Bool {
+        await waitForRestoration()
+        guard !failedRestorations.contains(WorkspaceSessionPersistence.key(for: sourceSpace)),
+              !documents.contains(where: { $0.space == sourceSpace }) else { return false }
+        do {
+            if let persistence, try await persistence.hasPersistedDocuments(in: sourceSpace) { return false }
+        } catch { return false }
+        // A window can open a document while the disk check is suspended.
+        return !documents.contains { $0.space == sourceSpace }
     }
 
     private func schedulePersistence(immediately: Bool = false) {

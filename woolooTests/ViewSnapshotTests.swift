@@ -1031,9 +1031,9 @@ final class ViewSnapshotTests: XCTestCase {
         let notifier = HerdrNotifier()
         defer { notifier.reset() }
         let view = VStack(alignment: .leading, spacing: 14) {
-            HerdrDestinationSection(store: local, notifier: notifier, active: true, grouped: true,
+            HerdrDestinationSection(store: local, notifier: notifier, spaceDrag: SpaceDragModel(), tabDrag: TabDragModel(), active: true, grouped: true,
                 select: { _ in }, create: {}, rename: { _ in }, close: { _ in })
-            HerdrDestinationSection(store: remote, notifier: notifier, active: false, grouped: true,
+            HerdrDestinationSection(store: remote, notifier: notifier, spaceDrag: SpaceDragModel(), tabDrag: TabDragModel(), active: false, grouped: true,
                 select: { _ in }, create: {}, rename: { _ in }, close: { _ in })
             Spacer()
         }.padding(10)

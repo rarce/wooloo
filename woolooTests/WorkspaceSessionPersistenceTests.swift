@@ -83,6 +83,42 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(untouchedLegacy.session.documents.first?.text, "legacy dirty buffer")
     }
 
+    func testSpaceReleaseChecksBuffersClaimedByAWindowThatHasClosed() async throws {
+        var owner: WorkspaceDocumentStore? = await store()
+        let id = owner!.newUntitled(at: location)
+        owner!.documents[0].text = "draft from the closed window"
+        let backupID = owner!.document(id)!.backupID
+        try await owner!.flushPersistence()
+        let observer = await store()
+        XCTAssertTrue(observer.documents.isEmpty, "The other window owns the persisted draft")
+        weak var closedWindow = owner
+        owner = nil
+        XCTAssertNil(closedWindow)
+
+        let canRelease = await observer.canReleaseSpace(space)
+        XCTAssertFalse(canRelease, "A completed restoration must still check unclaimed disk buffers")
+        XCTAssertTrue(observer.documents.isEmpty, "The safety check must not claim or restore hidden documents")
+        let persisted = try await disk.restore(space)
+        XCTAssertEqual(persisted.session.documents.map(\.backupID), [backupID])
+        XCTAssertEqual(persisted.session.documents.first?.text, "draft from the closed window")
+    }
+
+    func testSpaceReleaseRefusesCorruptMetadataAndUnindexedBackups() async throws {
+        let observer = await store()
+        try await disk.save(WorkspaceSessionSnapshot(space: space, documents: []))
+        try Data("invalid index".utf8).write(to: sessionURL())
+        let corruptIndex = await observer.canReleaseSpace(space)
+        XCTAssertFalse(corruptIndex)
+        try FileManager.default.removeItem(at: sessionURL())
+        let backup = backupURL(UUID())
+        try Data("unreadable orphan buffer".utf8).write(to: backup)
+        let orphan = await observer.canReleaseSpace(space)
+        XCTAssertFalse(orphan, "An unreadable orphan must remain reachable for recovery")
+        try FileManager.default.removeItem(at: backup)
+        let empty = await observer.canReleaseSpace(space)
+        XCTAssertTrue(empty)
+    }
+
     func testDiskWorkRunsOnItsOwnQueue() async {
         let label = await disk.currentQueueLabel()
         XCTAssertEqual(label, "dev.wooloo.session-persistence")

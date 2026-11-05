@@ -433,6 +433,7 @@ private struct DestinationContentView: View {
                         }
                         ForEach(destinations.stores, id: \.contextID) { store in
                             HerdrDestinationSection(store: store, notifier: notifier,
+                                spaceDrag: window.spaceDrag, tabDrag: window.tabDrag,
                                 active: store === herdr, grouped: destinations.stores.count > 1,
                                 select: { destinations.select(store, workspaceID: $0) },
                                 create: { destinations.createSpace(on: store) },
@@ -1226,6 +1227,15 @@ private struct DestinationContentView: View {
             Button("Close Tab…", systemImage: "xmark", role: .destructive) { closeTerminalTab(tab) }
         }
         .tabReorder(.terminal, id: tab.tabID, index: index, drag: window.tabDrag,
+                    connection: HerdrActionConnection(herdr), destinations: destinations,
+                    shouldFollow: { [weak documentStore, weak window, weak destinations, weak herdr,
+                                     documentRevision = documentStore.navigationRevision,
+                                     panelRevision = window.navigationRevision] in
+                        guard let documentStore, let window, let destinations, let herdr else { return false }
+                        return documentStore.activeID == nil && window.focusedPanel == .main
+                            && documentStore.navigationRevision == documentRevision
+                            && window.navigationRevision == panelRevision && destinations.active === herdr
+                    },
                     onMove: { herdr.moveTab($0, to: $1) })
     }
 
@@ -1594,6 +1604,7 @@ private struct DestinationContentView: View {
         }
         if old.destinationID != new.destinationID || old.space != new.space || documentStore.space != new.space {
             window.tabDrag.cancel()
+            window.spaceDrag.cancel()
             window.commandPalette.dismiss()
             window.quickOpen.dismiss()
             showSelectedSpace()

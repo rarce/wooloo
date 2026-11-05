@@ -194,7 +194,7 @@ final class TerminalTabDropViewTests: XCTestCase {
     /// private drag types exported by the application bundle as data types.
     func testTabDragTypesAreDeclaredByTheAppBundle() throws {
         let declarations = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "UTExportedTypeDeclarations") as? [[String: Any]])
-        for type in [TabDragModel.type, TabDragModel.panelType] {
+        for type in [TabDragModel.type, TabDragModel.panelType, SpaceDragModel.type] {
             let declaration = try XCTUnwrap(declarations.first { $0["UTTypeIdentifier"] as? String == type.identifier })
             let parents = try XCTUnwrap(declaration["UTTypeConformsTo"] as? [String])
             XCTAssertTrue(parents.contains(UTType.data.identifier))

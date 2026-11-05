@@ -292,17 +292,37 @@ final class HerdrDestinations: ObservableObject {
         }
     }
 
+    /// The window's navigation intent includes switches away and back to the same server.
+    /// Store selection alone cannot distinguish that from uninterrupted terminal viewing.
+    @discardableResult
+    func moveTab(_ tabID: String, toWorkspace workspaceID: String?, on store: HerdrStore,
+                 shouldFollow: @escaping () -> Bool = { true }) -> Bool {
+        guard active === store else { return false }
+        let intent = navigation
+        return store.moveTab(tabID, toWorkspace: workspaceID, shouldFollow: { [weak self, weak store] in
+            guard let self, let store else { return false }
+            return navigation == intent && active === store && shouldFollow()
+        }, onFollow: { [weak self, weak store] pane in
+            guard let self, let store, active === store else { return }
+            requestTerminal(context: store.contextID, pane: pane.paneID)
+        })
+    }
+
+    private func requestTerminal(context: String, pane: String) {
+        terminalRequest = (context, pane)
+        terminalRequestID = UUID()
+        onOpenTerminal()
+        acknowledgeVisiblePane()
+    }
+
     private func open(context: String, pane: String) -> Bool {
         guard let store = stores.first(where: { $0.contextID == context }),
               let target = store.snapshot?.panes.first(where: { $0.paneID == pane }) else { return false }
         nativeWindow?.makeKeyAndOrderFront(nil)
-        onOpenTerminal()
         select(store, workspaceID: target.workspaceID)
         store.select(tabID: target.tabID)
         store.select(paneID: pane)
-        terminalRequest = (context, pane)
-        terminalRequestID = UUID()
-        acknowledgeVisiblePane()
+        requestTerminal(context: context, pane: pane)
         return true
     }
 
@@ -351,6 +371,8 @@ struct DestinationWindowObserver: NSViewRepresentable {
 struct HerdrDestinationSection: View {
     @ObservedObject var store: HerdrStore
     @ObservedObject var notifier: HerdrNotifier
+    @ObservedObject var spaceDrag: SpaceDragModel
+    @ObservedObject var tabDrag: TabDragModel
     let active: Bool
     let grouped: Bool
     let select: (String) -> Void
@@ -423,6 +445,10 @@ struct HerdrDestinationSection: View {
                         .opacity(store.isConnected ? 1 : 0.5)
                     }
                     .buttonStyle(.plain)
+                    .onDrag { spaceDrag.begin(space.workspaceID, store: store) }
+                    .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: space.workspaceID))
+                    .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: space.workspaceID) }
+                          ?? "Drag to reorder Spaces, or drop a terminal tab to move it here")
                     .contextMenu {
                         Button("New Tab in Space", systemImage: "plus") {
                             select(space.workspaceID)
@@ -441,6 +467,16 @@ struct HerdrDestinationSection: View {
                         Button("Close Space…", systemImage: "xmark", role: .destructive) { close(space) }.disabled(!store.isConnected)
                     }
                 }
+                Label("Drop terminal tab here for a new Space", systemImage: "plus.square.dashed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 6)
+                    .contentShape(Rectangle())
+                    .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: nil))
+                    .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: nil) }
+                          ?? "Move a single-pane terminal tab into a new Space")
                 if let error = store.actionError {
                     Text(error).font(.caption).foregroundStyle(theme.warning)
                 }
