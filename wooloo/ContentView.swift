@@ -1135,7 +1135,7 @@ private struct DestinationContentView: View {
             Button("Close Tab…", systemImage: "xmark", role: .destructive) { closeTerminalTab(tab) }
         }
         .tabReorder(.terminal, id: tab.tabID, index: index, drag: window.tabDrag,
-                    connection: HerdrActionConnection(herdr),
+                    connection: HerdrActionConnection(herdr), destinations: destinations,
                     shouldFollow: { [weak documentStore, weak window, weak destinations, weak herdr,
                                      documentRevision = documentStore.navigationRevision,
                                      panelRevision = window.navigationRevision] in

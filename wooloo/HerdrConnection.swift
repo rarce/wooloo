@@ -1479,7 +1479,8 @@ final class HerdrStore: ObservableObject {
 
     /// Herdr moves a pane, not a whole tab. A single-pane tab can be relocated atomically.
     @discardableResult
-    func moveTab(_ tabID: String, toWorkspace workspaceID: String?, shouldFollow: @escaping () -> Bool = { true }) -> Bool {
+    func moveTab(_ tabID: String, toWorkspace workspaceID: String?, shouldFollow: @escaping () -> Bool = { true },
+                 onFollow: @escaping (HerdrPane) -> Void = { _ in }) -> Bool {
         guard tabSpaceMoveRefusal(tabID, to: workspaceID) == nil,
               let tab = snapshot?.tabs.first(where: { $0.tabID == tabID }) else { return false }
         let space = "\(contextID)|\(tab.workspaceID)"
@@ -1487,9 +1488,9 @@ final class HerdrStore: ObservableObject {
         let follow = selectedTabID == tabID
         runSpaceMove(prepare: {
             guard await WorkspaceSessionRegistry.shared.canRemoveSpace(space) else {
-                throw Self.spaceMoveError("Leave another terminal tab in the source Space, or close its document tabs in every window first.")
+                throw Self.spaceMoveError("Leave another terminal tab in the source Space, or recover and close its open or backed-up documents first.")
             }
-        }, onlyPrepareIfLastTab: tabID, followRevision: follow ? revision : nil, shouldFollow: shouldFollow) { path, token, lastTabWasChecked in
+        }, onlyPrepareIfLastTab: tabID, followRevision: follow ? revision : nil, shouldFollow: shouldFollow, onFollow: onFollow) { path, token, lastTabWasChecked in
             let fresh = try HerdrSocket.snapshot(path: path)
             if let reason = fresh.tabSpaceMoveRefusal(tabID, to: workspaceID) { throw Self.spaceMoveError(reason) }
             guard let currentTab = fresh.tabs.first(where: { $0.tabID == tabID }),
@@ -1523,6 +1524,7 @@ final class HerdrStore: ObservableObject {
     private func runSpaceMove(prepare: @escaping @MainActor () async throws -> Void = {},
                               onlyPrepareIfLastTab tabID: String? = nil, followRevision: UInt64? = nil,
                               shouldFollow: @escaping () -> Bool = { true },
+                              onFollow: @escaping (HerdrPane) -> Void = { _ in },
                               action: @escaping (String, HerdrRequestToken, Bool) throws -> HerdrPane?) {
         spaceMoveInFlight = true
         let path = socketPath
@@ -1557,6 +1559,7 @@ final class HerdrStore: ObservableObject {
                 if case .success(let pane?) = result, followRevision == selectionRevision, shouldFollow(),
                    fresh.panes.contains(where: { $0.paneID == pane.paneID && $0.tabID == pane.tabID && $0.workspaceID == pane.workspaceID }) {
                     select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
+                    onFollow(pane)
                 } else { repairSelection() }
             } else { repairSelection() }
             switch result {

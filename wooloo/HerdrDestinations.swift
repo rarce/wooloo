@@ -292,17 +292,37 @@ final class HerdrDestinations: ObservableObject {
         }
     }
 
+    /// The window's navigation intent includes switches away and back to the same server.
+    /// Store selection alone cannot distinguish that from uninterrupted terminal viewing.
+    @discardableResult
+    func moveTab(_ tabID: String, toWorkspace workspaceID: String?, on store: HerdrStore,
+                 shouldFollow: @escaping () -> Bool = { true }) -> Bool {
+        guard active === store else { return false }
+        let intent = navigation
+        return store.moveTab(tabID, toWorkspace: workspaceID, shouldFollow: { [weak self, weak store] in
+            guard let self, let store else { return false }
+            return navigation == intent && active === store && shouldFollow()
+        }, onFollow: { [weak self, weak store] pane in
+            guard let self, let store, active === store else { return }
+            requestTerminal(context: store.contextID, pane: pane.paneID)
+        })
+    }
+
+    private func requestTerminal(context: String, pane: String) {
+        terminalRequest = (context, pane)
+        terminalRequestID = UUID()
+        onOpenTerminal()
+        acknowledgeVisiblePane()
+    }
+
     private func open(context: String, pane: String) -> Bool {
         guard let store = stores.first(where: { $0.contextID == context }),
               let target = store.snapshot?.panes.first(where: { $0.paneID == pane }) else { return false }
         nativeWindow?.makeKeyAndOrderFront(nil)
-        onOpenTerminal()
         select(store, workspaceID: target.workspaceID)
         store.select(tabID: target.tabID)
         store.select(paneID: pane)
-        terminalRequest = (context, pane)
-        terminalRequestID = UUID()
-        acknowledgeVisiblePane()
+        requestTerminal(context: context, pane: pane)
         return true
     }
 

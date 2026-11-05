@@ -553,6 +553,105 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(documents.activeID, document)
     }
 
+    func testFollowingMovedTabRequestsTerminalOverDestinationsRememberedDocument() async {
+        addDestinationSpace()
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        await waitUntil("connected") { store.isConnected }
+        store.select(tabID: "w1:t2")
+        let documents = WorkspaceDocumentStore(persistence: nil)
+        let target = "\(store.contextID)|w2"
+        documents.showSpace(target)
+        let remembered = documents.newUntitled(at: WorkspaceFileLocation(machine: nil, session: store.sessionName,
+            workspaceID: "w2", workspaceLabel: "destination", root: "/private/tmp"))
+        documents.showSpace("\(store.contextID)|w1")
+        var openedTerminal = false
+        let oldRequest = destinations.terminalRequestID
+        destinations.onOpenTerminal = { [weak destinations, store = store!] in
+            guard let destinations else { return XCTFail("The destination window was released") }
+            // Switching Spaces restores the destination's remembered document first.
+            documents.showSpace(target)
+            XCTAssertEqual(documents.activeID, remembered)
+            XCTAssertTrue(destinations.wantsTerminal, "The presenter must keep selecting the terminal after Space restoration")
+            XCTAssertEqual(store.selectedPaneID, "w2:p9")
+            documents.activeID = nil
+            openedTerminal = true
+        }
+        XCTAssertTrue(destinations.moveTab("w1:t2", toWorkspace: "w2", on: store))
+        await waitUntil("move followed") { !store.spaceMoveInFlight }
+        XCTAssertTrue(openedTerminal)
+        XCTAssertNotEqual(destinations.terminalRequestID, oldRequest)
+        XCTAssertTrue(destinations.wantsTerminal)
+        XCTAssertNil(documents.activeID)
+    }
+
+    func testDestinationRoundTripCancelsFollowingMoveWithUnchangedSourceSelection() async throws {
+        addDestinationSpace()
+        let other = try FakeHerdrServer(path: root.appendingPathComponent("sessions/other/herdr.sock").path) { [state] method, _ in
+            method == "session.snapshot" ? state.snapshot() : ["result": [:]]
+        }
+        defer { other.stop() }
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        await waitUntil("connected") { store.isConnected }
+        store.select(tabID: "w1:t2")
+        let gate = DispatchSemaphore(value: 0)
+        state.update { $0.moveGate = gate }
+        defer { gate.signal() }
+        var openedTerminal = false
+        destinations.onOpenTerminal = { openedTerminal = true }
+        XCTAssertTrue(destinations.moveTab("w1:t2", toWorkspace: "w2", on: store))
+        await waitUntil("move in flight") { server.requests.contains { $0.method == "pane.move" } }
+        destinations.localSession("other")
+        await waitUntil("other destination connected") { destinations.active.isConnected }
+        destinations.select(store)
+        XCTAssertEqual(store.selectedTabID, "w1:t2", "The source selection is unchanged by this destination round trip")
+        gate.signal()
+        await waitUntil("move completed") { !store.spaceMoveInFlight }
+        XCTAssertTrue(destinations.active === store)
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+        XCTAssertEqual(store.selectedTabID, "w1:t1")
+        XCTAssertFalse(openedTerminal)
+        XCTAssertFalse(destinations.wantsTerminal)
+    }
+
+    func testLastTabMoveProtectsPersistedDraftAfterOwningWindowCloses() async throws {
+        state.update { state in
+            state.tabs.removeFirst()
+            state.panes.removeAll { $0["tab_id"] as? String == "w1:t1" }
+            state.focus = ("w1", "w1:t2", "w1:p3")
+            state.workspaces[0]["active_tab_id"] = "w1:t2"
+        }
+        await connect()
+        let persistence = WorkspaceSessionPersistence(root: root.appendingPathComponent("documents"))
+        let space = "\(store.contextID)|w1"
+        var owner: WorkspaceDocumentStore? = WorkspaceDocumentStore(persistence: persistence, backupDelay: 60_000_000_000)
+        owner!.showSpace(space)
+        await owner!.waitForRestoration()
+        _ = owner!.newUntitled(at: WorkspaceFileLocation(machine: nil, session: store.sessionName,
+            workspaceID: "w1", workspaceLabel: "source", root: "/private/tmp"))
+        owner!.documents[0].text = "draft"
+        try await owner!.flushPersistence()
+        let remainingWindow = WorkspaceDocumentStore(persistence: persistence, backupDelay: 60_000_000_000)
+        remainingWindow.showSpace(space)
+        await remainingWindow.waitForRestoration()
+        XCTAssertTrue(remainingWindow.documents.isEmpty)
+        weak var closed = owner
+        owner = nil
+        XCTAssertNil(closed)
+        XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: nil), "The asynchronous preflight must discover the disk-only buffer")
+        await waitUntil("move refused") { !store.spaceMoveInFlight }
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.move" })
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+        XCTAssertNotNil(store.actionError)
+        let persisted = try await persistence.restore(space)
+        XCTAssertEqual(persisted.session.documents.first?.text, "draft")
+    }
+
     func testLastTabMoveProtectsDocumentsInAnotherWindow() async {
         state.update { state in
             state.tabs.removeFirst()

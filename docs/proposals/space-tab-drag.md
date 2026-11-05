@@ -41,10 +41,15 @@ Do not retry uncertain remote mutations automatically.
 
 Use `focus: false`. Follow the returned pane's new IDs only when the original source
 tab was selected and selection has not changed while the request was running;
-otherwise preserve navigation and repair only invalid selection.
+otherwise preserve navigation and repair only invalid selection. Track destination navigation
+as well as tab/document/panel selection so switching away and back cancels a pending
+follow. Following the moved pane explicitly requests the main terminal view, overriding
+any editor document remembered by the destination Space.
 
 Before permitting a last-tab transfer, await document restoration and check all
-registered windows for source-Space documents or failed restoration. Refuse a move
+registered windows for source-Space documents or failed restoration. Also inspect the
+persisted session index and orphan backup files without filtering by window claims;
+refuse unreadable metadata and buffers left by a window that already closed. Refuse a move
 that could strand documents, with guidance to close document tabs or leave another
 terminal tab in the source. Recheck current topology before mutation. Other clients
 can still change topology between preflight and mutation: Herdr has no conditional

@@ -87,7 +87,8 @@ struct SpaceDropDelegate: DropDelegate {
 
     private func terminal(_ info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [TabDragModel.type]) &&
-        tabs.spaceConnection?.validStore === store && tabs.draggedTerminalTab != nil
+        tabs.spaceConnection?.validStore === store && tabs.spaceDestinations?.active === store
+            && tabs.draggedTerminalTab != nil
     }
 
     private func accepts(_ info: DropInfo) -> Bool {
@@ -124,15 +125,16 @@ struct SpaceDropDelegate: DropDelegate {
               let connection = isTerminal ? tabs.spaceConnection : spaces.source?.connection else { return false }
         let after = info.location.y >= height / 2
         let shouldFollow = tabs.spaceShouldFollow
+        let destinations = tabs.spaceDestinations
         spaces.hover(nil)
         Task { @MainActor in
             let payload = await SpaceDragModel.payload(provider, type: type)
             guard payload == nonce,
                   connection.validStore === store else { return }
             if isTerminal {
-                guard tabs.spaceNonce == nonce else { return }
+                guard tabs.spaceNonce == nonce, let destinations else { return }
                 tabs.cancel()
-                _ = store.moveTab(id, toWorkspace: workspaceID, shouldFollow: shouldFollow)
+                _ = destinations.moveTab(id, toWorkspace: workspaceID, on: store, shouldFollow: shouldFollow)
             } else {
                 guard spaces.source?.nonce == nonce, let workspaceID else { return }
                 spaces.cancel()

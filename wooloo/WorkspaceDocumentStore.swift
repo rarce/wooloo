@@ -199,8 +199,13 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// A terminal transfer must not remove a Space before its buffers have been restored.
     func canReleaseSpace(_ sourceSpace: String) async -> Bool {
         await waitForRestoration()
-        return !failedRestorations.contains(WorkspaceSessionPersistence.key(for: sourceSpace))
-            && !documents.contains { $0.space == sourceSpace }
+        guard !failedRestorations.contains(WorkspaceSessionPersistence.key(for: sourceSpace)),
+              !documents.contains(where: { $0.space == sourceSpace }) else { return false }
+        do {
+            if let persistence, try await persistence.hasPersistedDocuments(in: sourceSpace) { return false }
+        } catch { return false }
+        // A window can open a document while the disk check is suspended.
+        return !documents.contains { $0.space == sourceSpace }
     }
 
     private func schedulePersistence(immediately: Bool = false) {

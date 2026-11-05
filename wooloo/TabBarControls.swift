@@ -119,10 +119,12 @@ final class TabDragModel: ObservableObject {
 
     private(set) var spaceConnection: HerdrActionConnection?
     private(set) var spaceNonce: String?
+    private(set) weak var spaceDestinations: HerdrDestinations?
     private(set) var spaceShouldFollow: () -> Bool = { true }
 
     func begin(_ group: TabDragGroup, id: String, connection: HerdrActionConnection? = nil,
-               shouldFollow: @escaping () -> Bool = { true }) -> NSItemProvider {
+               destinations: HerdrDestinations? = nil, shouldFollow: @escaping () -> Bool = { true }) -> NSItemProvider {
+        spaceDestinations = destinations
         spaceShouldFollow = shouldFollow
         spaceConnection = connection
         spaceNonce = connection == nil ? nil : UUID().uuidString
@@ -176,6 +178,7 @@ final class TabDragModel: ObservableObject {
 
     private func endDrag() {
         spaceConnection = nil
+        spaceDestinations = nil
         spaceNonce = nil
         spaceShouldFollow = { true }
         dragged = nil
@@ -195,8 +198,9 @@ extension View {
     /// go: on the side of the tab under the pointer. `onMove` gets the dragged tab's ID and its
     /// gap, as `TabDragModel.Target.insertIndex`.
     func tabReorder(_ group: TabDragGroup, id: String, index: Int, drag: TabDragModel,
-                    connection: HerdrActionConnection? = nil, shouldFollow: @escaping () -> Bool = { true }, onMove: @escaping (String, Int) -> Void) -> some View {
-        modifier(TabReorderModifier(group: group, id: id, index: index, drag: drag, connection: connection, shouldFollow: shouldFollow, onMove: onMove))
+                    connection: HerdrActionConnection? = nil, destinations: HerdrDestinations? = nil,
+                    shouldFollow: @escaping () -> Bool = { true }, onMove: @escaping (String, Int) -> Void) -> some View {
+        modifier(TabReorderModifier(group: group, id: id, index: index, drag: drag, connection: connection, destinations: destinations, shouldFollow: shouldFollow, onMove: onMove))
     }
 
     /// Drops on the bar's space after a group's tabs, which put the dragged tab last in its
@@ -219,6 +223,7 @@ private struct TabReorderModifier: ViewModifier {
     let index: Int
     @ObservedObject var drag: TabDragModel
     let connection: HerdrActionConnection?
+    let destinations: HerdrDestinations?
     let shouldFollow: () -> Bool
     let onMove: (String, Int) -> Void
     @State private var width: CGFloat = 0
@@ -226,7 +231,7 @@ private struct TabReorderModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-            .onDrag { drag.begin(group, id: id, connection: connection, shouldFollow: shouldFollow) }
+            .onDrag { drag.begin(group, id: id, connection: connection, destinations: destinations, shouldFollow: shouldFollow) }
             .onDrop(of: TabDragModel.types, delegate: TabDropDelegate(group: group, index: index, width: width,
                                                                        drag: drag, onMove: onMove))
             .overlay(alignment: drag.target?.after == true ? .trailing : .leading) {

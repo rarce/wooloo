@@ -186,6 +186,20 @@ actor WorkspaceSessionPersistence {
         return result
     }
 
+    /// Checks every persisted buffer without filtering by live window claims or claiming
+    /// unowned backups. Unreadable metadata fails closed at the caller.
+    func hasPersistedDocuments(in space: String) throws -> Bool {
+        let session = try readSession(space)
+        if session?.documents.isEmpty == false { return true }
+        let directory = backupsURL(space)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return false }
+        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).contains { url in
+            guard url.pathExtension == "json", let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { return false }
+            // Even a corrupt/unindexed buffer needs to remain reachable for recovery.
+            return session?.discardedBackups.contains(id) != true
+        }
+    }
+
     /// A corrupt index can be rebuilt from self-contained backups. Corrupt backups remain on
     /// disk and are reported; they are never treated as empty drafts or silently deleted.
     func restore(_ space: String?, owner: UUID? = nil) throws -> (session: WorkspaceSessionSnapshot, warnings: [String]) {
