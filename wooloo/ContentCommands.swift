@@ -298,7 +298,8 @@ struct ContentCommands {
                 let current = focusedDocumentID.flatMap(documents.document)
                 window.quickOpen.present(at: explorerLocation, recents: documents.recentPaths(at: explorerLocation),
                                          current: current?.location == explorerLocation ? current?.path : nil,
-                                         symbols: window.symbols.currentSymbols())
+                                         symbols: current == nil ? [] : window.symbols.currentSymbols(),
+                                         symbolSource: current.map { QuickOpenModel.SymbolSource(document: $0) })
             }
         case .goToSymbol:
             if window.quickOpen.isPresented, window.quickOpen.isSymbolSearch {
@@ -306,7 +307,8 @@ struct ContentCommands {
             } else if let document = focusedDocumentID.flatMap(documents.document), document.kind == .file {
                 window.commandPalette.dismiss()
                 window.quickOpen.present(at: document.location, recents: documents.recentPaths(at: document.location),
-                                         current: document.path, symbols: window.symbols.currentSymbols(), query: "@")
+                                         current: document.path, symbols: window.symbols.currentSymbols(),
+                                         symbolSource: QuickOpenModel.SymbolSource(document: document), query: "@")
             }
         case .editor(let command):
             guard WoolooCommandItem.named(command.rawValue)?.isAvailable(availability) == true else { return }
@@ -384,9 +386,17 @@ struct ContentCommands {
     func openQuickOpenSelection() -> Task<Void, Never>? {
         let quickOpen = window.quickOpen
         if let match = quickOpen.selectedSymbol {
-            if workspaceContext != nil {
-                guard acceptsFileAction(at: explorerLocation),
-                      focusedDocumentID.flatMap(documents.document)?.location == quickOpen.location else {
+            guard effects.isCurrentDestination(), let source = quickOpen.symbolSource,
+                  let document = focusedDocumentID.flatMap(documents.document),
+                  document.backupID == source.documentID, document.space == source.space,
+                  documents.space == source.space else {
+                quickOpen.dismiss()
+                return nil
+            }
+            if let workspaceContext {
+                let current = WorkspaceContext(store: herdr)
+                guard current.destinationID == workspaceContext.destinationID,
+                      current.space == workspaceContext.space, current.space == source.space else {
                     quickOpen.dismiss()
                     return nil
                 }
