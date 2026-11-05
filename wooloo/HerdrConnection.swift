@@ -1,5 +1,4 @@
 import Combine
-import CryptoKit
 import Darwin
 import Foundation
 
@@ -908,9 +907,7 @@ final class HerdrStore: ObservableObject {
     /// Keep the existing local document keys; remote IDs are scoped to their machine.
     var legacyContextID: String { machine.map { "ssh:\($0.id)|\(sessionName)" } ?? sessionName }
     var contextID: String {
-        guard let machine else { return sessionName }
-        let target = SHA256.hash(data: Data(machine.target.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
-        return "\(legacyContextID)|target:\(target)"
+        machine?.contextID(session: sessionName) ?? sessionName
     }
     private var remoteBridge: HerdrRemoteBridge?
     /// App-wide passive API connection; terminal presentation remains owned by this window.
@@ -1979,7 +1976,12 @@ final class HerdrStore: ObservableObject {
             && old.focusedWorkspaceID == newSnapshot.focusedWorkspaceID && old.focusedTabID == newSnapshot.focusedTabID
             && old.focusedPaneID == newSnapshot.focusedPaneID
         let tabPanes = Set(newSnapshot.panes.filter { $0.tabID == selectedTabID }.map(\.paneID))
-        if onlyLayouts, let surfaceLayout, !tabPanes.isEmpty, Set(surfaceLayout.paneIDs) == tabPanes {
+        // Reordering the layout's first pane can change the file root even with the same panes.
+        let fileRootChanged = onlyLayouts && selectedWorkspaceID.map { workspaceID in
+            WorkspaceFiles.location(snapshot: old, workspaceID: workspaceID, session: sessionName, machine: machine)?.root
+                != WorkspaceFiles.location(snapshot: newSnapshot, workspaceID: workspaceID, session: sessionName, machine: machine)?.root
+        } == true
+        if onlyLayouts, !fileRootChanged, let surfaceLayout, !tabPanes.isEmpty, Set(surfaceLayout.paneIDs) == tabPanes {
             snapshotValue = newSnapshot
         } else {
             snapshot = newSnapshot

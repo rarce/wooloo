@@ -286,6 +286,17 @@ enum QuickOpenMatcher {
 /// files are read once per location and read again behind the results each time it opens.
 @MainActor
 final class QuickOpenModel: ObservableObject {
+    /// Symbols belong to the focused document, independently of the project file index's root.
+    struct SymbolSource: Equatable {
+        let documentID: UUID
+        let space: String?
+
+        init(document: WorkspaceDocument) {
+            documentID = document.backupID
+            space = document.space
+        }
+    }
+
     @Published private(set) var isPresented = false
     @Published var query = "" {
         didSet { if query != oldValue { refresh() } }
@@ -321,6 +332,7 @@ final class QuickOpenModel: ObservableObject {
     private var recents: [String] = []
     /// The symbols of the file open when Go to File opened.
     private(set) var symbols: [QuickOpenSymbol] = []
+    private(set) var symbolSource: SymbolSource?
     private var index: QuickOpenIndex?
     private var indexIdentity: String?
     private var loadGeneration = 0
@@ -352,7 +364,7 @@ final class QuickOpenModel: ObservableObject {
     /// one shown now, goes last so that ⌘P ↩ switches back to the previous file. `symbols` are
     /// those of the file in the editor, for `query` "@".
     func present(at location: WorkspaceFileLocation, recents: [String], current: String?,
-                 symbols: [QuickOpenSymbol] = [], query initialQuery: String = "") {
+                 symbols: [QuickOpenSymbol] = [], symbolSource: SymbolSource? = nil, query initialQuery: String = "") {
         previousResponder = NSApp?.keyWindow?.firstResponder
         if identity(location) != indexIdentity {
             index = nil
@@ -365,6 +377,7 @@ final class QuickOpenModel: ObservableObject {
         self.location = location
         self.recents = recents.filter { $0 != current } + (current.map { [$0] } ?? [])
         self.symbols = symbols
+        self.symbolSource = symbolSource
         error = nil
         isPresented = true
         if query == initialQuery { refresh() } else { query = initialQuery }
@@ -375,6 +388,7 @@ final class QuickOpenModel: ObservableObject {
     func dismiss(restoringFocus: Bool = true) {
         guard isPresented else { return }
         isPresented = false
+        symbolSource = nil
         matchTask?.cancel()
         if restoringFocus, let view = previousResponder as? NSView, let window = view.window {
             window.makeFirstResponder(view)

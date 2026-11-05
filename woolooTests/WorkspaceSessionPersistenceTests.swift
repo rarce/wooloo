@@ -344,6 +344,37 @@ final class WorkspaceSessionPersistenceTests: XCTestCase {
         XCTAssertTrue(restarted.documents[0].isDirty)
     }
 
+    func testRemoteDraftRestoresUUIDAndSelectionWithTargetScopedIdentity() async throws {
+        let machine = HerdrMachineProfile(id: "same-profile", label: "Remote", target: "first.example.test",
+                                          session: "agents", enabled: true)
+        let remote = WorkspaceFileLocation(machine: machine, session: machine.session, workspaceID: "w1",
+                                           workspaceLabel: "Remote Space", root: "/project")
+        let scoped = machine.contextID(session: machine.session) + "|w1"
+        let first = WorkspaceDocumentStore(persistence: disk)
+        first.showSpace(scoped)
+        await first.waitForRestoration()
+        first.newUntitled(at: remote)
+        first.documents[0].text = "unsaved remote buffer"
+        let backupID = first.documents[0].backupID
+        try await first.flushPersistence()
+        let restarted = WorkspaceDocumentStore(persistence: WorkspaceSessionPersistence(root: root))
+        restarted.showSpace(scoped)
+        await restarted.waitForRestoration()
+        let document = try XCTUnwrap(restarted.visibleDocuments.first)
+        XCTAssertEqual(document.backupID, backupID)
+        XCTAssertEqual(document.location, remote)
+        XCTAssertEqual(document.text, "unsaved remote buffer")
+        XCTAssertTrue(document.isDirty)
+        XCTAssertEqual(restarted.activeID, document.id)
+        let differentTarget = HerdrMachineProfile(id: machine.id, label: machine.label, target: "second.example.test",
+                                                 session: machine.session, enabled: true)
+        restarted.showSpace(differentTarget.contextID(session: machine.session) + "|w1")
+        await restarted.waitForRestoration()
+        XCTAssertTrue(restarted.visibleDocuments.isEmpty)
+        restarted.showSpace(scoped)
+        XCTAssertEqual(restarted.activeID, document.id)
+    }
+
     func testEachSpaceRestoresItsOwnTabsAndActiveDocument() async throws {
         let first = await store()
         await open("a.txt", in: first)

@@ -1092,6 +1092,34 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(published, 1, "Other changes still publish")
     }
 
+    func testLayoutOnlyRootChangePublishesEvenWhileTheSelectedSurfaceIsUnchanged() async throws {
+        state.update { state in
+            state.tabs.reverse()
+            state.panes = [["pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1", "cwd": "/selected"],
+                           ["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t2", "cwd": "/first"],
+                           ["pane_id": "w1:p4", "workspace_id": "w1", "tab_id": "w1:t2", "cwd": "/second"]]
+            state.layouts = [["tab_id": "w1:t2", "area": ["x": 0, "y": 0, "width": 80, "height": 24],
+                              "panes": ["w1:p3", "w1:p4"].map { ["pane_id": $0, "rect": ["x": 0, "y": 0, "width": 40, "height": 24]] }]]
+        }
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surfaceLayout?.paneIDs == ["w1:p1"] }
+        XCTAssertEqual(WorkspaceContext(store: store).location?.root, "/first")
+        var published = 0
+        let subscription = store.objectWillChange.sink { published += 1 }
+        defer { subscription.cancel() }
+        state.update { state in
+            let panes = state.layouts[0]["panes"] as! [[String: Any]]
+            state.layouts[0]["panes"] = Array(panes.reversed())
+        }
+        server.emit(["event": "layout.changed"])
+        await waitUntil("new root published") { WorkspaceContext(store: store).location?.root == "/second" }
+        XCTAssertEqual(published, 1)
+        XCTAssertEqual(store.selectedTabID, "w1:t1")
+    }
+
     func testSplitResizeNeedsTheEndpoint() async {
         await connect()
         store.setSplitRatio(path: [true], ratio: 0.5)

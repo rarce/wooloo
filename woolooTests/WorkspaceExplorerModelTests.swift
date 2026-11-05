@@ -120,9 +120,9 @@ final class WorkspaceExplorerModelTests: XCTestCase {
             ] as [String: Any]))
         }
         func browser(_ snapshot: HerdrSnapshot?, _ workspaceID: String?) -> WorkspaceBrowserView {
-            WorkspaceBrowserView(snapshot: snapshot, workspaceID: workspaceID, session: "test",
+            WorkspaceBrowserView(location: snapshot.flatMap { snapshot in workspaceID.flatMap { WorkspaceFiles.location(snapshot: snapshot, workspaceID: $0, session: "test", machine: nil) } },
                 machine: nil, refreshVersion: 0, onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in },
-                onNewTab: { _ in }, onNewSpace: { _, _ in }, onLocationChange: { _ in },
+                onNewTab: { _ in }, onNewSpace: { _, _ in },
                 onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in }, onOpenCommitFile: { _, _, _ in },
                 model: self.model)
         }
@@ -167,9 +167,9 @@ final class WorkspaceExplorerModelTests: XCTestCase {
             "workspaces": [["workspace_id": "repo", "label": "repo", "worktree": ["checkout_path": repo.root]]],
             "panes": [], "tabs": [], "agents": [], "layouts": []
         ] as [String: Any]))
-        let view = WorkspaceBrowserView(snapshot: snapshot, workspaceID: "repo", session: "test",
+        let view = WorkspaceBrowserView(location: WorkspaceFiles.location(snapshot: snapshot, workspaceID: "repo", session: "test", machine: nil),
             machine: nil, refreshVersion: 0, onOpenFile: { _, _, _ in }, onOpenDiff: { _, _, _ in },
-            onNewTab: { _ in }, onNewSpace: { _, _ in }, onLocationChange: { _ in },
+            onNewTab: { _ in }, onNewSpace: { _, _ in },
             onFindInFolder: { _, _ in }, onOpenWorktree: { _, _ in }, onOpenCommitFile: { _, _, _ in }, model: self.model)
         // The test host may be inactive, or lose activation midway, which would hold every refresh.
         model.pausesWhileInactive = false

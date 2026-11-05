@@ -1,5 +1,7 @@
 # Herdr server connection plan
 
+For the separate herdr-core backend, see the [0.1.18 protocol and integration review](herdr-core.md), dated 2026-11-05. The connection described here uses Herdr TUI.
+
 ## Scope
 
 wooloo connects to the named test session `wooloo-ui-test` through Herdr's JSON and client sockets. It subscribes to lifecycle events, takes `session.snapshot` after subscription and after structural changes, and maps server IDs into the sidebar and tabs. A generation-1 client endpoint streams the selected tab's terminal cells and carries semantic pane input; `pane.read` and JSON `pane.send_input` are fallbacks while the endpoint is unavailable. The sidebar session picker can switch to another named session, while `default` is rejected. Herdr's server owns the processes and terminal state; wooloo is a client. See [Herdr concepts](https://herdr.dev/docs/concepts/).

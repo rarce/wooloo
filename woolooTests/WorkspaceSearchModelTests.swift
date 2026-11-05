@@ -36,6 +36,130 @@ final class WorkspaceSearchModelTests: XCTestCase {
         await settle()
     }
 
+    private actor ReadGate {
+        var started = false
+        private var released = false
+        private var continuation: CheckedContinuation<Void, Never>?
+        func wait() async {
+            started = true
+            if released { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+        func release() { released = true; continuation?.resume(); continuation = nil }
+    }
+
+    private func waitForStart(_ gate: ReadGate) async {
+        for _ in 0..<500 {
+            if await gate.started { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("The delayed operation did not start")
+    }
+
+    func testChangingSpaceInvalidatesOpeningAndReplacingBeforeTheNewSearchFinishes() async throws {
+        await search("foo")
+        let other = try sandbox.repository("other", files: ["a.txt": "foo in B\n"])
+        let gate = ReadGate()
+        model.readSearch = { options, location in
+            let value = try await WorkspaceFiles.blocking(at: location) { try WorkspaceSearch.search(options, at: location) }
+            await gate.wait()
+            return value
+        }
+        model.replacement = "changed"
+        model.setLocation(other)
+        XCTAssertNil(model.result)
+        XCTAssertNil(model.locationForResult("a.txt"))
+        model.replaceNext()
+        model.replaceAll()
+        XCTAssertFalse(model.isReplacing)
+        await waitForStart(gate)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "other"), "foo in B\n")
+        await gate.release()
+        await settle()
+        XCTAssertEqual(model.locationForResult("a.txt"), other)
+    }
+
+    func testQueryChangesInvalidateResultsWithoutAMountedViewAndRejectOldConfirmation() async throws {
+        await search("foo")
+        let revision = try XCTUnwrap(model.resultRevision)
+        model.options.query = "bar"
+        XCTAssertNil(model.result)
+        XCTAssertNil(model.locationForResult("a.txt"))
+        model.replaceNext()
+        XCTAssertFalse(model.isReplacing)
+        await settle()
+        model.replacement = "changed"
+        model.replaceAll(expectedRevision: revision)
+        XCTAssertFalse(model.isReplacing)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "foo one foo\nbar\n")
+    }
+
+    func testLiveNavigationRejectsActionsBeforeTheLocationCallbackRuns() async throws {
+        await search("foo")
+        model.currentFileIdentity = { "another-context" }
+        XCTAssertNil(model.locationForResult("a.txt"))
+        model.replaceNext()
+        model.replaceAll()
+        XCTAssertFalse(model.isReplacing)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "foo one foo\nbar\n")
+    }
+
+    func testLateSearchCannotReplaceResultsAfterReturningToTheOriginalSpace() async throws {
+        await search("foo")
+        let original = repo!
+        let other = try sandbox.repository("other", files: ["other.txt": "foo in B\n"])
+        let gate = ReadGate()
+        model.readSearch = { options, location in
+            let value = try await WorkspaceFiles.blocking(at: location) { try WorkspaceSearch.search(options, at: location) }
+            if location.identity == other.identity { await gate.wait() }
+            return value
+        }
+        model.setLocation(other)
+        await waitForStart(gate)
+        model.setLocation(original)
+        await settle()
+        await gate.release()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(model.result?.matchCount, 3)
+        XCTAssertEqual(model.locationForResult("a.txt"), original)
+        XCTAssertNil(model.locationForResult("other.txt"))
+    }
+
+    func testReplaceFinishesInItsOriginalSpaceWithoutPublishingStatusInAnotherSpace() async throws {
+        await search("foo")
+        let other = try sandbox.repository("other", files: ["a.txt": "foo in B\n"])
+        let started = expectation(description: "replace started")
+        let gate = DispatchSemaphore(value: 0)
+        model.replaceFile = { path, options, replacement, target, location in
+            started.fulfill()
+            gate.wait()
+            return try WorkspaceSearch.replace(in: path, options: options, replacement: replacement, only: target, at: location)
+        }
+        var modified: [WorkspaceFileLocation] = []
+        model.didModifyFiles = { location, _ in modified.append(location) }
+        model.replacement = "changed"
+        model.replaceNext()
+        await fulfillment(of: [started], timeout: 5)
+        model.setLocation(other)
+        gate.signal()
+        await settle()
+        XCTAssertEqual(modified, [repo!])
+        XCTAssertNil(model.status)
+        XCTAssertEqual(try sandbox.read("a.txt", in: "repo"), "changed one foo\nbar\n")
+        XCTAssertEqual(try sandbox.read("a.txt", in: "other"), "foo in B\n")
+        XCTAssertEqual(model.locationForResult("a.txt"), other)
+    }
+
+    func testRenamingSpaceRefreshesMetadataWithoutRepeatingItsSearch() async throws {
+        await search("foo")
+        let revision = model.resultRevision
+        let renamed = WorkspaceFileLocation(machine: repo.machine, session: repo.session, workspaceID: repo.workspaceID,
+                                            workspaceLabel: "Renamed", root: repo.root)
+        model.setLocation(renamed)
+        XCTAssertEqual(model.location?.workspaceLabel, "Renamed")
+        XCTAssertEqual(model.resultRevision, revision)
+    }
+
     func testSearchListsEveryOccurrenceInOrder() async {
         await search("foo")
         XCTAssertNil(model.error)

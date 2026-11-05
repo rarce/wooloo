@@ -5,7 +5,9 @@ import SwiftUI
 final class WorkspaceSearchModel: ObservableObject {
     static let tabID = "project-search"
 
-    @Published var options = WorkspaceSearchOptions()
+    @Published var options = WorkspaceSearchOptions() {
+        didSet { if options != oldValue { search(debounce: true) } }
+    }
     @Published var replacement = ""
     @Published var showsReplace = false
     @Published var showsFilters = false
@@ -24,6 +26,36 @@ final class WorkspaceSearchModel: ObservableObject {
     /// Called with files written by a replace so open documents can reload.
     var didModifyFiles: (WorkspaceFileLocation, [String]) -> Void = { _, _ in }
 
+    /// Read live navigation at the action boundary, before SwiftUI applies transition effects.
+    var currentFileIdentity: (() -> String?)?
+    var readSearch: @Sendable (WorkspaceSearchOptions, WorkspaceFileLocation) async throws -> WorkspaceSearchResult = { options, location in
+        try await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
+            try WorkspaceSearch.search(options, at: location)
+        }
+    }
+    var replaceFile: @Sendable (String, WorkspaceSearchOptions, String, WorkspaceSearchMatchRef?, WorkspaceFileLocation) throws -> Int = {
+        try WorkspaceSearch.replace(in: $0, options: $1, replacement: $2, only: $3, at: $4)
+    }
+
+    private struct RequestKey: Equatable {
+        let identity: String
+        let options: WorkspaceSearchOptions
+    }
+    private var requestKey: RequestKey? {
+        location.map { RequestKey(identity: $0.identity, options: options) }
+    }
+    private var resultKey: RequestKey?
+    var hasCurrentResults: Bool {
+        resultKey != nil && resultKey == requestKey && !isSearching
+            && (currentFileIdentity.map { $0() == location?.identity } ?? true)
+    }
+    var resultRevision: Int? { hasCurrentResults ? generation : nil }
+
+    func locationForResult(_ path: String) -> WorkspaceFileLocation? {
+        guard hasCurrentResults, result?.files.contains(where: { $0.path == path }) == true else { return nil }
+        return location
+    }
+
     private var generation = 0
 
     var title: String { options.query.isEmpty ? "Project Search" : options.query }
@@ -31,14 +63,20 @@ final class WorkspaceSearchModel: ObservableObject {
     func requestFocus() { focusRequest += 1 }
 
     func setLocation(_ location: WorkspaceFileLocation?) {
-        guard location?.identity != self.location?.identity else { return }
-        self.location = location
-        search(debounce: false)
+        let changed = location?.identity != self.location?.identity
+        if self.location != location { self.location = location }
+        if changed { search(debounce: false) }
     }
 
     func search(debounce: Bool) {
         generation += 1
         let current = generation
+        let key = requestKey
+        if resultKey != key {
+            result = nil
+            matches = []
+            resultKey = nil
+        }
         status = nil
         guard let location, !options.isEmpty else {
             result = nil
@@ -56,18 +94,20 @@ final class WorkspaceSearchModel: ObservableObject {
         }
         isSearching = true
         let options = options
+        let readSearch = readSearch
         Task {
             if debounce {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 guard current == generation else { return }
             }
-            let outcome = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
-                Result { try WorkspaceSearch.search(options, at: location) }
-            }
+            let outcome: Result<WorkspaceSearchResult, Error>
+            do { outcome = .success(try await readSearch(options, location)) }
+            catch { outcome = .failure(error) }
             guard current == generation else { return }
             isSearching = false
             switch outcome {
             case .success(let value):
+                resultKey = key
                 result = value
                 error = nil
                 matches = value.files.flatMap { file in
@@ -77,6 +117,7 @@ final class WorkspaceSearchModel: ObservableObject {
                 }
                 activeMatch = matches.isEmpty ? 0 : min(activeMatch, matches.count - 1)
             case .failure(let failure):
+                resultKey = nil
                 result = nil
                 matches = []
                 error = failure.localizedDescription
@@ -90,7 +131,7 @@ final class WorkspaceSearchModel: ObservableObject {
     }
 
     func replaceNext() {
-        guard let location, matches.indices.contains(activeMatch), !isReplacing else { return }
+        guard hasCurrentResults, let location, matches.indices.contains(activeMatch), !isReplacing else { return }
         let target = matches[activeMatch]
         guard !hasUnsavedEdits(location, target.path) else {
             status = "\(target.path) has unsaved edits; save or close it first"
@@ -99,14 +140,18 @@ final class WorkspaceSearchModel: ObservableObject {
         runReplace(location: location, paths: [target.path], target: target)
     }
 
-    func replaceAll() {
-        guard let location, let result, !isReplacing else { return }
+    func replaceAll(expectedRevision: Int? = nil) {
+        if let expectedRevision, expectedRevision != resultRevision { return }
+        guard hasCurrentResults, let location, let result, !isReplacing else { return }
         runReplace(location: location, paths: result.files.map(\.path), target: nil)
     }
 
     private func runReplace(location: WorkspaceFileLocation, paths: [String], target: WorkspaceSearchMatchRef?) {
         let options = options
         let replacement = replacement
+        let key = requestKey
+        let originGeneration = generation
+        let replaceFile = replaceFile
         let skipped = paths.filter { hasUnsavedEdits(location, $0) }
         let writable = paths.filter { !skipped.contains($0) }
         isReplacing = true
@@ -117,8 +162,7 @@ final class WorkspaceSearchModel: ObservableObject {
                 var failures: [String] = []
                 for path in writable {
                     do {
-                        let replaced = try WorkspaceSearch.replace(in: path, options: options, replacement: replacement,
-                                                                   only: target, at: location)
+                        let replaced = try replaceFile(path, options, replacement, target, location)
                         if replaced > 0 { count += replaced; files.append(path) }
                     } catch {
                         failures.append("\(path): \(error.localizedDescription)")
@@ -134,8 +178,14 @@ final class WorkspaceSearchModel: ObservableObject {
             if !skipped.isEmpty { parts.append("skipped \(skipped.count) with unsaved edits") }
             if !outcome.failures.isEmpty { parts.append("failed: " + outcome.failures.joined(separator: "; ")) }
             if !outcome.files.isEmpty { didModifyFiles(location, outcome.files) }
-            search(debounce: false)
-            status = parts.joined(separator: " · ")
+            // The write belongs to its origin even if navigation or the query changed meanwhile.
+            // Refresh a search of those files, but never label another request with this status.
+            let showsStatus = key == requestKey && originGeneration == generation
+            if self.location?.identity == location.identity,
+               currentFileIdentity.map({ $0() == location.identity }) ?? true {
+                search(debounce: false)
+                if showsStatus { status = parts.joined(separator: " · ") }
+            }
         }
     }
 }
@@ -144,10 +194,16 @@ struct WorkspaceSearchView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     @ObservedObject var model: WorkspaceSearchModel
+    var expectedContext: WorkspaceContext?
     let onOpen: (WorkspaceFileLocation, String, Int, NSRange?) -> Void
+
+    private var isExpectedContext: Bool {
+        expectedContext.map { $0.fileIdentity == model.location?.identity } ?? true
+    }
 
     @FocusState private var focusedField: Field?
     @State private var confirmsReplaceAll = false
+    @State private var replaceRevision: Int?
 
     private enum Field { case query, replace, include, exclude }
 
@@ -168,9 +224,10 @@ struct WorkspaceSearchView: View {
         }
         .onAppear { focusedField = .query }
         .onChange(of: model.focusRequest) { _, _ in focusedField = .query }
-        .onChange(of: model.options) { _, _ in model.search(debounce: true) }
         .confirmationDialog("Replace all matches?", isPresented: $confirmsReplaceAll) {
-            Button("Replace All", role: .destructive) { model.replaceAll() }
+            Button("Replace All", role: .destructive) {
+                if isExpectedContext, let replaceRevision { model.replaceAll(expectedRevision: replaceRevision) }
+            }
         } message: {
             let files = model.result?.files.count ?? 0
             Text("\(model.matches.count) matches in \(files) files will be replaced and saved to disk. This cannot be undone from wooloo.")
@@ -252,11 +309,14 @@ struct WorkspaceSearchView: View {
                           text: $model.replacement, focus: .replace)
                         .onSubmit { model.replaceNext() }
                     Button("Replace Next", systemImage: "arrow.right.to.line") { model.replaceNext() }
-                        .disabled(model.matches.isEmpty || model.isReplacing)
+                        .disabled(!isExpectedContext || !model.hasCurrentResults || model.matches.isEmpty || model.isReplacing)
                         .help("Replace the active match and save (↩ in the replace field)")
-                    Button("Replace All", systemImage: "arrow.right.to.line.compact") { confirmsReplaceAll = true }
+                    Button("Replace All", systemImage: "arrow.right.to.line.compact") {
+                        replaceRevision = model.resultRevision
+                        confirmsReplaceAll = replaceRevision != nil
+                    }
                         .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(model.matches.isEmpty || model.isReplacing)
+                        .disabled(!isExpectedContext || !model.hasCurrentResults || model.matches.isEmpty || model.isReplacing)
                         .help("Replace every match and save (⌘↩)")
                     if model.isReplacing { ProgressView().controlSize(.small) }
                 }
@@ -360,7 +420,9 @@ struct WorkspaceSearchView: View {
 
     @ViewBuilder
     private var results: some View {
-        if model.options.isEmpty {
+        if !isExpectedContext {
+            emptyState("Searching…", detail: nil, symbol: "hourglass")
+        } else if model.options.isEmpty {
             emptyState("Search All Files",
                        detail: (model.location.map { "Searching \($0.root) on \($0.machineLabel)." } ?? "Select a Space in the Files sidebar.")
                            + "\nFiles ignored by .gitignore and binary files are skipped."
@@ -431,7 +493,7 @@ struct WorkspaceSearchView: View {
 
     private func fileHeader(_ file: WorkspaceSearchFile) -> some View {
         Button {
-            if let location = model.location { onOpen(location, file.path, 1, nil) }
+            if isExpectedContext, let location = model.locationForResult(file.path) { onOpen(location, file.path, 1, nil) }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "doc.text").foregroundStyle(.secondary)
@@ -485,13 +547,13 @@ struct WorkspaceSearchView: View {
     }
 
     private func open(_ line: WorkspaceSearchLine, file: WorkspaceSearchFile, occurrence: Int) {
-        guard let location = model.location else { return }
+        guard isExpectedContext, let location = model.locationForResult(file.path) else { return }
         let range = line.matches.indices.contains(occurrence) ? line.matches[occurrence] : nil
         onOpen(location, file.path, line.number, range)
     }
 
     func openActive() {
-        guard let active = activeRef, let location = model.location,
+        guard isExpectedContext, let active = activeRef, let location = model.locationForResult(active.path),
               let file = model.result?.files.first(where: { $0.path == active.path }),
               let line = file.excerpts.joined().first(where: { $0.number == active.line }) else { return }
         onOpen(location, file.path, line.number,

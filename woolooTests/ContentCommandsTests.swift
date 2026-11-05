@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import wooloo
 
@@ -11,6 +12,10 @@ final class ContentCommandsTests: XCTestCase {
         var tabs: [[String: Any]] = [["tab_id": "w1:t1", "workspace_id": "w1", "label": "one"],
                                      ["tab_id": "w1:t2", "workspace_id": "w1", "label": "two"],
                                      ["tab_id": "w1:t3", "workspace_id": "w1", "label": "three"]]
+        var workspaces: [[String: Any]] = [["workspace_id": "w1", "label": "project", "active_tab_id": "w1:t1"]]
+        var panes: [[String: Any]] = [["pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1", "cwd": "/tmp/project"],
+                                      ["pane_id": "w1:p2", "workspace_id": "w1", "tab_id": "w1:t2"],
+                                      ["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t3"]]
         /// The pane's directory `pane.get` answers, after a `cd` the snapshot has not seen.
         var paneDirectory = "/tmp/project"
 
@@ -20,14 +25,108 @@ final class ContentCommandsTests: XCTestCase {
 
         func snapshot() -> [String: Any] {
             ["result": ["snapshot": [
-                "workspaces": [["workspace_id": "w1", "label": "project", "active_tab_id": "w1:t1"]],
+                "workspaces": workspaces,
                 "tabs": tabs,
-                "panes": [["pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1", "cwd": "/tmp/project"],
-                          ["pane_id": "w1:p2", "workspace_id": "w1", "tab_id": "w1:t2"],
-                          ["pane_id": "w1:p3", "workspace_id": "w1", "tab_id": "w1:t3"]],
+                "panes": panes,
                 "agents": [], "layouts": [],
                 "focused_workspace_id": "w1", "focused_tab_id": "w1:t1", "focused_pane_id": "w1:p1"
             ] as [String: Any]]]
+        }
+    }
+
+    private func installFileContexts(_ locations: [WorkspaceFileLocation]) async throws {
+        state.update { state in
+            state.workspaces = locations.map { ["workspace_id": $0.workspaceID, "label": $0.workspaceLabel,
+                                                "worktree": ["checkout_path": $0.root]] }
+            state.tabs = locations.map { ["workspace_id": $0.workspaceID, "tab_id": $0.workspaceID + ":t1", "label": "shell"] }
+            state.panes = locations.map { ["workspace_id": $0.workspaceID, "tab_id": $0.workspaceID + ":t1",
+                                           "pane_id": $0.workspaceID + ":p1", "cwd": $0.root] }
+        }
+        server.emit(["event": "workspace.changed"])
+        await waitUntil("file contexts received") { herdr.snapshot?.workspaces.first?.workspaceID == locations.first?.workspaceID }
+    }
+
+    func testHiddenSidebarTracksSpaceAndRootAndKeepsOtherWindowsIndependent() async throws {
+        let other = try sandbox.repository("other", files: ["a.txt": "other\n"])
+        await connect()
+        try await installFileContexts([repo, other])
+        herdr.select(workspaceID: repo.workspaceID)
+        let firstLocation = try XCTUnwrap(WorkspaceContext(store: herdr).location)
+        let otherLocation = WorkspaceFileLocation(machine: nil, session: herdr.sessionName, workspaceID: other.workspaceID,
+                                                  workspaceLabel: other.workspaceLabel, root: other.root)
+        window.showsFilesSidebar = false
+        let secondDocuments = WorkspaceDocumentStore(persistence: nil)
+        let secondWindow = ContentWindowModel()
+        secondWindow.showsFilesSidebar = false
+        let secondSearch = WorkspaceSearchModel()
+        let hosts = [NSHostingView(rootView: ContentView(herdr: herdr, documents: documents, window: window, search: search)),
+                     NSHostingView(rootView: ContentView(herdr: herdr, documents: secondDocuments, window: secondWindow, search: secondSearch))]
+        let nativeWindows = hosts.map { host -> NSWindow in
+            let result = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650), styleMask: .borderless,
+                                  backing: .buffered, defer: false)
+            result.isReleasedWhenClosed = false
+            result.contentView = host
+            result.orderFront(nil)
+            host.layoutSubtreeIfNeeded()
+            return result
+        }
+        defer { for nativeWindow in nativeWindows { nativeWindow.close() } }
+        await waitUntil("initial hidden context") { search.location?.identity == firstLocation.identity && secondSearch.location?.identity == firstLocation.identity }
+        let initial = WorkspaceContext(store: herdr)
+        let liveCommands = ContentCommands(window: window, herdr: herdr, documents: documents, search: search,
+                                          explorerLocation: initial.location, workspaceContext: initial)
+        liveCommands.newUntitledFile()
+        documents.documents[0].text = "unsaved in first window"
+        XCTAssertTrue(secondDocuments.documents.isEmpty)
+        window.quickOpen.present(at: firstLocation, recents: [], current: nil)
+        herdr.select(workspaceID: other.workspaceID)
+        // Before SwiftUI's transition runs, a captured command must already reject the old root.
+        liveCommands.newUntitledFile()
+        XCTAssertEqual(documents.documents.count, 1)
+        await waitUntil("hidden sidebar follows space") { search.location?.identity == otherLocation.identity && documents.space == WorkspaceContext(store: herdr).space }
+        XCTAssertFalse(window.quickOpen.isPresented)
+        XCTAssertTrue(documents.visibleDocuments.isEmpty)
+        let current = WorkspaceContext(store: herdr)
+        let currentCommands = ContentCommands(window: window, herdr: herdr, documents: documents, search: search,
+                                              explorerLocation: current.location, workspaceContext: current)
+        currentCommands.newUntitledFile()
+        XCTAssertEqual(documents.visibleDocuments.first?.location.identity, otherLocation.identity)
+        currentCommands.perform("quick_open")
+        XCTAssertEqual(window.quickOpen.location?.identity, otherLocation.identity)
+        // A root change within this Space must update file commands without moving its documents.
+        state.update { state in
+            state.workspaces[1]["worktree"] = ["checkout_path": repo.root]
+        }
+        server.emit(["event": "workspace.changed"])
+        await waitUntil("same Space follows root") { search.location?.root == repo.root }
+        XCTAssertFalse(window.quickOpen.isPresented)
+        XCTAssertEqual(documents.visibleDocuments.first?.location.identity, otherLocation.identity)
+        herdr.select(workspaceID: repo.workspaceID)
+        await waitUntil("original dirty tab restored") { documents.visibleDocuments.first?.text == "unsaved in first window" }
+        XCTAssertTrue(secondDocuments.documents.isEmpty)
+    }
+
+    func testRelatedDocumentUsesItsOwnRootButRejectsAnotherSpace() async throws {
+        let other = try sandbox.repository("other", files: ["a.txt": "other\n"])
+        await connect()
+        try await installFileContexts([repo, other])
+        herdr.select(workspaceID: repo.workspaceID)
+        let context = WorkspaceContext(store: herdr)
+        documents.showSpace(context.space)
+        // An open document may be outside the current Space root (for example a terminal link).
+        var source = WorkspaceDocument(space: context.space, location: other, path: "a.txt", kind: .file)
+        source.isLoading = false
+        documents.documents = [source]
+        let scoped = ContentCommands(window: window, herdr: herdr, documents: documents, search: search,
+                                     explorerLocation: context.location, workspaceContext: context)
+        scoped.openRelatedDocument(.change, path: source.path, sourceID: source.backupID)
+        XCTAssertEqual(documents.documents.count, 2)
+        XCTAssertEqual(documents.documents.last?.location, other)
+        herdr.select(workspaceID: other.workspaceID)
+        scoped.openRelatedDocument(.file, path: "another.txt", sourceID: source.backupID)
+        XCTAssertEqual(documents.documents.count, 2, "The live selection changed before the transition callback")
+        for _ in 0..<500 where documents.documents.contains(where: { $0.isLoading }) {
+            try? await Task.sleep(for: .milliseconds(10))
         }
     }
 
