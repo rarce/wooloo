@@ -23,6 +23,9 @@ final class HerdrStoreTests: XCTestCase {
         /// When set, `pane.send_input` waits for it before answering, keeping the request in flight.
         var inputGate: DispatchSemaphore?
         var createGate: DispatchSemaphore?
+        var moveGate: DispatchSemaphore?
+        var rejectSpaceMove = false
+        var afterMove: (() -> Void)?
 
         /// Changes the state from a test, which may be async.
         func update(_ change: (State) -> Void) {
@@ -55,8 +58,13 @@ final class HerdrStoreTests: XCTestCase {
         server = try FakeHerdrServer(path: store.socketPath) { [state] method, params in
             if method == "pane.send_input", let gate = state.lock.withLock({ state.inputGate }) { gate.wait() }
             if method == "workspace.create", let gate = state.lock.withLock({ state.createGate }) { gate.wait() }
+            if ["workspace.move", "pane.move"].contains(method), let gate = state.lock.withLock({ state.moveGate }) { gate.wait() }
             state.lock.lock()
-            defer { state.lock.unlock() }
+            defer {
+                let afterMove = method == "pane.move" ? state.afterMove : nil
+                state.lock.unlock()
+                afterMove?()
+            }
             switch method {
             case "session.snapshot": return state.snapshot()
             case "pane.read": return ["result": ["read": ["text": "text of \(params["pane_id"] ?? "")"]]]
@@ -95,6 +103,14 @@ final class HerdrStoreTests: XCTestCase {
                 state.focus = ("w1", "w1:t1", "w1:p2")
                 return ["result": [:]]
             case "server.reload_config": return ["result": state.reload]
+            case "workspace.move":
+                if state.rejectSpaceMove { return ["error": ["message": "move rejected"]] }
+                guard let id = params["workspace_id"] as? String, let gap = params["insert_index"] as? Int,
+                      let from = state.workspaces.firstIndex(where: { $0["workspace_id"] as? String == id }),
+                      (0...state.workspaces.count).contains(gap) else { return ["error": ["message": "invalid workspace gap"]] }
+                let space = state.workspaces.remove(at: from)
+                state.workspaces.insert(space, at: gap > from ? gap - 1 : gap)
+                return ["result": ["workspaces": state.workspaces]]
             case "tab.move":
                 // As Herdr 0.9.1 does: `insert_index` is a gap in the Space's current order.
                 guard let id = params["tab_id"] as? String, let gap = params["insert_index"] as? Int,
@@ -113,6 +129,26 @@ final class HerdrStoreTests: XCTestCase {
                       let index = state.panes.firstIndex(where: { $0["pane_id"] as? String == id }),
                       let source = state.panes[index]["tab_id"] as? String else {
                     return ["error": ["message": "pane not found"]]
+                }
+                if destination["type"] as? String == "new_workspace" || destination["workspace_id"] != nil {
+                    if state.rejectSpaceMove { return ["result": ["move_result": ["changed": false, "reason": "zoomed_tab"]]] }
+                    let workspace = destination["workspace_id"] as? String ?? "w9"
+                    let targetTab = "\(workspace):t9"
+                    let targetPane = "\(workspace):p9"
+                    let sourceWorkspace = state.panes[index]["workspace_id"] as! String
+                    state.panes[index]["pane_id"] = targetPane
+                    state.panes[index]["tab_id"] = targetTab
+                    state.panes[index]["workspace_id"] = workspace
+                    state.tabs.removeAll { $0["tab_id"] as? String == source }
+                    state.tabs.append(["tab_id": targetTab, "workspace_id": workspace,
+                                       "label": destination["label"] as? String ?? destination["tab_label"] as? String ?? "moved"])
+                    if !state.workspaces.contains(where: { $0["workspace_id"] as? String == workspace }) {
+                        state.workspaces.append(["workspace_id": workspace, "label": "moved", "active_tab_id": targetTab])
+                    }
+                    if !state.tabs.contains(where: { $0["workspace_id"] as? String == sourceWorkspace }) {
+                        state.workspaces.removeAll { $0["workspace_id"] as? String == sourceWorkspace }
+                    }
+                    return ["result": ["move_result": ["changed": true, "pane": state.panes[index]]]]
                 }
                 let tabID: String
                 if destination["type"] as? String == "new_tab" {
@@ -333,6 +369,206 @@ final class HerdrStoreTests: XCTestCase {
         await waitUntil("snapshot read") { store.selectedTabs.map(\.tabID) == ["w1:t1", "w1:t2", "w1:t3"] }
         XCTAssertEqual(store.selectedTabID, "w1:t1", "The selection stays on its tab")
         XCTAssertNil(store.actionError)
+    }
+
+    func testSpaceDragProvidersCarryNonceAndExpireOnConnectionChange() async {
+        await connect()
+        let spaces = SpaceDragModel()
+        let provider = spaces.begin("w1", store: store)
+        let source = spaces.source!
+        let payload = await SpaceDragModel.payload(provider, type: SpaceDragModel.type)
+        XCTAssertEqual(payload, source.nonce)
+        XCTAssertNotEqual(payload, "w1")
+        XCTAssertTrue(source.connection.validStore === store)
+        let tabs = TabDragModel()
+        let tabProvider = tabs.begin(.terminal, id: "w1:t2", connection: HerdrActionConnection(store))
+        let tabPayload = await SpaceDragModel.payload(tabProvider, type: TabDragModel.type)
+        XCTAssertEqual(tabPayload, tabs.spaceNonce)
+        XCTAssertNotEqual(tabPayload, "w1:t2")
+        XCTAssertTrue(tabs.spaceConnection?.validStore === store)
+        _ = tabs.begin(.terminal, id: "w1:t2", connection: HerdrActionConnection(store))
+        XCTAssertNotEqual(tabPayload, tabs.spaceNonce, "A cancelled drag cannot authorize the next drag")
+        store.invalidatePendingActions()
+        XCTAssertNil(source.connection.validStore)
+        XCTAssertNil(tabs.spaceConnection?.validStore)
+        spaces.cancel()
+        tabs.cancel()
+        XCTAssertNil(spaces.source)
+        XCTAssertNil(tabs.spaceNonce)
+    }
+
+    func testSpaceMoveAnchorsResolveAgainstReorderedSnapshots() throws {
+        let data = Data("""
+        {"workspaces":[{"workspace_id":"w3","label":"3"},{"workspace_id":"w1","label":"1"},{"workspace_id":"w2","label":"2"}],
+         "tabs":[],"panes":[],"agents":[],"layouts":[]}
+        """.utf8)
+        let snapshot = try JSONDecoder().decode(HerdrSnapshot.self, from: data)
+        XCTAssertEqual(snapshot.workspaceMoveIndex("w1", beside: "w3", after: false), 0)
+        XCTAssertEqual(snapshot.workspaceMoveIndex("w3", beside: "w2", after: true), 3)
+        XCTAssertNil(snapshot.workspaceMoveIndex("w1", beside: "w3", after: true))
+        XCTAssertNil(snapshot.workspaceMoveIndex("w1", beside: "missing", after: true))
+    }
+
+    private func addDestinationSpace() {
+        state.update { $0.workspaces.append(["workspace_id": "w2", "label": "destination"]) }
+    }
+
+    func testSpaceReorderUsesServerOrderAndPreservesSelection() async {
+        addDestinationSpace()
+        await connect()
+        XCTAssertTrue(store.moveWorkspace("w1", beside: "w2", after: true))
+        XCTAssertFalse(store.moveWorkspace("w2", beside: "w1", after: false), "Serialized while in flight")
+        await waitUntil("space reordered") { !store.spaceMoveInFlight }
+        XCTAssertEqual(store.snapshot?.workspaces.map(\.workspaceID), ["w2", "w1"])
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+        XCTAssertEqual(server.requests.first { $0.method == "workspace.move" }?.params["insert_index"] as? Int, 2)
+        XCTAssertFalse(store.moveWorkspace("w1", beside: "w2", after: true), "No-op")
+    }
+
+    func testSpaceReorderFailureRefreshesAndReportsError() async {
+        addDestinationSpace()
+        state.update { $0.rejectSpaceMove = true }
+        await connect()
+        XCTAssertTrue(store.moveWorkspace("w1", beside: "w2", after: true))
+        await waitUntil("move rejected") { !store.spaceMoveInFlight }
+        XCTAssertEqual(store.snapshot?.workspaces.map(\.workspaceID), ["w1", "w2"])
+        XCTAssertEqual(store.actionError, "move rejected")
+    }
+
+    func testTabMoveToExistingSpaceUsesNewTabAndReturnedIDs() async {
+        addDestinationSpace()
+        await connect()
+        store.select(tabID: "w1:t2")
+        XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: "w2"))
+        await waitUntil("tab relocated") { !store.spaceMoveInFlight }
+        XCTAssertEqual(store.selectedWorkspaceID, "w2")
+        XCTAssertEqual(store.selectedTabID, "w2:t9")
+        XCTAssertEqual(store.selectedPaneID, "w2:p9")
+        let request = server.requests.first { $0.method == "pane.move" }
+        XCTAssertEqual(request?.params["pane_id"] as? String, "w1:p3")
+        XCTAssertEqual(request?.params["focus"] as? Bool, false)
+        let destination = request?.params["destination"] as? [String: Any]
+        XCTAssertEqual(destination?["type"] as? String, "new_tab")
+        XCTAssertEqual(destination?["workspace_id"] as? String, "w2")
+        XCTAssertEqual(destination?["label"] as? String, "2")
+        XCTAssertEqual(server.requests.filter { $0.method == "pane.move" }.count, 1)
+    }
+
+    func testTabMoveCreatesSpaceDirectlyAndClosesEmptySource() async {
+        state.update { state in
+            state.tabs.removeFirst()
+            state.panes.removeAll { $0["tab_id"] as? String == "w1:t1" }
+            state.focus = ("w1", "w1:t2", "w1:p3")
+            state.workspaces[0]["active_tab_id"] = "w1:t2"
+        }
+        await connect()
+        XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: nil))
+        await waitUntil("new space") { !store.spaceMoveInFlight }
+        XCTAssertEqual(store.snapshot?.workspaces.map(\.workspaceID), ["w9"])
+        XCTAssertEqual(store.selectedPaneID, "w9:p9")
+        let request = server.requests.first { $0.method == "pane.move" }
+        XCTAssertEqual((request?.params["destination"] as? [String: Any])?["type"] as? String, "new_workspace")
+        XCTAssertFalse(server.requests.contains { $0.method == "workspace.create" || $0.method == "tab.create" })
+    }
+
+    func testTabSpaceMoveRefusesMultiplePanesSameSpaceUnknownAndZoomedTabs() async {
+        addDestinationSpace()
+        await connect()
+        XCTAssertFalse(store.moveTab("w1:t1", toWorkspace: "w2"))
+        XCTAssertFalse(store.moveTab("w1:t2", toWorkspace: "w1"))
+        XCTAssertFalse(store.moveTab("missing", toWorkspace: nil))
+        XCTAssertFalse(store.moveTab("w1:t2", toWorkspace: "missing"))
+        state.update { $0.layouts = [["tab_id": "w1:t2", "zoomed": true,
+                                      "area": ["x": 0, "y": 0, "width": 80, "height": 24], "panes": []]] }
+        server.emit(["event": "layout.updated"])
+        await waitUntil("zoomed") { store.snapshot?.layouts.first?.zoomed == true }
+        XCTAssertFalse(store.moveTab("w1:t2", toWorkspace: nil))
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.move" })
+    }
+
+    func testTabSpaceMoveUnchangedReplyReportsReasonAndRefreshes() async {
+        addDestinationSpace()
+        state.update { $0.rejectSpaceMove = true }
+        await connect()
+        XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: "w2"))
+        await waitUntil("unchanged move") { !store.spaceMoveInFlight }
+        XCTAssertNotNil(store.actionError)
+        XCTAssertTrue(store.actionError?.contains("zoomed tab") == true)
+        XCTAssertTrue(store.snapshot?.tabs.contains { $0.tabID == "w1:t2" } == true)
+    }
+
+    func testMoveEventsWaitForReplyBeforeFollowingReturnedIDs() async {
+        addDestinationSpace()
+        await connect()
+        store.select(tabID: "w1:t2")
+        let gate = DispatchSemaphore(value: 0)
+        let server = server!
+        state.update { $0.afterMove = { server.emit(["event": "tab.closed"]); gate.wait() } }
+        defer { gate.signal() }
+        XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: "w2"))
+        await waitUntil("event refreshed topology before reply") { store.snapshot?.tabs.contains { $0.tabID == "w1:t2" } == false }
+        XCTAssertEqual(store.selectedTabID, "w1:t2", "Automatic selection repair waits for the returned IDs")
+        gate.signal()
+        await waitUntil("move complete") { !store.spaceMoveInFlight }
+        XCTAssertEqual(store.selectedWorkspaceID, "w2")
+        XCTAssertEqual(store.selectedPaneID, "w2:p9")
+    }
+
+    func testTabSpaceMoveDoesNotStealNavigationAwayAndBack() async {
+        addDestinationSpace()
+        await connect()
+        store.select(tabID: "w1:t2")
+        let gate = DispatchSemaphore(value: 0)
+        state.update { $0.moveGate = gate }
+        defer { gate.signal() }
+        XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: "w2"))
+        await waitUntil("move in flight") { server.requests.contains { $0.method == "pane.move" } }
+        store.select(workspaceID: "w2")
+        store.select(workspaceID: "w1", tabID: "w1:t2", paneID: "w1:p3")
+        gate.signal()
+        await waitUntil("move complete") { !store.spaceMoveInFlight }
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+        XCTAssertEqual(store.selectedTabID, "w1:t1")
+    }
+
+    func testSelectingDocumentDuringMoveKeepsTheDocumentVisible() async {
+        addDestinationSpace()
+        await connect()
+        store.select(tabID: "w1:t2")
+        let documents = WorkspaceDocumentStore(persistence: nil)
+        documents.showSpace("\(store.contextID)|w1")
+        let revision = documents.navigationRevision
+        let gate = DispatchSemaphore(value: 0)
+        state.update { $0.moveGate = gate }
+        defer { gate.signal() }
+        XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: "w2", shouldFollow: {
+            documents.navigationRevision == revision
+        }))
+        await waitUntil("move in flight") { server.requests.contains { $0.method == "pane.move" } }
+        let document = documents.newUntitled(at: WorkspaceFileLocation(machine: nil, session: store.sessionName,
+            workspaceID: "w1", workspaceLabel: "source", root: "/private/tmp"))
+        gate.signal()
+        await waitUntil("move complete") { !store.spaceMoveInFlight }
+        XCTAssertEqual(store.selectedWorkspaceID, "w1")
+        XCTAssertEqual(documents.activeID, document)
+    }
+
+    func testLastTabMoveProtectsDocumentsInAnotherWindow() async {
+        state.update { state in
+            state.tabs.removeFirst()
+            state.panes.removeAll { $0["tab_id"] as? String == "w1:t1" }
+            state.focus = ("w1", "w1:t2", "w1:p3")
+            state.workspaces[0]["active_tab_id"] = "w1:t2"
+        }
+        await connect()
+        let otherWindow = WorkspaceDocumentStore(persistence: nil)
+        otherWindow.showSpace("\(store.contextID)|w1")
+        _ = otherWindow.newUntitled(at: WorkspaceFileLocation(machine: nil, session: store.sessionName, workspaceID: "w1", workspaceLabel: "source", root: "/private/tmp"))
+        XCTAssertFalse(store.moveTab("w1:t2", toWorkspace: nil))
+        XCTAssertTrue(store.tabSpaceMoveRefusal("w1:t2", to: nil)?.contains("document") == true)
+        XCTAssertFalse(server.requests.contains { $0.method == "pane.move" })
+        let canRemove = await WorkspaceSessionRegistry.shared.canRemoveSpace("\(store.contextID)|w1")
+        XCTAssertFalse(canRemove)
     }
 
     /// A tab dropped on the right of a pane is one `pane.move` into the selected tab; Herdr

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		DA6400000000000000000001 /* SpaceDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA6400000000000000000002 /* SpaceDrag.swift */; };
 		D02100000000000000000001 /* HerdrDestinations.swift in Sources */ = {isa = PBXBuildFile; fileRef = D02100000000000000000002 /* HerdrDestinations.swift */; };
 		F18000000000000000000003 /* EditorStructureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F18000000000000000000004 /* EditorStructureTests.swift */; };
 		F18000000000000000000001 /* EditorStructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = F18000000000000000000002 /* EditorStructure.swift */; };
@@ -171,6 +172,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		DA6400000000000000000002 /* SpaceDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceDrag.swift; sourceTree = "<group>"; };
 		D02100000000000000000002 /* HerdrDestinations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrDestinations.swift; sourceTree = "<group>"; };
 		F18000000000000000000004 /* EditorStructureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStructureTests.swift; sourceTree = "<group>"; };
 		F18000000000000000000002 /* EditorStructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStructure.swift; sourceTree = "<group>"; };
@@ -347,6 +349,7 @@
 				C30000000000000000000071 /* HerdrSettingsModel.swift */,
 				A10000000000000000000015 /* HerdrConnection.swift */,
 				D02100000000000000000002 /* HerdrDestinations.swift */,
+				DA6400000000000000000002 /* SpaceDrag.swift */,
 				B90000000000000000000002 /* HerdrRemoteBridge.swift */,
 				A10000000000000000000017 /* TerminalPaneView.swift */,
 				A10000000000000000000019 /* HerdrSurface.swift */,
@@ -643,6 +646,7 @@
 				C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */,
 				A10000000000000000000014 /* HerdrConnection.swift in Sources */,
 				D02100000000000000000001 /* HerdrDestinations.swift in Sources */,
+				DA6400000000000000000001 /* SpaceDrag.swift in Sources */,
 				B90000000000000000000001 /* HerdrRemoteBridge.swift in Sources */,
 				A10000000000000000000016 /* TerminalPaneView.swift in Sources */,
 				A10000000000000000000018 /* HerdrSurface.swift in Sources */,

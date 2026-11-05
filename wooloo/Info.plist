@@ -4,6 +4,14 @@
 <dict>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>dev.wooloo.space</string>
+            <key>UTTypeDescription</key>
+            <string>Wooloo Space</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.data</string></array>
+        </dict>
 		<dict>
 			<key>UTTypeIdentifier</key>
 			<string>dev.wooloo.tab</string>

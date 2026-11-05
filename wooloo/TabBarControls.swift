@@ -113,17 +113,26 @@ final class TabDragModel: ObservableObject {
         var insertIndex: Int { index + (after ? 1 : 0) }
     }
 
-    private(set) var dragged: (group: TabDragGroup, id: String)?
+    @Published private(set) var dragged: (group: TabDragGroup, id: String)?
     /// Published only when it changes, to move the insertion line.
     @Published private(set) var target: Target?
 
-    func begin(_ group: TabDragGroup, id: String) -> NSItemProvider {
+    private(set) var spaceConnection: HerdrActionConnection?
+    private(set) var spaceNonce: String?
+    private(set) var spaceShouldFollow: () -> Bool = { true }
+
+    func begin(_ group: TabDragGroup, id: String, connection: HerdrActionConnection? = nil,
+               shouldFollow: @escaping () -> Bool = { true }) -> NSItemProvider {
+        spaceShouldFollow = shouldFollow
+        spaceConnection = connection
+        spaceNonce = connection == nil ? nil : UUID().uuidString
+        let payload = spaceNonce ?? id
         dragged = (group, id)
         target = nil
         let provider = NSItemProvider()
         provider.registerDataRepresentation(forTypeIdentifier: Self.type(of: group).identifier,
                                             visibility: .ownProcess) { completion in
-            completion(Data(id.utf8), nil)
+            completion(Data(payload.utf8), nil)
             return nil
         }
         return provider
@@ -166,16 +175,16 @@ final class TabDragModel: ObservableObject {
     func cancel() { endDrag() }
 
     private func endDrag() {
+        spaceConnection = nil
+        spaceNonce = nil
+        spaceShouldFollow = { true }
         dragged = nil
         if target != nil { target = nil }
     }
 
     /// The dragged tab's ID and the gap it drops into, ending the drag.
     func drop() -> (id: String, insertIndex: Int)? {
-        defer {
-            dragged = nil
-            target = nil
-        }
+        defer { endDrag() }
         guard let dragged, let target, target.group == dragged.group else { return nil }
         return (dragged.id, target.insertIndex)
     }
@@ -186,8 +195,8 @@ extension View {
     /// go: on the side of the tab under the pointer. `onMove` gets the dragged tab's ID and its
     /// gap, as `TabDragModel.Target.insertIndex`.
     func tabReorder(_ group: TabDragGroup, id: String, index: Int, drag: TabDragModel,
-                    onMove: @escaping (String, Int) -> Void) -> some View {
-        modifier(TabReorderModifier(group: group, id: id, index: index, drag: drag, onMove: onMove))
+                    connection: HerdrActionConnection? = nil, shouldFollow: @escaping () -> Bool = { true }, onMove: @escaping (String, Int) -> Void) -> some View {
+        modifier(TabReorderModifier(group: group, id: id, index: index, drag: drag, connection: connection, shouldFollow: shouldFollow, onMove: onMove))
     }
 
     /// Drops on the bar's space after a group's tabs, which put the dragged tab last in its
@@ -209,13 +218,15 @@ private struct TabReorderModifier: ViewModifier {
     let id: String
     let index: Int
     @ObservedObject var drag: TabDragModel
+    let connection: HerdrActionConnection?
+    let shouldFollow: () -> Bool
     let onMove: (String, Int) -> Void
     @State private var width: CGFloat = 0
 
     func body(content: Content) -> some View {
         content
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-            .onDrag { drag.begin(group, id: id) }
+            .onDrag { drag.begin(group, id: id, connection: connection, shouldFollow: shouldFollow) }
             .onDrop(of: TabDragModel.types, delegate: TabDropDelegate(group: group, index: index, width: width,
                                                                        drag: drag, onMove: onMove))
             .overlay(alignment: drag.target?.after == true ? .trailing : .leading) {

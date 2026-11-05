@@ -54,6 +54,26 @@ extension HerdrSnapshot {
     }
 }
 
+extension HerdrSnapshot {
+    func workspaceMoveIndex(_ workspaceID: String, beside anchorID: String, after: Bool) -> Int? {
+        guard let from = workspaces.firstIndex(where: { $0.workspaceID == workspaceID }),
+              let anchor = workspaces.firstIndex(where: { $0.workspaceID == anchorID }) else { return nil }
+        let gap = anchor + (after ? 1 : 0)
+        return gap == from || gap == from + 1 ? nil : gap
+    }
+
+    func tabSpaceMoveRefusal(_ tabID: String, to workspaceID: String?) -> String? {
+        guard let tab = tabs.first(where: { $0.tabID == tabID }) else { return "The source tab disappeared." }
+        guard panes.filter({ $0.tabID == tabID }).count == 1 else { return "Only terminal tabs with one pane can move between Spaces." }
+        guard layouts.first(where: { $0.tabID == tabID })?.zoomed != true else { return "Unzoom the terminal tab before moving it." }
+        if let workspaceID {
+            guard workspaceID != tab.workspaceID else { return "Drop on a different Space." }
+            guard workspaces.contains(where: { $0.workspaceID == workspaceID }) else { return "The destination Space disappeared." }
+        }
+        return nil
+    }
+}
+
 struct HerdrWorkspace: Decodable, Equatable, Identifiable {
     let workspaceID: String
     let label: String
@@ -644,13 +664,19 @@ final class HerdrStore: ObservableObject {
     @Published private(set) var agentViewState: HerdrAgentViewState?
     @Published private var agentPrioritySort = false
     private var agentPresentation = HerdrAgentPresentation()
-    @Published var selectedWorkspaceID: String?
+    @Published var selectedWorkspaceID: String? {
+        didSet { if !repairingSelection, oldValue != selectedWorkspaceID { selectionRevision &+= 1 } }
+    }
+    private var selectionRevision: UInt64 = 0
+    private var repairingSelection = false
+    @Published private(set) var spaceMoveInFlight = false
     /// Publishes as `@Published` would, except while a tab switch waits for its first surface
     /// (see `select(tabID:)`).
     var selectedTabID: String? {
         get { selectedTabValue }
         set {
             selectionWillChange()
+            if !repairingSelection, selectedTabValue != newValue { selectionRevision &+= 1 }
             selectedTabValue = newValue
         }
     }
@@ -659,6 +685,7 @@ final class HerdrStore: ObservableObject {
         get { selectedPaneValue }
         set {
             selectionWillChange()
+            if !repairingSelection, selectedPaneValue != newValue { selectionRevision &+= 1 }
             selectedPaneValue = newValue
             guard let selectedTabID, let selectedPaneID,
                   snapshot?.panes.contains(where: { $0.paneID == selectedPaneID && $0.tabID == selectedTabID }) == true
@@ -728,6 +755,7 @@ final class HerdrStore: ObservableObject {
     private var actionToken = HerdrRequestToken()
     private(set) var actionEpoch = UUID() {
         didSet {
+            spaceMoveInFlight = false
             actionToken.cancel()
             actionToken = HerdrRequestToken()
             inputTask?.cancel()
@@ -1422,6 +1450,122 @@ final class HerdrStore: ObservableObject {
         performAction(method: "tab.close", params: ["tab_id": tabID], followServerFocus: false)
     }
 
+    /// Sidebar reorders use a stable row anchor, resolved against the server's latest order.
+    @discardableResult
+    func moveWorkspace(_ workspaceID: String, beside anchorID: String, after: Bool) -> Bool {
+        guard isConnected, !spaceMoveInFlight, let snapshot,
+              snapshot.workspaceMoveIndex(workspaceID, beside: anchorID, after: after) != nil else { return false }
+        runSpaceMove { path, token, _ in
+            let fresh = try HerdrSocket.snapshot(path: path)
+            guard let gap = fresh.workspaceMoveIndex(workspaceID, beside: anchorID, after: after) else { return nil }
+            try token.check()
+            _ = try HerdrSocket.request(path: path, method: "workspace.move",
+                                        params: ["workspace_id": workspaceID, "insert_index": gap])
+            return nil
+        }
+        return true
+    }
+
+    func tabSpaceMoveRefusal(_ tabID: String, to workspaceID: String?) -> String? {
+        guard isConnected, !spaceMoveInFlight, let snapshot else { return "Wait for the Space connection or move to finish." }
+        if let reason = snapshot.tabSpaceMoveRefusal(tabID, to: workspaceID) { return reason }
+        if let tab = snapshot.tabs.first(where: { $0.tabID == tabID }),
+           snapshot.tabs.filter({ $0.workspaceID == tab.workspaceID }).count == 1,
+           WorkspaceSessionRegistry.shared.hasDocuments(in: "\(contextID)|\(tab.workspaceID)") {
+            return "Leave another terminal tab in the source Space, or close its document tabs in every window first."
+        }
+        return nil
+    }
+
+    /// Herdr moves a pane, not a whole tab. A single-pane tab can be relocated atomically.
+    @discardableResult
+    func moveTab(_ tabID: String, toWorkspace workspaceID: String?, shouldFollow: @escaping () -> Bool = { true }) -> Bool {
+        guard tabSpaceMoveRefusal(tabID, to: workspaceID) == nil,
+              let tab = snapshot?.tabs.first(where: { $0.tabID == tabID }) else { return false }
+        let space = "\(contextID)|\(tab.workspaceID)"
+        let revision = selectionRevision
+        let follow = selectedTabID == tabID
+        runSpaceMove(prepare: {
+            guard await WorkspaceSessionRegistry.shared.canRemoveSpace(space) else {
+                throw Self.spaceMoveError("Leave another terminal tab in the source Space, or close its document tabs in every window first.")
+            }
+        }, onlyPrepareIfLastTab: tabID, followRevision: follow ? revision : nil, shouldFollow: shouldFollow) { path, token, lastTabWasChecked in
+            let fresh = try HerdrSocket.snapshot(path: path)
+            if let reason = fresh.tabSpaceMoveRefusal(tabID, to: workspaceID) { throw Self.spaceMoveError(reason) }
+            guard let currentTab = fresh.tabs.first(where: { $0.tabID == tabID }),
+                  let pane = fresh.panes.first(where: { $0.tabID == tabID }) else { throw Self.spaceMoveError("The source tab disappeared.") }
+            // The actor checked documents before starting this worker. If another client
+            // removes a sibling tab after that check, fail closed rather than close the Space.
+            if fresh.tabs.filter({ $0.workspaceID == currentTab.workspaceID }).count == 1,
+               lastTabWasChecked == false { throw Self.spaceMoveError("The source Space changed. Try the drag again.") }
+            let destination: [String: Any] = workspaceID.map {
+                ["type": "new_tab", "workspace_id": $0, "label": currentTab.label]
+            } ?? ["type": "new_workspace", "label": currentTab.label, "tab_label": currentTab.label]
+            try token.check()
+            let response = try HerdrSocket.request(path: path, method: "pane.move",
+                params: ["pane_id": pane.paneID, "destination": destination, "focus": false])
+            try Self.requireChange(response, in: "move_result", doing: "move the terminal tab")
+            guard let root = try JSONSerialization.jsonObject(with: response) as? [String: Any],
+                  let result = root["result"] as? [String: Any],
+                  let move = result["move_result"] as? [String: Any], let moved = move["pane"] else {
+                throw Self.spaceMoveError("Herdr did not return the moved pane. Refresh before trying again.")
+            }
+            return try JSONDecoder().decode(HerdrPane.self, from: JSONSerialization.data(withJSONObject: moved))
+        }
+        return true
+    }
+
+    nonisolated private static func spaceMoveError(_ message: String) -> NSError {
+        NSError(domain: "WoolooSpaceMove", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    /// One sidebar mutation at a time; always reconcile uncertain replies without retrying.
+    private func runSpaceMove(prepare: @escaping @MainActor () async throws -> Void = {},
+                              onlyPrepareIfLastTab tabID: String? = nil, followRevision: UInt64? = nil,
+                              shouldFollow: @escaping () -> Bool = { true },
+                              action: @escaping (String, HerdrRequestToken, Bool) throws -> HerdrPane?) {
+        spaceMoveInFlight = true
+        let path = socketPath
+        let reaching = BlockingWorkMachine(machine)
+        let currentGeneration = generation
+        let currentEpoch = actionEpoch
+        let token = actionToken
+        Task {
+            let preflight = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
+                Result { try token.check(); return try HerdrSocket.snapshot(path: path) }
+            }
+            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
+            let result: Result<HerdrPane?, Error>
+            do {
+                let fresh = try preflight.get()
+                let lastTab = tabID.flatMap { id in fresh.tabs.first { $0.tabID == id } }.map { tab in
+                    fresh.tabs.filter { $0.workspaceID == tab.workspaceID }.count == 1
+                } ?? false
+                if lastTab { try await prepare() }
+                try token.check()
+                result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
+                    Result { try token.check(); return try action(path, token, lastTab) }
+                }
+            } catch { result = .failure(error) }
+            let fresh = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
+                try? { try token.check(); return try HerdrSocket.snapshot(path: path) }()
+            }
+            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
+            spaceMoveInFlight = false
+            if let fresh {
+                snapshot = fresh
+                if case .success(let pane?) = result, followRevision == selectionRevision, shouldFollow(),
+                   fresh.panes.contains(where: { $0.paneID == pane.paneID && $0.tabID == pane.tabID && $0.workspaceID == pane.workspaceID }) {
+                    select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
+                } else { repairSelection() }
+            } else { repairSelection() }
+            switch result {
+            case .success: actionError = fresh == nil ? "The move was sent, but refreshing Spaces failed. Check the connection before retrying." : nil
+            case .failure(let error): actionError = error.localizedDescription
+            }
+        }
+    }
+
     /// Moves a tab within its Space with `tab.move`. `insertIndex` is a gap in the Space's
     /// current tab order: 0 is before the first tab and `count` after the last, so a tab moved
     /// right goes before the tab at `insertIndex`. The new order shows at once and Herdr's
@@ -1846,7 +1990,11 @@ final class HerdrStore: ObservableObject {
     }
 
     private func repairSelection() {
-        guard let snapshot else { return }
+        // Move events can arrive before the reply. Reconcile once the operation knows
+        // the returned IDs, avoiding an intermediate Space switch that hides documents.
+        guard !spaceMoveInFlight, let snapshot else { return }
+        repairingSelection = true
+        defer { repairingSelection = false }
         if !snapshot.workspaces.contains(where: { $0.workspaceID == selectedWorkspaceID }) {
             selectedWorkspaceID = snapshot.focusedWorkspaceID ?? snapshot.workspaces.first?.workspaceID
         }

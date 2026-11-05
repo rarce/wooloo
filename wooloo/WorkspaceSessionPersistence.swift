@@ -353,6 +353,17 @@ final class WorkspaceSessionRegistry {
 
     func register(_ store: WorkspaceDocumentStore) { stores.add(store) }
 
+    func hasDocuments(in space: String) -> Bool {
+        stores.allObjects.contains { $0.documents.contains { $0.space == space } }
+    }
+
+    func canRemoveSpace(_ space: String) async -> Bool {
+        for store in stores.allObjects {
+            if !(await store.canReleaseSpace(space)) { return false }
+        }
+        return !hasDocuments(in: space)
+    }
+
     func flush() async throws {
         for store in stores.allObjects { try await store.flushPersistence() }
     }

@@ -120,11 +120,15 @@ final class ContentWindowModel: ObservableObject {
     let explorer = ExplorerCommandTarget()
     /// A tab dragged in the tab bar; only the tabs observe it, so hovering redraws only them.
     let tabDrag = TabDragModel()
+    let spaceDrag = SpaceDragModel()
     /// Each Space's split panels beside the main panel, by `WorkspaceSessionPersistence.key`;
     /// a Space without splits has none. They last as long as the window.
     @Published var panelLayouts: [String: PanelLayout] = [:]
     /// The panel clicked last; its document takes the editor commands. See `ContentCommands.focusedPanel`.
-    @Published var focusedPanel: PanelContent = .main
+    private(set) var navigationRevision: UInt64 = 0
+    @Published var focusedPanel: PanelContent = .main {
+        didSet { if oldValue != focusedPanel { navigationRevision &+= 1 } }
+    }
 
     /// Tests keep the pickers' recent commands and options out of the app's defaults.
     init(defaults: UserDefaults = .standard) {
