@@ -1,5 +1,11 @@
 import Foundation
 
+struct HerdrConfigReloadResult: Sendable {
+    enum Status: String, Sendable { case applied, partial, failed }
+    let status: Status
+    let diagnostics: [String]
+}
+
 enum HerdrConfigError: LocalizedError {
     case changedOnDisk
     case herdrUnavailable
@@ -82,19 +88,27 @@ enum HerdrConfigFile {
 
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func reloadServer(socketPath: String) throws -> String {
+        let result = try reloadResult(socketPath: socketPath)
+        let details = result.diagnostics.joined(separator: "\n")
+        switch result.status {
+        case .applied: return "Saved and reloaded the selected Herdr session."
+        case .partial: return "Saved; some settings need a restart. \(details)"
+        case .failed: return "Saved, but Herdr could not apply the config. \(details)"
+        }
+    }
+
+    @available(*, noasync, message: "Call inside BlockingWork.run")
+    static func reloadResult(socketPath: String) throws -> HerdrConfigReloadResult {
         let data = try HerdrSocket.request(path: socketPath, method: "server.reload_config")
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = root["result"] as? [String: Any] else {
             throw HerdrConfigError.validation("Unexpected response from Herdr reload")
         }
         let diagnostics = result["diagnostics"] as? [String] ?? []
-        let details = diagnostics.joined(separator: "\n")
-        switch result["status"] as? String {
-        case "applied": return "Saved and reloaded the selected Herdr session."
-        case "partial": return "Saved; some settings need a restart. \(details)"
-        case "failed": return "Saved, but Herdr could not apply the config. \(details)"
-        default: throw HerdrConfigError.validation("Unexpected response from Herdr reload")
+        guard let raw = result["status"] as? String, let status = HerdrConfigReloadResult.Status(rawValue: raw) else {
+            throw HerdrConfigError.validation("Unexpected response from Herdr reload")
         }
+        return HerdrConfigReloadResult(status: status, diagnostics: diagnostics)
     }
 }
 

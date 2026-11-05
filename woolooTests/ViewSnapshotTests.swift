@@ -132,7 +132,7 @@ final class ViewSnapshotTests: XCTestCase {
 
             [keys]
             prefix = "ctrl+a"
-            """)
+            """, name: "preferences-snapshot")
         defer { config.restore() }
         let defaults = UserDefaults.standard
         let keys = [WoolooTypography.baseKey, WoolooTypography.codeKey, HerdrNotifier.dockBadgeKey, HerdrNotifier.bounceDockKey]
@@ -146,6 +146,31 @@ final class ViewSnapshotTests: XCTestCase {
         try assertSnapshot(render(HerdrSettingsView(socketPath: "/nonexistent.sock", sessionName: "work",
                                                     showShortcuts: true), size: size),
                            named: "settings-shortcuts")
+        try skipIfRecorded()
+    }
+
+    func testRemoteConfigurationSettings() throws {
+        let config = try TemporaryHerdrConfig("[theme]\nname = \"rose-pine\"\n", name: "remote-preferences-snapshot")
+        let sandbox = try WorkspaceGitSandbox()
+        let previousSSH = WorkspaceFiles.sshExecutable
+        defer { WorkspaceFiles.sshExecutable = previousSSH; sandbox.tearDown(); config.restore() }
+        let ready = sandbox.path("ready")
+        try sandbox.write(["ssh": """
+            #!/bin/sh
+            printf '%s\\0' '/home/dev/.config/herdr/config.toml' '/home/dev/dotfiles/herdr.toml' 'dev' 'dev-server' '/home/dev/.local/bin/herdr' '1'
+            printf '%s\\n' '# Development server' '[ui]' 'pane_gaps = true'
+            : > \(WorkspaceFiles.quote(ready))
+            """], in: ".")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sandbox.path("ssh"))
+        WorkspaceFiles.sshExecutable = sandbox.path("ssh")
+        let machine = HerdrMachineProfile(id: "dev", label: "Development server", target: "ssh://dev@server.example.test:2222",
+                                          session: "wooloo-ui-test", enabled: true)
+        for (category, name) in [(HerdrSettingsView.Category.advanced, "settings-ssh-advanced"), (.shortcuts, "settings-local-on-ssh")] {
+            let view = HerdrSettingsView(socketPath: "/nonexistent.sock", sessionName: machine.session,
+                                        machine: machine, initialCategory: category)
+            try assertSnapshot(render(view, size: NSSize(width: 880, height: 620), settle: 2,
+                                      ready: { category.isLocal || FileManager.default.fileExists(atPath: ready) }), named: name)
+        }
         try skipIfRecorded()
     }
 

@@ -16,6 +16,31 @@ struct HerdrSettingsEffects {
     var play: (NSSound) -> Void = { $0.play() }
 }
 
+/// One immutable destination owns the file and the session receiving reloads.
+struct HerdrSettingsDestination: Sendable {
+    let machine: HerdrMachineProfile?
+    let socketPath: String?
+    let session: String
+    let localURL: URL
+
+    init(machine: HerdrMachineProfile? = nil, socketPath: String? = nil, session: String = "default",
+         localURL: URL = HerdrConfigFile.url) {
+        self.machine = machine
+        self.socketPath = socketPath
+        self.session = session
+        self.localURL = localURL
+    }
+}
+
+enum HerdrSettingsOutcome: Equatable {
+    case saved, reloaded, partial, reloadFailed, uncertain
+}
+
+extension Notification.Name {
+    /// Only local file saves post this: SSH edits must never change local preferences.
+    static let woolooLocalConfigSaved = Notification.Name("woolooLocalConfigSaved")
+}
+
 /// The config.toml being edited in settings: the guided fields' reads and writes, loading,
 /// saving with Herdr's validation and reload, and sound previews. `HerdrSettingsView` renders it.
 @MainActor
@@ -25,14 +50,28 @@ final class HerdrSettingsModel: ObservableObject {
     @Published private(set) var original = ""
     @Published var message: String?
     @Published private(set) var isSaving = false
+    @Published private(set) var isLoading = false
+    @Published private(set) var hasLoaded = false
+    @Published private(set) var configPath: String
+    @Published private(set) var remoteConfig: HerdrRemoteConfig?
+    @Published private(set) var outcome: HerdrSettingsOutcome?
+    let destination: HerdrSettingsDestination
+    private(set) var lastLoad: Task<Void, Never>?
     /// The last save started, for tests to wait on.
     private(set) var lastSave: Task<Void, Never>?
     private var previewSound: NSSound?
     var effects = HerdrSettingsEffects()
 
+    init(destination: HerdrSettingsDestination = HerdrSettingsDestination()) {
+        self.destination = destination
+        configPath = destination.machine == nil ? destination.localURL.path : ""
+    }
+
+    var isBusy: Bool { isLoading || isSaving }
+    var canEditConfig: Bool { hasLoaded && !isBusy && outcome != .uncertain }
+    var canRetryReload: Bool { !isBusy && !hasChanges && (outcome == .partial || outcome == .reloadFailed) }
     var hasChanges: Bool { document.text != original }
-    /// Success messages all start with "Saved"; anything else is a warning.
-    var messageIsSuccess: Bool { message?.hasPrefix("Saved") == true }
+    var messageIsSuccess: Bool { outcome == .saved || outcome == .reloaded }
 
     // MARK: Fields
 
@@ -116,43 +155,138 @@ final class HerdrSettingsModel: ObservableObject {
     // MARK: File
 
     func load() {
-        do {
-            original = try HerdrConfigFile.read(at: HerdrConfigFile.url)
-            document = HerdrConfigDocument(text: original)
-            message = nil
-        } catch {
-            message = error.localizedDescription
+        guard !isBusy else { return }
+        outcome = nil
+        if let machine = destination.machine {
+            isLoading = true
+            hasLoaded = false
+            message = "Loading configuration from \(machine.label)…"
+            lastLoad = Task {
+                defer { isLoading = false }
+                do {
+                    let config = try await WorkspaceFiles.blocking(on: machine, priority: .userInitiated) {
+                        try HerdrRemoteConfig.read(on: machine)
+                    }
+                    remoteConfig = config
+                    configPath = config.path
+                    didLoad(config.text)
+                } catch { message = error.localizedDescription }
+            }
+        } else {
+            do { didLoad(try HerdrConfigFile.read(at: destination.localURL)) }
+            catch { hasLoaded = false; message = error.localizedDescription }
         }
     }
 
-    /// Validates and writes the edited config, then asks the session to reload it. A file changed
-    /// on disk since it was loaded, or one Herdr rejects, is not written and the error is shown.
+    private func didLoad(_ text: String) {
+        original = text
+        document = HerdrConfigDocument(text: text)
+        hasLoaded = true
+        message = nil
+    }
+
+    /// Persistence and reload are separate: a saved file stays saved even if reload fails.
     @discardableResult
-    func save(socketPath: String, session: String, onSaved: @escaping () -> Void) -> Task<Void, Never> {
+    func save(reload: Bool = true, onSaved: @escaping () -> Void = {}) -> Task<Void, Never> {
+        guard canEditConfig else { return Task {} }
         let text = document.text
         let old = original
-        let url = HerdrConfigFile.url
+        let destination = destination
+        let remote = remoteConfig
         isSaving = true
-        message = "Validating with Herdr…"
+        outcome = nil
+        message = destination.machine.map { "Validating with Herdr on \($0.label)…" } ?? "Validating with Herdr…"
         let task = Task {
-            let result = await BlockingWork.run(priority: .userInitiated) {
-                Result {
-                    try HerdrConfigFile.saveAndReload(text, original: old, at: url,
-                                                      socketPath: socketPath, session: session)
+            defer { isSaving = false }
+            let result = await WorkspaceFiles.blocking(on: destination.machine, priority: .userInitiated) {
+                Result<HerdrRemoteConfig?, Error> {
+                    if let machine = destination.machine {
+                        guard let remote else { throw HerdrConfigError.validation("Load the remote file before saving.") }
+                        do {
+                            try remote.save(text, on: machine)
+                            return remote.replacingText(text)
+                        } catch {
+                            // A connection can drop after replacement but before its acknowledgement.
+                            // Re-read before treating it as a failed write or permitting another save.
+                            let current: HerdrRemoteConfig
+                            do { current = try HerdrRemoteConfig.read(on: machine) }
+                            catch { throw RemoteSaveUncertain() }
+                            if current.path == remote.path, current.resolvedPath == remote.resolvedPath,
+                               current.user == remote.user, current.host == remote.host,
+                               current.exists, current.text == text {
+                                return current
+                            }
+                            throw error
+                        }
+                    }
+                    try HerdrConfigFile.save(text, original: old, at: destination.localURL)
+                    return nil
                 }
             }
             switch result {
-            case .success(let status):
+            case .success(let remote):
                 original = text
-                message = status
-                isSaving = false
+                remoteConfig = remote
+                outcome = .saved
+                message = "Saved config.toml."
+                if destination.machine == nil {
+                    NotificationCenter.default.post(name: .woolooLocalConfigSaved, object: nil)
+                }
                 onSaved()
+                if reload { await performReload() }
             case .failure(let error):
-                message = error.localizedDescription
-                isSaving = false
+                if error is RemoteSaveUncertain {
+                    outcome = .uncertain
+                    message = "The SSH connection failed and the save outcome is unknown. Reload the file before saving again; copy your edits first if needed."
+                } else { message = error.localizedDescription }
             }
         }
         lastSave = task
         return task
     }
+
+    @discardableResult
+    func retryReload() -> Task<Void, Never> {
+        guard canRetryReload else { return Task {} }
+        isSaving = true
+        let task = Task {
+            await performReload()
+            isSaving = false
+        }
+        lastSave = task
+        return task
+    }
+
+    private func performReload() async {
+        guard let path = destination.socketPath else {
+            outcome = .reloadFailed
+            message = "Saved config.toml. No Herdr session was captured for reload."
+            return
+        }
+        let result = await WorkspaceFiles.blocking(on: destination.machine, priority: .userInitiated) {
+            Result { try HerdrConfigFile.reloadResult(socketPath: path) }
+        }
+        let label = destination.machine.map { "\($0.label) / \(destination.session)" } ?? destination.session
+        switch result {
+        case .success(let result):
+            let details = result.diagnostics.joined(separator: "\n")
+            switch result.status {
+            case .applied:
+                outcome = .reloaded
+                message = destination.machine == nil ? "Saved and reloaded the selected Herdr session."
+                    : "Saved config.toml. \(label) confirmed its configuration reload; the session’s config path cannot be verified."
+            case .partial:
+                outcome = .partial
+                message = "Saved config.toml. \(label) reloaded only part of its configuration; some settings need a restart. \(details)"
+            case .failed:
+                outcome = .reloadFailed
+                message = "Saved config.toml, but \(label) could not apply its configuration. \(details)"
+            }
+        case .failure(let error):
+            outcome = .reloadFailed
+            message = "Saved config.toml, but \(label) could not reload: \(error.localizedDescription)"
+        }
+    }
 }
+
+private struct RemoteSaveUncertain: Error {}

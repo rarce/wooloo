@@ -1,3 +1,4 @@
+import Combine
 import AppKit
 import SwiftUI
 import CodeEditSourceEditor
@@ -255,9 +256,14 @@ final class ThemeStore: ObservableObject {
     private var lightName = ""
     private var darkName = ""
     private var observer: NSObjectProtocol?
+    private var configObserver: AnyCancellable?
 
     init() {
         reload()
+        configObserver = NotificationCenter.default.publisher(for: .woolooLocalConfigSaved)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.reload() }
+            }
         observer = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil, queue: .main
         ) { [weak self] _ in

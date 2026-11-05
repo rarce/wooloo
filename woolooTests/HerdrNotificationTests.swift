@@ -5,11 +5,12 @@ import XCTest
 
 /// Points `HERDR_CONFIG_PATH` at a temporary config.toml and silences alert sounds.
 final class TemporaryHerdrConfig {
-    let directory = "/private/tmp/wooloo-tests/\(UUID().uuidString)"
+    let directory: String
     var path: String { directory + "/config.toml" }
     private let saved: [String: String?]
 
-    init(_ text: String = "") throws {
+    init(_ text: String = "", name: String = UUID().uuidString) throws {
+        directory = "/private/tmp/wooloo-tests/" + name
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         let keys = ["HERDR_CONFIG_PATH", "HERDR_DISABLE_SOUND"]
         saved = keys.reduce(into: [:]) { $0.updateValue(ProcessInfo.processInfo.environment[$1], forKey: $1) }

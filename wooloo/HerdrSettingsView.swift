@@ -4,15 +4,21 @@ import SwiftUI
 struct HerdrSettingsView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
-    let socketPath: String
-    let sessionName: String
-    let machine: HerdrMachineProfile?
+    private var sessionName: String { hostModel.destination.session }
+    private var machine: HerdrMachineProfile? { hostModel.destination.machine }
     private var remoteHost: String? { machine?.label }
     let onSaved: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var category: Category = .terminal
-    @StateObject private var model = HerdrSettingsModel()
+    @StateObject private var localModel: HerdrSettingsModel
+    @StateObject private var hostModel: HerdrSettingsModel
+    private var model: HerdrSettingsModel { category.isLocal ? localModel : hostModel }
+    private var hasUnsavedChanges: Bool { localModel.hasChanges || hostModel.hasChanges }
+    private var isBusy: Bool { localModel.isBusy || hostModel.isBusy }
+    @State private var confirmsDiscard = false
+    @State private var pendingCategory: Category?
+    @State private var closesAfterDiscard = false
     @ObservedObject private var remoteAccess = RemoteAccessModel.shared
     @State private var tunnelToken = ""
     @State private var authorizingMobile = false
@@ -24,7 +30,7 @@ struct HerdrSettingsView: View {
     @AppStorage("DimInactiveWindows") private var dimsInactiveWindows = true
     @AppStorage(MarkdownPreviewStyle.storageKey) private var markdownPreviewStyle = MarkdownPreviewStyle.theme
 
-    private enum Category: String, CaseIterable, Identifiable {
+    enum Category: String, CaseIterable, Identifiable {
         case terminal = "Terminal"
         case shortcuts = "Shortcuts"
         case worktrees = "Worktrees"
@@ -35,6 +41,7 @@ struct HerdrSettingsView: View {
         case advanced = "Advanced TOML"
 
         var id: Self { self }
+        var isLocal: Bool { [.shortcuts, .notifications, .appearance].contains(self) }
         var subtitle: String {
             switch self {
             case .terminal: "Shell and working directory for new panes"
@@ -63,34 +70,33 @@ struct HerdrSettingsView: View {
     }
 
     init(socketPath: String, sessionName: String, machine: HerdrMachineProfile? = nil, showShortcuts: Bool = false,
-         showRemoteAccess: Bool = false, onSaved: @escaping () -> Void = {}) {
-        self.socketPath = socketPath
-        self.sessionName = sessionName
-        self.machine = machine
+         showRemoteAccess: Bool = false, initialCategory: Category? = nil, onSaved: @escaping () -> Void = {}) {
+        let local = HerdrSettingsModel(destination: HerdrSettingsDestination(
+            socketPath: machine == nil ? socketPath : nil, session: sessionName))
+        _localModel = StateObject(wrappedValue: local)
+        _hostModel = StateObject(wrappedValue: machine == nil ? local : HerdrSettingsModel(
+            destination: HerdrSettingsDestination(machine: machine, socketPath: socketPath, session: sessionName)))
         self.onSaved = onSaved
-        _category = State(initialValue: showShortcuts ? .shortcuts : showRemoteAccess ? .remoteAccess : .terminal)
+        _category = State(initialValue: initialCategory ?? (showShortcuts ? .shortcuts : showRemoteAccess ? .remoteAccess : .terminal))
     }
 
     var body: some View {
         HStack(spacing: 0) {
             sidebar
-                .disabled(authorizingMobile)
+                .disabled(authorizingMobile || isBusy)
             Divider()
             VStack(alignment: .leading, spacing: 0) {
                 header
                 Divider()
+                if category != .remoteAccess { scopeSummary }
                 Group {
-                    if let remoteHost, category != .appearance && category != .notifications && category != .remoteAccess {
-                        Text("Herdr configuration for \(remoteHost) is managed on that host. Switch to Local to edit this Mac’s configuration.")
-                            .foregroundStyle(.secondary)
-                            .padding(24)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if category == .advanced {
+                    if category == .advanced {
                         advancedEditor
                     } else {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 24) {
                                 categoryFields
+                                    .disabled(model.isSaving || (!category.isLocal && category != .remoteAccess && !model.canEditConfig))
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(24)
@@ -100,7 +106,7 @@ struct HerdrSettingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // Remote access is wooloo's own and applies immediately; it has nothing to save.
-                if category != .remoteAccess && remoteHost == nil {
+                if category != .remoteAccess {
                     Divider()
                     footer
                 }
@@ -113,9 +119,26 @@ struct HerdrSettingsView: View {
         .tint(theme.accent)
         .preferredColorScheme(theme.colorScheme)
         // Like Done, which is disabled while the configuration is written.
-        .allowsQuitWhileShown(!model.isSaving && !authorizingMobile)
-        .interactiveDismissDisabled(authorizingMobile)
-        .onAppear(perform: model.load)
+        .allowsQuitWhileShown(!isBusy && !hasUnsavedChanges && !authorizingMobile)
+        .interactiveDismissDisabled(isBusy || hasUnsavedChanges || authorizingMobile)
+        .onAppear {
+            localModel.load()
+            loadHostIfNeeded()
+        }
+        .onChange(of: category) { _, _ in loadHostIfNeeded() }
+        .alert("Discard unsaved configuration changes?", isPresented: $confirmsDiscard) {
+            Button("Keep editing", role: .cancel) { pendingCategory = nil; closesAfterDiscard = false }
+            Button("Discard changes", role: .destructive) {
+                if localModel.hasChanges { localModel.load() }
+                if hostModel !== localModel && hostModel.hasChanges { hostModel.load() }
+                if closesAfterDiscard { dismiss() }
+                else if let pendingCategory { category = pendingCategory }
+                pendingCategory = nil
+                closesAfterDiscard = false
+            }
+        } message: {
+            Text("Your edits to \(model.configPath) have not been saved.")
+        }
     }
 
     private var sidebar: some View {
@@ -135,47 +158,91 @@ struct HerdrSettingsView: View {
             .padding(.horizontal, 8)
             .padding(.top, 8)
 
-            VStack(spacing: 5) {
-                ForEach(Category.allCases) { item in
-                    Button {
-                        category = item
-                        model.message = nil
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: item.icon)
-                                .font(.system(size: typography.body, weight: .medium))
-                                .frame(width: 20)
-                                .foregroundStyle(category == item ? theme.accent : theme.subtext)
-                            Text(item.rawValue)
-                                .font(.system(size: typography.body,
-                                              weight: category == item ? .semibold : .regular))
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 10)
-                        .frame(minHeight: 36)
-                        .background(category == item ? theme.accent.opacity(0.14) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 8))
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(category == item ? [.isSelected] : [])
-                }
+            VStack(alignment: .leading, spacing: 5) {
+                sidebarGroup("Wooloo · This Mac", items: [.appearance, .shortcuts, .notifications])
+                sidebarGroup("Herdr · " + (remoteHost ?? "This Mac"), items: [.terminal, .worktrees, .server, .advanced])
+                sidebarGroup("Connection", items: [.remoteAccess])
             }
             Spacer(minLength: 0)
-            VStack(alignment: .leading, spacing: 6) {
-                Label("Herdr configuration", systemImage: "doc.text")
-                    .font(.system(size: typography.secondary, weight: .medium))
-                Text(remoteHost.map { "Connected to \($0).\nRemote configuration stays on that host." } ?? "Shared across local sessions.\nReload applies to \(sessionName).")
-                    .font(.system(size: typography.caption))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .foregroundStyle(theme.subtext)
-            .padding(10)
+            Text("The editing destination stays fixed until you close Preferences.")
+                .font(.system(size: typography.caption))
+                .foregroundStyle(theme.subtext)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(8)
         }
         .padding(12)
         .frame(width: 196)
         .background(theme.sidebarBackground)
+    }
+
+    private func loadHostIfNeeded() {
+        if !category.isLocal && category != .remoteAccess && !hostModel.hasLoaded && !hostModel.isBusy {
+            hostModel.load()
+        }
+    }
+
+    private func selectCategory(_ item: Category) {
+        if item.isLocal != category.isLocal && model.hasChanges {
+            pendingCategory = item
+            confirmsDiscard = true
+        } else { category = item }
+    }
+
+    private func sidebarGroup(_ title: String, items: [Category]) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: typography.caption, weight: .semibold))
+                .foregroundStyle(theme.subtext)
+                .lineLimit(2)
+                .padding(.top, 8)
+                .padding(.horizontal, 8)
+            ForEach(items) { item in
+                Button { selectCategory(item) } label: {
+                    Label(item.rawValue, systemImage: item.icon)
+                        .font(.system(size: typography.body, weight: category == item ? .semibold : .regular))
+                        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .background(category == item ? theme.accent.opacity(0.14) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("preferences-" + item.rawValue)
+                .accessibilityAddTraits(category == item ? [.isSelected] : [])
+            }
+        }
+    }
+
+    private var scopeSummary: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if category.isLocal {
+                Text("Wooloo · This Mac · All windows and connections")
+                    .fontWeight(.semibold)
+                Text("TOML preferences also share this Mac’s Herdr configuration. Other Herdr clients apply them on reload.")
+            } else {
+                Text("Herdr · \(remoteHost ?? "This Mac") · Session: \(sessionName)")
+                    .fontWeight(.semibold)
+                if let machine {
+                    Text(model.remoteConfig.map { "\($0.user)@\($0.host) · SSH: \(machine.target)" } ?? "SSH: \(machine.target)")
+                }
+                Text("Shared by sessions in this account using this file. Only \(sessionName) receives a reload request.")
+                if machine != nil {
+                    Text("SSH discovers the file path; Herdr’s API cannot verify that this session uses it.")
+                        .foregroundStyle(theme.warning)
+                }
+            }
+            Text(model.configPath.isEmpty ? "Loading configuration path…" : model.configPath)
+                .font(.system(size: typography.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .lineLimit(2)
+        }
+        .font(.system(size: typography.caption))
+        .foregroundStyle(theme.subtext)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(theme.sidebarBackground.opacity(0.5))
     }
 
     private var header: some View {
@@ -188,9 +255,12 @@ struct HerdrSettingsView: View {
                     .foregroundStyle(theme.subtext)
             }
             Spacer(minLength: 0)
-            Button("Done") { dismiss() }
+            Button("Done") {
+                if hasUnsavedChanges { closesAfterDiscard = true; confirmsDiscard = true }
+                else { dismiss() }
+            }
                 .keyboardShortcut(.cancelAction)
-                .disabled(model.isSaving || authorizingMobile)
+                .disabled(isBusy || authorizingMobile)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
@@ -199,27 +269,37 @@ struct HerdrSettingsView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let message = model.message {
-                Label(message, systemImage: model.isSaving ? "arrow.triangle.2.circlepath"
+                Label(message, systemImage: model.isBusy ? "arrow.triangle.2.circlepath"
                       : model.messageIsSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .font(.system(size: typography.secondary))
-                    .foregroundStyle(model.isSaving ? theme.subtext
+                    .foregroundStyle(model.isBusy ? theme.subtext
                                      : model.messageIsSuccess ? theme.success : theme.warning)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
+            if model.hasChanges && !model.canEditConfig && !model.isBusy {
+                Button("Copy unsaved edits") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(model.document.text, forType: .string)
+                }
+            }
             HStack(spacing: 10) {
-                Label(model.hasChanges ? "Unsaved changes" : "Up to date",
-                      systemImage: model.hasChanges ? "circle.fill" : "checkmark.circle")
+                Label(model.isLoading ? "Loading…" : !model.hasLoaded ? "Configuration unavailable"
+                      : model.hasChanges ? "Unsaved changes" : "Up to date",
+                      systemImage: !model.hasLoaded || model.hasChanges ? "circle.fill" : "checkmark.circle")
                     .font(.system(size: typography.secondary))
                     .foregroundStyle(model.hasChanges ? theme.warning : theme.subtext)
                 Spacer(minLength: 0)
                 Button(model.hasChanges ? "Discard & reload" : "Reload file") { model.load() }
-                    .disabled(model.isSaving)
-                Button("Save & reload Herdr") {
-                    model.save(socketPath: socketPath, session: sessionName, onSaved: onSaved)
+                    .disabled(model.isBusy)
+                if !category.isLocal && model.canRetryReload {
+                    Button("Retry session reload") { model.retryReload() }
+                }
+                Button(category.isLocal ? "Save on this Mac" : "Save & reload") {
+                    model.save(reload: !category.isLocal, onSaved: onSaved)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.isSaving || !model.hasChanges)
+                .disabled(!model.canEditConfig || !model.hasChanges)
             }
         }
         .padding(.horizontal, 24)
@@ -267,6 +347,7 @@ struct HerdrSettingsView: View {
                     }
                 }
             }
+            .disabled(!model.canEditConfig)
             settingsGroup("wooloo", subtitle: "This app only · applies immediately") {
                 field("Back to Previous Context", hint: "Default: prefix+backspace. Separate alternatives with commas.") {
                     TextField("prefix+backspace", text: $previousContextShortcut).textFieldStyle(.roundedBorder)
@@ -293,7 +374,7 @@ struct HerdrSettingsView: View {
                     }
                 }
             }
-            settingsGroup("Sounds", subtitle: remoteHost == nil ? "Herdr · Save & reload to apply" : "Managed on the remote host") {
+            settingsGroup("Sounds", subtitle: "This Mac · shared with local Herdr · Save to apply in wooloo") {
                 description("Sounds play for agents outside the pane you are viewing, or when wooloo is in the background.")
                 Toggle("Play sounds", isOn: bool("ui.sound", "enabled", default: true))
                 field("Sound file", hint: "Optional mp3 for all alerts. Relative paths resolve from config.toml's folder. Blank uses the system sound.") {
@@ -324,8 +405,8 @@ struct HerdrSettingsView: View {
                     }
                 }
             }
-            .disabled(remoteHost != nil)
-            settingsGroup("Pop-up notifications", subtitle: remoteHost == nil ? "Herdr · Save & reload to apply" : "Managed on the remote host") {
+            .disabled(!model.canEditConfig)
+            settingsGroup("Pop-up notifications", subtitle: "This Mac · shared with local Herdr · Save to apply in wooloo") {
                 field("Delivery", hint: "Herdr's [ui.toast] delivery. Unset, wooloo uses System (Herdr itself defaults to Off). wooloo has no outer terminal, so Terminal uses system notifications.") {
                     Picker("", selection: string("ui.toast", "delivery",
                                                  default: HerdrNotificationSettings.defaultDelivery.rawValue)) {
@@ -353,7 +434,7 @@ struct HerdrSettingsView: View {
                     .frame(width: 220, alignment: .leading)
                 }
             }
-            .disabled(remoteHost != nil)
+            .disabled(!model.canEditConfig)
         case .appearance:
             settingsGroup("wooloo", subtitle: "This app only · applies immediately") {
                 field("Window focus", hint: "Reduce the brightness of inactive windows when another window or app has focus.") {
@@ -392,13 +473,13 @@ struct HerdrSettingsView: View {
                     .frame(width: 200)
                 }
             }
-            settingsGroup("Color theme", subtitle: "Herdr & wooloo · Save & reload to apply") {
+            settingsGroup("Color theme", subtitle: "This Mac · shared with local Herdr · Save to apply in wooloo") {
                 ThemeSettingsView(name: string("theme", "name", default: WoolooTheme.fallbackID),
                                   autoSwitch: bool("theme", "auto_switch", default: false),
                                   lightName: optionalString("theme", "light_name"),
                                   darkName: optionalString("theme", "dark_name"))
             }
-            .disabled(remoteHost != nil)
+            .disabled(!model.canEditConfig)
         case .server:
             description("Headless size applies when no client is attached. These values must be positive.")
             settingsGroup("Headless terminal") {
@@ -516,15 +597,16 @@ struct HerdrSettingsView: View {
 
     private var advancedEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Full local config.toml. Other Herdr settings and comments stay here when guided fields change.")
+            Text("Full Herdr config.toml for this destination. Guided fields preserve other settings and comments.")
                 .font(.system(size: typography.body))
                 .foregroundStyle(.secondary)
-            Text(HerdrConfigFile.url.path)
+            Text(model.configPath.isEmpty ? "Loading configuration path…" : model.configPath)
                 .font(.system(size: typography.secondary, design: .monospaced))
                 .foregroundStyle(theme.subtext)
                 .textSelection(.enabled)
-            TextEditor(text: $model.document.text)
+            TextEditor(text: configText)
                 .font(.system(size: typography.emphasis, design: .monospaced))
+                .disabled(!model.canEditConfig)
                 .scrollContentBackground(.hidden)
                 .padding(5)
                 .background(theme.sidebarBackground, in: RoundedRectangle(cornerRadius: 10))
@@ -554,24 +636,33 @@ struct HerdrSettingsView: View {
         }
     }
 
+    private var configText: Binding<String> {
+        let model = model
+        return Binding(get: { model.document.text }, set: { if model.canEditConfig { model.document.text = $0 } })
+    }
+
     private func string(_ section: String, _ key: String, default fallback: String) -> Binding<String> {
-        Binding(get: { model.string(section, key, default: fallback) },
-                set: { model.setString($0, section, key, default: fallback) })
+        let model = model
+        return Binding(get: { model.string(section, key, default: fallback) },
+                set: { if model.canEditConfig { model.setString($0, section, key, default: fallback) } })
     }
 
     private func optionalString(_ section: String, _ key: String) -> Binding<String> {
-        Binding(get: { model.string(section, key, default: "") },
-                set: { model.setOptionalString($0, section, key) })
+        let model = model
+        return Binding(get: { model.string(section, key, default: "") },
+                set: { if model.canEditConfig { model.setOptionalString($0, section, key) } })
     }
 
     private func bool(_ section: String, _ key: String, default fallback: Bool) -> Binding<Bool> {
-        Binding(get: { model.bool(section, key, default: fallback) },
-                set: { model.setBool($0, section, key, default: fallback) })
+        let model = model
+        return Binding(get: { model.bool(section, key, default: fallback) },
+                set: { if model.canEditConfig { model.setBool($0, section, key, default: fallback) } })
     }
 
     private func integer(_ section: String, _ key: String, default fallback: Int) -> Binding<Int> {
-        Binding(get: { model.integer(section, key, default: fallback) },
-                set: { model.setInteger($0, section, key, default: fallback) })
+        let model = model
+        return Binding(get: { model.integer(section, key, default: fallback) },
+                set: { if model.canEditConfig { model.setInteger($0, section, key, default: fallback) } })
     }
 
     private func groupHeader(_ title: String, subtitle: String?) -> some View {
@@ -628,11 +719,13 @@ struct HerdrSettingsView: View {
     }
 
     private func agentSound(_ agent: String) -> Binding<String> {
-        Binding(get: { model.agentSound(agent) }, set: { model.setAgentSound($0, agent) })
+        let model = model
+        return Binding(get: { model.agentSound(agent) }, set: { if model.canEditConfig { model.setAgentSound($0, agent) } })
     }
 
     private func shortcutBindings(_ definition: HerdrShortcutDefinition) -> Binding<String> {
-        Binding(get: { model.shortcutBindings(definition) },
-                set: { model.setShortcutBindings($0, definition) })
+        let model = model
+        return Binding(get: { model.shortcutBindings(definition) },
+                set: { if model.canEditConfig { model.setShortcutBindings($0, definition) } })
     }
 }

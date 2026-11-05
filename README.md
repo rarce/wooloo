@@ -57,6 +57,10 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 
 - Guided sections for Herdr's terminal defaults, worktrees, appearance, notifications, headless size and shortcuts, plus a full TOML editor. Saving validates with `herdr config check`, refuses to overwrite outside changes, and reloads the running session.
 - One theme shared by the interface, editor and terminals, with adjustable text sizes.
+- Preferences separates **Wooloo · This Mac** (all windows and connections on this Mac) from **Herdr · the selected host**. Theme, shortcuts and notification settings share the local Herdr config; saving updates every wooloo window without reloading SSH servers.
+- Terminal defaults, worktrees, server settings and **Advanced TOML** can edit the selected SSH account’s config. The account, host, file path and session stay fixed while Preferences is open. The file is shared by sessions using that path; saving requests a reload only for the displayed session. For a shared split divider, set `pane_gaps = false` in `[ui]` using Advanced TOML.
+- SSH saves validate with the remote Herdr, preserve config symlinks and permissions, and check for external edits before replacement. A failed or partial session reload is reported separately from saving and can be retried. If a connection drops without confirming the save, wooloo checks the file; if that also fails, copy the retained edits and reload the file before saving again.
+- **Remote path limitation:** SSH discovers the config path from its environment (`HERDR_CONFIG_PATH`, `XDG_CONFIG_HOME`, or the account’s default). Herdr’s API does not expose the running server’s config path. Preferences therefore cannot verify that a session started with different environment overrides reads the edited file, even when the server confirms a reload.
 
 ## Agent quotas
 

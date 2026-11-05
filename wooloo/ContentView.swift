@@ -45,7 +45,8 @@ private struct DestinationContentView: View {
     @ObservedObject private var destinations: HerdrDestinations
     @StateObject private var window = ContentWindowModel()
     @State private var hoveredTabID: String?
-    @State private var shortcutMap = HerdrShortcutMap.load()
+    @StateObject private var shortcutStore = HerdrShortcutStore()
+    private var shortcutMap: HerdrShortcutMap { shortcutStore.map }
     @State private var shortcutPrefixActive = false
     @AppStorage(HerdrShortcutMap.previousContextKey) private var previousContextShortcut = "prefix+backspace"
     @State private var availableSessions: [String] = []
@@ -153,7 +154,7 @@ private struct DestinationContentView: View {
                 destinations.localSession(runtime.connectedSession ?? herdr.sessionName)
                 window.commandStore = destinations.active
                 loadMachines()
-                shortcutMap = HerdrShortcutMap.load()
+                shortcutStore.reload()
             }
         }
         .focusedSceneValue(\.woolooCommands, WoolooCommandContext(
@@ -189,7 +190,12 @@ private struct DestinationContentView: View {
             }
             notifier.reloadSettings()
         }
-        .onChange(of: previousContextShortcut) { _, _ in shortcutMap = HerdrShortcutMap.load() }
+        .onReceive(NotificationCenter.default.publisher(for: .woolooLocalConfigSaved)) { _ in
+            for store in destinations.stores { store.reloadAgentViewSettings() }
+            notifier.reloadSettings()
+            notifier.refreshDockBadge()
+        }
+        .onChange(of: previousContextShortcut) { _, _ in shortcutStore.reload() }
         .onChange(of: herdr.selectedPaneID) { _, _ in destinations.acknowledgeVisiblePane() }
         .onChange(of: herdr.surfaceLayout) { _, _ in destinations.acknowledgeVisiblePane() }
         .onChange(of: activeDocumentID) { _, _ in destinations.acknowledgeVisiblePane() }
@@ -230,13 +236,7 @@ private struct DestinationContentView: View {
             HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               machine: herdr.machine,
                               showShortcuts: window.settingsShowShortcuts,
-                              showRemoteAccess: window.settingsShowRemoteAccess) {
-                shortcutMap = HerdrShortcutMap.load()
-                herdr.reloadAgentViewSettings()
-                themes.reload()
-                notifier.reloadSettings()
-                notifier.refreshDockBadge()
-            }
+                              showRemoteAccess: window.settingsShowRemoteAccess)
             .environment(\.woolooTheme, theme)
             .environment(\.woolooTypography, textScale)
         }
@@ -1339,7 +1339,7 @@ private struct DestinationContentView: View {
         ContentCommands(window: window, herdr: herdr, documents: documentStore, search: search,
                         explorerLocation: explorerLocation, workspaceContext: workspaceContext,
                         effects: ContentCommandEffects(reloadAppConfig: {
-                            shortcutMap = HerdrShortcutMap.load()
+                            shortcutStore.reload()
                             themes.reload()
                         }, previousContext: { destinations.goBack() },
                         createWorkspace: { destinations.createSpace(on: herdr) },

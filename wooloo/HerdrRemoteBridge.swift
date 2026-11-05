@@ -151,19 +151,30 @@ final class HerdrRemoteBridge: Sendable {
         if let port = endpoint.port { args += ["-p", port] }
         // Find Herdr on PATH or in common installation locations; never install software as
         // a side effect of selecting a machine. Shell quoting keeps profile data literal.
-        let script = """
-        h=$(command -v herdr 2>/dev/null)
-        for candidate in "$h" "$HOME/.local/bin/herdr" /opt/homebrew/bin/herdr /usr/local/bin/herdr /home/linuxbrew/.linuxbrew/bin/herdr "$HOME/.cargo/bin/herdr" "$HOME/.local/share/mise/installs/herdr/\(HerdrRuntimePaths.version)/bin/herdr" "$HOME/.local/share/mise/installs/herdr/\(HerdrRuntimePaths.version)/herdr" "$HOME/.nix-profile/bin/herdr" /run/current-system/sw/bin/herdr /nix/var/nix/profiles/default/bin/herdr; do
-            [ -x "$candidate" ] || continue
-            capability=$("$candidate" --session \(quote(machine.session)) remote-api-bridge --check </dev/null 2>/dev/null)
-            [ "$capability" = herdr-api-bridge-v1 ] || continue
-            exec "$candidate" --session \(quote(machine.session)) \(command)
-        done
-        printf '%s\\n' 'A compatible Herdr is not installed on this host; prepare it in Manage Remote Hosts' >&2
-        exit 127
-        """
+        let script = executableDiscoveryScript(session: machine.session) + "\n"
+            + "exec \"$h\" --session \(quote(machine.session)) \(command)"
         args += [endpoint.destination, "/bin/sh -c " + quote(script)]
         return args
+    }
+
+    /// Config validation must select the same compatible installation as the terminal bridge.
+    static func executableDiscoveryScript(session: String) -> String {
+        """
+        h=$(command -v herdr 2>/dev/null) || h=
+        found=false
+        for candidate in "$h" "$HOME/.local/bin/herdr" /opt/homebrew/bin/herdr /usr/local/bin/herdr /home/linuxbrew/.linuxbrew/bin/herdr "$HOME/.cargo/bin/herdr" "$HOME/.local/share/mise/installs/herdr/\(HerdrRuntimePaths.version)/bin/herdr" "$HOME/.local/share/mise/installs/herdr/\(HerdrRuntimePaths.version)/herdr" "$HOME/.nix-profile/bin/herdr" /run/current-system/sw/bin/herdr /nix/var/nix/profiles/default/bin/herdr; do
+            [ -x "$candidate" ] || continue
+            capability=$("$candidate" --session \(quote(session)) remote-api-bridge --check </dev/null 2>/dev/null) || continue
+            [ "$capability" = herdr-api-bridge-v1 ] || continue
+            h=$candidate
+            found=true
+            break
+        done
+        if [ "$found" != true ]; then
+            printf '%s\\n' 'A compatible Herdr is not installed on this host; prepare it in Manage Remote Hosts' >&2
+            exit 127
+        fi
+        """
     }
 
     private static func quote(_ text: String) -> String {

@@ -36,7 +36,7 @@ final class HerdrSettingsModelTests: XCTestCase {
 
     override func setUp() async throws {
         config = try TemporaryHerdrConfig(Self.initial)
-        model = HerdrSettingsModel()
+        model = HerdrSettingsModel(destination: HerdrSettingsDestination(socketPath: socket, session: "work"))
         model.effects.play = { [unowned self] in played.append($0) }
         model.load()
     }
@@ -68,7 +68,7 @@ final class HerdrSettingsModelTests: XCTestCase {
     /// Saves and waits; returns how many times the saved callback ran.
     private func save() async -> Int {
         var saved = 0
-        await model.save(socketPath: socket, session: "work", onSaved: { saved += 1 }).value
+        await model.save(onSaved: { saved += 1 }).value
         return saved
     }
 
@@ -225,7 +225,7 @@ final class HerdrSettingsModelTests: XCTestCase {
         let edited = model.document.text
 
         var saved = 0
-        let task = model.save(socketPath: socket, session: "work", onSaved: { saved += 1 })
+        let task = model.save(onSaved: { saved += 1 })
         XCTAssertTrue(model.isSaving)
         XCTAssertEqual(model.message, "Validating with Herdr…")
         XCTAssertFalse(model.messageIsSuccess)
@@ -251,7 +251,8 @@ final class HerdrSettingsModelTests: XCTestCase {
         XCTAssertEqual(saved, 1)
         XCTAssertTrue(model.message?.hasPrefix("Saved config.toml, but work could not reload: ") == true,
                       model.message ?? "")
-        XCTAssertTrue(model.messageIsSuccess)
+        XCTAssertFalse(model.messageIsSuccess)
+        XCTAssertTrue(model.canRetryReload)
         XCTAssertEqual(fileText, edited)
         XCTAssertFalse(model.hasChanges)
     }
@@ -291,6 +292,25 @@ final class HerdrSettingsModelTests: XCTestCase {
         XCTAssertEqual(saved, 0)
         XCTAssertEqual(model.message, HerdrConfigError.herdrUnavailable.localizedDescription)
         XCTAssertEqual(fileText, Self.initial)
+    }
+
+    func testLocalSaveUpdatesThemeAndShortcutStoresInEveryWindowWithoutReloadingServer() async throws {
+        try useFakeHerdr()
+        let server = try FakeHerdrServer(path: socket) { _, _ in ["result": ["status": "applied"]] }
+        defer { server.stop() }
+        let firstTheme = ThemeStore()
+        let secondTheme = ThemeStore()
+        let firstKeys = HerdrShortcutStore()
+        let secondKeys = HerdrShortcutStore()
+        model.setString("rose-pine", "theme", "name", default: WoolooTheme.fallbackID)
+        model.setString("ctrl+z", "keys", "prefix", default: HerdrShortcutMap.defaultPrefix)
+        await model.save(reload: false).value
+        XCTAssertEqual(firstTheme.theme.id, "rose-pine")
+        XCTAssertEqual(secondTheme.theme.id, "rose-pine")
+        XCTAssertEqual(firstKeys.map.prefixLabel, "ctrl+z")
+        XCTAssertEqual(secondKeys.map.prefixLabel, "ctrl+z")
+        XCTAssertEqual(model.outcome, .saved)
+        XCTAssertEqual(server.requests.count, 0)
     }
 
     // MARK: Sound preview
@@ -335,5 +355,278 @@ final class HerdrSettingsModelTests: XCTestCase {
         XCTAssertEqual(played.last?.name, "Ping")
         XCTAssertNil(HerdrSoundPreview(url: nil, systemName: "no-such-sound").sound(),
                      "Nothing is played without a sound")
+    }
+}
+
+/// Real POSIX scripts behind a fake SSH transport, with separate local and remote config files.
+@MainActor
+final class HerdrRemoteSettingsTests: XCTestCase {
+    private var sandbox: WorkspaceGitSandbox!
+    private var local: TemporaryHerdrConfig!
+    private var previousSSH = ""
+    private let machine = HerdrMachineProfile(id: "dev", label: "Development", target: "ssh://dev@example.test:2222",
+                                              session: "wooloo-ui-test", enabled: true)
+    private let initial = "# remote\n[ui]\npane_gaps = true\n"
+    private var configPath: String { sandbox.path("remote/config.toml") }
+    private var socketPath: String { sandbox.path("session.sock") }
+
+    override func setUp() async throws {
+        sandbox = try WorkspaceGitSandbox()
+        local = try TemporaryHerdrConfig("# local must stay untouched\n")
+        previousSSH = WorkspaceFiles.sshExecutable
+        let q = WorkspaceFiles.quote
+        try sandbox.write(["bin/hostname": "#!/bin/sh\nprintf '%s\\n' dev-server\n",
+                           "bin/id": "#!/bin/sh\nprintf '%s\\n' dev\n",
+                           "remote/config.toml": initial, "bin/herdr": """
+            #!/bin/sh
+            if [ "$1" = --session ]; then
+                [ "$3 $4" = 'remote-api-bridge --check' ] || exit 2
+                printf 'herdr-api-bridge-v1\\n'
+            elif [ "$1 $2" = 'config check' ]; then
+                printf 'validate\\n' >> \(q(sandbox.path("validation.log")))
+                if grep -q invalid "$HERDR_CONFIG_PATH"; then echo 'invalid config' >&2; exit 1; fi
+                if [ -e \(q(sandbox.path("conflict"))) ]; then printf external > \(q(configPath)); fi
+            else exit 3; fi
+            """, "bin/ssh": """
+            #!/bin/sh
+            printf '%s\\0' "$@" >> \(q(sandbox.path("ssh.log")))
+            [ ! -e \(q(sandbox.path("offline"))) ] || { echo offline >&2; exit 255; }
+            for task_command; do :; done
+            export HERDR_CONFIG_PATH=\(q(configPath))
+            if [ -s \(q(sandbox.path("remote-path"))) ]; then
+                HERDR_CONFIG_PATH=$(cat \(q(sandbox.path("remote-path"))))
+                export HERDR_CONFIG_PATH
+            fi
+            export PATH=\(q(sandbox.path("bin"))):/usr/bin:/bin
+            echo 'SSH warning' >&2
+            case "$task_command" in
+                *task_check_original*)
+                    if [ -e \(q(sandbox.path("lose-ack"))) ] || [ -e \(q(sandbox.path("lose-and-offline"))) ]; then
+                        /bin/sh -c "$task_command" >/dev/null || exit $?
+                        if [ -e \(q(sandbox.path("lose-and-offline"))) ]; then : > \(q(sandbox.path("offline"))); fi
+                        echo 'connection lost after save' >&2
+                        exit 255
+                    fi ;;
+            esac
+            exec /bin/sh -c "$task_command"
+            """], in: ".")
+        try sandbox.sh("chmod 755 bin/ssh bin/herdr bin/hostname bin/id; chmod 640 remote/config.toml")
+        WorkspaceFiles.sshExecutable = sandbox.path("bin/ssh")
+    }
+
+    override func tearDown() async throws {
+        WorkspaceFiles.sshExecutable = previousSSH
+        local.restore()
+        sandbox.tearDown()
+    }
+
+    private func loadedModel() async -> HerdrSettingsModel {
+        let model = HerdrSettingsModel(destination: HerdrSettingsDestination(machine: machine, socketPath: socketPath,
+                                                                            session: machine.session))
+        model.load()
+        XCTAssertTrue(model.isLoading)
+        await model.lastLoad?.value
+        XCTAssertTrue(model.hasLoaded, model.message ?? "")
+        return model
+    }
+
+    private func readRemote() throws -> String { try String(contentsOfFile: configPath, encoding: .utf8) }
+
+    func testRemoteSaveValidatesOnHostPreservesPermissionsAndReloadsCapturedSession() async throws {
+        let server = try FakeHerdrServer(path: socketPath) { _, _ in ["result": ["status": "applied"]] }
+        defer { server.stop() }
+        let model = await loadedModel()
+        XCTAssertEqual(model.configPath, configPath)
+        XCTAssertEqual(model.document.text, initial)
+        XCTAssertFalse(model.remoteConfig?.user.isEmpty ?? true)
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save().value
+        XCTAssertEqual(model.outcome, .reloaded)
+        XCTAssertTrue(try readRemote().contains("pane_gaps = false"))
+        XCTAssertEqual(try String(contentsOfFile: local.path, encoding: .utf8), "# local must stay untouched\n")
+        XCTAssertEqual(server.requests.map(\.method), ["server.reload_config"])
+        XCTAssertEqual(try String(contentsOfFile: sandbox.path("validation.log"), encoding: .utf8), "validate\n")
+        let attributes = try FileManager.default.attributesOfItem(atPath: configPath)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o640)
+        XCTAssertTrue(model.message?.contains("cannot be verified") == true)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sandbox.path("remote")), ["config.toml"])
+    }
+
+    func testExternalEditDuringValidationIsKept() async throws {
+        let model = await loadedModel()
+        try sandbox.write(["conflict": ""], in: ".")
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save().value
+        XCTAssertEqual(try readRemote(), "external")
+        XCTAssertTrue(model.hasChanges)
+        XCTAssertFalse(model.messageIsSuccess)
+        XCTAssertTrue(model.message?.contains("changed outside wooloo") == true, model.message ?? "")
+    }
+
+    func testInvalidRemoteConfigDoesNotChangeEitherFile() async throws {
+        let model = await loadedModel()
+        model.document.text = "invalid"
+        await model.save().value
+        XCTAssertEqual(try readRemote(), initial)
+        XCTAssertTrue(model.hasChanges)
+        XCTAssertTrue(model.message?.contains("invalid config") == true)
+    }
+
+    func testSavePreservesDotfilesSymlinkAndRejectsRetargeting() async throws {
+        try sandbox.sh("mkdir dotfiles; mv remote/config.toml dotfiles/herdr.toml; ln -s ../dotfiles/herdr.toml remote/config.toml")
+        let model = await loadedModel()
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save(reload: false).value
+        XCTAssertEqual(model.outcome, .saved)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: configPath), "../dotfiles/herdr.toml")
+        XCTAssertTrue(try readRemote().contains("pane_gaps = false"))
+        try sandbox.write(["dotfiles/other.toml": "other"], in: ".")
+        try sandbox.sh("rm remote/config.toml; ln -s ../dotfiles/other.toml remote/config.toml")
+        model.setBool(true, "ui", "pane_gaps", default: true)
+        await model.save(reload: false).value
+        XCTAssertEqual(try readRemote(), "other")
+        XCTAssertTrue(model.hasChanges)
+    }
+
+    func testMissingFileIsDifferentFromAnEmptyFileCreatedOutside() async throws {
+        try FileManager.default.removeItem(atPath: configPath)
+        let model = await loadedModel()
+        XCTAssertEqual(model.remoteConfig?.exists, false)
+        try sandbox.write(["remote/config.toml": ""], in: ".")
+        model.document.text = initial
+        await model.save(reload: false).value
+        XCTAssertEqual(try readRemote(), "")
+        XCTAssertTrue(model.hasChanges)
+        model.load()
+        await model.lastLoad?.value
+        model.document.text = initial
+        await model.save(reload: false).value
+        XCTAssertEqual(try readRemote(), initial)
+    }
+
+    func testMissingConfigIsCreatedPrivately() async throws {
+        try sandbox.sh("rm -rf remote")
+        let model = await loadedModel()
+        model.document.text = initial
+        await model.save(reload: false).value
+        XCTAssertEqual(model.outcome, .saved)
+        XCTAssertEqual(try readRemote(), initial)
+        let attributes = try FileManager.default.attributesOfItem(atPath: configPath)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func testMissingConfigUnderLinkedDirectoryKeepsStableIdentityAcrossSaves() async throws {
+        try sandbox.sh("rm -rf remote; mkdir dotfiles; ln -s dotfiles remote")
+        let model = await loadedModel()
+        XCTAssertEqual(model.remoteConfig?.resolvedPath, sandbox.path("dotfiles/config.toml"))
+        try sandbox.write(["lose-ack": ""], in: ".")
+        model.document.text = initial
+        await model.save(reload: false).value
+        XCTAssertEqual(model.outcome, .saved)
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save(reload: false).value
+        XCTAssertEqual(model.outcome, .saved)
+        XCTAssertTrue(try readRemote().contains("pane_gaps = false"))
+    }
+
+    func testLostAcknowledgementReconcilesSavedFile() async throws {
+        let model = await loadedModel()
+        try sandbox.write(["lose-ack": ""], in: ".")
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save(reload: false).value
+        XCTAssertEqual(model.outcome, .saved)
+        XCTAssertFalse(model.hasChanges)
+        XCTAssertEqual(try String(contentsOfFile: sandbox.path("validation.log"), encoding: .utf8), "validate\n")
+    }
+
+    func testDisconnectedSaveRequiresReloadBeforeAnotherSave() async throws {
+        let model = await loadedModel()
+        try sandbox.write(["offline": ""], in: ".")
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save().value
+        XCTAssertEqual(model.outcome, .uncertain)
+        XCTAssertFalse(model.canEditConfig)
+        XCTAssertTrue(model.hasChanges)
+        XCTAssertEqual(try readRemote(), initial)
+        try FileManager.default.removeItem(atPath: sandbox.path("offline"))
+        model.load()
+        await model.lastLoad?.value
+        XCTAssertTrue(model.canEditConfig)
+        XCTAssertFalse(model.hasChanges)
+    }
+
+    func testLostAcknowledgementAndOfflineReadKeepsUnknownOutcomeWithoutReload() async throws {
+        let server = try FakeHerdrServer(path: socketPath) { _, _ in ["result": ["status": "applied"]] }
+        defer { server.stop() }
+        let model = await loadedModel()
+        try sandbox.write(["lose-and-offline": ""], in: ".")
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        let edited = model.document.text
+        await model.save().value
+        XCTAssertEqual(try readRemote(), edited)
+        XCTAssertEqual(model.document.text, edited)
+        XCTAssertEqual(model.outcome, .uncertain)
+        XCTAssertFalse(model.canEditConfig)
+        XCTAssertTrue(model.hasChanges)
+        XCTAssertTrue(server.requests.isEmpty)
+    }
+
+    func testChangedRemotePathIsRejectedBeforeWriting() async throws {
+        let model = await loadedModel()
+        let otherPath = sandbox.path("other.toml")
+        try sandbox.write(["other.toml": "other", "remote-path": otherPath], in: ".")
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save().value
+        XCTAssertTrue(model.hasChanges)
+        XCTAssertEqual(try readRemote(), initial)
+        XCTAssertEqual(try String(contentsOfFile: otherPath, encoding: .utf8), "other")
+        XCTAssertTrue(model.message?.contains("path changed") == true, model.message ?? "")
+    }
+
+    func testSelectionChangeAfterSaveCannotRedirectSessionReload() async throws {
+        let first = try FakeHerdrServer(path: socketPath) { _, _ in ["result": ["status": "applied"]] }
+        let other = try FakeHerdrServer(path: sandbox.path("other.sock")) { _, _ in ["result": ["status": "applied"]] }
+        defer { first.stop(); other.stop() }
+        var selectedSocket = socketPath
+        let model = await loadedModel()
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save(onSaved: { selectedSocket = other.path }).value
+        XCTAssertEqual(selectedSocket, other.path)
+        XCTAssertEqual(model.destination.socketPath, first.path)
+        XCTAssertEqual(first.requests.map(\.method), ["server.reload_config"])
+        XCTAssertTrue(other.requests.isEmpty)
+    }
+
+    func testFailedAndPartialReloadCanBeRetriedWithoutRewriting() async throws {
+        let server = try FakeHerdrServer(path: socketPath) { _, _ in ["result": ["status": "failed", "diagnostics": ["rejected"]]] }
+        defer { server.stop() }
+        let model = await loadedModel()
+        model.setBool(false, "ui", "pane_gaps", default: true)
+        await model.save().value
+        XCTAssertEqual(model.outcome, .reloadFailed)
+        XCTAssertTrue(model.canRetryReload)
+        XCTAssertFalse(model.messageIsSuccess)
+        server.setResponder { _, _ in ["result": ["status": "partial", "diagnostics": ["restart needed"]]] }
+        await model.retryReload().value
+        XCTAssertEqual(model.outcome, .partial)
+        XCTAssertTrue(model.canRetryReload)
+        XCTAssertFalse(model.messageIsSuccess)
+        server.setResponder { _, _ in ["result": ["status": "applied"]] }
+        await model.retryReload().value
+        XCTAssertEqual(model.outcome, .reloaded)
+        XCTAssertFalse(model.canRetryReload)
+        XCTAssertEqual(server.requests.count, 3)
+        XCTAssertEqual(try String(contentsOfFile: sandbox.path("validation.log"), encoding: .utf8), "validate\n")
+    }
+
+    func testTwoOpenPreferenceWindowsDetectConflictingRemoteEdits() async throws {
+        let first = await loadedModel()
+        let second = await loadedModel()
+        first.setBool(false, "ui", "pane_gaps", default: true)
+        await first.save(reload: false).value
+        second.document.text = "[ui]\npane_borders = \"off\"\n"
+        await second.save(reload: false).value
+        XCTAssertTrue(second.hasChanges)
+        XCTAssertEqual(try readRemote(), first.original)
     }
 }

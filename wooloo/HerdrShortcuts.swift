@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 
 struct HerdrShortcutDefinition: Identifiable {
@@ -296,4 +297,20 @@ struct HerdrShortcutMap {
         }
         return .pass
     }
+}
+
+/// Every window observes local TOML saves, including windows viewing SSH machines.
+@MainActor
+final class HerdrShortcutStore: ObservableObject {
+    @Published private(set) var map = HerdrShortcutMap.load()
+    private var configObserver: AnyCancellable?
+
+    init() {
+        configObserver = NotificationCenter.default.publisher(for: .woolooLocalConfigSaved)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.reload() }
+            }
+    }
+
+    func reload() { map = HerdrShortcutMap.load() }
 }
