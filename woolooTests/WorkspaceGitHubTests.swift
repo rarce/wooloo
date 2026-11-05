@@ -6,14 +6,21 @@ private actor GitHubReadFixture {
     var requests: [String] = []
     var shouldFail = false
     var slowRoot: String?
-    let repository = WorkspaceGitHubRepository(nameWithOwner: "team/app", url: "https://github.com/team/app", hasIssuesEnabled: true)
+    var emptyResults = false
+    var repository = WorkspaceGitHubRepository(nameWithOwner: "team/app", url: "https://github.com/team/app", hasIssuesEnabled: true)
 
+    func closeAll() {
+        emptyResults = true
+        repository.issues = .init(totalCount: 0)
+        repository.pullRequests = .init(totalCount: 0)
+    }
     func fail() { shouldFail = true }
     func delay(_ root: String) { slowRoot = root }
     func read(_ location: WorkspaceFileLocation, kind: WorkspaceGitHubKind) async throws -> [WorkspaceGitHubItem] {
         requests.append(location.root + "|" + kind.rawValue)
         if location.root == slowRoot { try await Task.sleep(for: .milliseconds(80)) }
         if shouldFail { throw WorkspaceFileError.message("HTTP 403: API rate limit exceeded") }
+        if emptyResults { return [] }
         return [WorkspaceGitHubItem(number: 7, title: location.root + kind.rawValue,
                                     url: "https://github.com/team/app/issues/7", author: nil)]
     }
@@ -70,6 +77,56 @@ final class WorkspaceGitHubTests: XCTestCase {
         await old.value
         XCTAssertEqual(model.items?.first?.title, "/fastprs")
         XCTAssertEqual(model.context, WorkspaceGitHubModel.contextKey(location("/fast")))
+    }
+
+    func testCollapsedPanelLoadsBothTotalsWithoutFetchingLists() async throws {
+        let fixture = GitHubReadFixture()
+        let repository = try JSONDecoder().decode(WorkspaceGitHubRepository.self, from: Data("""
+            {"nameWithOwner":"team/app","url":"https://github.com/team/app","hasIssuesEnabled":true,
+             "issues":{"totalCount":123},"pullRequests":{"totalCount":0}}
+            """.utf8))
+        let model = WorkspaceGitHubModel(loadRepository: { _ in repository }, loadItems: { location, kind, _ in
+            try await fixture.read(location, kind: kind)
+        })
+        await model.load(location(), kind: .issues, includeItems: false)
+        XCTAssertEqual(model.repository?.count(.issues), 123)
+        XCTAssertEqual(model.repository?.count(.prs), 0)
+        XCTAssertNil(model.items)
+        let requests = await fixture.requests
+        XCTAssertTrue(requests.isEmpty)
+        await model.load(location(), kind: .issues)
+        XCTAssertEqual(model.items?.count, 1)
+        XCTAssertEqual(model.repository?.count(.issues), 123)
+        await model.load(nil, kind: .issues, includeItems: false)
+        XCTAssertNil(model.repository)
+    }
+
+    func testCollapsedRefreshInvalidatesBothListsOnlyForItsContext() async {
+        let fixture = GitHubReadFixture()
+        let model = model(fixture)
+        await model.load(location("/other"), kind: .issues)
+        await model.load(location(), kind: .issues)
+        await model.load(location(), kind: .prs)
+        await model.load(location(), kind: .prs, includeItems: false)
+        await fixture.closeAll()
+        await model.load(location(), kind: .prs, refresh: true, includeItems: false)
+        XCTAssertEqual(model.repository?.count(.issues), 0)
+        XCTAssertEqual(model.repository?.count(.prs), 0)
+        XCTAssertNil(model.items)
+        let collapsedRequests = await fixture.requests
+        XCTAssertEqual(collapsedRequests.count, 3)
+
+        await model.load(location(), kind: .prs)
+        XCTAssertEqual(model.items, [])
+        await model.load(location(), kind: .issues)
+        XCTAssertEqual(model.items, [])
+        let expandedRequests = await fixture.requests
+        XCTAssertEqual(expandedRequests, ["/other|issues", "/repo|issues", "/repo|prs", "/repo|prs", "/repo|issues"])
+
+        await model.load(location("/other"), kind: .issues)
+        XCTAssertEqual(model.items?.count, 1)
+        let finalRequests = await fixture.requests
+        XCTAssertEqual(finalRequests, expandedRequests)
     }
 
     func testDisabledIssuesDoNotRequestIssueList() async {

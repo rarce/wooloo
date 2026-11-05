@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      checks: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -56,12 +56,9 @@ jobs:
             echo "::error::$GITHUB_REF_NAME is not on main"
             exit 1
           fi
-          passed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=Build%20and%20test" \
-            --jq '[.check_runs[] | select(.conclusion == "success")] | length')
-          if [ "$passed" = 0 ]; then
-            echo "::error::CI has not passed on $GITHUB_SHA; wait for it, then push the tag again"
-            exit 1
-          fi
+          # A PR's required check can pass without macOS for docs-only changes.
+          # Require actual tests from a successful main push of this exact commit.
+          python3 scripts/ci_policy.py release
 
       - name: Select Xcode 26
         run: |

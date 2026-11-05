@@ -15,6 +15,7 @@ struct NotebookPreviewView: View {
     var matches: [MarkdownFindMatch] = []
     var currentMatch: Int?
     var revealRequest = 0
+    var keyboardFocusRequest = 0
     var onSearchText: ([String]) -> Void = { _ in }
     var onFindCommand: (String, Bool, Bool) -> Void = { _, _, _ in }
     /// Applies a cell edit made in the preview, worked out against the JSON the notebook was
@@ -38,7 +39,7 @@ struct NotebookPreviewView: View {
                 NotebookWebView(notebook: notebook, path: path, location: location,
                                 theme: style == .document ? .markdownDocument : theme, typography: typography,
                                 scroll: scroll, matches: matches, currentMatch: currentMatch,
-                                revealRequest: revealRequest, onOpenFile: onOpenFile, onSearchText: onSearchText, onFindCommand: onFindCommand,
+                                revealRequest: revealRequest, keyboardFocusRequest: keyboardFocusRequest, onOpenFile: onOpenFile, onSearchText: onSearchText, onFindCommand: onFindCommand,
                                 onEdit: onEdit)
             } else {
                 ProgressView("Preparing notebook…").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,6 +72,7 @@ struct NotebookWebView: NSViewRepresentable {
     var matches: [MarkdownFindMatch]
     var currentMatch: Int?
     var revealRequest: Int
+    var keyboardFocusRequest = 0
     let onOpenFile: (String) -> Void
     let onSearchText: ([String]) -> Void
     let onFindCommand: (String, Bool, Bool) -> Void
@@ -115,6 +117,7 @@ struct NotebookWebView: NSViewRepresentable {
         private var lastEditable = false
         private var lastFind = ""
         private var lastReveal = -1
+        private var lastKeyboardFocusRequest = 0
         private(set) var revision = ""
         private var editing: Task<Void, Never>?
 
@@ -123,6 +126,10 @@ struct NotebookWebView: NSViewRepresentable {
         func update(_ owner: NotebookWebView) {
             self.owner = owner
             guard ready, let webView else { return }
+            if owner.keyboardFocusRequest != lastKeyboardFocusRequest {
+                lastKeyboardFocusRequest = owner.keyboardFocusRequest
+                webView.window?.makeFirstResponder(webView)
+            }
             let palette = Self.palette(theme: owner.theme, typography: owner.typography)
             let editable = owner.onEdit != nil
             if owner.notebook.identity != lastModelID || palette != lastPalette || editable != lastEditable {

@@ -1197,7 +1197,7 @@ private struct DestinationContentView: View {
                 HStack(spacing: 5) {
                     Image(systemName: document.icon)
                         .foregroundStyle(theme.accent)
-                    Text(document.title).lineLimit(1).italic(document.isPreview)
+                    Text(document.tabTitle(among: documents)).lineLimit(1).italic(document.isPreview)
                         .strikethrough(document.isDeletedOnDisk)
                     if document.isDirty { Circle().fill(theme.warning).frame(width: 5, height: 5) }
                 }
@@ -1213,7 +1213,7 @@ private struct DestinationContentView: View {
                                  presence: tabBackground(.document(document.backupID), inMain: activeDocumentID == document.id)))
         .onHover { hoveredTabID = $0 ? document.id : nil }
         .help(document.isUntitled ? "\(document.title) · not saved yet"
-              : "\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.path)")
+              : "\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.location.absolutePath(document.path))")
         .onMiddleClick { closeDocument(document.id) }
         .contextMenu { documentActions(document) }
         .tabReorder(.document, id: document.id, index: index, drag: window.tabDrag,

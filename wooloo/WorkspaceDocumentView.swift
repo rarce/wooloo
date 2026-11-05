@@ -160,6 +160,32 @@ struct WorkspaceDocument: Identifiable {
         let name = (path as NSString).lastPathComponent
         return commit.map { "\(name) @ \($0.prefix(7))" } ?? name
     }
+
+    /// Distinguish paths first, then the file/diff or destination for an identical path.
+    func tabTitle(among documents: [WorkspaceDocument]) -> String {
+        let peers = documents.filter { $0.id != id && $0.title == title }
+        guard !peers.isEmpty, !isUntitled else { return title }
+        var details: [String] = []
+        let otherPaths = peers.filter { $0.path != path }
+        if !otherPaths.isEmpty {
+            let components = path.split(separator: "/").map(String.init)
+            for count in 2...max(2, components.count) {
+                let suffix = components.suffix(count).joined(separator: "/")
+                if otherPaths.allSatisfy({ $0.path.split(separator: "/").suffix(count).joined(separator: "/") != suffix }) {
+                    let folder = components.dropLast().suffix(count - 1).joined(separator: "/")
+                    details.append(folder.isEmpty ? "." : folder)
+                    break
+                }
+            }
+        }
+        let samePath = peers.filter { $0.path == path }
+        if samePath.contains(where: { $0.kind != kind }) { details.append(kind.rawValue) }
+        if samePath.contains(where: { $0.location != location }) {
+            details.append("\(location.machineLabel) · \(location.session) · \(location.workspaceLabel) · \(location.root)")
+        }
+        return details.isEmpty ? title : "\(title) — \(details.joined(separator: " · "))"
+    }
+
 }
 
 struct WorkspaceDocumentView: View {
@@ -206,6 +232,8 @@ struct WorkspaceDocumentView: View {
     /// Not private so snapshot tests can open the find bar with a query.
     @StateObject var find = DocumentFindModel()
     @State private var previewFocus: MarkdownFindFocus?
+    @FocusState private var previewHasKeyboardFocus: Bool
+    @State private var notebookFocusRequest = 0
     @State private var previewActions = MarkdownPreviewActions()
     @State private var notebookSearchText: [String] = []
     /// Set by Replace so the next match is selected once the edited text comes back.
@@ -252,93 +280,8 @@ struct WorkspaceDocumentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 7) {
-                Image(systemName: document.icon)
-                    .foregroundStyle(theme.accent)
-                Text(document.displayPath)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let commit = document.commit {
-                    Text(commit.prefix(7))
-                        .foregroundStyle(theme.accent)
-                        .help(commit)
-                }
-                Spacer()
-                Text("\(document.location.machineLabel) · \(document.location.workspaceLabel)")
-                    .lineLimit(1)
-                    .foregroundStyle(.secondary)
-                if document.kind == .file && document.supportsPreview {
-                    Picker("View", selection: $document.markdownMode) {
-                        ForEach(MarkdownDisplayMode.allCases) { mode in
-                            Label(mode.rawValue, systemImage: mode.icon).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 210)
-                    .help("Show the source, the rendered preview, or both")
-                    if document.markdownMode != .source {
-                        Toggle(isOn: Binding(get: { previewStyle == .document },
-                                             set: { previewStyle = $0 ? .document : .theme })) {
-                            Image(systemName: previewStyle == .document ? "doc.richtext.fill" : "doc.richtext")
-                                .foregroundStyle(previewStyle == .document ? theme.accent : .secondary)
-                        }
-                        .toggleStyle(.button)
-                        .help("Show the preview as a white document page instead of in the theme's colors")
-                    }
-                }
-                if document.diffPatches.count > 1 {
-                    Picker("Changes", selection: $document.diffScope) {
-                        ForEach(WorkspaceDiffScope.allCases) { scope in
-                            Text(scope.rawValue).tag(scope)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 210)
-                    .help("Show all changes since the last commit, only staged changes, or only unstaged changes")
-                }
-                if document.kind != .file && NotebookDocument.supports(document.path) {
-                    Picker("Notebook changes", selection: $notebookDiffMode) {
-                        ForEach(NotebookDiffMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 120)
-                    .help("Show the notebook's changes cell by cell, or as changes to its JSON")
-                }
-                if document.kind != .file && (!showsNotebookCells || notebookCellsUnavailable == document.diffSource) {
-                    Picker("View", selection: $diffMode) {
-                        ForEach(DiffDisplayMode.allCases) { mode in
-                            Label(mode.rawValue, systemImage: mode.icon).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 160)
-                    .help("Show changes in one column or old and new side by side")
-                }
-                if document.isEditable {
-                    Button(document.isUntitled ? "Save As…" : "Save") { onSave() }
-                        .keyboardShortcut(isFocused ? KeyboardShortcut("s", modifiers: .command) : nil)
-                        .disabled(document.isLoading || document.isSaving || !document.canSave)
-                }
-                if document.isReadOnly {
-                    Button("Reload", action: onReload)
-                        .disabled(document.isLoading)
-                        .help("Reload the preview from its local or SSH Space")
-                }
-            }
-            .font(.system(size: typography.body))
-            .padding(.horizontal, 12)
-            .frame(height: 33)
+            documentToolbar
             Divider()
-            if document.isEditable && !document.isLoading {
-                structureBar
-                Divider()
-            }
             if document.kind == .file && !document.isLoading, let notice = diskNotice {
                 diskBanner(notice)
                 Divider()
@@ -346,7 +289,7 @@ struct WorkspaceDocumentView: View {
             if document.isEditable && find.isVisible {
                 DocumentFindBar(model: find, allowsReplace: findTarget == .source,
                                 onReplace: replaceCurrentMatch, onReplaceAll: replaceAllMatches,
-                                onSelectAll: selectAllMatches)
+                                onSelectAll: selectAllMatches, onClose: closeFind)
                 Divider()
             }
 
@@ -512,6 +455,161 @@ struct WorkspaceDocumentView: View {
                               in: structure.symbols, documentLength: document.metadata.utf16Length)
     }
 
+    /// Both layouts belong to this document, including in a split panel.
+    private var documentToolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            toolbarRow(compact: false)
+            toolbarRow(compact: true)
+            HStack(spacing: 8) {
+                if document.isEditable && !document.isLoading {
+                    structureBar.frame(minWidth: 24, maxWidth: .infinity)
+                } else { Spacer(minLength: 0) }
+                Menu {
+                    toolbarControls(compact: true)
+                    if !document.isLoading && (document.isEditable || document.isPDF) {
+                        Button("Find in Document") { run(.find) }
+                    }
+                } label: {
+                    Label("Tools", systemImage: "slider.horizontal.3")
+                }
+                .fixedSize()
+                documentMenu
+            }
+        }
+        .font(.system(size: typography.secondary))
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .frame(height: 33)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Document tools")
+    }
+
+    private func toolbarRow(compact: Bool) -> some View {
+        HStack(spacing: 8) {
+            if document.isEditable && !document.isLoading {
+                structureBar
+                    .frame(minWidth: compact ? 24 : 80, maxWidth: .infinity)
+                    .layoutPriority(-1)
+            } else {
+                Spacer(minLength: 0)
+            }
+            if compact {
+                toolbarControls(compact: true)
+                    .pickerStyle(.menu)
+            } else {
+                toolbarControls(compact: false)
+                    .pickerStyle(.segmented)
+            }
+            if !document.isLoading && (document.isEditable || document.isPDF) {
+                Button { run(.find) } label: { Image(systemName: "magnifyingglass") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Find in Document")
+                    .help("Find in document (⌘F)")
+            }
+            documentMenu
+        }
+    }
+
+    @ViewBuilder
+    private func toolbarControls(compact: Bool) -> some View {
+        if document.kind == .file && document.supportsPreview {
+            Picker("View", selection: $document.markdownMode) {
+                ForEach(MarkdownDisplayMode.allCases) { mode in
+                    Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .frame(width: compact ? nil : 210)
+            .help("Show the source, the rendered preview, or both")
+            if document.markdownMode != .source {
+                Toggle(isOn: Binding(get: { previewStyle == .document },
+                                     set: { previewStyle = $0 ? .document : .theme })) {
+                    Image(systemName: previewStyle == .document ? "doc.richtext.fill" : "doc.richtext")
+                        .foregroundStyle(previewStyle == .document ? theme.accent : .secondary)
+                }
+                .toggleStyle(.button)
+                .help("Show the preview as a white document page instead of in the theme's colors")
+            }
+        }
+        if document.diffPatches.count > 1 {
+            Picker("Changes", selection: $document.diffScope) {
+                ForEach(WorkspaceDiffScope.allCases) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
+            }
+            .labelsHidden()
+            .frame(width: compact ? nil : 210)
+            .help("Show all changes since the last commit, only staged changes, or only unstaged changes")
+        }
+        if document.kind != .file && NotebookDocument.supports(document.path) {
+            Picker("Notebook changes", selection: $notebookDiffMode) {
+                ForEach(NotebookDiffMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .frame(width: compact ? nil : 120)
+            .help("Show the notebook's changes cell by cell, or as changes to its JSON")
+        }
+        if document.kind != .file && (!showsNotebookCells || notebookCellsUnavailable == document.diffSource) {
+            Picker("View", selection: $diffMode) {
+                ForEach(DiffDisplayMode.allCases) { mode in
+                    Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .frame(width: compact ? nil : 160)
+            .help("Show changes in one column or old and new side by side")
+        }
+        if document.isEditable {
+            Button(document.isUntitled ? "Save As…" : "Save") { onSave() }
+                .keyboardShortcut(isFocused ? KeyboardShortcut("s", modifiers: .command) : nil)
+                .disabled(document.isLoading || document.isSaving || !document.canSave)
+        }
+        if document.isReadOnly {
+            Button("Reload", action: onReload)
+                .disabled(document.isLoading)
+                .help("Reload the preview from its local or SSH Space")
+        }
+    }
+
+    private var documentMenu: some View {
+        Menu {
+            Text("\(document.location.machineLabel) · \(document.location.workspaceLabel)")
+            if !document.isUntitled {
+                Text(document.location.absolutePath(document.path))
+                Button("Copy Path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(document.location.absolutePath(document.path), forType: .string)
+                }
+                if document.location.isLocal {
+                    Button("Reveal in Finder") { AppActions.reveal(document.location.absolutePath(document.path)) }
+                }
+            }
+            if let commit = document.commit { Text("Commit \(commit)") }
+            if document.isEditable && !structure.symbols.isEmpty {
+                Divider()
+                ForEach(structure.symbols) { symbol in
+                    Button(symbol.name) { navigateToSymbol(symbol) }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel("Document Actions")
+        .help(document.isUntitled ? "\(document.title) · not saved yet"
+              : "\(document.location.machineLabel) · \(document.location.workspaceLabel) · \(document.location.absolutePath(document.path))")
+    }
+
+    private var documentFolder: String? {
+        guard !document.isUntitled else { return nil }
+        let folder = (document.path as NSString).deletingLastPathComponent
+        return folder.isEmpty || folder == "." ? nil : folder
+    }
+
     private var structureBar: some View {
         HStack(spacing: 6) {
             Button {
@@ -524,28 +622,16 @@ struct WorkspaceDocumentView: View {
             .help("Show or hide the file outline")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    Menu {
-                        Button("Copy Path") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(document.location.absolutePath(document.path), forType: .string)
-                        }
-                        if document.location.isLocal && !document.isUntitled {
-                            Button("Reveal in Finder") { AppActions.reveal(document.location.absolutePath(document.path)) }
-                        }
-                        if !structure.symbols.isEmpty {
-                            Divider()
-                            ForEach(structure.symbols) { symbol in
-                                Button(symbol.name) { navigateToSymbol(symbol) }
-                            }
-                        }
-                    } label: {
-                        Label(document.displayPath, systemImage: document.icon)
+                    if let folder = documentFolder {
+                        Text(folder)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1).fixedSize()
                     }
-                    .help(document.displayPath)
                     ForEach(structureChain) { symbol in
-                        Image(systemName: "chevron.right").font(.system(size: 8))
-                            .foregroundStyle(.tertiary)
+                        if documentFolder != nil || symbol.id != structureChain.first?.id {
+                            Image(systemName: "chevron.right").font(.system(size: 8))
+                                .foregroundStyle(.tertiary)
+                        }
                         Menu {
                             Button("Go to \(symbol.name)") { navigateToSymbol(symbol) }
                             if !symbol.children.isEmpty {
@@ -567,8 +653,6 @@ struct WorkspaceDocumentView: View {
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .font(.system(size: typography.secondary))
-        .padding(.horizontal, 10)
-        .frame(height: 27)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Breadcrumbs")
     }
@@ -796,6 +880,8 @@ struct WorkspaceDocumentView: View {
                                    onRevealLine: { actions.revealLine($0) },
                                    scroll: previewScroll)
             .equatable()
+            .focusable()
+            .focused($previewHasKeyboardFocus)
             .frame(minWidth: 200)
     }
 
@@ -807,12 +893,13 @@ struct WorkspaceDocumentView: View {
                                 scroll: previewScroll,
                                 matches: find.isVisible && findTarget == .preview ? find.previewMatches : [],
                                 currentMatch: find.current, revealRequest: find.revealRequest,
+                                keyboardFocusRequest: notebookFocusRequest,
                                 onSearchText: { text in
                                     guard text != notebookSearchText else { return }
                                     notebookSearchText = text
                                     updateFind(anchor: nil)
                                 }, onFindCommand: { key, shift, option in
-                                    if key == "escape" { find.close() }
+                                    if key == "escape" { closeFind() }
                                     else if key == "f" { openFind(replace: option) }
                                     else if key == "g" { find.isVisible ? find.move(shift ? -1 : 1) : openFind(replace: false) }
                                     else if key == "z" { undoNotebookEdit(redo: shift) }
@@ -977,6 +1064,18 @@ struct WorkspaceDocumentView: View {
         }
         return MarkdownSearchHighlight(matches: matches, current: find.current,
                                        color: theme.matchHighlight, currentColor: theme.activeMatchHighlight)
+    }
+
+    private func closeFind() {
+        find.close()
+        guard isFocused else { return }
+        if findTarget == .source {
+            document.focusRequest = UUID()
+        } else if NotebookDocument.supports(document.path) {
+            notebookFocusRequest += 1
+        } else {
+            previewHasKeyboardFocus = true
+        }
     }
 
     private func openFind(replace: Bool) {

@@ -13,8 +13,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_tests: ${{ steps.changes.outputs.run_tests }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The PR's merge commit includes its head, even for forks. The complete
+          # history lets the detector compare merge-base..head across every commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changes
+        id: changes
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci_policy.py changes
+
   test:
-    name: Build and test
+    name: macOS build and test
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     # MarkdownView's manifest needs Swift 6.2, which ships with Xcode 26.
     runs-on: macos-26
     timeout-minutes: 45
@@ -79,3 +102,23 @@ jobs:
         with:
           name: wooloo-test-results
           path: build/wooloo.xcresult
+
+  result:
+    # Keep the required check's name stable. A skipped dependency by itself can
+    # satisfy branch protection; explicitly reject failures and unintended skips.
+    name: Build and test
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Check CI results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_TESTS: ${{ needs.changes.outputs.run_tests }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: python3 scripts/ci_policy.py result

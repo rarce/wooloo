@@ -32,7 +32,17 @@ Run the unit tests by replacing `build` with `test` in the command above. Add `-
 - **Bundled runtime and launchd lifecycle:** `TEST_RUNNER_WOOLOO_RUNTIME_E2E=1 xcodebuild -project wooloo.xcodeproj -scheme wooloo -configuration Debug -destination 'platform=macOS' -only-testing:woolooTests/HerdrRuntimeTests test` runs them against a real server, with temporary config, state and runtime roots and only the `wooloo-ui-test` session. For an interactive isolated setup, launch a test copy with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `WOOLOO_RUNTIME_ROOT` pointing under `/private/tmp`, and `WOOLOO_SETUP_SESSION=wooloo-ui-test`.
 - **Remote access:** `TEST_RUNNER_WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` runs `RemoteAccessTests/testRealQuickTunnelReachesThisMacsSSH` against a real quick tunnel (`WOOLOO_CLOUDFLARE_TUNNEL_TEST=1` outside `xcodebuild test`).
 
-CI runs the build and unit tests on every pull request.
+CI runs the build and unit tests on pull requests, except when every changed file is
+`README.md`, `TODO.md` or under `site/`. The detector considers the whole PR, including
+deletions and both sides of renames; unknown paths or an unreadable diff run the full
+suite. Every push to `main` runs the full suite, including documentation-only pushes.
+The required `Build and test` check rejects failed/cancelled jobs and unexpected skips.
+
+For CI tooling changes, run `python3 -m unittest discover -s scripts/tests -v` and
+`actionlint` when available. Keep the macOS tests, complete-concurrency audit and ad-hoc
+signature intact. Compiled products are deliberately not cached: the audit requires
+fresh compilation evidence for the migrated files. The docs-only filter saves the PR's
+macOS run; it does not remove the run after merging into `main`.
 
 ## Code
 
@@ -53,7 +63,7 @@ Maintainers release by tag; `.github/workflows/release.yml` does the rest.
 
 1. Raise `MARKETING_VERSION` in `wooloo.xcodeproj/project.pbxproj` (both configurations of the app target) and merge it. The build number follows it, and Sparkle compares versions by it, so versions are plain `X.Y.Z`: no prerelease suffixes, and a broken release is replaced by the next patch version, never rebuilt under the same one.
 2. Optionally write the notes in `docs/releases/vX.Y.Z.md`; otherwise GitHub generates them from the merged pull requests. They appear in the release and in the update dialog.
-3. Once CI has passed on that commit of `main`, push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow refuses a commit that is not on `main` or has not passed CI.
+3. Once CI has passed on that commit of `main`, push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow refuses a commit that is not on `main` or has not passed CI. It requires a successful `ci.yml` run triggered by a push to `main` on that exact SHA, with the macOS job's tests and concurrency audit completed successfully; a green PR or aggregate check alone is insufficient.
 
 The workflow builds the universal app, publishes `wooloo-X.Y.Z.zip`, `appcast.xml` and `wooloo-X.Y.Z.dSYM.zip` (the build's debug symbols), and installed copies find the update through `https://github.com/rarce/wooloo/releases/latest/download/appcast.xml`. Every release must therefore carry `appcast.xml`; do not publish releases by hand. A fix to an older line (0.2.1 after 0.3.0) is published without becoming the latest release, so it does not replace the feed.
 
