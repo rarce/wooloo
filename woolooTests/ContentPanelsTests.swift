@@ -171,6 +171,28 @@ final class ContentPanelsTests: XCTestCase {
         XCTAssertTrue(window.panelLayouts.isEmpty)
     }
 
+    func testSelectingSearchInASplitRequestsFocusWithoutReplacingTheMainEditor() {
+        let (commands, documents, window) = makeCommands()
+        commands.openSearch(replace: true)
+        commands.splitTab(WorkspaceSearchModel.tabID, edge: .right)
+        let document = documents.newUntitled(at: location)
+        commands.selectTab(document)
+        let previousFocusRequest = commands.search.focusRequest
+
+        // The all-tabs menu selects an existing Search view without making it reappear.
+        commands.selectTab(WorkspaceSearchModel.tabID)
+
+        XCTAssertEqual(documents.activeID, document, "The main editor must stay open")
+        XCTAssertEqual(window.focusedPanel, .search)
+        XCTAssertEqual(commands.search.focusRequest, previousFocusRequest + 1,
+                       "Selecting the panel must also request keyboard focus for its search field")
+        XCTAssertTrue(commands.search.showsReplace, "Selecting Search preserves its existing state")
+
+        commands.selectTab(WorkspaceSearchModel.tabID)
+        XCTAssertEqual(commands.search.focusRequest, previousFocusRequest + 2,
+                       "Reselecting Search must focus its query field even if its panel is already selected")
+    }
+
     func testSearchSplitsLikeADocument() {
         let (commands, documents, window) = makeCommands()
         commands.openSearch(replace: false)

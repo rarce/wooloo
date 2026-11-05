@@ -460,7 +460,6 @@ struct ContentCommands {
         if replace { search.showsReplace = true }
         search.setLocation(explorerLocation)
         selectTab(WorkspaceSearchModel.tabID)
-        search.requestFocus()
     }
 
     func closeSearch() {

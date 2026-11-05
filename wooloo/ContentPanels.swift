@@ -471,6 +471,7 @@ extension ContentCommands {
             documents.activeID = id
             focusPanel(.main)
         }
+        if id == WorkspaceSearchModel.tabID { search.requestFocus() }
     }
 
     /// Keeps the rule that a tab shows in one place: a document or Search made active (opened
