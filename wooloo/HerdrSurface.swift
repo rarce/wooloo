@@ -922,6 +922,18 @@ struct HerdrEndpointTimeouts: Sendable {
     var healthReply: Duration = .seconds(10)
 }
 
+/// Generation-1 `ServerMessage::Clipboard` carries base64 text, not a terminal escape
+/// sequence. Bound it before decoding; queries and non-UTF-8 data never reach the host.
+enum HerdrClipboard {
+    static let maximumBytes = 1024 * 1024
+
+    static func text(from payload: String) -> String? {
+        guard payload.utf8.count <= ((maximumBytes + 2) / 3) * 4,
+              let data = Data(base64Encoded: payload), data.count <= maximumBytes else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
 /// One connection per instance. Shared descriptor, failure and queue state are lock-protected;
 /// the reader owns decoding/liveness state and the serial writer owns socket writes.
 final class HerdrSurfaceStream: @unchecked Sendable {
@@ -1101,7 +1113,8 @@ final class HerdrSurfaceStream: @unchecked Sendable {
 
     func run(path: String, cols: Int, rows: Int, cellWidth: Int, cellHeight: Int,
              onReady: () -> Void, onSurface: (HerdrSurface) -> Void,
-             onAgents: ((HerdrAgentProjection) -> Void)? = nil) throws {
+             onAgents: ((HerdrAgentProjection) -> Void)? = nil,
+             onClipboard: ((String) -> Void)? = nil) throws {
         let connected = try HerdrSocket.open(path: path, nonBlocking: true)
         lock.lock()
         fd = connected
@@ -1165,6 +1178,10 @@ final class HerdrSurfaceStream: @unchecked Sendable {
             var reader = SurfaceReader(bytes: frame)
             let tag = try reader.number()
             switch tag {
+            case 5 where welcomed && startupComplete: // ServerMessage::Clipboard
+                let payload = try reader.string()
+                guard reader.position == frame.count else { throw SurfaceProtocolError.invalidFrame }
+                if let text = HerdrClipboard.text(from: payload) { onClipboard?(text) }
             case 20:
                 let kind = try reader.string()
                 let data = try reader.string()

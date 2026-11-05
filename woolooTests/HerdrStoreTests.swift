@@ -872,6 +872,36 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertGreaterThan(published, 0, "A changed snapshot is still published")
     }
 
+    func testTerminalClipboardWritesHostPasteboardAndRejectsQueuedWritesAfterHiding() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        store.clipboardPasteboard = pasteboard
+        let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
+                                               afterHello: [SurfaceModel(width: 4, height: 2).surfaceFrame()])
+        defer { endpoint.stop() }
+        await connect()
+        await waitUntil("surface shown") { store.surface != nil }
+        let text = "Remote Claude copy: áé 🐑\nline two\n"
+        endpoint.send(FakeSurfaceEndpoint.clipboard(Data(text.utf8).base64EncodedString()))
+        await waitUntil("clipboard written") { pasteboard.string(forType: .string) == text }
+        let count = pasteboard.changeCount
+        endpoint.send(FakeSurfaceEndpoint.clipboard(Data(text.utf8).base64EncodedString()))
+        var next = SurfaceModel(width: 4, height: 2)
+        next.revision = 2
+        endpoint.send(next.surfaceFrame())
+        await waitUntil("duplicate write processed") { store.surface?.revision == 2 }
+        XCTAssertEqual(pasteboard.changeCount, count, "The same copy should not create duplicate clipboard history")
+
+        // Keep the main actor occupied while the reader queues the clipboard callback, then
+        // hide this destination before giving the callback a turn on the main queue.
+        endpoint.send(FakeSurfaceEndpoint.clipboard(Data("stale copy".utf8).base64EncodedString()))
+        usleep(100_000)
+        store.setPresentationActive(false)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(pasteboard.string(forType: .string), text)
+        XCTAssertEqual(pasteboard.changeCount, count)
+    }
+
     /// Herdr answers every pane.focus with a complete surface, so clicks in the pane it already
     /// focuses send none; a click in another pane still focuses that one.
     func testClicksInTheFocusedPaneDoNotFocusItAgain() async throws {
@@ -1541,6 +1571,9 @@ final class HerdrStoreTests: XCTestCase {
     }
 
     func testHostSwitchRoutesSpacesTerminalAndActionsToTheSameRemoteServer() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        store.clipboardPasteboard = pasteboard
         let originalSSH = WorkspaceFiles.sshExecutable
         let localSession = store.sessionName
         defer { WorkspaceFiles.sshExecutable = originalSSH }
@@ -1580,6 +1613,9 @@ final class HerdrStoreTests: XCTestCase {
         try await waitForRemoteSpace("remote project", server: remote)
         await waitUntil("remote terminal attached") { store.surface?.width == 7 }
         await waitUntil("remote agents attached") { store.agentViewState?.agents.count == 1 }
+        let copied = "Claude over SSH: áé 🐑\n"
+        remoteSurface.send(FakeSurfaceEndpoint.clipboard(Data(copied.utf8).base64EncodedString()))
+        await waitUntil("remote copy reaches this Mac") { pasteboard.string(forType: .string) == copied }
         server.emit(["event": "workspace.created"])
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(store.snapshot?.workspaces.first?.label, "remote project")
@@ -1602,6 +1638,9 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: oldSocket))
         await waitUntil("local Space restored") { store.snapshot?.workspaces.first?.label == "project" }
         XCTAssertNil(store.surface)
+        remoteSurface.send(FakeSurfaceEndpoint.clipboard(Data("old remote".utf8).base64EncodedString()))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(pasteboard.string(forType: .string), copied)
     }
 
     func testUnreachableRemoteNeverReusesLocalSnapshotOrSocket() async throws {

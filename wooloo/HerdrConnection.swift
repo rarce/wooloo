@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Darwin
 import Foundation
@@ -729,6 +730,8 @@ final class HerdrStore: ObservableObject {
     private var requestedFocusPaneID: String?
     private var terminalTheme = WoolooTheme.named(WoolooTheme.fallbackID)!
     private var terminalFocused = false
+    /// Tests use an isolated pasteboard, leaving the user's clipboard untouched.
+    var clipboardPasteboard = NSPasteboard.general
 
     func updateTerminalHost(theme: WoolooTheme, focused: Bool) {
         terminalTheme = theme
@@ -1130,6 +1133,17 @@ final class HerdrStore: ObservableObject {
                                 MainActor.assumeIsolated {
                                     guard store.generation == currentGeneration, store.presentationEpoch == epoch, store.surfaceStream === stream else { return }
                                     store.receiveAgentProjection(projection)
+                                }
+                            }
+                        } onClipboard: { text in
+                            DispatchQueue.main.async {
+                                MainActor.assumeIsolated {
+                                    guard store.generation == currentGeneration, store.presentationEpoch == epoch,
+                                          store.surfaceStream === stream, store.presentationActive else { return }
+                                    let pasteboard = store.clipboardPasteboard
+                                    guard pasteboard.string(forType: .string) != text else { return }
+                                    pasteboard.clearContents()
+                                    pasteboard.setString(text, forType: .string)
                                 }
                             }
                         }

@@ -69,6 +69,14 @@ final class FakeSurfaceEndpoint {
         return writer.data
     }
 
+    /// Frozen generation-1 ServerMessage::Clipboard: tag 5 and one base64 string.
+    static func clipboard(_ payload: String) -> Data {
+        var writer = SurfaceWireWriter()
+        writer.number(5)
+        writer.string(payload)
+        return writer.data
+    }
+
     var received: [Data] {
         lock.lock()
         defer { lock.unlock() }
@@ -231,7 +239,7 @@ final class HerdrSurfaceStreamTests: XCTestCase {
     }
 
     /// Runs the stream on a thread; returns what it delivered and a finished expectation.
-    private func start(_ stream: HerdrSurfaceStream, path: String)
+    private func start(_ stream: HerdrSurfaceStream, path: String, onClipboard: ((String) -> Void)? = nil)
         -> (ready: XCTestExpectation, surfaces: () -> [HerdrSurface], error: () -> Error?, finished: XCTestExpectation) {
         let ready = expectation(description: "ready")
         let finished = expectation(description: "finished")
@@ -244,7 +252,7 @@ final class HerdrSurfaceStreamTests: XCTestCase {
                     ready.fulfill()
                 } onSurface: { surface in
                     lock.lock(); surfaces.append(surface); lock.unlock()
-                }
+                } onClipboard: { onClipboard?($0) }
             } catch {
                 lock.lock(); failure = error; lock.unlock()
             }
@@ -264,6 +272,95 @@ final class HerdrSurfaceStreamTests: XCTestCase {
         HerdrEndpointTimeouts(handshake: .milliseconds(200), frame: .milliseconds(200),
                               write: .milliseconds(400), healthInterval: .milliseconds(100),
                               healthReply: .milliseconds(200))
+    }
+
+    func testClipboardWirePayloadDecodesUnicodeAndEmptyTextAfterHandshake() throws {
+        let text = "  Copia remota: áé 🐑\nsegunda línea\n"
+        let endpoint = try FakeSurfaceEndpoint(path: directory + "/c.sock", afterHello: [
+            // Literal fixture from Herdr 0.9.5's server_clipboard_roundtrip (base64 "test").
+            Data([5, 8]) + Data("dGVzdA==".utf8),
+            FakeSurfaceEndpoint.clipboard(Data(text.utf8).base64EncodedString()),
+            FakeSurfaceEndpoint.clipboard("")
+        ])
+        defer { endpoint.stop() }
+        let stream = HerdrSurfaceStream()
+        defer { stream.cancel() }
+        let copied = expectation(description: "clipboard writes")
+        copied.expectedFulfillmentCount = 3
+        let lock = NSLock()
+        var values: [String] = []
+        let run = start(stream, path: endpoint.path) { value in
+            lock.withLock { values.append(value) }
+            copied.fulfill()
+        }
+        wait(for: [run.ready, copied], timeout: 5)
+        XCTAssertEqual(lock.withLock { values }, ["test", text, ""])
+        stream.cancel()
+        wait(for: [run.finished], timeout: 2)
+    }
+
+    func testClipboardRejectsInvalidAndOversizedDataWithoutInterruptingSurfaces() throws {
+        let endpoint = try FakeSurfaceEndpoint(path: directory + "/c.sock", afterHello: [
+            FakeSurfaceEndpoint.clipboard("?"),
+            FakeSurfaceEndpoint.clipboard("not base64!"),
+            FakeSurfaceEndpoint.clipboard(Data([0xFF, 0xFE]).base64EncodedString()),
+            FakeSurfaceEndpoint.clipboard(Data(repeating: 65, count: HerdrClipboard.maximumBytes + 1).base64EncodedString()),
+            model.surfaceFrame()
+        ])
+        defer { endpoint.stop() }
+        let stream = HerdrSurfaceStream()
+        defer { stream.cancel() }
+        let copied = expectation(description: "invalid clipboard ignored")
+        copied.isInverted = true
+        let run = start(stream, path: endpoint.path) { _ in copied.fulfill() }
+        wait(for: [run.ready], timeout: 5)
+        waitUntil { run.surfaces().count == 1 }
+        wait(for: [copied], timeout: 0.05)
+        XCTAssertTrue(stream.isReady)
+        XCTAssertEqual(run.surfaces().first?.cells, model.surface.cells)
+        stream.cancel()
+        wait(for: [run.finished], timeout: 2)
+    }
+
+    func testClipboardWaitsForAuthoritativeSnapshot() throws {
+        let endpoint = try FakeSurfaceEndpoint(path: directory + "/c.sock", afterHello: [
+            FakeSurfaceEndpoint.clipboard(Data("too early".utf8).base64EncodedString()),
+            FakeSurfaceEndpoint.control("shell.snapshot.v1", #"{"boot_id":"boot-test"}"#),
+            FakeSurfaceEndpoint.clipboard(Data("ready".utf8).base64EncodedString())
+        ], sendsSnapshot: false)
+        defer { endpoint.stop() }
+        let stream = HerdrSurfaceStream()
+        defer { stream.cancel() }
+        let copied = expectation(description: "ready clipboard")
+        let run = start(stream, path: endpoint.path) { text in
+            XCTAssertEqual(text, "ready")
+            copied.fulfill()
+        }
+        wait(for: [run.ready, copied], timeout: 5)
+        stream.cancel()
+        wait(for: [run.finished], timeout: 2)
+    }
+
+    func testClipboardSizeLimitIncludesExactBoundary() {
+        let text = String(repeating: "a", count: HerdrClipboard.maximumBytes)
+        XCTAssertEqual(HerdrClipboard.text(from: Data(text.utf8).base64EncodedString()), text)
+        XCTAssertNil(HerdrClipboard.text(from: Data((text + "a").utf8).base64EncodedString()))
+    }
+
+    func testMalformedClipboardFramesNeverDeliverPartialText() throws {
+        let valid = FakeSurfaceEndpoint.clipboard("dGVzdA==")
+        for (index, frame) in [Data(valid.dropLast()), valid + Data([0])].enumerated() {
+            let endpoint = try FakeSurfaceEndpoint(path: directory + "/\(index).sock", afterHello: [frame])
+            defer { endpoint.stop() }
+            let stream = HerdrSurfaceStream()
+            let copied = expectation(description: "malformed clipboard ignored")
+            copied.isInverted = true
+            let run = start(stream, path: endpoint.path) { _ in copied.fulfill() }
+            wait(for: [run.ready, run.finished], timeout: 5)
+            wait(for: [copied], timeout: 0.01)
+            XCTAssertNotNil(run.error())
+            stream.cancel()
+        }
     }
 
     func testMissingWelcomeOrSnapshotTimesOutAndCanBeCancelled() throws {

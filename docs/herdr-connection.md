@@ -107,6 +107,8 @@ Unit and socket tests cover decoding, replacement, malformed frames, geometry, c
 
 The live renderer records UTF-16 offsets at cell boundaries. Before replacing the attributed text for a new surface, it maps the selected range to cells, then restores the range in the new render. Copy uses a snapshot of the selected text so subsequent screen updates do not change clipboard content, and trims terminal row padding. In `wooloo-ui-test`, selection remained active through about 200 updates from another pane, and Command-C/Command-V reproduced the selected text.
 
+Program-initiated copies use Herdr's generation-1 [`ServerMessage::Clipboard`](https://github.com/herdrdev/herdr/blob/v0.9.5/src/protocol/wire.rs) (tag 5, one base64 string), which carries OSC 52 writes parsed by Herdr. wooloo decodes valid UTF-8 text up to 1 MiB and writes it to the Mac's pasteboard on the main thread. This uses the same endpoint for Local and SSH destinations; no remote clipboard utility is needed. Clipboard data is accepted only after the endpoint handshake and initial snapshot, and callbacks from an old connection or a destination that has since been hidden are discarded. Invalid base64, non-UTF-8 data and oversized writes leave the clipboard unchanged; clipboard-read queries are not supported.
+
 The suitability and integration boundary for [SwiftTerm](swiftterm-evaluation.md) are documented separately.
 
 ## Herdr configuration

@@ -36,6 +36,7 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 - Live terminal surfaces over Herdr's binary client endpoint: colors, text attributes, cursor, alternate-screen apps and Herdr's inline PNG and RGB images, drawn with Core Text at Herdr's frame rate.
 - Direct typing with control and option chords, paste, and dropped file paths. Mouse clicks, drags and the wheel reach programs that enable mouse reporting.
 - Drag split borders to resize panes, select and copy text, and Command-click links.
+- Programs can copy text to this Mac through OSC 52, including over SSH. The visible destination accepts UTF-8 clipboard writes up to 1 MiB; clipboard-read queries are not supported.
 - Herdr's prefix (`ctrl+b` by default) and direct key bindings, read from and edited in the same `config.toml`.
 
 ### Files and editor
