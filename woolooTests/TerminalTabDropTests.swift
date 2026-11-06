@@ -190,6 +190,31 @@ final class TerminalTabDropViewTests: XCTestCase {
         XCTAssertNil(drag.dropTerminalTab())
     }
 
+    func testOnlyTerminalTabDragsShowTheNewSpaceAffordance() {
+        let drag = TabDragModel()
+        XCTAssertFalse(drag.isDraggingTerminalTab)
+        _ = drag.begin(.document, id: "doc")
+        XCTAssertFalse(drag.isDraggingTerminalTab)
+        _ = drag.begin(.search, id: "search")
+        XCTAssertFalse(drag.isDraggingTerminalTab)
+        _ = drag.begin(.terminal, id: "w1:t2")
+        XCTAssertTrue(drag.isDraggingTerminalTab)
+        drag.cancel()
+        XCTAssertFalse(drag.isDraggingTerminalTab)
+    }
+
+    func testReleaseHidesTheAffordanceWhileTheDropCanStillReadItsPayload() async {
+        let drag = TabDragModel()
+        let provider = drag.begin(.terminal, id: "w1:t2")
+        drag.finishDragging()
+        XCTAssertFalse(drag.isDraggingTerminalTab)
+        XCTAssertEqual(drag.draggedTerminalTab, "w1:t2")
+        let payload = await SpaceDragModel.payload(provider, type: TabDragModel.type)
+        XCTAssertEqual(payload, "w1:t2")
+        XCTAssertEqual(drag.dropTerminalTab(), "w1:t2")
+        XCTAssertFalse(drag.isDraggingTerminalTab)
+    }
+
     /// A runtime-only UTType is insufficient: SwiftUI's AppKit destinations need the
     /// private drag types exported by the application bundle as data types.
     func testTabDragTypesAreDeclaredByTheAppBundle() throws {
