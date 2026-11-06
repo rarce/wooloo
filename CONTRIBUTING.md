@@ -22,6 +22,8 @@ herdr --session wooloo-ui-test workspace create --cwd "$PWD" --label wooloo-test
 herdr --session wooloo-ui-test server stop   # when finished
 ```
 
+When running beside another wooloo build, add `WOOLOO_APP_BUNDLE_IDENTIFIER=dev.wooloo.ui-test` to the `xcodebuild` command to give the test app a separate macOS identity and preference domain. Use a different identifier and `-derivedDataPath` for each concurrent worktree, together with the separate Herdr session above.
+
 ## Tests
 
 Run the unit tests by replacing `build` with `test` in the command above. Add `-only-testing:woolooTests/ClassName` to run one class. The Git, SSH and Herdr socket tests create disposable repositories and sockets under `/private/tmp/wooloo-tests` and remove them afterwards; they ignore your global Git config.
