@@ -28,6 +28,12 @@ final class IntegratedWindowChromeTests: XCTestCase {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { views(type, in: $0) }
     }
 
+    private func mouseEvent(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                                        windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                        clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+    }
+
     private func settle(_ window: NSWindow) async throws {
         for _ in 0..<10 {
             window.contentView?.layoutSubtreeIfNeeded()
@@ -35,7 +41,7 @@ final class IntegratedWindowChromeTests: XCTestCase {
         }
     }
 
-    func testTabsInTheNativeTitlebarKeepMouseEventsForTheirOwnDrag() async throws {
+    func testNativeTitlebarInteractionsTemporarilyDisableWindowDraggingForAllTabGroups() async throws {
         let drag = TabDragModel()
         let host = NSHostingView(rootView: VStack(spacing: 0) {
             HStack(spacing: 0) {
@@ -57,7 +63,8 @@ final class IntegratedWindowChromeTests: XCTestCase {
             }
             .frame(height: 30)
             Spacer()
-        }.ignoresSafeArea(.container, edges: .top))
+        }.ignoresSafeArea(.container, edges: .top)
+            .background { IntegratedWindowObserver(chrome: IntegratedWindowChrome()) })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 400),
                               styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -68,16 +75,20 @@ final class IntegratedWindowChromeTests: XCTestCase {
         window.contentView = host
         try await settle(window)
 
+        let observer = try XCTUnwrap(views(IntegratedWindowObserver.WindowView.self, in: host).first)
         let tabs = views(MiddleClickView.self, in: host)
         XCTAssertEqual(tabs.count, 3)
         for tab in tabs {
             let point = tab.convert(NSPoint(x: tab.bounds.midX, y: tab.bounds.midY), to: nil)
             XCTAssertGreaterThan(point.y, window.contentLayoutRect.maxY, "Exercise the native titlebar, not the content below it")
             let hit = try XCTUnwrap(host.hitTest(host.superview?.convert(point, from: nil) ?? point))
-            XCTAssertFalse(hit.mouseDownCanMoveWindow, "Tab mouse events must not become native titlebar window drags")
+            XCTAssertTrue(window.isMovable)
+            observer.handleMouseEvent(try mouseEvent(.leftMouseDown, at: point, in: window))
+            XCTAssertFalse(window.isMovable, "Native titlebar dragging must be disabled even when a SwiftUI ancestor allows it")
+            observer.handleMouseEvent(try mouseEvent(.leftMouseUp, at: point, in: window))
+            XCTAssertTrue(window.isMovable, "The window policy must be restored after release")
             XCTAssertFalse(hit is WindowDragView)
         }
-        XCTAssertTrue(window.isMovable, "Explicit empty regions must still be able to move the window")
     }
 
     func testHeaderSharesTheNativeControlRowAndKeepsDragSpaceWhenSidebarIsHidden() async throws {
@@ -107,8 +118,18 @@ final class IntegratedWindowChromeTests: XCTestCase {
         let tab = try XCTUnwrap(views(MiddleClickView.self, in: content).first)
         let tabPoint = tab.convert(NSPoint(x: tab.bounds.midX, y: tab.bounds.midY), to: content.superview)
         let tabHit = try XCTUnwrap(content.hitTest(tabPoint))
-        XCTAssertFalse(tabHit.mouseDownCanMoveWindow,
-                       "The real header must keep tab gestures out of native window dragging")
+        XCTAssertFalse(tabHit is WindowDragView)
+        let observer = try XCTUnwrap(views(IntegratedWindowObserver.WindowView.self, in: content).first)
+        let nativePoint = tab.convert(NSPoint(x: tab.bounds.midX, y: tab.bounds.midY), to: nil)
+        observer.handleMouseEvent(try mouseEvent(.leftMouseDown, at: nativePoint, in: window))
+        XCTAssertFalse(window.isMovable, "The real header must keep tab gestures out of native window dragging")
+        observer.handleMouseEvent(try mouseEvent(.leftMouseUp, at: nativePoint, in: window))
+        XCTAssertTrue(window.isMovable)
+
+        let empty = try XCTUnwrap(regions.first { $0.bounds.width == 44 })
+        let emptyPoint = empty.convert(NSPoint(x: empty.bounds.midX, y: empty.bounds.midY), to: nil)
+        observer.handleMouseEvent(try mouseEvent(.leftMouseDown, at: emptyPoint, in: window))
+        XCTAssertTrue(window.isMovable, "Explicit empty regions must still start native window drags")
     }
 
 
@@ -154,15 +175,37 @@ final class IntegratedWindowChromeTests: XCTestCase {
         defer { first.close(); second.close() }
         let delegate = Delegate()
         first.delegate = delegate
+        first.isMovable = true
+        second.isMovable = true
         first.isMovableByWindowBackground = true
         second.isMovableByWindowBackground = true
         let observer = IntegratedWindowObserver.WindowView(chrome: IntegratedWindowChrome())
         first.contentView?.addSubview(observer)
         try await settle(first)
         XCTAssertTrue(first.delegate === delegate, "Document close guards must keep their delegate")
+        XCTAssertTrue(first.isMovable)
+        XCTAssertTrue(second.isMovable)
         XCTAssertFalse(first.isMovableByWindowBackground)
         XCTAssertTrue(second.isMovableByWindowBackground)
+        let titlebar = NSPoint(x: first.frame.width / 2, y: first.frame.height - 10)
+        observer.handleMouseEvent(try mouseEvent(.leftMouseDown, at: titlebar, in: second))
+        XCTAssertTrue(first.isMovable)
+        XCTAssertTrue(second.isMovable, "Another window's clicks must never change its policy")
+        observer.handleMouseEvent(try mouseEvent(.leftMouseDown, at: NSPoint(x: 100, y: 100), in: first))
+        XCTAssertTrue(first.isMovable, "Content below the titlebar keeps its normal policy")
+        observer.handleMouseEvent(try mouseEvent(.leftMouseDown, at: titlebar, in: first))
+        XCTAssertFalse(first.isMovable)
+        observer.handleMouseEvent(try mouseEvent(.leftMouseUp, at: titlebar, in: first))
+        XCTAssertTrue(first.isMovable)
+        first.isMovable = false
+        observer.handleMouseEvent(try mouseEvent(.leftMouseDown, at: titlebar, in: first))
+        observer.handleMouseEvent(try mouseEvent(.leftMouseUp, at: titlebar, in: first))
+        XCTAssertFalse(first.isMovable, "An initially immovable window must stay immovable")
+        first.isMovable = true
+        observer.handleMouseEvent(try mouseEvent(.leftMouseDown, at: titlebar, in: first))
+        XCTAssertFalse(first.isMovable)
         observer.removeFromSuperview()
+        XCTAssertTrue(first.isMovable, "Dismantling during a gesture must restore the original policy")
         XCTAssertTrue(first.isMovableByWindowBackground)
         XCTAssertTrue(first.delegate === delegate)
     }

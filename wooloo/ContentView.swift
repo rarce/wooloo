@@ -1052,7 +1052,7 @@ private struct DestinationContentView: View {
                                     .tabDropAtEnd(drag: window.tabDrag, [.terminal: terminalTabsEnd])
                             }
                             if window.showsSearchTab {
-                                WindowInteractionRegion { searchTab }
+                                searchTab
                                     .fixedSize(horizontal: true, vertical: false)
                                     .id(WorkspaceSearchModel.tabID)
                             }

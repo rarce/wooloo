@@ -40,6 +40,9 @@ struct IntegratedWindowObserver: NSViewRepresentable {
         let chrome: IntegratedWindowChrome
         private weak var observedWindow: NSWindow?
         private var previousBackgroundDrag = false
+        private var previousMovable: Bool?
+        private var mouseMonitor: Any?
+        private var dragEndTimer: Timer?
         private var measurementPending = false
 
         init(chrome: IntegratedWindowChrome) {
@@ -55,6 +58,12 @@ struct IntegratedWindowObserver: NSViewRepresentable {
             previousBackgroundDrag = window.isMovableByWindowBackground
             // Only the explicit empty titlebar regions move the window; tabs keep their drags.
             window.isMovableByWindowBackground = false
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+                MainActor.assumeIsolated {
+                    self?.handleMouseEvent(event)
+                }
+                return event
+            }
             for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification,
                          NSWindow.didExitFullScreenNotification] {
                 NotificationCenter.default.addObserver(self, selector: #selector(windowChanged), name: name, object: window)
@@ -63,9 +72,49 @@ struct IntegratedWindowObserver: NSViewRepresentable {
         }
 
         func uninstall() {
+            if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+            mouseMonitor = nil
+            finishMouseInteraction()
             NotificationCenter.default.removeObserver(self)
             observedWindow?.isMovableByWindowBackground = previousBackgroundDrag
             observedWindow = nil
+        }
+
+        /// AppKit's server-side titlebar drag ignores both background dragging and a
+        /// SwiftUI hit view's mouseDownCanMoveWindow. Block it for this mouse sequence,
+        /// while leaving our explicit empty drag regions and other windows untouched.
+        func handleMouseEvent(_ event: NSEvent) {
+            if event.type == .leftMouseUp {
+                finishMouseInteraction()
+                return
+            }
+            guard event.type == .leftMouseDown else { return }
+            finishMouseInteraction()
+            guard let window = observedWindow, event.window === window,
+                  event.locationInWindow.y >= window.contentLayoutRect.maxY,
+                  let hit = window.contentView?.superview?.hitTest(event.locationInWindow),
+                  !(hit is WindowDragView) else { return }
+            previousMovable = window.isMovable
+            window.isMovable = false
+            // A native item drag can consume mouse-up outside this window. Restore the
+            // policy on physical release too, without monitoring or intercepting other apps.
+            if NSEvent.pressedMouseButtons & 1 != 0 {
+                let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
+                    guard let self else { timer.invalidate(); return }
+                    MainActor.assumeIsolated {
+                        if NSEvent.pressedMouseButtons & 1 == 0 { self.finishMouseInteraction() }
+                    }
+                }
+                dragEndTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        }
+
+        private func finishMouseInteraction() {
+            dragEndTimer?.invalidate()
+            dragEndTimer = nil
+            if let previousMovable { observedWindow?.isMovable = previousMovable }
+            previousMovable = nil
         }
 
         @objc private func windowChanged(_ notification: Notification) { scheduleMeasurement() }
@@ -95,29 +144,6 @@ struct IntegratedWindowObserver: NSViewRepresentable {
 struct WindowDragRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> WindowDragView { WindowDragView() }
     func updateNSView(_ view: WindowDragView, context: Context) {}
-}
-
-/// Full-size content still occupies the native titlebar, whose automatic window drag is
-/// independent of `isMovableByWindowBackground`. Keep tab gestures in the content view.
-struct WindowInteractionRegion<Content: View>: NSViewRepresentable {
-    let content: Content
-
-    init(@ViewBuilder content: () -> Content) { self.content = content() }
-
-    func makeNSView(context: Context) -> WindowInteractionView {
-        let view = WindowInteractionView(rootView: AnyView(content.environment(\.self, context.environment)))
-        view.sizingOptions = [.intrinsicContentSize]
-        view.safeAreaRegions = []
-        return view
-    }
-
-    func updateNSView(_ view: WindowInteractionView, context: Context) {
-        view.rootView = AnyView(content.environment(\.self, context.environment))
-    }
-}
-
-final class WindowInteractionView: NSHostingView<AnyView> {
-    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 final class WindowDragView: NSView {

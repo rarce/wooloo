@@ -224,11 +224,7 @@ extension View {
     func tabReorder(_ group: TabDragGroup, id: String, index: Int, drag: TabDragModel,
                     connection: HerdrActionConnection? = nil, destinations: HerdrDestinations? = nil,
                     shouldFollow: @escaping () -> Bool = { true }, onMove: @escaping (String, Int) -> Void) -> some View {
-        // Observe drag state inside this host so beginning a drag does not replace its root.
-        WindowInteractionRegion {
-            modifier(TabReorderModifier(group: group, id: id, index: index, drag: drag, connection: connection, destinations: destinations, shouldFollow: shouldFollow, onMove: onMove))
-        }
-        .fixedSize(horizontal: true, vertical: false)
+        modifier(TabReorderModifier(group: group, id: id, index: index, drag: drag, connection: connection, destinations: destinations, shouldFollow: shouldFollow, onMove: onMove))
     }
 
     /// Drops on the bar's space after a group's tabs, which put the dragged tab last in its
