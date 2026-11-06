@@ -43,6 +43,18 @@ final class PreviewScrollMemoryTests: XCTestCase {
         XCTAssertEqual(memory.restoredMarkdownBlock(in: "Z.\n\n" + text), MarkdownBlockAnchor(index: 3))
     }
 
+    func testReadingARestoredBlockDoesNotMoveAShownPreview() {
+        let memory = PreviewScrollMemory()
+        let original = "First.\n\nSecond.\n\nThird."
+        memory.setMarkdownBlock(MarkdownBlockAnchor(index: 1), in: original)
+        let edited = "Inserted.\n\n" + original
+        for _ in 0..<3 {
+            XCTAssertEqual(memory.restoredMarkdownBlock(in: edited), MarkdownBlockAnchor(index: 2))
+            XCTAssertEqual(memory.shownMarkdownBlock, MarkdownBlockAnchor(index: 1),
+                           "Reading a new preview's initial position must not change a live preview's position")
+        }
+    }
+
     func testARepeatedBlockKeepsItsOccurrence() {
         let section = (0..<4).map { "### Parameters\n\nText \($0)." }.joined(separator: "\n\n")
         // The third heading, at 4, with three new blocks near the start.

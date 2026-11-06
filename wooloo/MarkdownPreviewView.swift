@@ -58,7 +58,6 @@ struct MarkdownPreviewView: View, Equatable {
     @Environment(\.woolooTheme) private var theme
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
     @State private var width: CGFloat = 0
-    @State private var scrollStart = MarkdownPreviewScrollStart()
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         MainActor.assumeIsolated {
@@ -87,18 +86,6 @@ struct MarkdownPreviewView: View, Equatable {
         }
     }
 
-    /// The block at the top of the preview. Read and written through the memory, not state:
-    /// scrolling past a block then does not run this body, which parses the whole document. The
-    /// first read restores the saved block; later ones leave a shown preview where it is.
-    private var topBlock: Binding<MarkdownBlockAnchor?> {
-        let (scroll, text, start) = (scroll, text, scrollStart)
-        return Binding(get: {
-            guard !start.taken else { return scroll?.shownMarkdownBlock }
-            start.taken = true
-            return scroll?.restoredMarkdownBlock(in: text)
-        }, set: { scroll?.setMarkdownBlock($0, in: text) })
-    }
-
     private var themed: some View {
         ScrollView {
             markdown(theme: theme)
@@ -118,7 +105,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .frame(maxWidth: 900, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
-        .scrollPosition(id: topBlock, anchor: .top)
+        .modifier(MarkdownPreviewScrollPosition(text: text, memory: scroll))
         .background(theme.contentBackground)
     }
 
@@ -156,7 +143,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .padding(compact ? 12 : 32)
                 .frame(maxWidth: .infinity)
         }
-        .scrollPosition(id: topBlock, anchor: .top)
+        .modifier(MarkdownPreviewScrollPosition(text: text, memory: scroll))
         .background(theme.sidebarBackground.overlay(Color.black.opacity(theme.isDark ? 0 : 0.05)))
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
     }
@@ -458,8 +445,7 @@ final class PreviewScrollMemory {
     /// is when blocks were added or removed above it since.
     func restoredMarkdownBlock(in text: String) -> MarkdownBlockAnchor? {
         if let block = markdownBlock, text != markdownText {
-            markdownBlock = Self.block(block, from: markdownText, to: text)
-            markdownText = text
+            return Self.block(block, from: markdownText, to: text)
         }
         return markdownBlock
     }
@@ -498,10 +484,27 @@ final class PreviewScrollMemory {
     }
 }
 
-/// Whether a shown Markdown preview has taken its starting block from the scroll memory.
-@MainActor
-final class MarkdownPreviewScrollStart {
-    var taken = false
+/// The scroll view owns its live position. Memory supplies an initial value and receives
+/// changes, but never drives an already shown preview through a computed binding. In particular,
+/// SwiftUI can read the binding during layout without remapping or mutating another preview's
+/// position. Keeping state in this modifier also avoids parsing Markdown on each scroll update.
+private struct MarkdownPreviewScrollPosition: ViewModifier {
+    let text: String
+    let memory: PreviewScrollMemory?
+    @State private var block: MarkdownBlockAnchor?
+
+    init(text: String, memory: PreviewScrollMemory?) {
+        self.text = text
+        self.memory = memory
+        _block = State(initialValue: memory?.restoredMarkdownBlock(in: text))
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition(id: $block, anchor: .top)
+            .onChange(of: block) { _, block in memory?.setMarkdownBlock(block, in: text) }
+            .onChange(of: text) { _, text in memory?.setMarkdownBlock(block, in: text) }
+    }
 }
 
 /// A preview's callbacks, kept by its document view and updated on each of that view's

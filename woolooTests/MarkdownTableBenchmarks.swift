@@ -146,6 +146,87 @@ final class MarkdownTableBenchmarks: XCTestCase {
 /// Find must still reach blocks that have not been built by the lazy preview yet.
 @MainActor
 final class MarkdownPreviewRenderingTests: XCTestCase {
+    /// Scroll a tall, wrapping table while its native selection overlays change appearance.
+    /// The window stays non-key so running this regression does not take the user's keyboard focus.
+    func testLargeTableKeepsScrollingAcrossFocusAndTypographyChanges() throws {
+        let suite = "markdown-freeze-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(MarkdownPreviewStyle.document.rawValue, forKey: MarkdownPreviewStyle.storageKey)
+        var text = "# Review\n\n" + MarkdownTableFixtures.table(rows: 5, columns: 4)
+            + "\n\n## Findings\n\n" + MarkdownTableFixtures.table(rows: 58, columns: 3)
+        // Local reproduction only; CI always uses the synthetic document above.
+        if let path = ProcessInfo.processInfo.environment["WOOLOO_MARKDOWN_REPRO_FILE"] {
+            guard path.hasPrefix("/") else {
+                throw WorkspaceFileError.message("The reproduction document path must be absolute")
+            }
+            text = try String(contentsOfFile: path, encoding: .utf8)
+        }
+        let location = WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test-markdown-freeze",
+                                             workspaceID: "table-freeze", workspaceLabel: "Table freeze", root: "/private/tmp")
+        let memory = PreviewScrollMemory()
+        var typeScale = WoolooTypography()
+        func preview(active: ControlActiveState) -> some View {
+            MarkdownPreviewView(text: text, path: "review.md", location: location,
+                                onOpenFile: { _ in }, scroll: memory)
+                .equatable()
+                .defaultAppStorage(defaults)
+                .environment(\.controlActiveState, active)
+                .preferredColorScheme(.dark)
+                .environment(\.woolooTheme, WoolooTheme.named(WoolooTheme.fallbackID)!)
+                .environment(\.woolooTypography, typeScale)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        let host = NSHostingView(rootView: preview(active: .key))
+        host.frame = NSRect(x: 0, y: 0, width: 1000, height: 800)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = host
+        defer { window.close() }
+        window.title = "Markdown scroll regression"
+        window.orderFront(nil)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        func wheel(_ delta: Int32, phase: Int64 = 0, momentum: Int64 = 0) throws {
+            let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                              wheel1: delta, wheel2: 0, wheel3: 0))
+            event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            event.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+            event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+            let liveScroll = try XCTUnwrap(markdownScrollView(in: host))
+            liveScroll.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: event)))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.002))
+            host.layoutSubtreeIfNeeded()
+        }
+        for width in [449.0, 780.5] {
+            window.setContentSize(NSSize(width: width, height: 320))
+            for delta: Int32 in [-50, 50, -50, 50] {
+                let scroll = try XCTUnwrap(markdownScrollView(in: host))
+                let start = scroll.documentVisibleRect.minY
+                let canScrollDown = start + 500 < (scroll.documentView?.bounds.height ?? 0) - scroll.bounds.height
+                try wheel(delta, phase: 1)
+                for step in 0..<80 {
+                    if step % 20 == 0 {
+                        typeScale.base = step.isMultiple(of: 40) ? 13 : 17
+                        host.rootView = preview(active: step.isMultiple(of: 40) ? .key : .inactive)
+                    }
+                    try wheel(delta, phase: 2)
+                }
+                try wheel(0, phase: 4)
+                try wheel(delta, momentum: 1)
+                for _ in 0..<80 { try wheel(delta, momentum: 2) }
+                try wheel(0, momentum: 3)
+                if delta < 0 && canScrollDown {
+                    let liveScroll = try XCTUnwrap(markdownScrollView(in: host))
+                    XCTAssertGreaterThan(liveScroll.documentVisibleRect.minY, start + 200,
+                                         "Scrolling must advance within the table instead of retargeting its top")
+                }
+            }
+        }
+        XCTAssertNotNil(memory.shownMarkdownBlock, "Scrolling must still remember the visible block")
+    }
+
     func testDifferentShapeStylesAreNotEqual() {
         let red = AnyShapeStyle(SwiftUI.Color.red)
         let blue = AnyShapeStyle(SwiftUI.Color.blue)
