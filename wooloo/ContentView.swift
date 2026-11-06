@@ -1051,7 +1051,11 @@ private struct DestinationContentView: View {
                                     .contentShape(Rectangle())
                                     .tabDropAtEnd(drag: window.tabDrag, [.terminal: terminalTabsEnd])
                             }
-                            if window.showsSearchTab { searchTab.id(WorkspaceSearchModel.tabID) }
+                            if window.showsSearchTab {
+                                WindowInteractionRegion { searchTab }
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .id(WorkspaceSearchModel.tabID)
+                            }
                             ForEach(Array(documents.enumerated()), id: \.element.id) { index, document in
                                 documentTab(document, index: index).id(document.id)
                             }

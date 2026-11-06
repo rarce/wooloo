@@ -51,6 +51,7 @@
 		A10000000000000000000038 /* WorkspaceRepositoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000039 /* WorkspaceRepositoryView.swift */; };
 		E02600000000000000000001 /* WorkspaceGitHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E02600000000000000000002 /* WorkspaceGitHubView.swift */; };
 		A10000000000000000000050 /* MarkdownPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000051 /* MarkdownPreviewView.swift */; };
+		E91700000000000000000001 /* MermaidDiagramViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E91700000000000000000002 /* MermaidDiagramViewer.swift */; };
 		A10000000000000000000048 /* ThemeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000049 /* ThemeSettingsView.swift */; };
 		A10000000000000000000046 /* WoolooTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000047 /* WoolooTheme.swift */; };
 		A10000000000000000000044 /* WorkspaceSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000045 /* WorkspaceSearchView.swift */; };
@@ -130,6 +131,7 @@
 		C30000000000000000000032 /* HerdrSocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000033 /* HerdrSocketTests.swift */; };
 		C30000000000000000000034 /* WorkspaceFilesRemoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000035 /* WorkspaceFilesRemoteTests.swift */; };
 		C30000000000000000000040 /* WorkspaceTreeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000041 /* WorkspaceTreeTests.swift */; };
+		E91700000000000000000003 /* MermaidDiagramViewerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E91700000000000000000004 /* MermaidDiagramViewerTests.swift */; };
 		C300000000000000000000E2 /* EditorLineChangesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C300000000000000000000E3 /* EditorLineChangesTests.swift */; };
 		C300000000000000000000F2 /* EditorMultiCursorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C300000000000000000000F3 /* EditorMultiCursorTests.swift */; };
 		C30000000000000000000042 /* DocumentFindTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000043 /* DocumentFindTests.swift */; };
@@ -219,6 +221,7 @@
 		A10000000000000000000039 /* WorkspaceRepositoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRepositoryView.swift; sourceTree = "<group>"; };
 		E02600000000000000000002 /* WorkspaceGitHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitHubView.swift; sourceTree = "<group>"; };
 		A10000000000000000000051 /* MarkdownPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPreviewView.swift; sourceTree = "<group>"; };
+		E91700000000000000000002 /* MermaidDiagramViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MermaidDiagramViewer.swift; sourceTree = "<group>"; };
 		A10000000000000000000049 /* ThemeSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeSettingsView.swift; sourceTree = "<group>"; };
 		A10000000000000000000047 /* WoolooTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooTheme.swift; sourceTree = "<group>"; };
 		A10000000000000000000045 /* WorkspaceSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSearchView.swift; sourceTree = "<group>"; };
@@ -296,6 +299,7 @@
 		C30000000000000000000033 /* HerdrSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSocketTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000035 /* WorkspaceFilesRemoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceFilesRemoteTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000041 /* WorkspaceTreeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTreeTests.swift; sourceTree = "<group>"; };
+		E91700000000000000000004 /* MermaidDiagramViewerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MermaidDiagramViewerTests.swift; sourceTree = "<group>"; };
 		C300000000000000000000E3 /* EditorLineChangesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorLineChangesTests.swift; sourceTree = "<group>"; };
 		C300000000000000000000F3 /* EditorMultiCursorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorMultiCursorTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000043 /* DocumentFindTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentFindTests.swift; sourceTree = "<group>"; };
@@ -389,6 +393,7 @@
 				A10000000000000000000039 /* WorkspaceRepositoryView.swift */,
 				E02600000000000000000002 /* WorkspaceGitHubView.swift */,
 				A10000000000000000000051 /* MarkdownPreviewView.swift */,
+				E91700000000000000000002 /* MermaidDiagramViewer.swift */,
 				A10000000000000000000049 /* ThemeSettingsView.swift */,
 				A10000000000000000000047 /* WoolooTheme.swift */,
 				A10000000000000000000045 /* WorkspaceSearchView.swift */,
@@ -485,6 +490,7 @@
 				D91000000000000000000007 /* EditorSyntaxTests.swift */,
 				F18000000000000000000004 /* EditorStructureTests.swift */,
 				C30000000000000000000041 /* WorkspaceTreeTests.swift */,
+				E91700000000000000000004 /* MermaidDiagramViewerTests.swift */,
 				C30000000000000000000043 /* DocumentFindTests.swift */,
 				C300000000000000000000E3 /* EditorLineChangesTests.swift */,
 				C300000000000000000000F3 /* EditorMultiCursorTests.swift */,
@@ -688,6 +694,7 @@
 				A10000000000000000000038 /* WorkspaceRepositoryView.swift in Sources */,
 				E02600000000000000000001 /* WorkspaceGitHubView.swift in Sources */,
 				A10000000000000000000050 /* MarkdownPreviewView.swift in Sources */,
+				E91700000000000000000001 /* MermaidDiagramViewer.swift in Sources */,
 				A10000000000000000000048 /* ThemeSettingsView.swift in Sources */,
 				A10000000000000000000046 /* WoolooTheme.swift in Sources */,
 				A10000000000000000000044 /* WorkspaceSearchView.swift in Sources */,
@@ -773,6 +780,7 @@
 				D91000000000000000000006 /* EditorSyntaxTests.swift in Sources */,
 				F18000000000000000000003 /* EditorStructureTests.swift in Sources */,
 				C30000000000000000000040 /* WorkspaceTreeTests.swift in Sources */,
+				E91700000000000000000003 /* MermaidDiagramViewerTests.swift in Sources */,
 				C30000000000000000000042 /* DocumentFindTests.swift in Sources */,
 				C300000000000000000000E2 /* EditorLineChangesTests.swift in Sources */,
 				C300000000000000000000F2 /* EditorMultiCursorTests.swift in Sources */,

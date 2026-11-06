@@ -467,16 +467,19 @@ struct HerdrDestinationSection: View {
                         Button("Close Space…", systemImage: "xmark", role: .destructive) { close(space) }.disabled(!store.isConnected)
                     }
                 }
-                Label("Drop terminal tab here for a new Space", systemImage: "plus.square.dashed")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 6)
-                    .contentShape(Rectangle())
-                    .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: nil))
-                    .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: nil) }
-                          ?? "Move a single-pane terminal tab into a new Space")
+                if tabDrag.isDraggingTerminalTab,
+                   tabDrag.spaceConnection?.validStore === store {
+                    Label("Drop terminal tab here for a new Space", systemImage: "plus.square.dashed")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 6)
+                        .contentShape(Rectangle())
+                        .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: nil))
+                        .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: nil) }
+                              ?? "Move a single-pane terminal tab into a new Space")
+                }
                 if let error = store.actionError {
                     Text(error).font(.caption).foregroundStyle(theme.warning)
                 }
