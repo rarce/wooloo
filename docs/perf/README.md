@@ -23,7 +23,9 @@ This script times decode, layout and draw per frame over the synthetic workloads
 
 ## End to end: `scripts/terminal-e2e.sh`
 
-This script starts a dedicated `wooloo-perf` Herdr session and opens a Release build on it with `WOOLOO_METRICS_FILE` and `WOOLOO_SURFACE_TRACE` set. It then runs these workloads in the pane:
+This script starts a dedicated `wooloo-perf` Herdr session and opens a Release build on it with `WOOLOO_METRICS_FILE` and `WOOLOO_SURFACE_TRACE` set. On exit, including a failed workload or interrupt, it closes the app and removes the Space created by that run. Existing Spaces are preserved, and the server is stopped only if the script started it. Cleanup failures make the run fail instead of silently leaving test Spaces behind.
+
+The workloads are:
 
 - `ascii`, `color` and `unicode`: 250 lines/s for 5 s
 - `graphics`: 100 lines/s for 5 s, every tenth line a different 192×96 PNG shown over 24×4 cells with the Kitty graphics protocol (`q=2`, so the terminal answers nothing), like a notebook or an agent printing plots between output

@@ -95,26 +95,50 @@ python3 $root/scripts/terminal-perf.py workloads $run
 started_server=0
 app_pid=
 resource_pid=
+workspace=
 load_pids=()
 previous_session=$(defaults read dev.wooloo.app HerdrLastSession 2>/dev/null || true)
 cleanup() {
+    local cleanup_status=$?
+    trap - EXIT INT TERM
     (( ${#load_pids} )) && kill $load_pids 2>/dev/null || true
     if [[ -n $resource_pid ]]; then
         kill $resource_pid 2>/dev/null || true
         wait $resource_pid 2>/dev/null || true
     fi
     [[ -n $app_pid ]] && kill $app_pid 2>/dev/null || true
+    [[ -n $app_pid ]] && wait $app_pid 2>/dev/null || true
     # wooloo remembers the session it connected to; give the developer's own choice back.
     if [[ -n $previous_session ]]; then
         defaults write dev.wooloo.app HerdrLastSession -string $previous_session
     else
         defaults delete dev.wooloo.app HerdrLastSession 2>/dev/null || true
     fi
-    [[ $started_server == 1 ]] && $herdr server stop > /dev/null 2>&1 || true
+    # Stop our app first so it cannot recreate an empty Space. Remove only this run's
+    # Space, including when a workload fails; leave pre-existing Spaces and servers alone.
+    if [[ -n $workspace ]]; then
+        if $herdr workspace close $workspace > /dev/null 2>&1; then
+            echo "Closed test Space $workspace in session $session"
+        else
+            echo "Failed to close test Space $workspace in session $session" >&2
+            cleanup_status=1
+        fi
+    fi
+    if [[ $started_server == 1 ]]; then
+        if ! $herdr server stop > /dev/null 2>&1; then
+            echo "Failed to stop test server $session" >&2
+            cleanup_status=1
+        fi
+    fi
+    exit $cleanup_status
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-if ! $herdr status server 2>/dev/null | grep -q "status: running"; then
+# Drain status completely: grep -q can SIGPIPE Herdr under pipefail and make a
+# running server look stopped, incorrectly claiming ownership of it.
+if ! $herdr status server 2>/dev/null | grep "status: running" > /dev/null; then
     $herdr server > $run/server.log 2>&1 &
     started_server=1
     for _ in {1..100}; do
