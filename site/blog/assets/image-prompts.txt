@@ -1,0 +1,30 @@
+Editorial illustrations for "ADE vs IDE: from writing code to shaping software"
+Generated with the built-in imagegen tool on November 6, 2026.
+Revision: hacker / Unix technical editorial style, replacing the earlier sculptural illustrations.
+Conceptual references read before generating:
+- https://news.ycombinator.com/item?id=47140322 (Emdash)
+- https://news.ycombinator.com/item?id=47626598 (ctx)
+These discussions informed the terminal/worktree/review subject matter. The artwork is original,
+not copied from those projects or presented as a real wooloo screenshot.
+Real product screenshots are unchanged.
+
+PORTADA: ade-shaping-software-hacker.webp, ade-shaping-software-hacker-768.webp,
+ade-shaping-software-hacker-social.jpg
+Use case: illustration-story.
+Asset type: replacement editorial cover for wooloo.dev, a technical blog post titled "ADE vs IDE: from writing code to shaping software".
+Primary request: a distinctly hacker, Unix, terminal-native editorial graphic about directing agentic software development. Draw from the conceptual themes in the Hacker News discussions of Emdash and ctx: real terminal sessions, isolated Git worktrees, following agent progress, and carefully reviewing changes. This is an ORIGINAL composition, not copied from another website.
+Art direction: an exceptionally crisp flat technical plate, like a beautifully typeset terminal multiplexer meets an old Unix systems diagram and contemporary independent hacker zine. Deep almost-black ink background, fine warm gray monospaced strokes, restrained phosphor green and amber highlights. Authentic working-tool aesthetic with disciplined spacing, subtle print grain, and a faint underlying character-cell grid.
+Composition: wide landscape 16:9. A small input prompt on the left fans out into three rectangular terminal panes, each shown as a distinct branch of a Git worktree diagram. The panes converge on a much larger human review junction to the right, with a legible green/red code patch. A single final integration line leaves that junction. Emphasize deliberate review and judgement instead of a swarm or autonomous factory.
+Exact short labels only: "intent", "plan", "worktree/a", "worktree/b", "review", "integrate". Use these six labels once each in real monospaced typography. Add only a few sparse nonverbal terminal marks such as >_, +, -, brackets, and simple ASCII connector characters. No long prose and no other words. Avoid fabricated data, test scores or performance claims.
+Rendering: sharp 2D linework and screenprint texture, fine terminal borders and ASCII-like connectors, strong editorial hierarchy, the overall branching structure must read clearly at thumbnail size.
+Constraints: not a product screenshot, no wooloo interface reconstruction, no vendor logos, no hands or people, no toy geometry, no floating glass panels, no glossy 3D objects, no pastel gradients, no robots, no hoodie figures, no neon cyberpunk city, no Matrix rain, no watermark. Keep it austere, useful and technically credible. Opaque background.
+
+ARTIFACTS: review-artifacts-hacker.webp and review-artifacts-hacker-768.webp
+Use case: illustration-story.
+Asset type: replacement supporting editorial illustration for wooloo.dev's article on reviewing coding-agent work.
+Primary request: an original hacker/Unix visual about three evidence artifacts supporting one developer's review: a Markdown plan, a Jupyter notebook with saved results, and a Git diff. Inspired by the practical terminal/worktree/review concerns discussed on Hacker News around Emdash and ctx, without copying any project graphics.
+Art direction: crisp flat terminal-art technical plate, restrained independent hacker-publication aesthetic. Near-black background, fixed-width typography, extremely fine gray character-cell grid, phosphor-green rules and restrained amber annotations, red and green diff marks. Slight screenprint grain, no glowy blur.
+Composition: wide landscape 16:9, three distinct flat rectangular panes aligned across a careful grid. Left pane is an ASCII branching plan; middle pane is a small line chart and result table drawn in terminal characters with no numbers or quantitative claims; right pane is a concise abstract patch with + and - lines. Fine routed connectors carry evidence from all three into a single small review node below.
+Exact labels (monospaced, legible, verbatim): "plan.md" above the left pane, "analysis.ipynb" above the middle pane, "git diff" above the right pane, "review" at the convergence node. No other words, letters or numbers. Abstract code lines may be made from short horizontal strokes rather than fake code.
+Visual priorities: the drawing should feel made by an engineer with taste: purposeful topology, aligned baselines, generous negative space, sharp terminal-like borders, simple ASCII control marks. It should feel related to the other cover, without repeating the same composition.
+Constraints: conceptual illustration, not a screenshot of wooloo; no company logos, no real product UI, no architecture buildings, hands, people, pastel paper, glass panels, 3D rendering, robots, dramatic neon, Matrix rain or watermark. Opaque background.

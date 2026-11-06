@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-1Z0JSL8DYB"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-1Z0JSL8DYB');
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADE vs IDE: from writing code to shaping software | wooloo</title>
+<meta name="description" content="Explore ADE vs IDE workflows, open-source and commercial alternatives, and how wooloo brings Markdown, notebooks and Git into agent supervision on macOS.">
+<meta name="author" content="Roberto Arce">
+<link rel="icon" type="image/png" href="../../icon.png">
+<link rel="apple-touch-icon" href="../../icon.png">
+<link rel="canonical" href="https://wooloo.dev/blog/ade-vs-ide-agentic-development/">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://wooloo.dev/blog/ade-vs-ide-agentic-development/">
+<meta property="og:title" content="ADE vs IDE: from writing code to shaping software">
+<meta property="og:description" content="A practical look at agentic workflows, the alternatives, and wooloo's approach to reviewing plans, results and code in one Mac workspace.">
+<meta property="og:image" content="https://wooloo.dev/blog/assets/ade-shaping-software-hacker-social.jpg">
+<meta property="og:image:alt" content="Terminal-style diagram connecting intent, parallel worktrees, review and integration">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="675">
+<meta property="article:published_time" content="2026-11-06T12:00:00Z">
+<meta property="article:author" content="https://github.com/rarce">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="../../style.css">
+<link rel="stylesheet" href="../blog.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BlogPosting",
+      "@id": "https://wooloo.dev/blog/ade-vs-ide-agentic-development/#article",
+      "mainEntityOfPage": "https://wooloo.dev/blog/ade-vs-ide-agentic-development/",
+      "headline": "ADE vs IDE: from writing code to shaping software",
+      "description": "Explore ADE vs IDE workflows, open-source and commercial alternatives, and how wooloo brings Markdown, notebooks and Git into agent supervision on macOS.",
+      "datePublished": "2026-11-06T12:00:00Z",
+      "inLanguage": "en",
+      "author": {"@type": "Person", "name": "Roberto Arce", "url": "https://github.com/rarce", "sameAs": ["https://github.com/rarce"]},
+      "publisher": {"@type": "Organization", "name": "wooloo", "url": "https://wooloo.dev/"},
+      "isPartOf": {"@type": "Blog", "@id": "https://wooloo.dev/blog/#blog", "name": "wooloo blog", "url": "https://wooloo.dev/blog/"},
+      "image": ["https://wooloo.dev/blog/assets/ade-shaping-software-hacker-social.jpg", "https://wooloo.dev/blog/assets/wooloo-diff-review.png", "https://wooloo.dev/blog/assets/wooloo-markdown-edit.png", "https://wooloo.dev/blog/assets/wooloo-notebook-preview.png"],
+      "articleSection": "Development workflows"
+    },
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {"@type": "ListItem", "position": 1, "name": "wooloo", "item": "https://wooloo.dev/"},
+        {"@type": "ListItem", "position": 2, "name": "Blog", "item": "https://wooloo.dev/blog/"},
+        {"@type": "ListItem", "position": 3, "name": "ADE vs IDE", "item": "https://wooloo.dev/blog/ade-vs-ide-agentic-development/"}
+      ]
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap top">
+  <a class="brand" href="../../"><img src="../../icon.png" alt="">wooloo</a>
+  <nav aria-label="Main navigation">
+    <a class="nav-start" href="../../#start">Get started</a>
+    <a href="../">Blog</a>
+    <a href="https://github.com/rarce/wooloo">GitHub</a>
+  </nav>
+</header>
+<main id="main" class="wrap" tabindex="-1">
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    <ol><li><a href="../../">wooloo</a></li><li><a href="../">Blog</a></li><li aria-current="page">ADE vs IDE</li></ol>
+  </nav>
+  <article>
+    <header class="post-header">
+      <span class="eyebrow">Development workflows · 01</span>
+      <h1>ADE vs IDE: from writing code to shaping software</h1>
+      <p class="lede">Coding agents change what we need from a development environment. Here is how to think about the workflow, where the alternatives fit, and why wooloo puts review and supervision at the center.</p>
+      <div class="post-meta"><span>By <a href="https://github.com/rarce" rel="author">Roberto Arce</a></span><time datetime="2026-11-06">November 6, 2026</time></div>
+      <aside class="post-summary" aria-labelledby="tldr">
+        <h2 id="tldr">TL;DR</h2>
+        <ul>
+          <li><strong>ADE workflows shift attention toward shaping the work:</strong> define intent, guide agents, examine evidence and integrate changes. IDE and ADE workflows can coexist.</li>
+          <li><strong>wooloo brings essential IDE tools into that review loop:</strong> Markdown proposals, notebooks with saved results, agent terminals, Git diffs, and repository issue and PR lists.</li>
+          <li><strong>Open-source and commercial alternatives emphasize different handoffs,</strong> from organizing local agents to delegating work to hosted environments.</li>
+          <li><strong>Unattended workflows remain an open question for wooloo,</strong> to explore as software development practices and users' needs evolve.</li>
+        </ul>
+      </aside>
+    </header>
+    <figure class="post-cover">
+      <img src="../assets/ade-shaping-software-hacker.webp" srcset="../assets/ade-shaping-software-hacker-768.webp 768w, ../assets/ade-shaping-software-hacker.webp 1672w" sizes="(min-width: 1120px) 1056px, calc(100vw - 32px)" width="1672" height="941" alt="Terminal-style diagram showing intent and planning branching into parallel worktree sessions, converging on a code review and integration step" fetchpriority="high">
+    </figure>
+    <div class="post-layout">
+      <nav class="toc" aria-label="In this article">
+        <p>In this article</p>
+        <ol>
+          <li><a href="#ade-vs-ide">What changes with an ADE?</a></li>
+          <li><a href="#workflow">The agentic workflow</a></li>
+          <li><a href="#alternatives">Open-source and commercial alternatives</a></li>
+          <li><a href="#wooloo">How wooloo supports review</a></li>
+          <li><a href="#practice">A workflow to try</a></li>
+          <li><a href="#unattended">The unattended question</a></li>
+          <li><a href="#questions">Common questions</a></li>
+        </ol>
+      </nav>
+      <div class="prose">
+        <p>When an agent is implementing a change, the next useful action may be reading its proposal, checking a result, or answering a question. The code editor still matters, but so do the artifacts and decisions around it.</p>
+        <p>That is the starting point for wooloo: bring the essential tools of an IDE into a workspace organized around <strong>supervising agents and reviewing their work</strong>. A Markdown proposal, a notebook's results, a Git diff and a running terminal are different views of the same task.</p>
+        <p class="takeaway"><strong>The practical distinction:</strong> an IDE brings tools together for working directly in code. An ADE, or agentic development environment, organizes the loop of giving agents context, following their progress, evaluating their output and deciding what to integrate. Modern tools increasingly support both.</p>
+
+        <section id="ade-vs-ide">
+          <h2>What changes between an IDE and an ADE?</h2>
+          <p>An <strong>integrated development environment (IDE)</strong> combines tools such as an editor, navigation, a debugger, build commands and source control. Its familiar loop is to make a change, run it, inspect the behavior and adjust.</p>
+          <p>In an <strong>agentic development environment (ADE)</strong>, some of that implementation loop is delegated. The developer defines the goal and constraints, supplies context, follows execution and checks the evidence. The environment needs to make those handoffs understandable.</p>
+          <p>ADE is an emerging product category. We use it here as a description of a workflow, rather than a certification or a fixed feature checklist. <a href="https://www.warp.dev/articles/what-is-an-agentic-development-environment">Warp's explanation of ADE</a> describes agents carrying out multiple steps under developer supervision. Meanwhile, <a href="https://cursor.com/docs/agent/overview">Cursor's agent</a> already edits files and runs commands inside an editor. The categories overlap.</p>
+          <p>For choosing a tool, I find a more useful question is: <strong>what does the environment help me understand and decide while work is happening?</strong> Agent visibility, readable proposals, inspectable results and clear Git changes become central parts of that answer.</p>
+        </section>
+
+        <section id="workflow">
+          <h2>The agentic development workflow, step by step</h2>
+          <p>Consider a small feature: add JSON output to a command-line tool while preserving its existing text output. A useful agent brief identifies the expected behavior, compatibility constraints, relevant files and how to verify the result. The workflow then has several distinct handoffs.</p>
+          <figure class="post-figure">
+            <div class="diagram">
+              <p class="diagram-label">A supervised development loop</p>
+              <ol class="workflow">
+                <li><strong>Scope</strong><span>Define the outcome and acceptance checks.</span></li>
+                <li><strong>Prepare</strong><span>Choose context, branch and working directory.</span></li>
+                <li><strong>Delegate</strong><span>Ask an agent to propose or implement.</span></li>
+                <li><strong>Supervise</strong><span>Read the plan and resolve blockers.</span></li>
+                <li><strong>Verify</strong><span>Inspect artifacts, diffs and test evidence.</span></li>
+                <li><strong>Integrate</strong><span>Commit the reviewed change and open a PR.</span></li>
+              </ol>
+              <p class="loop-note">Feedback can send the task back to its scope, proposal or implementation.</p>
+            </div>
+            <figcaption>Original workflow diagram. Each stage produces something the developer can inspect or decide.</figcaption>
+          </figure>
+          <p><strong>Context becomes a working artifact.</strong> A short Markdown plan can record assumptions and alternatives before the agent changes files. Keep it with the project so both the agent and the developer can refer to the same decisions.</p>
+          <p><strong>Parallel work needs boundaries.</strong> If two tasks touch the same checkout, they can interfere with each other. Separate <a href="https://git-scm.com/docs/git-worktree">Git worktrees</a> give them separate working directories while sharing repository history. A worktree is useful task isolation; it does not provide a security sandbox or isolate shared ports, databases and external services.</p>
+          <p><strong>Completion starts a review.</strong> An agent's status tells you where to direct attention. The actual result still needs scrutiny: does the diff match the scope, do the tests exercise the requested behavior, and can someone else reproduce the evidence?</p>
+        </section>
+
+        <section id="alternatives">
+          <h2>Open-source and commercial ADE alternatives</h2>
+          <p>Several tools support parts of this loop. The comparisons below describe their documented approaches, rather than a benchmark or a ranking. Start with the handoff you need help with: organizing terminals, isolating tasks, reviewing changes or running work away from your desktop.</p>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Alternatives comparison; scroll horizontally on small screens">
+            <table>
+              <caption>Alternatives by workflow and distribution model</caption>
+              <thead><tr><th scope="col">Tool</th><th scope="col">Workflow emphasis</th><th scope="col">Source and service model</th></tr></thead>
+              <tbody>
+                <tr><th scope="row"><a href="https://github.com/manaflow-ai/cmux">cmux</a></th><td>A macOS terminal with vertical tabs and notifications for following several coding agents.</td><td>Open-source desktop under GPL-3.0-or-later; server components have separate BSL terms. Check the repository's license scope.</td></tr>
+                <tr><th scope="row"><a href="https://github.com/generalaction/emdash">Emdash</a></th><td>An agent workspace for running multiple coding agents in parallel with your chosen providers.</td><td>Open source under Apache-2.0. Agent access and provider costs are separate.</td></tr>
+                <tr><th scope="row"><a href="https://github.com/ParadevAI/Paradev">Paradev (formerly Superset)</a></th><td>CLI agents, terminals, code review and browser previews together in a workspace.</td><td>The current repository lists MIT licensing and a free desktop app, with optional services on top.</td></tr>
+                <tr><th scope="row"><a href="https://www.conductor.build/docs/concepts/git-worktrees">Conductor</a></th><td>A task workspace around a Git worktree, with agent execution, review and integration; also offers cloud workspaces.</td><td>A commercial product with free local and paid cloud/team offerings. Check its <a href="https://www.conductor.build/docs/cloud/faq">current plans</a> and agent requirements.</td></tr>
+                <tr><th scope="row"><a href="https://docs.warp.dev/">Warp</a></th><td>A terminal-centered agent environment, with agent tooling and cloud execution options.</td><td>Offers free and paid services. Its <a href="https://www.warp.dev/pricing">pricing page</a> separates included features and usage allowances.</td></tr>
+                <tr><th scope="row"><a href="https://cursor.com/docs/agent/overview">Cursor</a></th><td>Agent work close to the editor: codebase exploration, file edits and terminal commands.</td><td>A commercial editor and agent product; useful when direct editing and agent work belong in the same loop.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>The agent itself is another layer. <a href="https://code.claude.com/docs/en/overview">Claude Code</a> and <a href="https://learn.chatgpt.com/docs/codex/cli">Codex CLI</a> can inspect code, change files and run commands from a terminal. An environment around them adds ways to organize and inspect that work. Evaluate the environment, the agent and the execution service separately.</p>
+          <p class="small">Sources checked November 6, 2026. Licenses, names, plans and hosted offerings can change; follow the linked primary sources when evaluating a tool. A free or open-source environment does not make model usage free.</p>
+        </section>
+
+        <section id="wooloo">
+          <h2>How wooloo brings IDE tools into agent supervision</h2>
+          <p>wooloo is a native macOS app built around Herdr's terminal sessions. Its emphasis is on keeping the task, its agent and its review material close together. The editor is available when you need to inspect or adjust code, alongside the other artifacts that help you evaluate the work.</p>
+          <figure class="post-figure">
+            <img src="../assets/review-artifacts-hacker.webp" srcset="../assets/review-artifacts-hacker-768.webp 768w, ../assets/review-artifacts-hacker.webp 1672w" sizes="(min-width: 1050px) 746px, (min-width: 792px) 760px, calc(100vw - 32px)" width="1672" height="941" alt="ASCII-style panels labeled plan.md, analysis.ipynb and git diff feeding evidence into one review step" loading="lazy" decoding="async">
+            <figcaption>Plans, results and code changes contribute different evidence to the same review. Original editorial illustration.</figcaption>
+          </figure>
+          <h3>Read the proposal in Markdown</h3>
+          <p>Ask the agent to write its approach as a Markdown file in the project. Open it in wooloo to read the rendered document, tables and Mermaid diagrams. You can evaluate the plan and return to the agent's terminal with specific feedback from the same workspace.</p>
+          <p>This makes planning a concrete review step: check assumptions, the intended scope and the proposed validation before implementation expands. Source, preview and split views also help when you need to revise the document.</p>
+          <figure class="post-figure">
+            <a href="../assets/wooloo-markdown-edit.png"><img src="../assets/wooloo-markdown-edit.png" width="1920" height="1200" alt="wooloo showing Markdown source beside its rendered preview, with the agent list and changed files in the same window" loading="lazy" decoding="async"></a>
+            <figcaption>Markdown source and preview in wooloo. This frame from the recorded demo shows a README edit; a proposal saved as Markdown uses the same view. Select the image for full size.</figcaption>
+          </figure>
+          <h3>Inspect results in Jupyter notebooks</h3>
+          <p>For data work, a diff alone may not communicate the outcome. Ask the agent to save its analysis in a Jupyter notebook with outputs, then inspect the cells, tables and supported output formats in wooloo. A reviewer can compare the explanation, the code and the saved results without leaving the app.</p>
+          <p>wooloo renders <strong>saved notebook outputs</strong> and supports cell editing and notebook diffs. Kernel execution happens outside this viewer. Before accepting an analysis, check how the notebook was produced and whether its outputs are current and reproducible.</p>
+          <figure class="post-figure">
+            <a href="../assets/wooloo-notebook-preview.png"><img src="../assets/wooloo-notebook-preview.png" width="1759" height="1407" alt="wooloo's notebook preview displaying Markdown, a Python cell, saved standard output and a rendered result table" loading="lazy" decoding="async"></a>
+            <figcaption>The notebook review surface, captured from wooloo's UI snapshot suite with test data. Code and saved output can be inspected together.</figcaption>
+          </figure>
+          <h3>Follow the task and review its changes</h3>
+          <p>Spaces, tabs and split panes organize the terminal work. The Agents list shows each recognized agent's location and state. Notifications and unread indicators help you return when a task finishes or requires input. Detection depends on Herdr's supported agents and integrations; a completion indicator is an attention signal.</p>
+          <p>From the Changes tree, open a unified or split diff, inspect changed files, stage them and write a commit. Repository history, branches and worktrees provide context for integration. You can make a small correction in the editor or send the issue back to the agent.</p>
+          <figure class="post-figure">
+            <a href="../assets/wooloo-diff-review.png"><img src="../assets/wooloo-diff-review.png" width="1920" height="1200" alt="A split Git diff in wooloo showing a Codex agent's JSON-output changes to a Python command-line tool, beside its Changes tree" loading="lazy" decoding="async"></a>
+            <figcaption>A split diff from the wooloo demo: the agent has added JSON output, and the developer reviews the patch before staging it. The recording uses an isolated session and a disposable repository.</figcaption>
+          </figure>
+          <h3>Keep repository issues and PRs in view</h3>
+          <p>The GitHub panel lists open issues and pull requests for the selected Space's repository. It keeps the task queue and incoming changes visible alongside the local work. It uses GitHub CLI authentication on that Space's host; selecting an item opens its details in the browser.</p>
+          <figure class="post-figure github-figure">
+            <a href="../assets/wooloo-github-prs.png"><img src="../assets/wooloo-github-prs.png" width="400" height="680" alt="wooloo's GitHub panel with Issues and Pull Requests tabs and two example pull requests, including a draft" loading="lazy" decoding="async"></a>
+            <figcaption>The GitHub panel, captured from the UI snapshot suite with example PR data. The list stays in the Space; full discussions and hosted PR reviews open on GitHub.</figcaption>
+          </figure>
+          <h3>Separate the workspace from the running session</h3>
+          <p><a href="https://herdr.dev/tui/docs/concepts/">Herdr's server</a> owns the terminal processes, layout and terminal state. wooloo renders those terminals natively and adds file, document and Git views. The same sessions remain accessible from Herdr's TUI.</p>
+          <figure class="post-figure">
+            <div class="diagram architecture">
+              <p class="diagram-label">Who owns what?</p>
+              <div class="clients"><div class="layer native"><strong>wooloo · macOS</strong><span>Supervision, document review, files and Git</span></div><div class="layer"><strong>Herdr TUI</strong><span>Terminal access to the same sessions</span></div></div>
+              <div class="connector">↕ terminal state and input ↕</div>
+              <div class="layer"><strong>Herdr server</strong><span>Sessions · workspaces · tabs · panes · agent state</span></div>
+              <div class="connector">↕ terminal processes ↕</div>
+              <div class="layer"><strong>Your agent CLIs and development tools</strong><span>Proposals · code changes · commands · test output</span></div>
+            </div>
+            <figcaption>Original architecture diagram of the terminal path. wooloo's file and Git operations use their own local or SSH access.</figcaption>
+          </figure>
+          <p>Quitting wooloo leaves the Herdr server and its agents running, so you can reconnect. That persistence depends on the host and server staying alive; it does not keep a local agent working while the Mac is asleep or powered off. Saved session restoration after a restart is a separate concern.</p>
+          <p>wooloo is <a href="https://github.com/rarce/wooloo/blob/main/LICENSE">MIT licensed</a> and includes Herdr. Install and authenticate your agent CLIs separately; their accounts, subscriptions and provider data handling remain their own. See the <a href="../../#start">setup instructions</a> and <a href="https://github.com/rarce/wooloo#privacy">connection and privacy details</a>.</p>
+        </section>
+
+        <section id="practice">
+          <h2>A supervised workflow to try in wooloo</h2>
+          <p>Start with one bounded task, such as the JSON-output example. Establish the review loop before adding parallel agents.</p>
+          <ol>
+            <li><strong>Anchor the task.</strong> Pick an issue and write down the expected behavior, compatibility requirements and acceptance checks. The GitHub list helps keep the repository's open work visible.</li>
+            <li><strong>Prepare its workspace.</strong> Open the project as a Space. For concurrent changes in the same repository, create separate worktrees and open their directories as separate Spaces. Multiple Spaces pointing at one directory still share the same files.</li>
+            <li><strong>Review a proposal.</strong> Start your installed agent CLI in a terminal and ask it to write a short Markdown plan. Read that plan in wooloo and resolve assumptions before implementation.</li>
+            <li><strong>Follow execution.</strong> Let the agent implement the agreed scope. Use its terminal and status to see progress, answer questions and redirect it when necessary.</li>
+            <li><strong>Inspect the evidence.</strong> Review the Git diff and run the relevant checks in a terminal. For analysis tasks, inspect a notebook's saved outputs and verify how they were generated. Ask for corrections where the result falls short.</li>
+            <li><strong>Integrate deliberately.</strong> Stage the reviewed files and commit. Use your normal GitHub CLI or browser workflow to open the PR; the GitHub panel then helps you see the repository's open PRs.</li>
+          </ol>
+          <p>The environment's value here is continuity: moving from a proposal to a terminal, from a terminal to a notebook, and from the result to a diff while keeping the task's context close at hand.</p>
+        </section>
+
+        <section id="unattended">
+          <h2>Should wooloo move toward unattended workflows?</h2>
+          <p>Some products put cloud execution and asynchronous delegation at the center of their offering. Conductor's cloud workspaces and Warp's cloud options are examples of that direction. They address a different handoff: giving a task to an environment that can continue independently of a developer's desktop session.</p>
+          <p>wooloo has so far prioritized a workspace where a developer stays close to proposals, execution and review. Persistent terminals support that workflow, but persistence alone does not define an unattended development system.</p>
+          <p><strong>Should wooloo take a larger role in unattended work as agentic software development evolves?</strong> That is an open product question. The answer should emerge from discovery: how developers divide work, where they need to intervene, which artifacts make results trustworthy, and what they actually want to hand off.</p>
+          <p>As agents and practices change, we need to learn where supervision belongs and which decisions people want to retain. That learning should shape wooloo's direction. It is a question to explore with users, rather than a commitment to a particular next feature.</p>
+        </section>
+
+        <section id="questions">
+          <h2>Common questions about ADE workflows</h2>
+          <h3>Does an ADE replace an IDE?</h3>
+          <p>The workflows can coexist. Debugging, refactoring and direct editing may still happen in your preferred IDE, while an agent workspace helps you delegate tasks and review their output. Some products combine both approaches.</p>
+          <h3>Is wooloo a coding agent?</h3>
+          <p>wooloo is the native workspace around your agents and review material. Agent CLIs perform the coding work in Herdr terminals. You choose, install and authenticate those CLIs yourself.</p>
+          <h3>Can I review notebooks and GitHub work inside wooloo?</h3>
+          <p>You can inspect notebooks with saved outputs and browse open GitHub issue and PR lists in the Space. Notebook kernel execution is external, and opening an issue or PR's full details takes you to the browser.</p>
+        </section>
+        <div class="author-card">
+          <p><strong>Written by <a href="https://github.com/rarce" rel="author">Roberto Arce</a></strong></p>
+          <p class="small">This article presents my perspective on wooloo's development workflow. Comparisons use the primary sources linked in the text. Illustrations are original; screenshots come from the project's recorded demo and UI snapshot suite.</p>
+        </div>
+        <aside class="post-cta" aria-label="Try wooloo">
+          <p><strong>Try the review loop in your own project.</strong> wooloo is a free, open-source early preview for macOS 14 and later. Agent CLIs are separate; the app is not notarized yet.</p>
+          <a class="button primary" href="../../#start">Get started with wooloo</a>
+          <a class="button" href="https://github.com/rarce/wooloo">Explore the source</a>
+        </aside>
+      </div>
+    </div>
+  </article>
+</main>
+<footer><div class="wrap">
+  <span><a href="../">All posts</a> · <a href="../../">wooloo</a> · <a href="https://github.com/rarce/wooloo">GitHub</a></span>
+  <span>wooloo is independent, not affiliated with or endorsed by Herdr, Anthropic or OpenAI.</span>
+  <span>This site uses Google Analytics to count visits. The wooloo app has no analytics or telemetry.</span>
+</div></footer>
+</body>
+</html>
