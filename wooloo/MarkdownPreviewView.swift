@@ -59,6 +59,7 @@ struct MarkdownPreviewView: View, Equatable {
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
     @State private var width: CGFloat = 0
     @State private var scrollStart = MarkdownPreviewScrollStart()
+    @State private var expandedDiagram: NSImage?
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         MainActor.assumeIsolated {
@@ -85,6 +86,22 @@ struct MarkdownPreviewView: View, Equatable {
                 }
             }
         }
+        .allowsHitTesting(expandedDiagram == nil)
+        .accessibilityHidden(expandedDiagram != nil)
+        .overlay {
+            if let expandedDiagram {
+                MermaidDiagramViewer(image: expandedDiagram,
+                                     theme: style == .document ? .markdownDocument : theme) {
+                    self.expandedDiagram = nil
+                }
+                .id(ObjectIdentifier(expandedDiagram))
+            }
+        }
+        .onChange(of: text) { expandedDiagram = nil }
+        .onChange(of: path) { expandedDiagram = nil }
+        .onChange(of: location) { expandedDiagram = nil }
+        .onChange(of: style) { expandedDiagram = nil }
+        .onChange(of: theme.id) { expandedDiagram = nil }
     }
 
     /// The block at the top of the preview. Read and written through the memory, not state:
@@ -164,17 +181,26 @@ struct MarkdownPreviewView: View, Equatable {
     private func markdown(theme: WoolooTheme) -> some View {
         MarkdownView(MarkdownSpaceLinks.rewritingImages(in: text, documentPath: path))
             .markdownLazyBlocks()
-            .markdownCodeBlockStyle(WoolooCodeBlockStyle(theme: theme))
+            .markdownCodeBlockStyle(WoolooCodeBlockStyle(theme: theme, onExpand: { expandedDiagram = $0 }))
             .markdownElementRenderer(.image(SpaceImageRenderer(location: location),
                                             urlScheme: MarkdownSpaceLinks.scheme))
             .markdownSearchHighlight(highlight)
             .markdownTaskToggle(onToggleTask)
-            .markdownRevealSource(onRevealLine)
+            // Keep the monitor's branch mounted, preserving lazy block state and scroll position.
+            .markdownRevealSource(revealSource)
             .environment(\.openURL, OpenURLAction { open($0) })
             .environment(\.woolooTheme, theme)
             .foregroundStyle(theme.text)
             .tint(theme.accent)
             .textSelection(.enabled)
+    }
+
+    private var revealSource: (@MainActor (Int) -> Void)? {
+        guard let onRevealLine else { return nil }
+        return { line in
+            guard expandedDiagram == nil else { return }
+            onRevealLine(line)
+        }
     }
 
     /// Opens Space files as document tabs, web links in the browser, and ignores anchors.
@@ -311,10 +337,11 @@ private struct SpaceImage: View {
 /// Highlighted code blocks, except ```mermaid fences, which render as native diagrams.
 private struct WoolooCodeBlockStyle: MarkdownCodeBlockStyle {
     let theme: WoolooTheme
+    let onExpand: (NSImage) -> Void
 
     func makeBody(configuration: Configuration) -> some View {
         if configuration.language?.lowercased() == "mermaid" {
-            MermaidBlock(source: configuration.code, theme: theme)
+            MermaidBlock(source: configuration.code, theme: theme, onExpand: onExpand)
         } else {
             DefaultCodeBlockStyle(highlighterTheme: CodeHighlighterTheme(themeName: theme.highlighterName))
                 .makeBody(configuration: configuration)
@@ -329,6 +356,7 @@ private struct MermaidBlock: View {
     @Environment(\.woolooTypography) private var typography
     let source: String
     let theme: WoolooTheme
+    let onExpand: (NSImage) -> Void
 
     @State private var image: NSImage?
     @State private var error: String?
@@ -341,6 +369,20 @@ private struct MermaidBlock: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: image.size.width)
                     .frame(maxWidth: .infinity, alignment: .center)
+                    .overlay(alignment: .bottomTrailing) {
+                        Button { onExpand(image) } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .padding(7)
+                                .background(theme.contentBackground, in: RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.muted.opacity(0.4)))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(theme.text)
+                        .help("Expand diagram")
+                        .accessibilityLabel("Expand Mermaid diagram")
+                        .accessibilityIdentifier("mermaid-expand")
+                        .padding(6)
+                    }
             } else if let error {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Mermaid diagram could not be rendered: \(error)", systemImage: "exclamationmark.triangle")
@@ -358,6 +400,8 @@ private struct MermaidBlock: View {
             }
         }
         .task(id: "\(theme.id)|\(source)") {
+            image = nil
+            error = nil
             let diagramTheme = DiagramTheme(
                 background: WoolooTheme.nsColor(theme.background),
                 foreground: WoolooTheme.nsColor(theme.foreground),
@@ -367,13 +411,14 @@ private struct MermaidBlock: View {
                 border: WoolooTheme.nsColor(theme.herdr.surface1)
             )
             do {
-                guard let rendered = try await MermaidRenderer.renderImageAsync(source: source, theme: diagramTheme) else {
-                    error = "unsupported diagram"
-                    return
-                }
+                let rendered = try await MermaidVectorImage.render(source: source, theme: diagramTheme)
+                try Task.checkCancellation()
                 image = rendered
                 error = nil
+            } catch is CancellationError {
+                return
             } catch {
+                guard !Task.isCancelled else { return }
                 self.error = error.localizedDescription
             }
         }
