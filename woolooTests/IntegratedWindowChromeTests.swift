@@ -35,10 +35,56 @@ final class IntegratedWindowChromeTests: XCTestCase {
         }
     }
 
+    func testTabsInTheNativeTitlebarKeepMouseEventsForTheirOwnDrag() async throws {
+        let drag = TabDragModel()
+        let host = NSHostingView(rootView: VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                WindowDragRegion().frame(width: 100)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(Array([TabDragGroup.terminal, .document, .search].enumerated()), id: \.offset) { index, group in
+                            Button("Tab \(index)") {}
+                                .buttonStyle(.plain)
+                                .frame(width: 120, height: 30)
+                                .contentShape(Rectangle())
+                                .onMiddleClick {}
+                                .tabReorder(group, id: "tab-\(index)", index: index, drag: drag) { _, _ in }
+                        }
+                    }
+                }
+                .frame(width: 360)
+                WindowDragRegion()
+            }
+            .frame(height: 30)
+            Spacer()
+        }.ignoresSafeArea(.container, edges: .top))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 400),
+                              styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = false
+        window.contentView = host
+        try await settle(window)
+
+        let tabs = views(MiddleClickView.self, in: host)
+        XCTAssertEqual(tabs.count, 3)
+        for tab in tabs {
+            let point = tab.convert(NSPoint(x: tab.bounds.midX, y: tab.bounds.midY), to: nil)
+            XCTAssertGreaterThan(point.y, window.contentLayoutRect.maxY, "Exercise the native titlebar, not the content below it")
+            let hit = try XCTUnwrap(host.hitTest(host.superview?.convert(point, from: nil) ?? point))
+            XCTAssertFalse(hit.mouseDownCanMoveWindow, "Tab mouse events must not become native titlebar window drags")
+            XCTAssertFalse(hit is WindowDragView)
+        }
+        XCTAssertTrue(window.isMovable, "Explicit empty regions must still be able to move the window")
+    }
+
     func testHeaderSharesTheNativeControlRowAndKeepsDragSpaceWhenSidebarIsHidden() async throws {
         let state = ContentWindowModel()
         state.showsSidebar = false
         state.showsFilesSidebar = false
+        state.showsSearchTab = true
         let (window, store) = makeWindow(state: state)
         defer { window.close(); store.stop() }
         try await settle(window)
@@ -58,6 +104,11 @@ final class IntegratedWindowChromeTests: XCTestCase {
         XCTAssertTrue(views(TerminalPaneTabDropTargetView.self, in: content).allSatisfy {
             $0.convert($0.bounds, to: nil).minX >= rect.maxX
         }, "Pane detach targets cannot cover native window controls")
+        let tab = try XCTUnwrap(views(MiddleClickView.self, in: content).first)
+        let tabPoint = tab.convert(NSPoint(x: tab.bounds.midX, y: tab.bounds.midY), to: content.superview)
+        let tabHit = try XCTUnwrap(content.hitTest(tabPoint))
+        XCTAssertFalse(tabHit.mouseDownCanMoveWindow,
+                       "The real header must keep tab gestures out of native window dragging")
     }
 
 

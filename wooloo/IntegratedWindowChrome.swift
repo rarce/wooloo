@@ -97,6 +97,29 @@ struct WindowDragRegion: NSViewRepresentable {
     func updateNSView(_ view: WindowDragView, context: Context) {}
 }
 
+/// Full-size content still occupies the native titlebar, whose automatic window drag is
+/// independent of `isMovableByWindowBackground`. Keep tab gestures in the content view.
+struct WindowInteractionRegion<Content: View>: NSViewRepresentable {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    func makeNSView(context: Context) -> WindowInteractionView {
+        let view = WindowInteractionView(rootView: AnyView(content.environment(\.self, context.environment)))
+        view.sizingOptions = [.intrinsicContentSize]
+        view.safeAreaRegions = []
+        return view
+    }
+
+    func updateNSView(_ view: WindowInteractionView, context: Context) {
+        view.rootView = AnyView(content.environment(\.self, context.environment))
+    }
+}
+
+final class WindowInteractionView: NSHostingView<AnyView> {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
 final class WindowDragView: NSView {
     /// Weak window keys keep independent restore frames without retaining closed windows.
     private static let fillRestoreFrames = NSMapTable<NSWindow, NSValue>.weakToStrongObjects()
