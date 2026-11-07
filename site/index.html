@@ -12,16 +12,16 @@
   gtag('config', 'G-1Z0JSL8DYB');
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wooloo — shape software with your coding agents</title>
-<meta name="description" content="An open source agentic development environment for macOS. Review Markdown plans, Jupyter notebook results and Git diffs alongside your coding agents.">
+<title>wooloo — a native macOS home for your coding agents</title>
+<meta name="description" content="Watch your coding agents, review Markdown plans, inspect notebook results and Git diffs, and edit in one native Mac window. Open source; Herdr included. Early preview.">
 <link rel="icon" type="image/png" href="icon.png">
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="canonical" href="https://wooloo.dev/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://wooloo.dev/">
-<meta property="og:title" content="wooloo — shape software with your agents">
-<meta property="og:description" content="Review plans, inspect results and evaluate code changes in one native macOS workspace. Free and open source.">
-<meta property="og:image" content="https://wooloo.dev/assets/home/social-preview.jpg">
+<meta property="og:title" content="wooloo">
+<meta property="og:description" content="A native macOS home for your coding agents. Open source client for Herdr.">
+<meta property="og:image" content="https://wooloo.dev/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="style.css">
 <style>
@@ -66,27 +66,54 @@
   .card h3 { margin: 0 0 10px; font-size: 19px; line-height: 1.3; letter-spacing: -0.01em; }
   .card p { margin: 0; color: var(--text-2); font-size: 15.5px; }
 
-  .eyebrow { margin: 0 0 10px; color: var(--accent); font: 500 12px/1.5 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
-  .hero .eyebrow { margin-top: 18px; }
-  .hero .story-link { margin: 18px auto 0; font-size: 14px; color: var(--text-3); }
-  .flow { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0 0 28px; padding: 0; list-style: none; color: var(--text-3); font: 13px/1.5 var(--mono); }
-  .flow li + li::before { content: '→'; margin-right: 16px; color: var(--accent); }
-  .workflow { display: grid; gap: 56px; }
-  .workflow-step { display: grid; gap: 22px; align-items: center; }
-  .workflow-step h3 { font-size: clamp(24px, 3vw, 30px); line-height: 1.2; margin: 0 0 14px; }
-  .workflow-step p:not(.eyebrow) { color: var(--text-2); margin: 0; }
-  .workflow-step p + p:not(.eyebrow) { margin-top: 12px; }
-  .workflow figure { margin: 0; min-width: 0; }
-  .workflow figure a { display: block; border-radius: 10px; }
-  .workflow img { display: block; width: 100%; height: auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--bg-raised); }
-  .workflow figcaption { margin-top: 9px; color: var(--text-3); font-size: 13px; }
-  @media (min-width: 960px) { .workflow-step { grid-template-columns: minmax(0, 3fr) minmax(0, 7fr); gap: 36px; } }
-  .repo-captures a + a { margin-top: 12px; }
-  .foundations { margin-top: 42px; }
-  .recording { margin-top: 32px; border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
-  .recording summary { color: var(--text-2); cursor: pointer; }
-  .recording video { display: block; width: 100%; height: auto; margin-top: 16px; border-radius: 8px; }
-  .recording p { color: var(--text-3); font-size: 14px; margin-bottom: 0; }
+  /* Features: each area of text lights up the part of the window it describes. */
+  .tour { display: grid; gap: 8px; }
+  .area { padding: 28px 0; border-top: 1px solid var(--line); }
+  .area:first-child { border-top: 0; padding-top: 8px; }
+  .area h3 { margin: 14px 0 10px; font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; }
+  .area ul { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 16px; max-width: 34em; }
+  .area li + li { margin-top: 8px; }
+  .area li::marker { color: var(--text-3); }
+  /* A small map of the window: sidebar, terminal, files, Git. */
+  .minimap { display: grid; grid-template-columns: 16fr 65fr 19fr; grid-template-rows: 45fr 55fr; gap: 2px; width: 60px; height: 38px; padding: 3px; border: 1px solid var(--line-strong); border-radius: 6px; }
+  .minimap i { background: var(--line); border-radius: 2px; }
+  .minimap i:nth-child(1) { grid-row: 1 / 3; }
+  .minimap i:nth-child(2) { grid-row: 1 / 3; }
+  .area[data-area="agents"] .minimap i:nth-child(1),
+  .area[data-area="terminal"] .minimap i:nth-child(2),
+  .area[data-area="files"] .minimap i:nth-child(3),
+  .area[data-area="git"] .minimap i:nth-child(4) { background: var(--accent); }
+  .tour-shot { display: none; }
+
+  @media (min-width: 960px) {
+    .tour { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; align-items: start; }
+    .area { padding: 9vh 0; }
+    .area:first-child { padding-top: 4vh; }
+    .area h3, .area ul { transition: color 0.3s; }
+    .tour[data-active] .area:not(.is-active) h3 { color: var(--text-3); }
+    .tour[data-active] .area:not(.is-active) ul { color: var(--text-3); }
+    .tour-shot { display: block; position: sticky; top: max(24px, calc(50vh - 220px)); margin: 0; overflow: hidden; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55); }
+    .tour-shot img { display: block; width: 100%; height: auto; }
+    .spot { position: absolute; opacity: 0; border: 2px solid var(--accent); border-radius: 8px; box-shadow: 0 0 0 200vmax rgba(9, 9, 16, 0.62);
+            transition: left 0.45s cubic-bezier(.3, .7, .2, 1), top 0.45s cubic-bezier(.3, .7, .2, 1), width 0.45s cubic-bezier(.3, .7, .2, 1), height 0.45s cubic-bezier(.3, .7, .2, 1), opacity 0.3s; }
+    .tour[data-active] .spot { opacity: 1; }
+    .tour[data-active="agents"] .spot { left: 0.4%; top: 0.6%; width: 15.4%; height: 98.8%; }
+    .tour[data-active="terminal"] .spot { left: 16.4%; top: 0.6%; width: 64.2%; height: 98.8%; }
+    .tour[data-active="files"] .spot { left: 81.1%; top: 0.6%; width: 18.5%; height: 44.4%; }
+    .tour[data-active="git"] .spot { left: 81.1%; top: 45.4%; width: 18.5%; height: 54%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spot, .area h3, .area ul, .button { transition: none !important; }
+  }
+
+  /* Current-release examples extend the original Files and Git tour. */
+  .feature-examples { margin-top: 18px; color: var(--text-2); font-size: 15px; }
+  .feature-examples summary { cursor: pointer; color: var(--accent); }
+  .feature-examples summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .feature-examples figure { margin: 18px 0 0; }
+  .feature-examples a { display: block; border-radius: 8px; }
+  .feature-examples img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
+  .feature-examples figcaption { margin-top: 7px; color: var(--text-3); font-size: 13px; }
 
   .command { position: relative; margin: 12px 0 0; }
   pre { margin: 0; background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font: 14px/1.5 var(--mono); color: var(--text); }
@@ -121,9 +148,9 @@
 <main id="main" tabindex="-1">
   <div class="wrap hero">
     <img class="icon" src="icon.png" alt="The wooloo icon: a sheep peeking out of a window">
-    <p class="eyebrow">Open source · Native macOS · Agentic development</p>
-    <h1>Shape software<br>with your agents.</h1>
-    <p class="lede">Review plans in Markdown, inspect notebook results, and evaluate code changes in one native macOS workspace.</p>
+    <h1>A native macOS home<br>for your coding agents</h1>
+    <p class="lede">Watch your agent sessions, open the files they change, review the Git diff and edit it, all in one native Mac window.</p>
+    <p class="herdr">Sessions are kept by <a href="https://herdr.dev/">Herdr</a>, which is included: they keep running when you close wooloo, and stay available from Herdr's own terminal UI.</p>
     <div class="actions">
       <div class="download">
       <a class="button primary" href="https://github.com/rarce/wooloo/releases/latest" aria-describedby="release-status"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Download for macOS</a>
@@ -134,12 +161,11 @@
     <ul class="meta" role="list">
       <li>Free and MIT licensed</li><li>macOS 14 or later</li><li>Apple silicon and Intel</li><li>Agent CLIs not included</li>
     </ul>
-    <p class="story-link"><a href="blog/ade-vs-ide-agentic-development/">ADE vs IDE: from writing code to shaping software ↗</a></p>
   </div>
 
   <figure class="wrap shot">
-    <a href="assets/home/overview.webp" class="zoom-open"><img src="assets/home/overview-1280.webp" srcset="assets/home/overview-768.webp 768w, assets/home/overview-1280.webp 1280w, assets/home/overview.webp 3200w" sizes="(min-width: 1120px) 1056px, calc(100vw - 32px)" width="3200" height="1700" alt="wooloo 0.3.16 displaying saved notebook results, a chart, project files and document tabs in a native macOS workspace" fetchpriority="high"></a>
-    <figcaption>wooloo 0.3.16 · A demonstration project, from proposal to evidence and code review. Select any screenshot to enlarge it.</figcaption>
+    <video id="demo" src="demo.mp4" poster="demo-poster.jpg" width="1920" height="1200" controls muted loop playsinline preload="metadata" aria-label="A one-minute demo: Codex adds a feature in a Herdr pane, wooloo shows it finish, then the diff is reviewed, the README edited with a live preview, the changes staged and committed, and the tests run in a terminal"></video>
+    <figcaption>Recorded in wooloo 0.3.1 with the Codex CLI; a brief interruption from an unrelated performance test was cut. Sped-up parts are marked. <a href="main-window.png" class="zoom-open">See a full-size screenshot</a>.</figcaption>
   </figure>
   <dialog class="zoom" id="zoom" aria-label="Screenshot at full size">
     <button type="button" class="close" id="zoom-close">Close</button>
@@ -148,37 +174,71 @@
 
   <section id="features">
     <div class="wrap">
-      <h2>Keep the whole development loop in view.</h2>
-      <p class="intro">Your agents write code. You shape the work through plans, evidence and decisions. wooloo brings the files, previews and Git tools you need into the workspace where your agents run.</p>
-      <ol class="flow" aria-label="Development workflow"><li>Intent</li><li>Proposal</li><li>Evidence</li><li>Review</li><li>Integrate</li></ol>
-      <div class="workflow">
-        <article class="workflow-step">
-          <div><p class="eyebrow">01 / Review the proposal</p><h3>Start with the intent.</h3><p>Read the agent’s plan as a rendered Markdown document. Explore Mermaid diagrams and examine the reasoning before steering the next step.</p><p>The proposal stays beside the project files, ready to revisit as the work evolves.</p></div>
-          <figure><a href="assets/home/proposal.webp" class="zoom-open"><img src="assets/home/proposal-1280.webp" srcset="assets/home/proposal-768.webp 768w, assets/home/proposal-1280.webp 1280w, assets/home/proposal.webp 1720w" sizes="(min-width: 1120px) 714px, (min-width: 960px) 66vw, calc(100vw - 32px)" width="1720" height="1638" alt="Markdown proposal with an opt-in JSON flag, a rendered Mermaid flowchart and evidence to review" loading="lazy"></a><figcaption>A demo proposal, rendered in wooloo 0.3.16.</figcaption></figure>
-        </article>
-        <article class="workflow-step">
-          <div><p class="eyebrow">02 / Inspect the evidence</p><h3>Make results part of the review.</h3><p>Open Jupyter notebooks to inspect saved outputs, tables and charts. Compare the evidence with the intended behavior, in the same workspace.</p><p>Edit cells and review notebook diffs. Run the notebook with your own tools when you need fresh results.</p></div>
-          <figure><a href="assets/home/notebook.webp" class="zoom-open"><img src="assets/home/notebook-1280.webp" srcset="assets/home/notebook-768.webp 768w, assets/home/notebook-1280.webp 1280w, assets/home/notebook.webp 2130w" sizes="(min-width: 1120px) 714px, (min-width: 960px) 66vw, calc(100vw - 32px)" width="2130" height="1410" alt="Jupyter notebook in wooloo showing JSON validation and a chart of 120 demo events" loading="lazy"></a><figcaption>Saved notebook results from a deterministic demo dataset.</figcaption></figure>
-        </article>
-        <article class="workflow-step">
-          <div><p class="eyebrow">03 / Evaluate the change</p><h3>Follow the diff through to the commit.</h3><p>Review unified or split Git diffs, including notebook changes cell by cell. Stage the changes you accept and write the commit message in wooloo.</p><p>Branches, history and worktrees keep parallel tasks connected to their repository context.</p></div>
-          <figure><a href="assets/home/diff.webp" class="zoom-open"><img src="assets/home/diff-1280.webp" srcset="assets/home/diff-768.webp 768w, assets/home/diff-1280.webp 1280w, assets/home/diff.webp 2565w" sizes="(min-width: 1120px) 714px, (min-width: 960px) 66vw, calc(100vw - 32px)" width="2565" height="890" alt="Git diff of a Python CLI adding an optional JSON output format in wooloo" loading="lazy"></a><figcaption>The same demo task, reviewed as a Git diff.</figcaption></figure>
-        </article>
-        <article class="workflow-step">
-          <div><p class="eyebrow">04 / Keep the context</p><h3>Your repository belongs in the workspace.</h3><p>Browse the repository’s open issues and pull requests from the current Space. Keep the next task and ongoing work in view while you evaluate the changes.</p><p>Select an issue or PR to open its details in your browser. Connect through the GitHub CLI account already configured on the Space’s host.</p></div>
-          <figure class="repo-captures"><a href="assets/home/github.webp" class="zoom-open"><img src="assets/home/github-1280.webp" srcset="assets/home/github-768.webp 768w, assets/home/github.webp 1120w" sizes="(min-width: 1120px) 714px, (min-width: 960px) 66vw, calc(100vw - 32px)" width="1120" height="360" alt="wooloo GitHub panel listing an open pull request for the public rarce/wooloo repository" loading="lazy"></a><a href="assets/home/github-issues.webp" class="zoom-open"><img src="assets/home/github-issues-768.webp" srcset="assets/home/github-issues-768.webp 768w, assets/home/github-issues.webp 1120w" sizes="(min-width: 1120px) 714px, (min-width: 960px) 66vw, calc(100vw - 32px)" width="1120" height="440" alt="The public wooloo repository’s open issues listed inside its Space" loading="lazy"></a><figcaption>Pull requests and issues in the public wooloo repository. Each list is a separate capture of wooloo 0.3.16.</figcaption></figure>
-        </article>
+      <h2>Everything around the agent, in one window</h2>
+      <p class="intro">Herdr keeps owning the processes, layout and terminal state, so the same sessions stay available from the Herdr TUI. wooloo renders them natively and sends your input back.</p>
+      <div class="tour">
+        <div class="areas">
+          <article class="area" data-area="agents">
+            <span class="minimap" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <h3>Your agents, on the left</h3>
+            <ul>
+              <li>See every agent with its Space, task and status: working, blocked, idle or done.</li>
+              <li>Get a sound, toast or notification when an agent finishes or needs you, and an unread mark until you look.</li>
+              <li>Create, rename and close Spaces, tabs and panes from the sidebar, the menus or the command palette (⇧⌘P).</li>
+              <li>Watch the host's CPU, memory and disk, on this Mac or over SSH.</li>
+            </ul>
+          </article>
+          <article class="area" data-area="terminal">
+            <span class="minimap" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <h3>Live terminals in the middle</h3>
+            <ul>
+              <li>Herdr's panes, drawn natively with Core Text at Herdr's frame rate.</li>
+              <li>Colors, full-screen apps, inline images, mouse support and links you can ⌘-click.</li>
+              <li>Drag split borders, select and copy, paste, or drop files to type their paths.</li>
+              <li>Herdr's own key bindings, edited in the same <code>config.toml</code>.</li>
+            </ul>
+          </article>
+          <article class="area" data-area="files">
+            <span class="minimap" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <h3>Files and an editor, on the right</h3>
+            <ul>
+              <li>Browse local or SSH Spaces with Git status colors, drag and drop, and undo.</li>
+              <li>Open files follow changes on disk, on this Mac or over SSH.</li>
+              <li>Jump with Go to File (⌘P) or Go to Symbol (⇧⌘O), and search and replace across the project.</li>
+              <li>Read agent proposals in rendered Markdown with Mermaid diagrams, and preview images and PDFs.</li>
+              <li>Inspect saved Jupyter notebook outputs, tables and charts, and edit notebooks cell by cell.</li>
+              <li>Edit with syntax highlighting, an outline and breadcrumbs, change bars and multiple cursors.</li>
+            </ul>
+
+            <details class="feature-examples">
+              <summary>See Markdown and notebooks in wooloo 0.3.16</summary>
+              <figure><a href="assets/home/proposal.webp" class="zoom-open"><img src="assets/home/proposal-768.webp" srcset="assets/home/proposal-768.webp 768w, assets/home/proposal-1280.webp 1280w, assets/home/proposal.webp 1720w" sizes="(min-width: 1120px) 410px, (min-width: 960px) 42vw, calc(100vw - 32px)" width="1720" height="1638" alt="Rendered Markdown proposal with a Mermaid diagram in wooloo" loading="lazy"></a><figcaption>Review a proposal and its diagram.</figcaption></figure>
+              <figure><a href="assets/home/notebook.webp" class="zoom-open"><img src="assets/home/notebook-768.webp" srcset="assets/home/notebook-768.webp 768w, assets/home/notebook-1280.webp 1280w, assets/home/notebook.webp 2130w" sizes="(min-width: 1120px) 410px, (min-width: 960px) 42vw, calc(100vw - 32px)" width="2130" height="1410" alt="Saved notebook output with a chart of 120 demonstration events" loading="lazy"></a><figcaption>Inspect saved results from a demo dataset. Run notebooks with your own tools when you need fresh output.</figcaption></figure>
+            </details>
+          </article>
+          <article class="area" data-area="git">
+            <span class="minimap" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <h3>Git, below the files</h3>
+            <ul>
+              <li>Stage changes, write the message and commit from the Changes tree.</li>
+              <li>Review unified or split diffs with syntax colors, and notebook diffs cell by cell.</li>
+              <li>Browse history and branches, and add worktrees. Removing one with uncommitted work is refused.</li>
+              <li>Browse the repository's open issues and pull requests in the same Space; select one to open its details in your browser.</li>
+            </ul>
+
+            <details class="feature-examples">
+              <summary>See diffs, issues and pull requests in wooloo 0.3.16</summary>
+              <figure><a href="assets/home/diff.webp" class="zoom-open"><img src="assets/home/diff-768.webp" srcset="assets/home/diff-768.webp 768w, assets/home/diff-1280.webp 1280w, assets/home/diff.webp 2565w" sizes="(min-width: 1120px) 410px, (min-width: 960px) 42vw, calc(100vw - 32px)" width="2565" height="890" alt="Split Git diff of the demonstration CLI adding optional JSON output" loading="lazy"></a><figcaption>Review the demo change in a split diff.</figcaption></figure>
+              <figure><a href="assets/home/github.webp" class="zoom-open"><img src="assets/home/github-768.webp" srcset="assets/home/github-768.webp 768w, assets/home/github.webp 1120w" sizes="(min-width: 1120px) 410px, (min-width: 960px) 42vw, calc(100vw - 32px)" width="1120" height="360" alt="Open pull request listed in the wooloo GitHub panel" loading="lazy"></a><figcaption>Pull requests in the public wooloo repository.</figcaption></figure>
+              <figure><a href="assets/home/github-issues.webp" class="zoom-open"><img src="assets/home/github-issues-768.webp" srcset="assets/home/github-issues-768.webp 768w, assets/home/github-issues.webp 1120w" sizes="(min-width: 1120px) 410px, (min-width: 960px) 42vw, calc(100vw - 32px)" width="1120" height="440" alt="Open issues listed in the wooloo GitHub panel" loading="lazy"></a><figcaption>Issues in the same repository context.</figcaption></figure>
+            </details>
+          </article>
+        </div>
+        <figure class="tour-shot" aria-hidden="true">
+          <img src="main-window.png" width="2560" height="1600" alt="" loading="lazy">
+          <span class="spot"></span>
+        </figure>
       </div>
-      <div class="grid three foundations">
-        <article class="card"><h3>Know when to step in</h3><p>See agent activity and unread completions across Spaces. Notifications draw your attention when an agent finishes or needs input; live terminals let you respond.</p></article>
-        <article class="card"><h3>Keep your own tools</h3><p>Run the agent CLIs you already use. Browse local or SSH files, search the project, and make direct edits when you need them.</p></article>
-        <article class="card"><h3>Come back to the session</h3><p><a href="https://herdr.dev/">Herdr</a>, included with wooloo, owns the terminals and processes. Sessions keep running when you close wooloo, while their host and Herdr server remain running.</p></article>
-      </div>
-      <details class="recording">
-        <summary>Watch the earlier CLI-to-commit demo · recorded in 0.3.1</summary>
-        <video id="demo" src="demo.mp4" poster="demo-poster.jpg" width="1920" height="1200" controls muted playsinline preload="none" aria-label="Earlier wooloo 0.3.1 demo: Codex adds a feature, then changes are reviewed, staged and committed"></video>
-        <p>A real session with the Codex CLI in wooloo 0.3.1. Sped-up parts are marked; a brief unrelated interruption was removed.</p>
-      </details>
     </div>
   </section>
 
@@ -255,6 +315,35 @@
   </div>
 </footer>
 <script>
+  // Lights up the part of the window that the area of text in the middle of the screen describes.
+  (function () {
+    var tour = document.querySelector('.tour');
+    if (!tour || !('IntersectionObserver' in window)) return;
+    var areas = Array.prototype.slice.call(tour.querySelectorAll('.area'));
+    function activate(area) {
+      tour.setAttribute('data-active', area.getAttribute('data-area'));
+      areas.forEach(function (a) { a.classList.toggle('is-active', a === area); });
+    }
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) { if (entry.isIntersecting) activate(entry.target); });
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    activate(areas[0]);
+    areas.forEach(function (area) {
+      observer.observe(area);
+      area.addEventListener('mouseenter', function () { activate(area); });
+    });
+  })();
+  // Plays the demo once it is on screen, unless the visitor prefers reduced motion; the controls stay.
+  (function () {
+    var video = document.getElementById('demo');
+    if (!video || !('IntersectionObserver' in window)) return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) { video.play().catch(function () {}); } else { video.pause(); }
+      });
+    }, { threshold: 0.4 }).observe(video);
+  })();
   // Every screenshot remains a normal image link when dialogs are unavailable.
   (function () {
     var dialog = document.getElementById('zoom');
@@ -276,10 +365,6 @@
       if (event.target === dialog || event.target.classList.contains('frame')) dialog.close();
     });
     dialog.addEventListener('close', function () { if (opener) opener.focus(); });
-    var recording = document.querySelector('.recording');
-    recording.addEventListener('toggle', function () {
-      if (!recording.open) document.getElementById('demo').pause();
-    });
   })();
   // Adds a Copy button to the install command where the Clipboard API is available.
   (function () {

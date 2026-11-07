@@ -30,3 +30,8 @@ github: wooloo-github-0316.png (2080, 1010, 3200, 1370)
 github-issues: wooloo-github-issues-0316.png (2080, 1010, 3200, 1450)
 
 The earlier demo.mp4 remains explicitly labeled as wooloo 0.3.1.
+
+Homepage review screenshot: homepage-tour-preview.webp shows the website tour
+with its Markdown examples expanded. Captured via Computer Use, cropped to
+website content to exclude browser tabs and controls. It is a layout review
+image, separate from the application screenshots listed above.
