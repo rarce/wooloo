@@ -1,0 +1,32 @@
+Real wooloo UI captures for the homepage
+
+App: /Applications/wooloo.app, marketing/build version 0.3.16.
+Included runtime: Herdr 0.9.5.
+Host: macOS 26.6.2 (25G83).
+Capture date: 2026-11-06.
+Captured with the Computer Use screenshot API; no generated or repainted UI.
+Exports use crop/resize/WebP or JPEG encoding only. No screenshot compositing.
+
+The Signal demo runs in /private/tmp/wooloo-home-demo under the isolated
+wooloo-ui-test Herdr session. No primary session or remote terminal is used
+for demonstration commands. proposal.md describes adding an opt-in --json
+flag to a small Python event-summary CLI. events.json contains 96 passed,
+18 warning and 6 failed sample events. Four CLI unit tests passed, including unchanged default text output.
+The notebook's Python code was executed outside wooloo using the existing
+.venv-notebooks environment; the file stores the resulting output/chart.
+wooloo renders saved notebook outputs and does not run a notebook kernel.
+The dataset and task are demonstration fixtures, not product benchmarks.
+
+GitHub captures show the public rarce/wooloo repository via the existing
+GitHub CLI sign-in. Selecting an item opens browser details. No issue, PR,
+comment, staging or commit was submitted during capture.
+
+Source PNGs were 3200 x 1948. Crop bounds (left, top, right, bottom):
+overview: wooloo-notebook-0316.png (0, 0, 3200, 1700)
+proposal: wooloo-proposal-0316.png (405, 190, 2125, 1828)
+notebook: wooloo-notebook-0316.png (190, 195, 2320, 1605)
+diff: wooloo-diff-0316.png (0, 125, 2565, 1015)
+github: wooloo-github-0316.png (2080, 1010, 3200, 1370)
+github-issues: wooloo-github-issues-0316.png (2080, 1010, 3200, 1450)
+
+The earlier demo.mp4 remains explicitly labeled as wooloo 0.3.1.
