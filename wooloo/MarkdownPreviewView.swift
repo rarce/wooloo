@@ -59,6 +59,7 @@ struct MarkdownPreviewView: View, Equatable {
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
     @State private var width: CGFloat = 0
     @State private var expandedDiagram: NSImage?
+    @State private var diagnosticID = UUID()
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         MainActor.assumeIsolated {
@@ -101,6 +102,29 @@ struct MarkdownPreviewView: View, Equatable {
         .onChange(of: location) { expandedDiagram = nil }
         .onChange(of: style) { expandedDiagram = nil }
         .onChange(of: theme.id) { expandedDiagram = nil }
+        .onAppear { recordPreviewContext() }
+        .onChange(of: path) { recordPreviewContext() }
+        .onChange(of: location) { recordPreviewContext() }
+        .onChange(of: style) { recordPreviewContext() }
+        .onChange(of: theme.id) { recordPreviewContext() }
+        .onChange(of: text) { recordPreviewContext() }
+        .onDisappear {
+            HangWatchdog.shared.record("preview disappeared path=\(path)")
+            HangWatchdog.shared.setContext(nil, for: "preview-\(diagnosticID)")
+            HangWatchdog.shared.setContext(nil, for: "viewport-\(diagnosticID)")
+        }
+        .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
+            let description = "path=\(path) size=\(size.width)x\(size.height)"
+            HangWatchdog.shared.setContext(description, for: "viewport-\(diagnosticID)")
+            HangWatchdog.shared.record("preview geometry \(description)", coalescing: "preview-geometry")
+        }
+    }
+
+    private func recordPreviewContext() {
+        let description = "path=\(path) space=\(location.workspaceLabel) root=\(location.root)"
+            + " style=\(style.rawValue) theme=\(theme.id) utf8_bytes=\(text.utf8.count)"
+        HangWatchdog.shared.setContext(description, for: "preview-\(diagnosticID)")
+        HangWatchdog.shared.record("preview \(description)")
     }
 
     private var themed: some View {
@@ -122,7 +146,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .frame(maxWidth: 900, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
-        .modifier(MarkdownPreviewScrollPosition(text: text, memory: scroll))
+        .modifier(MarkdownPreviewScrollPosition(text: text, path: path, diagnosticID: diagnosticID, memory: scroll))
         .background(theme.contentBackground)
     }
 
@@ -160,7 +184,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .padding(compact ? 12 : 32)
                 .frame(maxWidth: .infinity)
         }
-        .modifier(MarkdownPreviewScrollPosition(text: text, memory: scroll))
+        .modifier(MarkdownPreviewScrollPosition(text: text, path: path, diagnosticID: diagnosticID, memory: scroll))
         .background(theme.sidebarBackground.overlay(Color.black.opacity(theme.isDark ? 0 : 0.05)))
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
     }
@@ -535,11 +559,15 @@ final class PreviewScrollMemory {
 /// position. Keeping state in this modifier also avoids parsing Markdown on each scroll update.
 private struct MarkdownPreviewScrollPosition: ViewModifier {
     let text: String
+    let path: String
+    let diagnosticID: UUID
     let memory: PreviewScrollMemory?
     @State private var block: MarkdownBlockAnchor?
 
-    init(text: String, memory: PreviewScrollMemory?) {
+    init(text: String, path: String, diagnosticID: UUID, memory: PreviewScrollMemory?) {
         self.text = text
+        self.path = path
+        self.diagnosticID = diagnosticID
         self.memory = memory
         _block = State(initialValue: memory?.restoredMarkdownBlock(in: text))
     }
@@ -547,8 +575,19 @@ private struct MarkdownPreviewScrollPosition: ViewModifier {
     func body(content: Content) -> some View {
         content
             .scrollPosition(id: $block, anchor: .top)
-            .onChange(of: block) { _, block in memory?.setMarkdownBlock(block, in: text) }
+            .onAppear { recordBlock(block) }
+            .onDisappear { HangWatchdog.shared.setContext(nil, for: "block-\(diagnosticID)") }
+            .onChange(of: block) { _, block in
+                memory?.setMarkdownBlock(block, in: text)
+                recordBlock(block)
+            }
             .onChange(of: text) { _, text in memory?.setMarkdownBlock(block, in: text) }
+    }
+
+    private func recordBlock(_ block: MarkdownBlockAnchor?) {
+        let description = "path=\(path) index=\(block.map { String($0.index) } ?? "nil")"
+        HangWatchdog.shared.setContext(description, for: "block-\(diagnosticID)")
+        HangWatchdog.shared.record("preview block \(description)", coalescing: "preview-block")
     }
 }
 

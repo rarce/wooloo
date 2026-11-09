@@ -277,6 +277,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
 
     private func raise(_ kind: HerdrAlertKind, agent: HerdrAgent, snapshot: HerdrSnapshot,
                        selectedPaneID: String?, contextID: String) {
+        HangWatchdog.shared.record("alert raised kind=\(kind) pane=\(agent.paneID) context=\(contextID)")
         // Herdr's terminal UI shows one workspace at a time, so it sounds only for background
         // workspaces. wooloo shows one pane, so any pane out of view counts as background.
         let registeredWatch = windows.values.contains { registration in
@@ -312,6 +313,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     }
 
     private func deliver(_ toast: HerdrToast) {
+        HangWatchdog.shared.record("alert deliver id=\(toast.id) pane=\(toast.paneID) delivery=\(settings.delivery)")
         switch settings.delivery {
         case .off: return
         case .herdr: showToast(toast)
@@ -331,7 +333,13 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
                 guard generation == deliveryGeneration, contextEpochs[toast.contextID] == epoch,
                       attention[key(toast.paneID, context: toast.contextID)] == toast.kind else { return }
                 guard status == .authorized || status == .provisional else { showToast(toast); return }
-                do { try await addNotification(request) } catch { showToast(toast) }
+                do {
+                    try await addNotification(request)
+                    HangWatchdog.shared.record("alert submitted id=\(toast.id)")
+                } catch {
+                    HangWatchdog.shared.record("alert submission failed id=\(toast.id)")
+                    showToast(toast)
+                }
             }
         }
     }
