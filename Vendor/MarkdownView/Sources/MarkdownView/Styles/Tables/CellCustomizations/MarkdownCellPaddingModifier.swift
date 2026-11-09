@@ -17,10 +17,17 @@ struct MarkdownCellPaddingModifier: ViewModifier {
     var padding: MarkdownTableCellPadding
     
     func body(content: Content) -> some View {
-        content
-            .contentPadding(.top, padding[.top])
-            .contentPadding(.bottom, padding[.bottom])
-            .contentPadding(.leading, padding[.leading])
-            .contentPadding(.trailing, padding[.trailing])
+        // wooloo patch: one inset layout per cell instead of four nested layouts.
+        // Keep the directional edges and safe-area behavior used by custom table styles.
+        if #available(iOS 17.0, macOS 14.0, tvOS 17.0, watchOS 10.0, *) {
+            content.safeAreaPadding(EdgeInsets(top: padding[.top], leading: padding[.leading],
+                                               bottom: padding[.bottom], trailing: padding[.trailing]))
+        } else {
+            content
+                .contentPadding(.top, padding[.top])
+                .contentPadding(.bottom, padding[.bottom])
+                .contentPadding(.leading, padding[.leading])
+                .contentPadding(.trailing, padding[.trailing])
+        }
     }
 }

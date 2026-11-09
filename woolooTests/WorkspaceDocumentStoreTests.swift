@@ -21,6 +21,287 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         sandbox.tearDown()
     }
 
+    func testClosedConnectionKeepsDirtyTextWithoutDiskChecksSavesOrReloads() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "preserved draft")
+        store.permitsBackgroundAccess = { _ in false }
+        store.connectionAccessChanged()
+        try sandbox.write(["a.txt": "changed while closed"], in: "repo")
+        await store.checkDisk().value
+        store.load(document.id)
+        store.save(document.id)
+        store.compareWithDisk(document.id)
+        XCTAssertEqual(store.document(document.id)?.text, "preserved draft")
+        XCTAssertEqual(store.document(document.id)?.savedText, "one\n")
+        XCTAssertNil(store.diskComparison)
+        XCTAssertFalse(store.document(document.id)?.isSaving ?? true)
+        XCTAssertEqual(try WorkspaceFiles.read("a.txt", at: repo).text, "changed while closed")
+        store.permitsBackgroundAccess = { _ in true }
+        await store.checkDisk().value
+        guard case .changed = store.document(document.id)?.diskState else { return XCTFail("Reopening resumes disk comparisons") }
+    }
+
+    func testClosingConnectionRevokesASaveQueuedForAWorkerSlot() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "must not be sent after closing")
+        for _ in 0..<BlockingWork.limit { try await BlockingWork.slots.acquire() }
+        var holding = true
+        defer { if holding { for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() } } }
+        store.save(document.id)
+        await Task.yield()
+        store.permitsBackgroundAccess = { _ in false }
+        store.connectionAccessChanged()
+        for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() }
+        holding = false
+        await settle()
+        XCTAssertEqual(try WorkspaceFiles.read("a.txt", at: repo).text, "one\n")
+        XCTAssertEqual(store.document(document.id)?.text, "must not be sent after closing")
+        XCTAssertTrue(store.document(document.id)?.isDirty == true)
+    }
+
+    func testReopeningResumesInitialReadBeforeOrAfterCancellationCompletes() async throws {
+        for reopensBeforeCompletion in [false, true] {
+            store = WorkspaceDocumentStore()
+            for _ in 0..<BlockingWork.limit { try await BlockingWork.slots.acquire() }
+            var holding = true
+            defer { if holding { for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() } } }
+            store.open(.file, path: "a.txt", at: repo)
+            let document = try XCTUnwrap(store.documents.first)
+            await wait("Initial read waits for a worker") { BlockingWork.slots.waiting > 0 }
+            store.permitsBackgroundAccess = { _ in false }
+            store.connectionAccessChanged()
+            if reopensBeforeCompletion {
+                store.permitsBackgroundAccess = { _ in true }
+                store.connectionAccessChanged()
+            }
+            for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() }
+            holding = false
+            await settle()
+            if !reopensBeforeCompletion {
+                XCTAssertNil(store.document(document.id)?.version)
+                store.permitsBackgroundAccess = { _ in true }
+                store.connectionAccessChanged()
+                await settle()
+            }
+            let loaded = try XCTUnwrap(store.document(document.id))
+            XCTAssertEqual(loaded.text, "one\n")
+            XCTAssertEqual(loaded.version, WorkspaceFiles.gitBlobHash(Data("one\n".utf8)))
+            XCTAssertNil(loaded.error)
+            XCTAssertEqual(loaded.backupID, document.backupID)
+            XCTAssertEqual(store.documents.count, 1)
+        }
+    }
+
+    func testReopeningResumesCleanRestorationDeferredWhileConnectionWasClosed() async throws {
+        let persistence = WorkspaceSessionPersistence(root: URL(fileURLWithPath: sandbox.path("deferred-restoration")))
+        let space = "closed-connection|space"
+        var clean = WorkspaceDocument(space: space, location: repo, path: "a.txt", kind: .file)
+        clean.text = "old disk contents"
+        clean.savedText = clean.text
+        try await persistence.save(WorkspaceSessionSnapshot(space: space, documents: [WorkspaceDocumentSnapshot(clean)]))
+        store = WorkspaceDocumentStore(persistence: persistence, backupDelay: 60_000_000_000, watchesOpenFiles: false)
+        store.permitsBackgroundAccess = { _ in false }
+        store.showSpace(space)
+        await store.waitForRestoration()
+        XCTAssertNil(store.documents.first?.version)
+        store.permitsBackgroundAccess = { _ in true }
+        store.connectionAccessChanged()
+        await settle()
+        XCTAssertEqual(store.documents.first?.text, "one\n")
+        XCTAssertNotNil(store.documents.first?.version)
+        XCTAssertNil(store.documents.first?.error)
+    }
+
+    func testResumingCancelledInitialReadPreservesEditsTypedWhileWaiting() async throws {
+        for _ in 0..<BlockingWork.limit { try await BlockingWork.slots.acquire() }
+        var holding = true
+        defer { if holding { for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() } } }
+        store.open(.file, path: "a.txt", at: repo)
+        let id = try XCTUnwrap(store.documents.first?.id)
+        await wait("Initial read waits for a worker") { BlockingWork.slots.waiting > 0 }
+        edit("a.txt", "typed before closing")
+        store.permitsBackgroundAccess = { _ in false }
+        store.connectionAccessChanged()
+        for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() }
+        holding = false
+        await settle()
+        store.permitsBackgroundAccess = { _ in true }
+        store.connectionAccessChanged()
+        await settle()
+        XCTAssertEqual(store.document(id)?.text, "typed before closing")
+        XCTAssertEqual(store.document(id)?.savedText, "one\n")
+        XCTAssertNotNil(store.document(id)?.version)
+        XCTAssertTrue(store.document(id)?.isDirty == true)
+        store.save(id)
+        await settle()
+        XCTAssertEqual(try WorkspaceFiles.read("a.txt", at: repo).text, "typed before closing")
+    }
+
+    func testPreservedTextDraftsExcludeDeletedBinaryPreviewsButKeepTextAndUntitledBuffers() async throws {
+        try ImageFixtures.data().write(to: URL(fileURLWithPath: repo.absolutePath("image.png")))
+        try PDFFixtures.data().write(to: URL(fileURLWithPath: repo.absolutePath("document.pdf")))
+        _ = await open("image.png")
+        _ = await open("document.pdf")
+        let openedDirty = await open("a.txt")
+        let dirty = try XCTUnwrap(openedDirty)
+        edit("a.txt", "dirty text")
+        let openedDeleted = await open("b.txt")
+        let deleted = try XCTUnwrap(openedDeleted)
+        _ = await open("c.txt")
+        let untitled = store.newUntitled(at: repo)
+        for path in ["image.png", "document.pdf", "b.txt"] {
+            try FileManager.default.removeItem(atPath: repo.absolutePath(path))
+        }
+        await store.checkDisk().value
+        XCTAssertTrue(store.documents.first { $0.isImage }?.isDeletedOnDisk == true)
+        XCTAssertTrue(store.documents.first { $0.isPDF }?.isDeletedOnDisk == true)
+        XCTAssertNotNil(store.documents.first { $0.isImage }?.image)
+        XCTAssertNotNil(store.documents.first { $0.isPDF }?.pdf)
+        XCTAssertEqual(Set(store.preservedTextDrafts.map(\.id)), [dirty.id, deleted.id, untitled])
+        XCTAssertEqual(store.preservedTextDrafts.first { $0.id == deleted.id }?.text, "bee\n")
+    }
+
+    func testReopeningDoesNotRestoreCancelledTabOverItsReplacement() async throws {
+        for _ in 0..<BlockingWork.limit { try await BlockingWork.slots.acquire() }
+        var holding = true
+        defer { if holding { for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() } } }
+        store.open(.file, path: "a.txt", at: repo)
+        let original = try XCTUnwrap(store.documents.first)
+        await wait("Original read waits for a worker") { BlockingWork.slots.waiting > 0 }
+        store.permitsBackgroundAccess = { _ in false }
+        store.connectionAccessChanged()
+        XCTAssertTrue(store.close(original.id))
+        store.open(.file, path: "a.txt", at: repo)
+        let replacement = try XCTUnwrap(store.documents.first)
+        XCTAssertNotEqual(replacement.backupID, original.backupID)
+        store.permitsBackgroundAccess = { _ in true }
+        store.connectionAccessChanged()
+        for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() }
+        holding = false
+        await settle()
+        XCTAssertEqual(store.documents.count, 1)
+        XCTAssertEqual(store.documents.first?.backupID, replacement.backupID)
+        XCTAssertEqual(store.documents.first?.text, "one\n")
+        XCTAssertNil(store.documents.first?.error)
+    }
+
+    func testConnectionAccessChangesDoNotAutomaticallyRetryOrdinaryReadErrors() async throws {
+        let opened = await open("missing.txt")
+        let missing = try XCTUnwrap(opened)
+        XCTAssertNotNil(missing.error)
+        try sandbox.write(["missing.txt": "now exists"], in: "repo")
+        store.permitsBackgroundAccess = { _ in false }
+        store.connectionAccessChanged()
+        store.permitsBackgroundAccess = { _ in true }
+        store.connectionAccessChanged()
+        await settle()
+        XCTAssertNotNil(store.document(missing.id)?.error)
+        XCTAssertNil(store.document(missing.id)?.version)
+        store.load(missing.id)
+        await wait("An explicit reload still succeeds") { store.document(missing.id)?.version != nil }
+        XCTAssertEqual(store.document(missing.id)?.text, "now exists")
+    }
+
+    func testClosedConnectionDraftsRecoverWithoutReadingCleanFilesOrTheirHost() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp/wooloo-draft-recovery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = WorkspaceSessionPersistence(root: root)
+        let space = "retired-profile|space"
+        var dirty = WorkspaceDocument(space: space, location: repo, path: "a.txt", kind: .file)
+        dirty.text = "unreachable host draft"
+        dirty.savedText = "old"
+        dirty.version = "old-version"
+        var clean = WorkspaceDocument(space: space, location: repo, path: "b.txt", kind: .file)
+        clean.text = "clean"
+        clean.savedText = "clean"
+        try await persistence.save(WorkspaceSessionSnapshot(space: space, documents: [WorkspaceDocumentSnapshot(dirty), WorkspaceDocumentSnapshot(clean)]))
+        let recovery = WorkspaceDocumentStore(persistence: persistence, watchesOpenFiles: false)
+        recovery.permitsBackgroundAccess = { _ in false }
+        await recovery.recoverConnectionDrafts(in: [space])
+        XCTAssertEqual(recovery.documents.map(\.text), ["unreachable host draft"])
+        XCTAssertFalse(recovery.documents[0].isLoading)
+        await recovery.recoverConnectionDrafts(in: [space])
+        XCTAssertEqual(recovery.documents.count, 1)
+        try await recovery.flushPersistence()
+        let retained = try await persistence.restore(space)
+        XCTAssertEqual(retained.session.documents.count, 2, "Recovery must not rewrite or discard the original clean tab inventory")
+    }
+
+    func testClosedConnectionRecoversIndependentFileBuffersWithUniqueIdentitiesAfterReopening() async throws {
+        let root = URL(fileURLWithPath: sandbox.path("draft-recovery"))
+        let persistence = WorkspaceSessionPersistence(root: root)
+        let space = "retired-profile|space"
+        var first = WorkspaceDocument(space: space, location: repo, path: "a.txt", kind: .file)
+        first.text = "first window edit"
+        first.savedText = "one\n"
+        var second = first
+        second.backupID = UUID()
+        second.text = "second window edit"
+        try await persistence.save(WorkspaceSessionSnapshot(space: space,
+            documents: [WorkspaceDocumentSnapshot(first), WorkspaceDocumentSnapshot(second)]))
+        let recovery = WorkspaceDocumentStore(persistence: persistence, backupDelay: 60_000_000_000, watchesOpenFiles: false)
+        recovery.permitsBackgroundAccess = { _ in false }
+        await recovery.recoverConnectionDrafts(in: [space])
+        XCTAssertEqual(recovery.documents.count, 2)
+        XCTAssertEqual(Set(recovery.documents.map(\.id)).count, 2)
+        let draft = try XCTUnwrap(recovery.documents.first { $0.isUntitled })
+        XCTAssertEqual(draft.originalPath, "a.txt")
+        XCTAssertEqual(draft.backupID, second.backupID)
+        XCTAssertEqual(recovery.document(draft.id)?.text, second.text)
+
+        await recovery.recoverConnectionDrafts(in: [space])
+        recovery.showSpace(space)
+        await recovery.waitForRestoration()
+        XCTAssertEqual(recovery.documents.count, 2, "Opening the connection must not recover the same backup again")
+        XCTAssertEqual(Set(recovery.documents.map(\.id)).count, 2)
+        XCTAssertEqual(Set(recovery.documents.map(\.backupID)), [first.backupID, second.backupID])
+        XCTAssertEqual(Set(recovery.documents.map(\.text)), [first.text, second.text])
+        try await recovery.flushPersistence()
+        let restarted = WorkspaceDocumentStore(persistence: WorkspaceSessionPersistence(root: root),
+            backupDelay: 60_000_000_000, watchesOpenFiles: false)
+        restarted.showSpace(space)
+        await restarted.waitForRestoration()
+        XCTAssertEqual(restarted.documents.count, 2)
+        XCTAssertEqual(Set(restarted.documents.map(\.id)).count, 2)
+        XCTAssertEqual(Set(restarted.documents.map(\.text)), [first.text, second.text])
+    }
+
+    func testClosedConnectionContinuesRecoveringAfterInvalidDraftAndRetainsWarnings() async throws {
+        let persistence = WorkspaceSessionPersistence(root: URL(fileURLWithPath: sandbox.path("draft-recovery")))
+        let space = "retired-profile|space"
+        var valid = WorkspaceDocument(space: space, location: repo, path: "a.txt", kind: .file)
+        valid.text = "healthy dirty buffer"
+        var invalid = WorkspaceDocumentSnapshot(valid)
+        invalid.backupID = UUID()
+        invalid.path = "../invalid.txt"
+        try await persistence.save(WorkspaceSessionSnapshot(space: space,
+            documents: [invalid, WorkspaceDocumentSnapshot(valid)]))
+        let laterSpace = "another-retired-profile|space"
+        var later = valid
+        later.space = laterSpace
+        later.backupID = UUID()
+        later.text = "another healthy buffer"
+        var anotherInvalid = invalid
+        anotherInvalid.space = laterSpace
+        anotherInvalid.backupID = UUID()
+        anotherInvalid.location = WorkspaceFileLocation(machine: nil, session: "default", workspaceID: "w1",
+                                                        workspaceLabel: "project", root: "relative-root")
+        try await persistence.save(WorkspaceSessionSnapshot(space: laterSpace,
+            documents: [anotherInvalid, WorkspaceDocumentSnapshot(later)]))
+        let recovery = WorkspaceDocumentStore(persistence: persistence, watchesOpenFiles: false)
+        recovery.permitsBackgroundAccess = { _ in false }
+        await recovery.recoverConnectionDrafts(in: [space, laterSpace])
+        XCTAssertEqual(Set(recovery.documents.map(\.text)), [valid.text, later.text])
+        let warnings = try XCTUnwrap(recovery.persistenceError)
+        XCTAssertTrue(warnings.contains("Invalid session root"))
+        XCTAssertEqual(warnings.components(separatedBy: "\n").count, 2, "Report failures from both Spaces")
+        XCTAssertTrue(recovery.documents.allSatisfy { !$0.isLoading })
+        let retained = try await persistence.restore(space)
+        XCTAssertEqual(retained.session.documents.count, 2, "The invalid backup remains available for recovery")
+    }
+
     func testTabTitlesDistinguishHomonymousFilesWithTheirDiffs() {
         let documents = ["a/Config.swift", "b/Config.swift"].flatMap { path in
             [WorkspaceDocumentKind.file, .change].map { WorkspaceDocument(location: repo, path: path, kind: $0) }

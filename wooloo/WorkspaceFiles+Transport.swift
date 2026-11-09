@@ -25,6 +25,14 @@ extension WorkspaceFiles {
         return try JSONDecoder().decode([HerdrMachineProfile].self, from: data).filter { includeDisabled || $0.enabled }
     }
 
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
+    static func localSessions() throws -> [HerdrLocalSession] {
+        struct Response: Decodable { let sessions: [HerdrLocalSession] }
+        let data = try run(herdrExecutable(), ["session", "list", "--json"], limit: 1_000_000, timeout: 15)
+        return try JSONDecoder().decode(Response.self, from: data).sessions
+            .filter { HerdrSessionName.isValid($0.name) }
+    }
+
     /// Delegate persistence and remote preparation to Herdr, which owns machine profiles.
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func manageMachine(_ arguments: [String]) throws {

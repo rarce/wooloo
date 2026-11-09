@@ -164,6 +164,287 @@ final class NotebookRenderingTests: XCTestCase {
         throw NotebookDocument.ParseError.message("Notebook did not render its cells")
     }
 
+    func testLargeNotebookFillsTheViewportAndRestoresItsCellBeforeTheFirstPaint() async throws {
+        // Blank Markdown lines have large estimated heights but collapse when rendered.
+        // Filling only the first estimated batch would leave empty slots on screen.
+        let cells = (0..<260).map {
+            NotebookPreviewFixtures.cell("markdown", $0, source: "## Cell \($0)\n\n" + String(repeating: "\n", count: 100))
+        }
+        let workload = try NotebookPreviewFixtures.make("estimated-heights", cells: cells)
+        let model = try NotebookDocument.parse(workload.source)
+        for style in [MarkdownPreviewStyle.theme, .document] {
+            let harness = NotebookPreviewHarness(workload, style: style)
+            defer { harness.close() }
+            let web = try await harness.ready()
+            let result = try await web.evaluateJavaScript("""
+                (() => {
+                    const data = \(model.previewJSON);
+                    const visible = () => Array.from(document.querySelectorAll('.cell-slot')).filter(slot => {
+                        const rect = slot.getBoundingClientRect();
+                        return rect.bottom > 0 && rect.top < innerHeight;
+                    });
+                    const filled = () => visible().length > 0 && visible().every(slot => slot.querySelector('.cell'));
+                    window.notebook.render({...data, cells:[]}, 'empty-initial', {}, false);
+                    window.notebook.render(data, 'initial', {}, false);
+                    const initial = filled();
+                    // A newly created webview has no previous top cell to override `start`.
+                    window.notebook.render({...data, cells:[]}, 'empty', {}, false);
+                    window.notebook.render(data, 'restored', {}, false, {cell:'cell-fixture-120', offset:-20});
+                    return {initial, restored:filled(), top:document.getElementById('cell-fixture-120').getBoundingClientRect().top};
+                })()
+                """) as? [String: Any]
+            XCTAssertEqual(result?["initial"] as? Bool, true)
+            XCTAssertEqual(result?["restored"] as? Bool, true)
+            XCTAssertEqual(try XCTUnwrap(result?["top"] as? Double), -20, accuracy: 1)
+        }
+    }
+
+    func testDeferredCodeFindKeepsEveryRangeWhenRevealingTheSecondMatch() async throws {
+        for breaks in ["\n", "\r\n", "\r"] {
+            let cells = (0..<250).map { index in
+                NotebookPreviewFixtures.cell("code", index, source: index == 249
+                    ? "print('needle')" + breaks + "print('needle')" : "pass")
+            }
+            let workload = try NotebookPreviewFixtures.make("deferred-find", cells: cells)
+            let harness = NotebookPreviewHarness(workload, style: .theme)
+            defer { harness.close() }
+            let web = try await harness.ready()
+            let find = DocumentFindModel(); find.open(replace: false, query: "needle")
+            find.update(text: workload.source, target: .preview, anchor: nil, previewTextNodes: harness.probe.searchText ?? [])
+            XCTAssertEqual(find.count, 2)
+            let ranges = find.previewMatches.enumerated().map { index, match in
+                ["block": match.block, "lower": match.range.lowerBound, "upper": match.range.upperBound, "index": index]
+            }
+            let data = try JSONSerialization.data(withJSONObject: ranges)
+            let json = String(decoding: data, as: UTF8.self)
+            let result = try await web.evaluateJavaScript("""
+                (() => {
+                    window.notebook.find(\(json), 1, true);
+                    const section = document.getElementById('cell-fixture-249');
+                    return {ranges:Array.from(CSS.highlights.get('notebook-find')).map(r => r.toString()),
+                        current:Array.from(CSS.highlights.get('notebook-current')).map(r => r.toString()),
+                        connected:section.isConnected, highlighted:!!section.querySelector('.hljs-string')};
+                })()
+                """) as? [String: Any]
+            XCTAssertEqual(result?["ranges"] as? [String], ["needle", "needle"], breaks.debugDescription)
+            XCTAssertEqual(result?["current"] as? [String], ["needle"])
+            XCTAssertEqual(result?["connected"] as? Bool, true)
+            XCTAssertEqual(result?["highlighted"] as? Bool, true)
+        }
+    }
+
+    func testVisibleMIMESwitchAndImageFallbackActivateDeferredMarkdownCode() async throws {
+        let output = NotebookPreviewFixtures.display(["text/html": "<p>Initial output</p>",
+            "text/markdown": "```python\nprint('needle')\n```"])
+        let fallback = NotebookPreviewFixtures.display(["image/png": "broken",
+            "text/markdown": "```python\nprint('fallback')\n```"])
+        let cells = (0..<250).map { index in
+            NotebookPreviewFixtures.cell("code", index, source: "pass", outputs: index == 0 ? [output, fallback] : [])
+        }
+        let workload = try NotebookPreviewFixtures.make("deferred-mime", cells: cells)
+        let harness = NotebookPreviewHarness(workload, style: .theme)
+        defer { harness.close() }
+        let web = try await harness.ready()
+        _ = try await web.evaluateJavaScript("""
+            const picker = document.querySelector('.mime-picker select');
+            picker.value='1'; picker.dispatchEvent(new Event('change'));
+            """)
+        for _ in 0..<100 {
+            if (try await web.evaluateJavaScript("document.querySelectorAll('#cell-fixture-0 .markdown .hljs-string').length")) as? Int == 2 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let result = try await web.evaluateJavaScript("""
+            ({highlighted:document.querySelectorAll('#cell-fixture-0 .markdown .hljs-string').length,
+              pending:document.querySelectorAll('#cell-fixture-0 [data-notebook-language]').length})
+            """) as? [String: Int]
+        XCTAssertEqual(result?["highlighted"], 2)
+        XCTAssertEqual(result?["pending"], 0)
+        XCTAssertTrue(harness.probe.searchText?.contains(where: { $0.contains("needle") }) == true)
+        XCTAssertTrue(harness.probe.searchText?.contains(where: { $0.contains("fallback") }) == true)
+    }
+
+    func testColorChangePreservesTheEditorAndOutputState() async throws {
+        let source = try NotebookParsingTests.source(cells: [NotebookParsingTests.cell("code", source: "print('original')", outputs: [
+            NotebookPreviewFixtures.display(["text/html": "<p>Initial</p>", "text/plain": "Alternate"])
+        ])])
+        let web = try await render(source)
+        let coordinator = try XCTUnwrap(web.navigationDelegate as? NotebookWebView.Coordinator)
+        var owner = coordinator.owner
+        owner.onEdit = { _, _, _ in XCTFail("A color change must not save the editor"); return false }
+        let find = DocumentFindModel(); find.open(replace: false, query: "original")
+        find.update(text: source, target: .preview, anchor: nil, previewTextNodes: ["print('original')", "Initial"])
+        owner.matches = find.previewMatches; owner.currentMatch = find.current
+        coordinator.update(owner)
+        for _ in 0..<100 {
+            if (try await web.evaluateJavaScript("!!document.querySelector('.cell-tools')")) as? Bool == true { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        _ = try await web.evaluateJavaScript("""
+            const picker = document.querySelector('.mime-picker select'); picker.value='1'; picker.dispatchEvent(new Event('change'));
+            document.querySelector('details.output').open=false;
+            document.querySelector('.cell-tools button').click();
+            window.savedEditor=document.querySelector('textarea.cell-editor');
+            savedEditor.value='Unsaved text'; savedEditor.setSelectionRange(2,5); savedEditor.focus();
+            """)
+        let revision = coordinator.revision
+        owner = NotebookWebView(notebook: owner.notebook, path: owner.path, location: owner.location,
+                                theme: WoolooTheme.all[1], typography: owner.typography, matches: owner.matches, currentMatch: owner.currentMatch,
+                                revealRequest: owner.revealRequest, onOpenFile: owner.onOpenFile, onSearchText: owner.onSearchText,
+                                onFindCommand: owner.onFindCommand, onEdit: owner.onEdit)
+        coordinator.update(owner)
+        // Calls are ordered in WebKit; this query follows the palette update.
+        let result = try await web.evaluateJavaScript("""
+            ({same:savedEditor===document.querySelector('textarea.cell-editor'), value:savedEditor.value,
+              start:savedEditor.selectionStart, end:savedEditor.selectionEnd, focused:document.activeElement===savedEditor,
+              mime:document.querySelector('.mime-picker select').value, collapsed:!document.querySelector('details.output').open,
+              background:document.documentElement.style.getPropertyValue('--background'),
+              found:Array.from(CSS.highlights.get('notebook-current') || []).map(r=>r.toString()).join('')})
+            """) as? [String: Any]
+        XCTAssertEqual(coordinator.revision, revision)
+        XCTAssertEqual(result?["same"] as? Bool, true)
+        XCTAssertEqual(result?["value"] as? String, "Unsaved text")
+        XCTAssertEqual(result?["start"] as? Int, 2)
+        XCTAssertEqual(result?["end"] as? Int, 5)
+        XCTAssertEqual(result?["focused"] as? Bool, true)
+        XCTAssertEqual(result?["mime"] as? String, "1")
+        XCTAssertEqual(result?["collapsed"] as? Bool, true)
+        XCTAssertEqual(result?["background"] as? String, NotebookWebView.Coordinator.palette(theme: owner.theme, typography: owner.typography)["--background"])
+        XCTAssertEqual(result?["found"] as? String, "original")
+        _ = try await web.evaluateJavaScript("savedEditor.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+    }
+
+    func testCellEditReusesOnlyUnchangedStaticMarkdownAndRestoreClosesTheEditor() async throws {
+        let cells = [
+            NotebookPreviewFixtures.cell("markdown", 0, source: "## Static math\n\n$E=mc^2$"),
+            NotebookPreviewFixtures.cell("markdown", 1, source: "![missing](attachment:missing.png)"),
+            NotebookPreviewFixtures.cell("code", 2, source: "print('before')")
+        ]
+        let workload = try NotebookPreviewFixtures.make("reuse-markdown", cells: cells)
+        let model = try NotebookDocument.parse(workload.source)
+        let harness = NotebookPreviewHarness(workload, style: .theme)
+        defer { harness.close() }
+        let web = try await harness.ready()
+        let result = try await web.evaluateJavaScript("""
+            (() => {
+                const data=\(model.previewJSON), palette={'--body-size':'13px','--code-size':'12px'};
+                window.notebook.render(data,'initial',palette,true);
+                const before=Array.from(document.querySelectorAll('.cell'));
+                window.notebook.find([{block:0,lower:0,upper:6,index:0}],0,false);
+                const edited=JSON.parse(JSON.stringify(data)); edited.cells[2].source="print('after')";
+                window.notebook.render(edited,'edited',palette,true);
+                const after=Array.from(document.querySelectorAll('.cell'));
+                const reused=before[0]===after[0], imageRebuilt=before[1]!==after[1], codeRebuilt=before[2]!==after[2];
+                const cleared=!after[0].querySelector('.find-active') && !after[0].classList.contains('find-active')
+                    && (CSS.highlights.get('notebook-find')?.size ?? 0) === 0 && (CSS.highlights.get('notebook-current')?.size ?? 0) === 0;
+                after[0].querySelector('.cell-tools button').click();
+                const editor=document.querySelector('textarea.cell-editor'); editor.value='Unsaved';
+                window.notebook.restore('edited');
+                const restored=!document.querySelector('textarea.cell-editor') && document.querySelector('#cell-fixture-0 .markdown').textContent.includes('Static math');
+                const sameAfterRestore=after[0]===document.getElementById('cell-fixture-0');
+                return {reused,imageRebuilt,codeRebuilt,cleared,restored,sameAfterRestore,
+                    controls:document.querySelectorAll('#cell-fixture-0 .cell-tools').length};
+            })()
+            """) as? [String: Any]
+        XCTAssertEqual(result?["reused"] as? Bool, true)
+        XCTAssertEqual(result?["imageRebuilt"] as? Bool, true)
+        XCTAssertEqual(result?["codeRebuilt"] as? Bool, true)
+        XCTAssertEqual(result?["cleared"] as? Bool, true)
+        XCTAssertEqual(result?["restored"] as? Bool, true)
+        XCTAssertEqual(result?["sameAfterRestore"] as? Bool, false)
+        XCTAssertEqual(result?["controls"] as? Int, 1)
+    }
+
+    func testReusedOffscreenMarkdownGetsANewSlotAndCanBeFoundAndHighlighted() async throws {
+        let cells = (0..<250).map { index in
+            NotebookPreviewFixtures.cell("markdown", index, source: index == 249
+                ? "```python\nprint('needle')\n```" : "# Cell \(index)")
+        }
+        let workload = try NotebookPreviewFixtures.make("reuse-offscreen", cells: cells)
+        let model = try NotebookDocument.parse(workload.source)
+        let harness = NotebookPreviewHarness(workload, style: .theme)
+        defer { harness.close() }
+        let web = try await harness.ready()
+        let result = try await web.evaluateJavaScript("""
+            (() => {
+                const data=\(model.previewJSON), palette={'--body-size':'13px','--code-size':'12px'};
+                window.notebook.render(data,'first',palette,true);
+                const oldSlot=document.querySelectorAll('.cell-slot')[249], before=oldSlot.cellSection;
+                const deferred=!!before.querySelector('[data-notebook-language]') && !before.isConnected;
+                const edited=JSON.parse(JSON.stringify(data)); edited.cells[1].source='# Changed';
+                window.notebook.render(edited,'edited',palette,true);
+                const newSlot=document.querySelectorAll('.cell-slot')[249], after=newSlot.cellSection;
+                const reused=before===after, newLink=oldSlot!==newSlot && after.cellSlot===newSlot;
+                const lower=after.querySelector('.markdown').textContent.indexOf('needle');
+                window.notebook.find([{block:249,lower,upper:lower+6,index:0}],0,true);
+                window.notebook.find([{block:249,lower,upper:lower+6,index:0}],0,true);
+                const found=Array.from(CSS.highlights.get('notebook-current')).map(r=>r.toString()).join('');
+                const highlighted=!!after.querySelector('.hljs-string') && !after.querySelector('[data-notebook-language]');
+                const controls=after.querySelectorAll('.cell-tools').length;
+                const changed=JSON.parse(JSON.stringify(edited)); changed.cells[249].source='# Replacement';
+                window.notebook.render(changed,'changed-source',palette,true);
+                const replaced=document.querySelectorAll('.cell-slot')[249].cellSection;
+                window.notebook.render(changed,'changed-font',{...palette,'--body-size':'18px'},true);
+                const resized=document.querySelectorAll('.cell-slot')[249].cellSection;
+                return {deferred,reused,newLink,found,highlighted,controls,sourceRebuilt:replaced!==after,fontRebuilt:resized!==replaced};
+            })()
+            """) as? [String: Any]
+        for key in ["deferred", "reused", "newLink", "highlighted", "sourceRebuilt", "fontRebuilt"] {
+            XCTAssertEqual(result?[key] as? Bool, true, key)
+        }
+        XCTAssertEqual(result?["found"] as? String, "needle")
+        XCTAssertEqual(result?["controls"] as? Int, 1)
+    }
+
+    func testQuickFindJumpsPreserveAnOpenEditorAndInternalLinksReachOffscreenCells() async throws {
+        let cells = (0..<260).map { index in
+            NotebookPreviewFixtures.cell("markdown", index, source: index == 0
+                ? "[Go to end](#last-heading)\n\nneedlefirst"
+                : index == 259 ? "<h2 id='last-heading'>needlelast</h2>" : "## Cell \(index)")
+        }
+        let workload = try NotebookPreviewFixtures.make("quick-jumps", cells: cells)
+        let model = try NotebookDocument.parse(workload.source)
+        let harness = NotebookPreviewHarness(workload, style: .theme)
+        defer { harness.close() }
+        let web = try await harness.ready()
+        _ = try await web.evaluateJavaScript("""
+            window.notebook.render(\(model.previewJSON),'quick-jumps',{},true);
+            document.querySelector('.cell-tools button').click();
+            document.querySelector('textarea.cell-editor').value='Unsaved source';
+            window.jumpTo = (block, query) => {
+                const section=document.querySelectorAll('.cell-slot')[block].cellSection;
+                const lower=section.querySelector('.markdown').textContent.indexOf(query);
+                window.notebook.find([{block,lower,upper:lower+query.length,index:0}],0,true);
+            };
+            jumpTo(259,'needlelast'); jumpTo(0,'needlefirst'); jumpTo(259,'needlelast');
+            """)
+        _ = try await harness.capture(web)
+        let editor = try await web.evaluateJavaScript("document.querySelector('textarea.cell-editor')?.value") as? String
+        XCTAssertEqual(editor, "Unsaved source")
+        let current = try await web.evaluateJavaScript("Array.from(CSS.highlights.get('notebook-current') || []).map(r=>r.toString()).join('')") as? String
+        XCTAssertEqual(current, "needlelast")
+        _ = try await web.evaluateJavaScript("""
+            document.querySelector('textarea.cell-editor').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+            window.scrollTo(0,0);
+            """)
+        for _ in 0..<100 {
+            if (try await web.evaluateJavaScript("!!document.querySelector('#cell-fixture-0 a')")) as? Bool == true { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        _ = try await web.evaluateJavaScript("document.querySelector('#cell-fixture-0 a').click()")
+        _ = try await harness.capture(web)
+        let result = try await web.evaluateJavaScript("""
+            (() => {
+                const heading=document.getElementById('last-heading'), rect=heading?.getBoundingClientRect();
+                return {visible:!!rect && rect.bottom>0 && rect.top<innerHeight,
+                    bounded:document.querySelectorAll('.cell').length<80,
+                    controls:document.querySelectorAll('#cell-fixture-259 .cell-tools').length};
+            })()
+            """) as? [String: Any]
+        XCTAssertEqual(result?["visible"] as? Bool, true)
+        XCTAssertEqual(result?["bounded"] as? Bool, true)
+        XCTAssertEqual(result?["controls"] as? Int, 1)
+    }
+
     func testActualWebKitRendersMathTablesCodeAndSanitizesStoredActiveContent() async throws {
         let malicious = #"<script>window.injectedNotebook=true</script><div style="position:fixed" onclick="window.injectedNotebook=true"><table><tr><td>Saved value</td></tr></table></div><iframe src="https://example.invalid"></iframe><a href="javascript:window.injectedNotebook=true">bad link</a>"#
         let source = try NotebookParsingTests.source(cells: [NotebookParsingTests.cell("markdown", source: "# Heading\n\n$E=mc^2$ and $a_b^2$\n\n\\(x^2\\)\n\n\\[y^2\\]"),

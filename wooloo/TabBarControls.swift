@@ -117,6 +117,8 @@ final class TabDragModel: ObservableObject {
     /// Published only when it changes, to move the insertion line.
     @Published private(set) var target: Target?
 
+    @Published private(set) var isDraggingTerminalTab = false
+    private var dragEndTimer: Timer?
     private(set) var spaceConnection: HerdrActionConnection?
     private(set) var spaceNonce: String?
     private(set) weak var spaceDestinations: HerdrDestinations?
@@ -131,6 +133,20 @@ final class TabDragModel: ObservableObject {
         let payload = spaceNonce ?? id
         dragged = (group, id)
         target = nil
+        dragEndTimer?.invalidate()
+        isDraggingTerminalTab = group == .terminal
+        if isDraggingTerminalTab {
+            // SwiftUI retains its item provider after cancelled drags. Watch the physical
+            // release as well as successful drops, including releases outside the window.
+            let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
+                MainActor.assumeIsolated {
+                    guard let self else { timer.invalidate(); return }
+                    if NSEvent.pressedMouseButtons & 1 == 0 { self.finishDragging() }
+                }
+            }
+            dragEndTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
         let provider = NSItemProvider()
         provider.registerDataRepresentation(forTypeIdentifier: Self.type(of: group).identifier,
                                             visibility: .ownProcess) { completion in
@@ -176,7 +192,15 @@ final class TabDragModel: ObservableObject {
 
     func cancel() { endDrag() }
 
+    /// Hide drag affordances on release without invalidating a drop loading its payload.
+    func finishDragging() {
+        dragEndTimer?.invalidate()
+        dragEndTimer = nil
+        isDraggingTerminalTab = false
+    }
+
     private func endDrag() {
+        finishDragging()
         spaceConnection = nil
         spaceDestinations = nil
         spaceNonce = nil

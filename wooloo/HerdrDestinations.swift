@@ -90,6 +90,20 @@ final class HerdrDestinations: ObservableObject {
     private(set) var lastLocal: HerdrStore?
     @Published private(set) var catalogError: String?
     @Published private(set) var sessionSelectionError: String?
+    @Published private(set) var retired: [HerdrWindowConnection] = []
+    var isActiveDestinationOpen: Bool { stores.contains { $0 === active } }
+    var canAccessActiveDestination: Bool { isActiveDestinationOpen && active.destinationEnabled }
+    var openedContextIDs: Set<String> { Set(stores.filter(\.destinationEnabled).map(\.contextID)) }
+    var recoverySpaces: [String] { Array(Set(retired.flatMap(\.spaces))).sorted() }
+    private var retiredStores: [String: HerdrStore] = [:]
+    private var knownSpaces: [String: Set<String>] = [:]
+    private var savedMachines: [HerdrMachineProfile] = []
+    private var requiresFreshCatalog = false
+    private var restorationKey: String?
+    private var restorationDefaults: UserDefaults?
+    private var restorationFailed = false
+    private var hasWindowClaim = false
+    private static var claimedWindows: Set<String> = []
     private(set) var isRunning = false
     private var subscriptions: [ObjectIdentifier: AnyCancellable] = [:]
     private var catalogSubscription: AnyCancellable?
@@ -99,11 +113,104 @@ final class HerdrDestinations: ObservableObject {
     private var terminalRequest: (context: String, pane: String)?
     private var acknowledgeTask: Task<Void, Never>?
     var onOpenTerminal: () -> Void = {}
+    var onConnectionsChanged: () -> Void = {}
     var isTerminalVisible: () -> Bool = { true }
     private let notifier: HerdrNotifier
     private let pool: HerdrMetadataPool?
     let windowID = UUID()
     weak var nativeWindow: NSWindow?
+
+    /// SceneStorage supplies the system-restored identity. After an explicit last-window
+    /// close, use the last record once; additional new windows receive independent records.
+    @discardableResult
+    func restoreWindow(_ preferred: String, defaults: UserDefaults = .standard) -> String {
+        if let restorationKey { return restorationKey }
+        let lastKey = "HerdrConnectionsLastWindow"
+        let candidate = preferred.isEmpty && Self.claimedWindows.isEmpty ? defaults.string(forKey: lastKey) : preferred
+        let key = candidate.flatMap { !$0.isEmpty && !Self.claimedWindows.contains($0) ? $0 : nil }
+            ?? UUID().uuidString
+        Self.claimedWindows.insert(key)
+        hasWindowClaim = true
+        restorationKey = key
+        requiresFreshCatalog = true
+        restorationDefaults = defaults
+        defaults.set(key, forKey: lastKey)
+        let storageKey = "HerdrConnectionsWindow.\(key)"
+        if let data = defaults.data(forKey: storageKey) {
+            guard let state = try? JSONDecoder().decode(HerdrConnectionWindowState.self, from: data),
+                  state.version == 1, state.root == HerdrStore.sessionRoot.standardizedFileURL.path,
+                  (state.opened + state.retired).allSatisfy({ descriptor in
+                      HerdrSessionName.isValid(descriptor.session)
+                          && descriptor.spaces.allSatisfy { $0.hasPrefix(descriptor.id + "|") }
+                  }), Set(state.opened.map(\.id)).count == state.opened.count,
+                  state.selected.map({ selected in state.opened.contains { $0.id == selected } }) ?? true else {
+                stores = []
+                active.setDestinationEnabled(false, reason: "Window connections could not be restored.")
+                lastLocal = nil
+                restorationFailed = true
+                catalogError = "Saved window connections could not be restored. No connections were opened; the saved record was preserved."
+                return key
+            }
+            for descriptor in state.opened + state.retired {
+                knownSpaces[descriptor.id, default: []].formUnion(descriptor.spaces)
+            }
+            stores = state.opened.map { makeStore($0) }
+            retired = state.retired
+            if let selected = state.selected, let store = stores.first(where: { $0.contextID == selected }) {
+                active = store
+            } else if state.selected != nil, let first = stores.first {
+                active = first
+            } else if let descriptor = state.retired.last {
+                active = makeStore(descriptor)
+                retiredStores[active.contextID] = active
+                active.setDestinationEnabled(false, reason: "Connection closed in this window.")
+            } else {
+                active.setDestinationEnabled(false, reason: "No connections are open in this window.")
+            }
+            lastLocal = stores.first { $0.machine == nil }
+        }
+        persistWindow()
+        return key
+    }
+
+    private func makeStore(_ descriptor: HerdrWindowConnection) -> HerdrStore {
+        let store = HerdrStore()
+        store.requiresSurfaceForInput = true
+        store.setPresentationActive(false)
+        if let machine = descriptor.machine {
+            store.connect(to: machine, startImmediately: false)
+            store.setDestinationEnabled(false, reason: "Checking saved SSH profile…")
+        } else {
+            store.connect(to: descriptor.session, remember: false, startImmediately: false)
+        }
+        return store
+    }
+
+    func configureInitialSession(_ name: String) {
+        guard !isRunning, HerdrSessionName.isValid(name) else { return }
+        let store = makeStore(HerdrWindowConnection(session: name))
+        stores = [store]
+        active = store
+        lastLocal = store
+        persistWindow()
+    }
+
+    private func persistWindow() {
+        guard hasWindowClaim, !restorationFailed, let restorationKey, let defaults = restorationDefaults else { return }
+        let state = HerdrConnectionWindowState(root: HerdrStore.sessionRoot.standardizedFileURL.path,
+            opened: stores.map(descriptor), retired: retired,
+            selected: isActiveDestinationOpen ? active.contextID : nil)
+        if let data = try? JSONEncoder().encode(state) {
+            defaults.set(data, forKey: "HerdrConnectionsWindow.\(restorationKey)")
+        }
+    }
+
+    private func descriptor(_ store: HerdrStore) -> HerdrWindowConnection {
+        var value = HerdrWindowConnection(store)
+        knownSpaces[value.id, default: []].formUnion(value.spaces)
+        value.spaces = Array(knownSpaces[value.id] ?? []).sorted()
+        return value
+    }
 
     init(store: HerdrStore? = nil, notifier: HerdrNotifier? = nil,
          pool: HerdrMetadataPool? = nil) {
@@ -117,10 +224,15 @@ final class HerdrDestinations: ObservableObject {
     }
 
     func start() {
+        if let restorationKey {
+            Self.claimedWindows.insert(restorationKey)
+            hasWindowClaim = true
+        }
         isRunning = true
         if catalogSubscription == nil, let pool {
             catalogSubscription = pool.profiles.sink { [weak self] profiles in
-                if let profiles { self?.applyCatalog(profiles) }
+                guard let self, !requiresFreshCatalog else { return }
+                if let profiles { applyCatalog(profiles) }
             }
         }
         for store in stores {
@@ -128,6 +240,7 @@ final class HerdrDestinations: ObservableObject {
             observe(store)
             store.start()
         }
+        active.setPresentationActive(isActiveDestinationOpen)
         notifier.register(windowID, window: { [weak self] in self?.nativeWindow },
                           watched: { [weak self] in
             guard let self, nativeWindow?.isKeyWindow == true, active.inputReady, isTerminalVisible(),
@@ -137,6 +250,14 @@ final class HerdrDestinations: ObservableObject {
     }
 
     func stop() {
+        persistWindow()
+        if hasWindowClaim, let restorationKey {
+            Self.claimedWindows.remove(restorationKey)
+            hasWindowClaim = false
+            if Self.claimedWindows.isEmpty {
+                restorationDefaults?.set(restorationKey, forKey: "HerdrConnectionsLastWindow")
+            }
+        }
         isRunning = false
         acknowledgeTask?.cancel()
         navigation = UUID()
@@ -157,83 +278,109 @@ final class HerdrDestinations: ObservableObject {
     }
 
     private func observe(_ store: HerdrStore) {
-        guard pool == nil else { return }
         let key = ObjectIdentifier(store)
         guard subscriptions[key] == nil else { return }
         subscriptions[key] = store.snapshotPublisher.sink { [weak self, weak store] snapshot in
             guard let self, let store else { return }
-            notifier.process(snapshot, selectedPaneID: nil, contextID: store.contextID)
+            if self.pool == nil { notifier.process(snapshot, selectedPaneID: nil, contextID: store.contextID) }
+            self.persistWindow()
         }
     }
 
     func refresh(_ machines: [HerdrMachineProfile]) {
         guard isRunning else { return }
+        requiresFreshCatalog = false
         if let pool { pool.profiles.send(machines) }
         else { applyCatalog(machines) }
     }
 
     private func applyCatalog(_ machines: [HerdrMachineProfile]) {
         guard isRunning else { return }
-        catalogError = nil
+        if !restorationFailed { catalogError = nil }
         let enabled = machines.filter(\.enabled)
-        guard enabled.allSatisfy({ $0.session.range(of: "^[A-Za-z0-9_-]{1,64}$", options: .regularExpression) != nil }) else {
+        guard enabled.allSatisfy({ HerdrSessionName.isValid($0.session) }) else {
             catalogError = "A saved host has an invalid Herdr session. Current connections were kept unchanged."
             return
         }
-        // Removing/disabling a selected host never silently redirects actions to Local.
-        // Keep that destination visible until the user explicitly leaves it.
-        for store in stores where store.machine != nil && store !== active {
-            if !enabled.contains(where: { $0.id == store.machine?.id }) {
-                store.stop()
-                if let source = store.metadataSource { pool?.release(source) }
-                store.metadataSource = nil
-                subscriptions.removeValue(forKey: ObjectIdentifier(store))
+        savedMachines = machines
+        for store in stores where store.machine != nil {
+            guard let profile = enabled.first(where: { $0.id == store.machine?.id }),
+                  profile.target == store.machine?.target, profile.session == store.sessionName else {
+                remove(store)
+                continue
             }
-        }
-        stores.removeAll { store in
-            store !== active && store.machine != nil && !enabled.contains { $0.id == store.machine?.id }
-        }
-        if let profile = active.machine, !enabled.contains(where: { $0.id == profile.id }) {
-            active.setDestinationEnabled(false)
-            if let source = active.metadataSource { pool?.release(source) }
-            active.metadataSource = nil
-        }
-        for profile in enabled {
-            if let existing = stores.first(where: { $0.machine?.id == profile.id }) {
-                if !existing.destinationEnabled {
-                    existing.metadataSource = pool?.acquire(machine: profile, session: profile.session)
-                    existing.setDestinationEnabled(true)
-                }
-                if existing.machine != profile {
-                    // Label-only changes do not reconnect or invalidate document identity.
-                    if existing.machine?.target != profile.target || existing.sessionName != profile.session {
-                        existing.stop()
-                        if let source = existing.metadataSource { pool?.release(source) }
-                        existing.metadataSource = pool?.acquire(machine: profile, session: profile.session)
-                    }
-                    existing.updateProfile(profile)
-                    existing.metadataSource?.updateProfile(profile)
-                }
-            } else {
-                let store = HerdrStore()
-                store.requiresSurfaceForInput = true
-                store.setPresentationActive(false)
-                store.metadataSource = pool?.acquire(machine: profile, session: profile.session)
-                store.connect(to: profile)
-                stores.append(store)
-                observe(store)
+            store.updateProfile(profile)
+            if !store.destinationEnabled {
+                store.setDestinationEnabled(true, startImmediately: false)
+                attachMetadata(store)
+                store.start()
             }
+            store.metadataSource?.updateProfile(profile)
         }
+        persistWindow()
+    }
+
+    /// Releases only this window's lease. The archived active store retains editor identity,
+    /// but cannot send input, actions, or notifications and is never redirected to Local.
+    func remove(_ store: HerdrStore) {
+        guard stores.contains(where: { $0 === store }) else { return }
+        var descriptor = descriptor(store)
+        descriptor.spaces = Array(Set(descriptor.spaces + (retired.first { $0.id == descriptor.id }?.spaces ?? []))).sorted()
+        retired.removeAll { $0.id == descriptor.id }
+        retired.append(descriptor)
+        retiredStores[store.contextID] = store
+        navigation = UUID()
+        terminalRequest = nil
+        terminalRequestID = UUID()
+        acknowledgeTask?.cancel()
+        previous = nil
+        previousSelection = nil
+        store.setPresentationActive(false)
+        store.setDestinationEnabled(false, reason: "Connection closed in this window. Open it again in Connections.")
+        if let source = store.metadataSource { pool?.release(source) }
+        store.metadataSource = nil
+        subscriptions.removeValue(forKey: ObjectIdentifier(store))
+        stores.removeAll { $0 === store }
+        onConnectionsChanged()
+        if lastLocal === store { lastLocal = stores.first { $0.machine == nil } }
+        persistWindow()
+    }
+
+    func openMachine(_ profile: HerdrMachineProfile) {
+        guard isRunning, let current = savedMachines.first(where: { $0.id == profile.id }),
+              current == profile, current.enabled else { return }
+        if let store = stores.first(where: { $0.machine?.id == profile.id }) { select(store); return }
+        open(HerdrWindowConnection(session: profile.session, machine: profile))
+    }
+
+    private func open(_ descriptor: HerdrWindowConnection) {
+        if restorationFailed, let restorationKey, let defaults = restorationDefaults {
+            // An explicit Open starts a fresh record, preserving the unreadable original.
+            defaults.set(defaults.data(forKey: "HerdrConnectionsWindow.\(restorationKey)"),
+                         forKey: "HerdrConnectionsWindowBackup.\(restorationKey)")
+            restorationFailed = false
+            catalogError = nil
+        }
+        let store = retiredStores.removeValue(forKey: descriptor.id) ?? makeStore(descriptor)
+        if let profile = descriptor.machine { store.updateProfile(profile) }
+        store.setDestinationEnabled(true, startImmediately: false)
+        retired.removeAll { $0.id == descriptor.id }
+        stores.append(store)
+        onConnectionsChanged()
+        attachMetadata(store)
+        observe(store)
+        select(store)
     }
 
     func reportCatalogError(_ error: Error) { catalogError = error.localizedDescription }
 
     func select(_ store: HerdrStore, workspaceID: String? = nil) {
+        guard stores.contains(where: { $0 === store }), store.destinationEnabled else { return }
         terminalRequest = nil
         navigation = UUID()
         if store !== active || (workspaceID != nil && workspaceID != active.selectedWorkspaceID) {
-            previous = active
-            previousSelection = (active.selectedWorkspaceID, active.selectedTabID, active.selectedPaneID)
+            previous = canAccessActiveDestination ? active : nil
+            previousSelection = previous.map { ($0.selectedWorkspaceID, $0.selectedTabID, $0.selectedPaneID) }
         }
         if store !== active {
             active.setPresentationActive(false)
@@ -246,6 +393,7 @@ final class HerdrDestinations: ObservableObject {
         if let workspaceID { store.select(workspaceID: workspaceID) }
         store.setPresentationActive(true)
         store.start()
+        persistWindow()
     }
 
     func goBack() {
@@ -261,8 +409,8 @@ final class HerdrDestinations: ObservableObject {
     func localSession(_ requestedName: String) {
         guard isRunning else { return }
         let name = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard name.range(of: "^[A-Za-z0-9_-]{1,64}$", options: .regularExpression) != nil else {
-            sessionSelectionError = "Use letters, numbers, hyphens, or underscores"
+        guard HerdrSessionName.isValid(name) else {
+            sessionSelectionError = "Use 1–64 letters, numbers, dots, hyphens, or underscores"
             return
         }
         sessionSelectionError = nil
@@ -270,18 +418,11 @@ final class HerdrDestinations: ObservableObject {
             select(store)
             return
         }
-        let store = HerdrStore()
-        store.requiresSurfaceForInput = true
-        store.setPresentationActive(false)
-        store.metadataSource = pool?.acquire(machine: nil, session: name)
-        store.connect(to: name)
-        guard store.sessionSelectionError == nil else { return }
-        stores.insert(store, at: stores.firstIndex(where: { $0.machine != nil }) ?? stores.endIndex)
-        observe(store)
-        select(store)
+        open(HerdrWindowConnection(session: name))
     }
 
     func createSpace(on store: HerdrStore, cwd: String? = nil, label: String? = nil) {
+        guard stores.contains(where: { $0 === store }), store.destinationEnabled else { return }
         let intent = navigation
         let previousContext = (active.contextID, active.selectedWorkspaceID, active.selectedTabID, active.selectedPaneID)
         store.createWorkspace(cwd: cwd, label: label, selectOnOpen: false) { [weak self, weak store] id in
@@ -375,6 +516,8 @@ struct HerdrDestinationSection: View {
     @ObservedObject var tabDrag: TabDragModel
     let active: Bool
     let grouped: Bool
+    var manage: () -> Void = {}
+    var remove: () -> Void = {}
     let select: (String) -> Void
     let create: () -> Void
     let rename: (HerdrWorkspace) -> Void
@@ -409,6 +552,13 @@ struct HerdrDestinationSection: View {
                     Button(action: create) { Image(systemName: "plus") }
                         .buttonStyle(.plain).disabled(!store.isConnected)
                         .help("New Space on \(store.machine?.label ?? "Local") · \(store.sessionName)")
+                    Menu {
+                        Button("Connections…", action: manage)
+                        Button("Remove from This Window", systemImage: "xmark", action: remove)
+                    } label: { Image(systemName: "ellipsis") }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Connection actions")
                 }
                 .font(.system(size: typography.secondary, weight: .medium))
                 .padding(.vertical, 4)
@@ -467,16 +617,19 @@ struct HerdrDestinationSection: View {
                         Button("Close Space…", systemImage: "xmark", role: .destructive) { close(space) }.disabled(!store.isConnected)
                     }
                 }
-                Label("Drop terminal tab here for a new Space", systemImage: "plus.square.dashed")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 6)
-                    .contentShape(Rectangle())
-                    .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: nil))
-                    .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: nil) }
-                          ?? "Move a single-pane terminal tab into a new Space")
+                if tabDrag.isDraggingTerminalTab,
+                   tabDrag.spaceConnection?.validStore === store {
+                    Label("Drop terminal tab here for a new Space", systemImage: "plus.square.dashed")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 6)
+                        .contentShape(Rectangle())
+                        .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: nil))
+                        .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: nil) }
+                              ?? "Move a single-pane terminal tab into a new Space")
+                }
                 if let error = store.actionError {
                     Text(error).font(.caption).foregroundStyle(theme.warning)
                 }

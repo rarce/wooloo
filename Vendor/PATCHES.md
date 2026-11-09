@@ -61,6 +61,7 @@ the system UI font. Cross-display visual QA is still needed on both 1x and 2x ha
 | Lazy blocks and source-action monitors | Offscreen table find test above and existing interaction tests. No dedicated hidden/duplicate-monitor regression identified. | Candidate after closing that event-delivery gap. |
 | Synchronous plain-text rendering | `MarkdownTableBenchmarks.testPreviewRendering` and VS Markdown snapshots. No dedicated inline-HTML cancellation/input-change regression identified. | Performance candidate; protect the asynchronous HTML path separately. |
 | Canvas-backed tables | VS `testMarkdownTables`, `testMarkdownTablesDocument`; `scripts/markdown-bench.sh`. | Performance candidate; retain custom-decoration behavior. |
+| Combined cell insets | Existing VS Markdown/table snapshots and `scripts/markdown-bench.sh` compare layout, wrapping, row colors and timings. | Reduces four safe-area layouts per cell to one on macOS 14+; older platform fallback retained. See the 2026-11-07 measurements. |
 | `AnyShapeStyle` buffer lifetime and comparison | `MarkdownPreviewRenderingTests.testDifferentShapeStylesAreNotEqual` in [MarkdownTableBenchmarks.swift](../woolooTests/MarkdownTableBenchmarks.swift). | Prioritize as a small correctness candidate. |
 | Mermaid macOS bitmap orientation | No dedicated orientation regression identified. | Add an orientation check before contributing or removing the fix. |
 

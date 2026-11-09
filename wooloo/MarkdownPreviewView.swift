@@ -58,7 +58,8 @@ struct MarkdownPreviewView: View, Equatable {
     @Environment(\.woolooTheme) private var theme
     @AppStorage(MarkdownPreviewStyle.storageKey) private var style = MarkdownPreviewStyle.theme
     @State private var width: CGFloat = 0
-    @State private var scrollStart = MarkdownPreviewScrollStart()
+    @State private var expandedDiagram: NSImage?
+    @State private var diagnosticID = UUID()
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         MainActor.assumeIsolated {
@@ -85,18 +86,45 @@ struct MarkdownPreviewView: View, Equatable {
                 }
             }
         }
+        .allowsHitTesting(expandedDiagram == nil)
+        .accessibilityHidden(expandedDiagram != nil)
+        .overlay {
+            if let expandedDiagram {
+                MermaidDiagramViewer(image: expandedDiagram,
+                                     theme: style == .document ? .markdownDocument : theme) {
+                    self.expandedDiagram = nil
+                }
+                .id(ObjectIdentifier(expandedDiagram))
+            }
+        }
+        .onChange(of: text) { expandedDiagram = nil }
+        .onChange(of: path) { expandedDiagram = nil }
+        .onChange(of: location) { expandedDiagram = nil }
+        .onChange(of: style) { expandedDiagram = nil }
+        .onChange(of: theme.id) { expandedDiagram = nil }
+        .onAppear { recordPreviewContext() }
+        .onChange(of: path) { recordPreviewContext() }
+        .onChange(of: location) { recordPreviewContext() }
+        .onChange(of: style) { recordPreviewContext() }
+        .onChange(of: theme.id) { recordPreviewContext() }
+        .onChange(of: text) { recordPreviewContext() }
+        .onDisappear {
+            HangWatchdog.shared.record("preview disappeared path=\(path)")
+            HangWatchdog.shared.setContext(nil, for: "preview-\(diagnosticID)")
+            HangWatchdog.shared.setContext(nil, for: "viewport-\(diagnosticID)")
+        }
+        .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
+            let description = "path=\(path) size=\(size.width)x\(size.height)"
+            HangWatchdog.shared.setContext(description, for: "viewport-\(diagnosticID)")
+            HangWatchdog.shared.record("preview geometry \(description)", coalescing: "preview-geometry")
+        }
     }
 
-    /// The block at the top of the preview. Read and written through the memory, not state:
-    /// scrolling past a block then does not run this body, which parses the whole document. The
-    /// first read restores the saved block; later ones leave a shown preview where it is.
-    private var topBlock: Binding<MarkdownBlockAnchor?> {
-        let (scroll, text, start) = (scroll, text, scrollStart)
-        return Binding(get: {
-            guard !start.taken else { return scroll?.shownMarkdownBlock }
-            start.taken = true
-            return scroll?.restoredMarkdownBlock(in: text)
-        }, set: { scroll?.setMarkdownBlock($0, in: text) })
+    private func recordPreviewContext() {
+        let description = "path=\(path) space=\(location.workspaceLabel) root=\(location.root)"
+            + " style=\(style.rawValue) theme=\(theme.id) utf8_bytes=\(text.utf8.count)"
+        HangWatchdog.shared.setContext(description, for: "preview-\(diagnosticID)")
+        HangWatchdog.shared.record("preview \(description)")
     }
 
     private var themed: some View {
@@ -118,7 +146,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .frame(maxWidth: 900, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
-        .scrollPosition(id: topBlock, anchor: .top)
+        .modifier(MarkdownPreviewScrollPosition(text: text, path: path, diagnosticID: diagnosticID, memory: scroll))
         .background(theme.contentBackground)
     }
 
@@ -156,7 +184,7 @@ struct MarkdownPreviewView: View, Equatable {
                 .padding(compact ? 12 : 32)
                 .frame(maxWidth: .infinity)
         }
-        .scrollPosition(id: topBlock, anchor: .top)
+        .modifier(MarkdownPreviewScrollPosition(text: text, path: path, diagnosticID: diagnosticID, memory: scroll))
         .background(theme.sidebarBackground.overlay(Color.black.opacity(theme.isDark ? 0 : 0.05)))
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
     }
@@ -164,17 +192,26 @@ struct MarkdownPreviewView: View, Equatable {
     private func markdown(theme: WoolooTheme) -> some View {
         MarkdownView(MarkdownSpaceLinks.rewritingImages(in: text, documentPath: path))
             .markdownLazyBlocks()
-            .markdownCodeBlockStyle(WoolooCodeBlockStyle(theme: theme))
+            .markdownCodeBlockStyle(WoolooCodeBlockStyle(theme: theme, onExpand: { expandedDiagram = $0 }))
             .markdownElementRenderer(.image(SpaceImageRenderer(location: location),
                                             urlScheme: MarkdownSpaceLinks.scheme))
             .markdownSearchHighlight(highlight)
             .markdownTaskToggle(onToggleTask)
-            .markdownRevealSource(onRevealLine)
+            // Keep the monitor's branch mounted, preserving lazy block state and scroll position.
+            .markdownRevealSource(revealSource)
             .environment(\.openURL, OpenURLAction { open($0) })
             .environment(\.woolooTheme, theme)
             .foregroundStyle(theme.text)
             .tint(theme.accent)
             .textSelection(.enabled)
+    }
+
+    private var revealSource: (@MainActor (Int) -> Void)? {
+        guard let onRevealLine else { return nil }
+        return { line in
+            guard expandedDiagram == nil else { return }
+            onRevealLine(line)
+        }
     }
 
     /// Opens Space files as document tabs, web links in the browser, and ignores anchors.
@@ -311,10 +348,11 @@ private struct SpaceImage: View {
 /// Highlighted code blocks, except ```mermaid fences, which render as native diagrams.
 private struct WoolooCodeBlockStyle: MarkdownCodeBlockStyle {
     let theme: WoolooTheme
+    let onExpand: (NSImage) -> Void
 
     func makeBody(configuration: Configuration) -> some View {
         if configuration.language?.lowercased() == "mermaid" {
-            MermaidBlock(source: configuration.code, theme: theme)
+            MermaidBlock(source: configuration.code, theme: theme, onExpand: onExpand)
         } else {
             DefaultCodeBlockStyle(highlighterTheme: CodeHighlighterTheme(themeName: theme.highlighterName))
                 .makeBody(configuration: configuration)
@@ -329,6 +367,7 @@ private struct MermaidBlock: View {
     @Environment(\.woolooTypography) private var typography
     let source: String
     let theme: WoolooTheme
+    let onExpand: (NSImage) -> Void
 
     @State private var image: NSImage?
     @State private var error: String?
@@ -341,6 +380,20 @@ private struct MermaidBlock: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: image.size.width)
                     .frame(maxWidth: .infinity, alignment: .center)
+                    .overlay(alignment: .bottomTrailing) {
+                        Button { onExpand(image) } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .padding(7)
+                                .background(theme.contentBackground, in: RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.muted.opacity(0.4)))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(theme.text)
+                        .help("Expand diagram")
+                        .accessibilityLabel("Expand Mermaid diagram")
+                        .accessibilityIdentifier("mermaid-expand")
+                        .padding(6)
+                    }
             } else if let error {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Mermaid diagram could not be rendered: \(error)", systemImage: "exclamationmark.triangle")
@@ -358,6 +411,8 @@ private struct MermaidBlock: View {
             }
         }
         .task(id: "\(theme.id)|\(source)") {
+            image = nil
+            error = nil
             let diagramTheme = DiagramTheme(
                 background: WoolooTheme.nsColor(theme.background),
                 foreground: WoolooTheme.nsColor(theme.foreground),
@@ -367,13 +422,14 @@ private struct MermaidBlock: View {
                 border: WoolooTheme.nsColor(theme.herdr.surface1)
             )
             do {
-                guard let rendered = try await MermaidRenderer.renderImageAsync(source: source, theme: diagramTheme) else {
-                    error = "unsupported diagram"
-                    return
-                }
+                let rendered = try await MermaidVectorImage.render(source: source, theme: diagramTheme)
+                try Task.checkCancellation()
                 image = rendered
                 error = nil
+            } catch is CancellationError {
+                return
             } catch {
+                guard !Task.isCancelled else { return }
                 self.error = error.localizedDescription
             }
         }
@@ -458,8 +514,7 @@ final class PreviewScrollMemory {
     /// is when blocks were added or removed above it since.
     func restoredMarkdownBlock(in text: String) -> MarkdownBlockAnchor? {
         if let block = markdownBlock, text != markdownText {
-            markdownBlock = Self.block(block, from: markdownText, to: text)
-            markdownText = text
+            return Self.block(block, from: markdownText, to: text)
         }
         return markdownBlock
     }
@@ -498,10 +553,42 @@ final class PreviewScrollMemory {
     }
 }
 
-/// Whether a shown Markdown preview has taken its starting block from the scroll memory.
-@MainActor
-final class MarkdownPreviewScrollStart {
-    var taken = false
+/// The scroll view owns its live position. Memory supplies an initial value and receives
+/// changes, but never drives an already shown preview through a computed binding. In particular,
+/// SwiftUI can read the binding during layout without remapping or mutating another preview's
+/// position. Keeping state in this modifier also avoids parsing Markdown on each scroll update.
+private struct MarkdownPreviewScrollPosition: ViewModifier {
+    let text: String
+    let path: String
+    let diagnosticID: UUID
+    let memory: PreviewScrollMemory?
+    @State private var block: MarkdownBlockAnchor?
+
+    init(text: String, path: String, diagnosticID: UUID, memory: PreviewScrollMemory?) {
+        self.text = text
+        self.path = path
+        self.diagnosticID = diagnosticID
+        self.memory = memory
+        _block = State(initialValue: memory?.restoredMarkdownBlock(in: text))
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition(id: $block, anchor: .top)
+            .onAppear { recordBlock(block) }
+            .onDisappear { HangWatchdog.shared.setContext(nil, for: "block-\(diagnosticID)") }
+            .onChange(of: block) { _, block in
+                memory?.setMarkdownBlock(block, in: text)
+                recordBlock(block)
+            }
+            .onChange(of: text) { _, text in memory?.setMarkdownBlock(block, in: text) }
+    }
+
+    private func recordBlock(_ block: MarkdownBlockAnchor?) {
+        let description = "path=\(path) index=\(block.map { String($0.index) } ?? "nil")"
+        HangWatchdog.shared.setContext(description, for: "block-\(diagnosticID)")
+        HangWatchdog.shared.record("preview block \(description)", coalescing: "preview-block")
+    }
 }
 
 /// A preview's callbacks, kept by its document view and updated on each of that view's

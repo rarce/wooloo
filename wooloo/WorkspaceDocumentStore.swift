@@ -39,19 +39,108 @@ final class WorkspaceDocumentStore: ObservableObject {
     private var recentFiles: [(space: String?, location: String, path: String)] = []
     /// The Space whose documents are shown and where new ones open.
     @Published private(set) var space: String?
+    var preservedTextDrafts: [WorkspaceDocument] { documents.filter(\.canSave) }
+
+    /// Closed connections retain their buffers, without continuing background SSH/file work.
+    var permitsBackgroundAccess: (WorkspaceFileLocation) -> Bool = { _ in true }
+    private var connectionTokens: [String: HerdrRequestToken] = [:]
+    /// Backup identities survive tab moves and cannot be reused by a replacement preview.
+    private var deferredInitialLoads: Set<UUID> = []
+
+    private func connectionToken(_ location: WorkspaceFileLocation) -> HerdrRequestToken {
+        if let token = connectionTokens[location.identity], token.isValid { return token }
+        let token = HerdrRequestToken()
+        connectionTokens[location.identity] = token
+        return token
+    }
+
+    func connectionAccessChanged() {
+        for (identity, token) in connectionTokens {
+            if let location = documents.first(where: { $0.location.identity == identity })?.location,
+               permitsBackgroundAccess(location) { continue }
+            token.cancel()
+        }
+        for (identity, task) in diskChecks {
+            guard let location = documents.first(where: { $0.location.identity == identity })?.location,
+                  !permitsBackgroundAccess(location) else { continue }
+            task.cancel()
+            queuedDiskChecks.remove(identity)
+        }
+        resumeDeferredInitialLoads()
+    }
+
+    private func resumeDeferredInitialLoads() {
+        deferredInitialLoads.formIntersection(documents.map(\.backupID))
+        let pending = documents.filter {
+            deferredInitialLoads.contains($0.backupID) && permitsBackgroundAccess($0.location)
+                && !loadsInFlight.contains($0.loadRequest)
+        }
+        for document in pending { load(document.id) }
+    }
+
+    /// Recover backed-up text even when its host/profile no longer exists. Do not register
+    /// these namespaces for writes or load their clean files until the connection is opened.
+    func recoverConnectionDrafts(in spaces: [String]) async {
+        guard let persistence else { return }
+        var warnings: [String] = []
+        for space in spaces {
+            do {
+                let restored = try await persistence.restore(space, owner: persistenceOwner)
+                applyingRestoration = true
+                defer { applyingRestoration = false }
+                warnings += restored.warnings
+                for snapshot in restored.session.documents where snapshot.hasBackup {
+                    guard !documents.contains(where: { $0.backupID == snapshot.backupID }) else { continue }
+                    do {
+                        var document = try snapshot.document()
+                        if let number = document.untitledNumber, documents.contains(where: {
+                            $0.space == document.space && $0.untitledNumber == number
+                        }) {
+                            document.untitledNumber = (1...).first { number in
+                                !documents.contains { $0.space == document.space && $0.untitledNumber == number }
+                            }
+                        }
+                        if documents.contains(where: { $0.id == document.id }) {
+                            document = try recoveredDraft(snapshot)
+                            warnings.append("Another buffer for \(snapshot.path) was recovered as \(document.title).")
+                        }
+                        documents.append(document)
+                    } catch { warnings.append(error.localizedDescription) }
+                }
+            } catch { warnings.append(error.localizedDescription) }
+        }
+        if !warnings.isEmpty { persistenceError = warnings.joined(separator: "\n") }
+    }
+
+    private func recoveredDraft(_ snapshot: WorkspaceDocumentSnapshot) throws -> WorkspaceDocument {
+        var recovered = snapshot
+        recovered.path = ""
+        recovered.originalPath = snapshot.path
+        recovered.kind = .file
+        recovered.untitledNumber = (1...).first { number in
+            !documents.contains { $0.space == snapshot.space && $0.untitledNumber == number }
+        }
+        recovered.savedText = ""
+        recovered.version = nil
+        recovered.isPreview = false
+        return try recovered.document()
+    }
 
     @Published var diskComparison: WorkspaceDiskComparison?
 
     /// Capture the buffer now; a late read or a refreshed comparison cannot replace edits or
     /// change the version that Save/Overwrite protects.
     func compareWithDisk(_ id: String) {
-        guard let document = document(id), document.isEditable, !document.isUntitled, !document.isLoading else { return }
+        guard let document = document(id), permitsBackgroundAccess(document.location),
+              document.isEditable, !document.isUntitled, !document.isLoading else { return }
         let comparison = WorkspaceDiskComparison(documentID: id, location: document.location, path: document.path,
                                                   buffer: document.text, syntaxOverride: document.syntaxOverride)
         diskComparison = comparison
+        let access = connectionToken(document.location)
         Task {
             let result = await WorkspaceFiles.blocking(at: document.location, priority: .userInitiated) {
                 Result { () throws -> (WorkspaceFileContents, String) in
+                    try access.check()
                     let disk = try WorkspaceFiles.read(document.path, at: document.location)
                     let patch = try WorkspaceFiles.comparisonPatch(disk: disk.text, buffer: comparison.buffer, path: document.path)
                     return (disk, patch)
@@ -135,6 +224,8 @@ final class WorkspaceDocumentStore: ObservableObject {
                 var warnings = restored.warnings
                 var reload: [String] = []
                 for snapshot in restored.session.documents {
+                    // Connections may already have recovered this backup under a draft ID.
+                    guard !self.documents.contains(where: { $0.backupID == snapshot.backupID }) else { continue }
                     do {
                         var document = try snapshot.document()
                         if document.space == nil, self.space != nil { document.space = self.space }
@@ -154,17 +245,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                                 if self.activeID == document.id { self.activeBySpace[key] = document.backupID }
                             } else if document.isDirty && self.documents[existing].text != document.text {
                                 // Two windows edited the same file independently. Preserve both buffers.
-                                var recovered = snapshot
-                                recovered.path = ""
-                                recovered.originalPath = snapshot.path
-                                recovered.kind = .file
-                                recovered.untitledNumber = (1...).first { number in
-                                    !self.documents.contains { $0.space == document.space && $0.untitledNumber == number }
-                                }
-                                recovered.savedText = ""
-                                recovered.version = nil
-                                recovered.isPreview = false
-                                document = try recovered.document()
+                                document = try self.recoveredDraft(snapshot)
                                 self.documents.append(document)
                                 warnings.append("Another buffer for \(snapshot.path) was recovered as \(document.title).")
                             }
@@ -415,6 +496,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             return "The document is no longer open"
         }
         let document = documents[index]
+        guard permitsBackgroundAccess(document.location) else { return "Connection closed. Save a copy from Connections instead." }
         let path: String
         switch Self.untitledSavePath(input, root: document.location.root) {
         case .success(let value): path = value
@@ -423,9 +505,11 @@ final class WorkspaceDocumentStore: ObservableObject {
         guard !WorkspacePDF.supports(path) else { return "PDF files can only be previewed; choose a text file extension" }
         guard !WorkspaceImage.supports(path) else { return "Image files can only be previewed; choose a text file extension" }
         let (text, location) = (document.text, document.location)
+        let access = connectionToken(location)
         documents[index].isSaving = true
         let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
             Result { () throws -> String in
+                try access.check()
                 try WorkspaceFiles.createFile(path, at: location)
                 return try WorkspaceFiles.save(text, path: path, expectedVersion: WorkspaceFiles.gitBlobHash(Data()),
                                                at: location)
@@ -502,11 +586,23 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// Reads a document's file, diff or commit diff from disk or over SSH.
     func load(_ id: String) {
         guard let initialIndex = documents.firstIndex(where: { $0.id == id }) else { return }
+        guard permitsBackgroundAccess(documents[initialIndex].location) else {
+            if documents[initialIndex].version == nil && !documents[initialIndex].isUntitled {
+                deferredInitialLoads.insert(documents[initialIndex].backupID)
+            }
+            return
+        }
+        let resuming = deferredInitialLoads.remove(documents[initialIndex].backupID) != nil
+        if resuming {
+            documents[initialIndex].isLoading = true
+            documents[initialIndex].error = nil
+        }
         let request = UUID()
         documents[initialIndex].loadRequest = request
         loadsInFlight.insert(request)
         let document = documents[initialIndex]
         let (kind, path, location) = (document.kind, document.path, document.location)
+        let access = connectionToken(location)
         let (commit, originalPath) = (document.commit, document.originalPath)
         let isPDF = document.isPDF
         let isImage = document.isImage
@@ -517,6 +613,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             }
             let result = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
                 Result { () throws -> LoadedContents in
+                    try access.check()
                     if kind == .commit, let commit {
                         return .text(WorkspaceFileContents(text: try WorkspaceFiles.commitDiff(
                             commit, path: path, originalPath: originalPath, at: location), version: ""))
@@ -533,6 +630,14 @@ final class WorkspaceDocumentStore: ObservableObject {
             loadsInFlight.remove(request)
             guard let index = documents.firstIndex(where: { $0.id == id && $0.loadRequest == request }) else { return }
             documents[index].isLoading = false
+            if case .failure(let failure) = result, failure is CancellationError, !access.isValid,
+               documents[index].version == nil, !documents[index].isUntitled {
+                deferredInitialLoads.insert(documents[index].backupID)
+                documents[index].error = nil
+                // Access may have returned while this cancelled read was still queued.
+                resumeDeferredInitialLoads()
+                return
+            }
             if case .success = result {
                 documents[index].diskState = .current
                 documents[index].asksToOverwrite = false
@@ -563,7 +668,8 @@ final class WorkspaceDocumentStore: ObservableObject {
                     // asks before overwriting the newer file.
                     documents[index].diskState = .changed(version: content.version)
                 } else {
-                    if documents[index].text == document.text, documents[index].text != content.text {
+                    if documents[index].text == document.text, documents[index].text != content.text,
+                       !(resuming && document.isDirty) {
                         documents[index].text = content.text
                         documents[index].diskReload = UUID()
                     }
@@ -602,6 +708,7 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// deleted file came back with other contents.
     private func save(_ id: String, overwriting: Bool, onSaved: @escaping () -> Void) {
         guard let index = documents.firstIndex(where: { $0.id == id }),
+              permitsBackgroundAccess(documents[index].location),
               documents[index].isEditable, !documents[index].isUntitled, !documents[index].isSaving,
               let version = documents[index].version,
               documents[index].isDirty || documents[index].isDeletedOnDisk || overwriting else { return }
@@ -612,10 +719,12 @@ final class WorkspaceDocumentStore: ObservableObject {
         }
         let document = documents[index]
         let recreate = document.isDeletedOnDisk
+        let access = connectionToken(document.location)
         documents[index].isSaving = true
         Task {
             let result = await WorkspaceFiles.blocking(at: document.location, priority: .userInitiated) {
                 () -> Result<String, any Error> in
+                guard access.isValid else { return .failure(CancellationError()) }
                 var created = false
                 do {
                     if recreate {
@@ -743,6 +852,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return true }
         if documents[index].isDirty && !force { return false }
         let key = WorkspaceSessionPersistence.key(for: documents[index].space)
+        deferredInitialLoads.remove(documents[index].backupID)
         discardedBySpace[key, default: []].insert(documents[index].backupID)
         closedBeforeRestoration.insert(id)
         documents.remove(at: index)
@@ -797,7 +907,7 @@ final class WorkspaceDocumentStore: ObservableObject {
     @discardableResult
     func checkDisk(at identity: String? = nil) -> Task<Void, Never> {
         let identities = identity.map { [$0] }
-            ?? Array(Set(documents.filter(Self.followsDisk).map(\.location.identity)))
+            ?? Array(Set(documents.filter { Self.followsDisk($0) && permitsBackgroundAccess($0.location) }.map(\.location.identity)))
         let now = ContinuousClock.now
         for identity in identities { checkedElsewhere[identity] = now }
         let tasks = identities.map { checkDisk(location: $0) }
@@ -836,6 +946,8 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     private func checkDisk(location identity: String,
                            retryDelay: @escaping (Int) -> Duration = { _ in .zero }) -> Task<Void, Never> {
+        guard let location = documents.first(where: { $0.location.identity == identity })?.location,
+              permitsBackgroundAccess(location) else { return Task {} }
         queuedDiskChecks.insert(identity)
         if let running = diskChecks[identity] { return running }
         let task = Task { [weak self] in
@@ -856,11 +968,13 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     private func compareWithDisk(at identity: String, retryDelay: (Int) -> Duration) async {
         let checked = documents.filter { Self.followsDisk($0) && $0.location.identity == identity }
-        guard let location = checked.first?.location else { return }
+        guard let location = checked.first?.location, permitsBackgroundAccess(location) else { return }
         let paths = checked.map(\.path)
+        let access = connectionToken(location)
         let versions = await WorkspaceFiles.blocking(at: location, priority: .utility) {
-            Optional(WorkspaceFiles.diskVersions(paths, at: location))
+            access.isValid ? Optional(WorkspaceFiles.diskVersions(paths, at: location)) : nil
         } ?? [:]
+        guard permitsBackgroundAccess(location) else { return }
         // Over SSH, a check that reached the machine has an answer for every valid path.
         if !location.isLocal {
             if versions.isEmpty {

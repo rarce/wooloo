@@ -43,6 +43,18 @@ final class HerdrRuntimeTests: XCTestCase {
         ["result": ["type": "pong", "capabilities": ["endpoint_protocol_generation": generation]]]
     }
 
+    func testSessionDiscoveryDoesNotInterpretConnectionErrorsAsStoppedServers() throws {
+        let json = Data(#"[{"name":"blocked","running":false,"connection_error":"Permission denied"},{"name":"stopped","running":false},{"name":"live","running":true}]"#.utf8)
+        let sessions = try JSONDecoder().decode([HerdrLocalSession].self, from: json)
+        XCTAssertFalse(sessions[0].isVerifiedStopped)
+        XCTAssertEqual(sessions[0].status, "State not verified")
+        XCTAssertTrue(sessions[1].isVerifiedStopped)
+        XCTAssertFalse(sessions[2].isVerifiedStopped)
+        XCTAssertTrue(HerdrSessionName.isValid("release.1"))
+        XCTAssertFalse(HerdrSessionName.isValid(".."))
+        XCTAssertFalse(HerdrSessionName.isValid("../default"))
+    }
+
     func testInstallRepairsModifiedBinaryAndPreservesExecutablePermissions() async throws {
         let runtime = service()
         let installed = try await runtime.installBundledExecutable()
@@ -98,6 +110,16 @@ final class HerdrRuntimeTests: XCTestCase {
             XCTAssertEqual(error.localizedDescription, "stop here")
         }
         XCTAssertEqual(label.value, "dev.wooloo.herdr-runtime")
+    }
+
+    func testUnverifiableSocketDoesNotStartAnotherServer() async throws {
+        let runtime = HerdrRuntimeService(supportRoot: root.appendingPathComponent("support"),
+            configRoot: root.appendingPathComponent(String(repeating: "x", count: 120)), bundledExecutable: helper,
+            launcher: { _, _, _, _, _ in XCTFail("An invalid socket is not a verified stopped server") })
+        do {
+            try await runtime.ensureServer(executable: helper, session: "test")
+            XCTFail("The socket error must be surfaced")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("socket path is too long")) }
     }
 
     func testExistingModeDoesNotLaunchAnAbsentServer() async throws {

@@ -40,6 +40,9 @@ struct IntegratedWindowObserver: NSViewRepresentable {
         let chrome: IntegratedWindowChrome
         private weak var observedWindow: NSWindow?
         private var previousBackgroundDrag = false
+        private var previousMovable = true
+        private var mouseMonitor: Any?
+        private var dragEndTimer: Timer?
         private var measurementPending = false
 
         init(chrome: IntegratedWindowChrome) {
@@ -53,8 +56,18 @@ struct IntegratedWindowObserver: NSViewRepresentable {
             guard let window else { return }
             observedWindow = window
             previousBackgroundDrag = window.isMovableByWindowBackground
-            // Only the explicit empty titlebar regions move the window; tabs keep their drags.
+            // WindowServer can start a titlebar drag before a local mouse-down monitor runs.
+            // Publish the nonmovable policy before the click, then opt in only for our
+            // explicit empty drag regions. Disabling background dragging alone is not enough.
+            previousMovable = window.isMovable
+            window.isMovable = false
             window.isMovableByWindowBackground = false
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+                MainActor.assumeIsolated {
+                    self?.handleMouseEvent(event)
+                }
+                return event
+            }
             for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification,
                          NSWindow.didExitFullScreenNotification] {
                 NotificationCenter.default.addObserver(self, selector: #selector(windowChanged), name: name, object: window)
@@ -63,9 +76,47 @@ struct IntegratedWindowObserver: NSViewRepresentable {
         }
 
         func uninstall() {
+            if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+            mouseMonitor = nil
+            finishMouseInteraction()
             NotificationCenter.default.removeObserver(self)
+            observedWindow?.isMovable = previousMovable
             observedWindow?.isMovableByWindowBackground = previousBackgroundDrag
             observedWindow = nil
+        }
+
+        /// Keep automatic titlebar dragging disabled between events, including before the
+        /// first click and after a tab drag. Only an explicit empty region opts into a drag.
+        func handleMouseEvent(_ event: NSEvent) {
+            guard let window = observedWindow, event.window === window else { return }
+            if event.type == .leftMouseUp {
+                finishMouseInteraction()
+                return
+            }
+            guard event.type == .leftMouseDown else { return }
+            finishMouseInteraction()
+            guard previousMovable,
+                  let frameView = window.contentView?.superview,
+                  frameView.hitTest(frameView.convert(event.locationInWindow, from: nil)) is WindowDragView else { return }
+            window.isMovable = true
+            // A native window drag can consume mouse-up outside this window. Restore the
+            // policy on physical release too, without monitoring or intercepting other apps.
+            if NSEvent.pressedMouseButtons & 1 != 0 {
+                let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
+                    guard let self else { timer.invalidate(); return }
+                    MainActor.assumeIsolated {
+                        if NSEvent.pressedMouseButtons & 1 == 0 { self.finishMouseInteraction() }
+                    }
+                }
+                dragEndTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        }
+
+        private func finishMouseInteraction() {
+            dragEndTimer?.invalidate()
+            dragEndTimer = nil
+            observedWindow?.isMovable = false
         }
 
         @objc private func windowChanged(_ notification: Notification) { scheduleMeasurement() }

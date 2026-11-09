@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var destinations: HerdrDestinations
+    @SceneStorage("HerdrConnectionWindowID") private var connectionWindowID = ""
     private let documents: WorkspaceDocumentStore?
     private let window: ContentWindowModel?
     private let search: WorkspaceSearchModel?
@@ -33,7 +34,7 @@ struct ContentView: View {
     var body: some View {
         DestinationContentView(herdr: destinations.active, destinations: destinations,
                                notifier: notifier, documents: documents, window: window, search: search,
-                               managesRuntime: managesRuntime)
+                               managesRuntime: managesRuntime, restorationID: managesRuntime ? $connectionWindowID : nil)
     }
 }
 
@@ -51,9 +52,8 @@ private struct DestinationContentView: View {
     private var shortcutMap: HerdrShortcutMap { shortcutStore.map }
     @State private var shortcutPrefixActive = false
     @AppStorage(HerdrShortcutMap.previousContextKey) private var previousContextShortcut = "prefix+backspace"
-    @State private var availableSessions: [String] = []
-    @State private var showsMachineManager = false
-    @State private var machines: [HerdrMachineProfile] = []
+    @ObservedObject private var catalog = HerdrConnectionCatalog.shared
+    private let restorationID: Binding<String>?
     /// All panels use the store’s active host; nil is this Mac.
     private var explorerMachine: HerdrMachineProfile? { herdr.machine }
     @StateObject private var documentStore = WorkspaceDocumentStore()
@@ -75,7 +75,6 @@ private struct DestinationContentView: View {
     @AppStorage("FilesSidebarWidth") private var filesSidebarWidth = 244.0
     @AppStorage("AgentsInSelectedSpaceOnly") private var agentsInSelectedSpaceOnly = false
     @State private var followsHerdrAgentView = true
-    @State private var connectionRequest = UUID()
     @State private var popupDocument: (session: String, space: String?, tab: String?, document: String)?
 
     @StateObject private var themes = ThemeStore()
@@ -114,11 +113,13 @@ private struct DestinationContentView: View {
     }
 
     init(herdr: HerdrStore, destinations: HerdrDestinations, notifier: HerdrNotifier,
-         documents: WorkspaceDocumentStore?, window: ContentWindowModel?, search: WorkspaceSearchModel?, managesRuntime: Bool) {
+         documents: WorkspaceDocumentStore?, window: ContentWindowModel?, search: WorkspaceSearchModel?, managesRuntime: Bool,
+         restorationID: Binding<String>? = nil) {
         self.herdr = herdr
         self.destinations = destinations
         self.notifier = notifier
         self.managesRuntime = managesRuntime
+        self.restorationID = restorationID
         if let documents { _documentStore = StateObject(wrappedValue: documents) }
         if let window { _window = StateObject(wrappedValue: window) }
         if let search { _search = StateObject(wrappedValue: search) }
@@ -142,13 +143,17 @@ private struct DestinationContentView: View {
         .environment(\.woolooTypography, textScale)
         .tint(theme.accent)
         .task {
-            if managesRuntime {
-                guard await runtime.prepare(session: herdr.sessionName) else { return }
+            if let restorationID, !ProcessInfo.processInfo.arguments.contains("-HerdrLastSession") {
+                restorationID.wrappedValue = destinations.restoreWindow(restorationID.wrappedValue)
             }
+            if managesRuntime { catalog.acquire() }
+            guard !managesRuntime || !runtime.showsSetup else { return }
             guard !Task.isCancelled else { return }
             destinations.start()
-            window.commandStore = herdr
-            if managesRuntime { loadMachines() }
+            window.commandStore = destinations.active
+            if managesRuntime {
+                if let profiles = await catalog.freshMachines(), destinations.isRunning { destinations.refresh(profiles) }
+            }
         }
         .background { DestinationWindowObserver(destinations: destinations).frame(width: 0, height: 0) }
         .background { IntegratedWindowObserver(chrome: chrome).frame(width: 0, height: 0) }
@@ -157,6 +162,9 @@ private struct DestinationContentView: View {
             if showsSetup {
                 herdr.stop()
             } else {
+                if !destinations.isRunning {
+                    destinations.configureInitialSession(runtime.connectedSession ?? herdr.sessionName)
+                }
                 destinations.start()
                 destinations.localSession(runtime.connectedSession ?? herdr.sessionName)
                 window.commandStore = destinations.active
@@ -172,6 +180,7 @@ private struct DestinationContentView: View {
         ))
         .onDisappear {
             destinations.stop()
+            if managesRuntime { catalog.release() }
             Task {
                 do { try await documentStore.flushPersistence() }
                 catch { documentStore.persistenceError = error.localizedDescription }
@@ -188,6 +197,11 @@ private struct DestinationContentView: View {
     private var windowBehavior: some View {
         followingPanels(windowContent)
         .onAppear {
+            documentStore.permitsBackgroundAccess = { [weak destinations] location in
+                let context = location.machine?.contextID(session: location.session) ?? location.session
+                return destinations?.openedContextIDs.contains(context) == true
+            }
+            destinations.onConnectionsChanged = { [weak documentStore] in documentStore?.connectionAccessChanged() }
             destinations.onOpenTerminal = { [documentStore, window] in
                 documentStore.activeID = nil
                 window.focusedPanel = .main
@@ -218,6 +232,14 @@ private struct DestinationContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             destinations.acknowledgeVisiblePane()
             documentStore.checkDisk()
+            if managesRuntime { catalog.refresh() }
+        }
+        .onChange(of: catalog.generation) { _, _ in
+            if managesRuntime && catalog.machinesLoaded { destinations.refresh(catalog.machines) }
+        }
+        .onChange(of: destinations.openedContextIDs) { _, _ in
+            documentStore.connectionAccessChanged()
+            if !destinations.canAccessActiveDestination { window.showsSettings = false }
         }
         .onReceive(Self.diskChanges) { checkDisk(after: $0) }
         // The poll skips a hidden window; one shown again is checked at once, as on activation.
@@ -236,16 +258,24 @@ private struct DestinationContentView: View {
 
     private var windowSheets: some View {
         windowBehavior
-        .sheet(isPresented: $showsMachineManager, onDismiss: loadMachines) {
-            HerdrMachineManagerView()
+        .sheet(isPresented: $window.showsSessionPicker) {
+            HerdrConnectionsView(destinations: destinations, documents: documentStore,
+                catalog: catalog, runtime: runtime, closeConnection: removeConnection)
         }
         .sheet(isPresented: $window.showsSettings) {
-            HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
+            if destinations.canAccessActiveDestination {
+                HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
                               machine: herdr.machine,
                               showShortcuts: window.settingsShowShortcuts,
                               showRemoteAccess: window.settingsShowRemoteAccess)
-            .environment(\.woolooTheme, theme)
-            .environment(\.woolooTypography, textScale)
+                    .environment(\.woolooTheme, theme)
+                    .environment(\.woolooTypography, textScale)
+            } else {
+                VStack(spacing: 16) {
+                    Text("Choose a connection before opening its settings.")
+                    Button("Done") { window.showsSettings = false }.keyboardShortcut(.cancelAction)
+                }.padding(24)
+            }
         }
     }
 
@@ -333,7 +363,7 @@ private struct DestinationContentView: View {
                                     range: 160...max(160, min(420, totalWidth - right - mainMinimum)))
             }
             mainArea
-            if window.showsFilesSidebar {
+            if window.showsFilesSidebar && destinations.canAccessActiveDestination {
                 SidebarResizeHandle(width: $filesSidebarWidth, defaultWidth: 244, edge: .trailing,
                                     range: 200...max(200, min(560, totalWidth - left - mainMinimum)))
                 WorkspaceBrowserView(location: explorerLocation,
@@ -405,10 +435,7 @@ private struct DestinationContentView: View {
             .disabled(!herdr.isConnected)
         Button("Back to Previous Context", systemImage: "arrow.uturn.backward") { destinations.goBack() }
             .disabled(destinations.previous == nil)
-        Button("Manage Remote Hosts…", systemImage: "network") { showsMachineManager = true }
-        Button("Switch Session…", systemImage: "point.3.connected.trianglepath.dotted") {
-            commands.perform(.switchSession)
-        }
+        Button("Connections…", systemImage: "network") { window.showsSessionPicker = true }
     }
 
     private var sidebar: some View {
@@ -434,7 +461,9 @@ private struct DestinationContentView: View {
                         ForEach(destinations.stores, id: \.contextID) { store in
                             HerdrDestinationSection(store: store, notifier: notifier,
                                 spaceDrag: window.spaceDrag, tabDrag: window.tabDrag,
-                                active: store === herdr, grouped: destinations.stores.count > 1,
+                                active: store === herdr, grouped: true,
+                                manage: { window.showsSessionPicker = true },
+                                remove: { Task { await removeConnection(store) } },
                                 select: { destinations.select(store, workspaceID: $0) },
                                 create: { destinations.createSpace(on: store) },
                                 rename: { space in
@@ -571,163 +600,72 @@ private struct DestinationContentView: View {
                 .padding(7)
             }
 
-            Divider()
-            HostStatsSection(machine: explorerMachine,
-                             directory: explorerLocation?.machine?.id == explorerMachine?.id
-                                 ? explorerLocation?.root : nil)
-                .padding(7)
-            Divider()
-            AgentQuotaSection(machine: explorerMachine)
-                .padding(7)
+            if destinations.canAccessActiveDestination {
+                Divider()
+                HostStatsSection(machine: explorerMachine,
+                    directory: explorerLocation?.machine?.id == explorerMachine?.id ? explorerLocation?.root : nil)
+                    .padding(7)
+                Divider()
+                AgentQuotaSection(machine: explorerMachine).padding(7)
+            }
             Divider()
             HStack(spacing: 0) {
-                Button {
-                    window.requestedSessionName = herdr.machine == nil ? herdr.sessionName
-                        : UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName
-                    window.showsSessionPicker = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                        Text(herdr.sessionName).lineLimit(1)
-                        if let explorerMachine {
-                            Image(systemName: "network").foregroundStyle(theme.accent)
-                            Text(explorerMachine.label).lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: typography.caption))
-                    }
-                    .font(.system(size: typography.secondary, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 11)
-                    .frame(height: typography.metric(29))
+                Button { window.showsSessionPicker = true } label: {
+                    Label("Connections…", systemImage: "network")
+                        .font(.system(size: typography.secondary))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 11)
+                        .frame(height: typography.metric(29))
+                }.buttonStyle(.plain)
+                if destinations.canAccessActiveDestination {
+                    RemoteAccessIndicator { commands.perform("remote_access") }
                 }
-                .buttonStyle(.plain)
-                RemoteAccessIndicator { commands.perform("remote_access") }
                 Button {
                     window.settingsShowShortcuts = false
                     window.settingsShowRemoteAccess = false
                     window.showsSettings = true
                 } label: {
                     Image(systemName: "gearshape")
-                        .font(.system(size: typography.body))
-                        .foregroundStyle(.secondary)
                         .frame(width: 29, height: typography.metric(29))
-                }
-                .buttonStyle(.plain)
-                .help("Herdr settings")
-            }
-            .popover(isPresented: $window.showsSessionPicker) {
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("Local sessions")
-                        .font(.subheadline.weight(.semibold))
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(availableSessions, id: \.self) { name in
-                            Button {
-                                window.requestedSessionName = name
-                                connect()
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: herdr.machine == nil && name == herdr.sessionName ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(herdr.machine == nil && name == herdr.sessionName ? theme.accent : Color.secondary)
-                                    Text(name).font(.system(size: typography.emphasis, design: .monospaced))
-                                    if name == HerdrStore.defaultSessionName {
-                                        Text("primary").font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .frame(height: typography.metric(22))
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    HStack {
-                        TextField("Local session name", text: $window.requestedSessionName)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit(connect)
-                        Button("Connect", action: connect)
-                    }
-                    if let error = destinations.sessionSelectionError ?? herdr.sessionSelectionError {
-                        Text(error).font(.caption).foregroundStyle(theme.warning)
-                    }
-                    if managesRuntime {
-                        Button("Set Up Local Herdr…") {
-                            window.showsSessionPicker = false
-                            runtime.showsSetup = true
-                        }
-                    }
-                    Divider()
-                    Text("Hosts")
-                        .font(.subheadline.weight(.semibold))
-                    VStack(alignment: .leading, spacing: 2) {
-                        machineRow(nil)
-                        ForEach(machines) { machineRow($0) }
-                        Button("Manage Remote Hosts…", systemImage: "plus.circle") {
-                            window.showsSessionPicker = false
-                            showsMachineManager = true
-                        }
-                        .padding(.top, 6)
-                    }
-                }
-                .padding(14)
-                .frame(width: 305)
-                .onAppear {
-                    availableSessions = HerdrStore.availableSessions()
-                    loadMachines()
-                }
+                }.buttonStyle(.plain).help("Herdr settings").disabled(!destinations.canAccessActiveDestination)
             }
         }
         .background(sidebarBackground)
     }
 
-    private func machineRow(_ profile: HerdrMachineProfile?) -> some View {
-        let selected = profile?.id == explorerMachine?.id
-        return Button {
-            connectionRequest = UUID()
-            if let profile {
-                if let store = destinations.stores.first(where: { $0.machine?.id == profile.id }) { destinations.select(store) }
-            } else {
-                window.requestedSessionName = destinations.lastLocal?.sessionName ?? HerdrStore.defaultSessionName
-                connect()
-            }
-            window.showsSessionPicker = false
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selected ? theme.accent : Color.secondary)
-                Image(systemName: profile == nil ? "desktopcomputer" : "network")
-                    .foregroundStyle(.secondary)
-                Text(profile?.label ?? "Local").font(.system(size: typography.emphasis))
-                if let profile {
-                    Text(profile.target).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(height: typography.metric(22))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
+    private func loadMachines() { catalog.refresh() }
 
-    private func loadMachines() {
-        Task {
-            let result = await BlockingWork.run { Result { try WorkspaceFiles.machines() } }
-            guard case .success(let profiles) = result else {
-                if case .failure(let error) = result { destinations.reportCatalogError(error) }
-                return
+    private func removeConnection(_ store: HerdrStore) async {
+        do {
+            // A failed backup leaves the connection and its accessible editor in place.
+            try await documentStore.flushPersistence()
+            destinations.remove(store)
+            if !destinations.canAccessActiveDestination {
+                window.tabDrag.cancel()
+                window.spaceDrag.cancel()
+                window.quickOpen.dismiss()
+                window.commandPalette.dismiss()
+                search.setLocation(nil)
             }
-            machines = profiles
-            destinations.refresh(profiles)
-
-        }
+        } catch { documentStore.persistenceError = error.localizedDescription }
     }
 
     private var mainArea: some View {
         VStack(spacing: 0) {
-            mainContent
-                .id(herdr.contextID)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if destinations.canAccessActiveDestination { mainContent }
+                else {
+                    ContentUnavailableView {
+                        Label(destinations.isActiveDestinationOpen ? "Checking connection…" : "Connection closed in this window", systemImage: "network")
+                    } description: {
+                        Text("Your drafts are preserved. Open a connection or save a copy from Connections.")
+                    } actions: {
+                        Button("Connections…") { window.showsSessionPicker = true }
+                    }
+                }
+            }
+            .id(herdr.contextID)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             statusBar
         }
@@ -744,7 +682,7 @@ private struct DestinationContentView: View {
             }
             .buttonStyle(.plain)
             .help(window.showsSidebar ? "Hide sidebar" : "Show sidebar")
-            Text("\(herdr.machine?.label ?? "Local") · \(herdr.sessionName)")
+            Text(destinations.canAccessActiveDestination ? "\(herdr.machine?.label ?? "Local") · \(herdr.sessionName)" : "No active connection")
                 .lineLimit(1)
                 .help(herdr.machine?.target ?? "This Mac")
             Text(selectedWorkspace?.label ?? "Herdr")
@@ -1051,7 +989,11 @@ private struct DestinationContentView: View {
                                     .contentShape(Rectangle())
                                     .tabDropAtEnd(drag: window.tabDrag, [.terminal: terminalTabsEnd])
                             }
-                            if window.showsSearchTab { searchTab.id(WorkspaceSearchModel.tabID) }
+                            if window.showsSearchTab {
+                                searchTab
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .id(WorkspaceSearchModel.tabID)
+                            }
                             ForEach(Array(documents.enumerated()), id: \.element.id) { index, document in
                                 documentTab(document, index: index).id(document.id)
                             }
@@ -1405,22 +1347,6 @@ private struct DestinationContentView: View {
         }
     }
 
-    private func connect() {
-        let name = window.requestedSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
-        runtime.clearServerStartError()
-        let request = UUID()
-        connectionRequest = request
-        Task {
-            if managesRuntime {
-                guard await runtime.prepare(session: name) else { return }
-            }
-            guard destinations.isRunning, connectionRequest == request else { return }
-            destinations.localSession(name)
-            if destinations.sessionSelectionError == nil && herdr.sessionSelectionError == nil { window.showsSessionPicker = false }
-        }
-        activeDocumentID = nil
-    }
-
     private func openDocument(_ kind: WorkspaceDocumentKind, path: String, at location: WorkspaceFileLocation,
                               reveal: WorkspaceDocumentReveal? = nil,
                               commit: String? = nil, originalPath: String? = nil,
@@ -1473,7 +1399,7 @@ private struct DestinationContentView: View {
                         }, previousContext: { destinations.goBack() },
                         createWorkspace: { destinations.createSpace(on: herdr) },
                         isCurrentDestination: { [contextID = herdr.contextID] in
-                            destinations.active === herdr && herdr.contextID == contextID
+                            destinations.canAccessActiveDestination && destinations.active === herdr && herdr.contextID == contextID
                         }),
                         bindingLabel: { [shortcutMap] in shortcutMap.displayLabel(for: $0) })
     }
@@ -1616,7 +1542,7 @@ private struct DestinationContentView: View {
 
     private func canOpen(at location: WorkspaceFileLocation) -> Bool {
         let context = WorkspaceContext(store: destinations.active)
-        return destinations.active === herdr && context.space == documentStore.space
+        return destinations.canAccessActiveDestination && destinations.active === herdr && context.space == documentStore.space
             && context.fileIdentity == location.identity
     }
 
@@ -1643,6 +1569,10 @@ private struct DestinationContentView: View {
     }
 
     private func handleShortcut(_ action: String) {
+        if !destinations.canAccessActiveDestination, ["settings", "help", "remote_access"].contains(action) {
+            window.showsSessionPicker = true
+            return
+        }
         if action == "previous_context" { destinations.goBack() }
         else { commands.perform(action) }
     }

@@ -122,7 +122,7 @@ The wooloo app has no analytics or telemetry. (The website, wooloo.dev, counts v
 - Anthropic's and OpenAI's unofficial usage endpoints, when you turn on QUOTAS;
 - Cloudflare, when you turn on Remote Access.
 
-If wooloo stops responding for a few seconds, it records where it was stuck (a `sample` of its own threads) in `~/Library/Logs/wooloo/Hangs`, keeping the last 20. These reports stay on your Mac; attach one to an issue if you want to share it.
+If wooloo stops responding for a few seconds, it writes an incident report in `~/Library/Logs/wooloo/Hangs`, keeping the last 20. Each report includes recent scroll/click and alert events, mounted Markdown preview paths, Space, appearance, viewport size and visible block, and process memory readings. A continuing freeze gets up to three thread samples spaced at least 30 seconds apart, with memory recorded about every five seconds and recovery time when the app responds again. Sampling can delay memory readings. The recent event history is bounded and held in memory until a hang occurs; reports are private local files and nothing is uploaded automatically. They contain local paths, but no document text, keystrokes or notification bodies. Review a report before attaching it to an issue.
 
 ## Requirements
 
