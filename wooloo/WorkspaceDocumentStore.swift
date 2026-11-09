@@ -69,21 +69,48 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// these namespaces for writes or load their clean files until the connection is opened.
     func recoverConnectionDrafts(in spaces: [String]) async {
         guard let persistence else { return }
+        var warnings: [String] = []
         for space in spaces {
             do {
                 let restored = try await persistence.restore(space, owner: persistenceOwner)
                 applyingRestoration = true
+                defer { applyingRestoration = false }
+                warnings += restored.warnings
                 for snapshot in restored.session.documents where snapshot.hasBackup {
                     guard !documents.contains(where: { $0.backupID == snapshot.backupID }) else { continue }
-                    documents.append(try snapshot.document())
+                    do {
+                        var document = try snapshot.document()
+                        if let number = document.untitledNumber, documents.contains(where: {
+                            $0.space == document.space && $0.untitledNumber == number
+                        }) {
+                            document.untitledNumber = (1...).first { number in
+                                !documents.contains { $0.space == document.space && $0.untitledNumber == number }
+                            }
+                        }
+                        if documents.contains(where: { $0.id == document.id }) {
+                            document = try recoveredDraft(snapshot)
+                            warnings.append("Another buffer for \(snapshot.path) was recovered as \(document.title).")
+                        }
+                        documents.append(document)
+                    } catch { warnings.append(error.localizedDescription) }
                 }
-                applyingRestoration = false
-                if !restored.warnings.isEmpty { persistenceError = restored.warnings.joined(separator: "\n") }
-            } catch {
-                applyingRestoration = false
-                persistenceError = error.localizedDescription
-            }
+            } catch { warnings.append(error.localizedDescription) }
         }
+        if !warnings.isEmpty { persistenceError = warnings.joined(separator: "\n") }
+    }
+
+    private func recoveredDraft(_ snapshot: WorkspaceDocumentSnapshot) throws -> WorkspaceDocument {
+        var recovered = snapshot
+        recovered.path = ""
+        recovered.originalPath = snapshot.path
+        recovered.kind = .file
+        recovered.untitledNumber = (1...).first { number in
+            !documents.contains { $0.space == snapshot.space && $0.untitledNumber == number }
+        }
+        recovered.savedText = ""
+        recovered.version = nil
+        recovered.isPreview = false
+        return try recovered.document()
     }
 
     @Published var diskComparison: WorkspaceDiskComparison?
@@ -184,6 +211,8 @@ final class WorkspaceDocumentStore: ObservableObject {
                 var warnings = restored.warnings
                 var reload: [String] = []
                 for snapshot in restored.session.documents {
+                    // Connections may already have recovered this backup under a draft ID.
+                    guard !self.documents.contains(where: { $0.backupID == snapshot.backupID }) else { continue }
                     do {
                         var document = try snapshot.document()
                         if document.space == nil, self.space != nil { document.space = self.space }
@@ -203,17 +232,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                                 if self.activeID == document.id { self.activeBySpace[key] = document.backupID }
                             } else if document.isDirty && self.documents[existing].text != document.text {
                                 // Two windows edited the same file independently. Preserve both buffers.
-                                var recovered = snapshot
-                                recovered.path = ""
-                                recovered.originalPath = snapshot.path
-                                recovered.kind = .file
-                                recovered.untitledNumber = (1...).first { number in
-                                    !self.documents.contains { $0.space == document.space && $0.untitledNumber == number }
-                                }
-                                recovered.savedText = ""
-                                recovered.version = nil
-                                recovered.isPreview = false
-                                document = try recovered.document()
+                                document = try self.recoveredDraft(snapshot)
                                 self.documents.append(document)
                                 warnings.append("Another buffer for \(snapshot.path) was recovered as \(document.title).")
                             }

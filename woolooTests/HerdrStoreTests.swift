@@ -1813,6 +1813,39 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(second.stores.count, 2)
     }
 
+    func testFallbackRestoresTheLastClosedWindowInEitherClosingOrder() throws {
+        for closesFirstCreatedLast in [true, false] {
+            let suite = "connections-\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let first = HerdrDestinations()
+            let firstKey = first.restoreWindow("", defaults: defaults)
+            first.configureInitialSession("first")
+            let second = HerdrDestinations()
+            let secondKey = second.restoreWindow("", defaults: defaults)
+            second.configureInitialSession("second")
+            XCTAssertNotEqual(firstKey, secondKey)
+            let lastClosed = closesFirstCreatedLast ? first : second
+            let other = closesFirstCreatedLast ? second : first
+            other.stop()
+            lastClosed.stop()
+            let reopened = HerdrDestinations()
+            let restoredKey = reopened.restoreWindow("", defaults: defaults)
+            defer { reopened.stop() }
+            XCTAssertEqual(restoredKey, closesFirstCreatedLast ? firstKey : secondKey)
+            XCTAssertEqual(reopened.stores.map(\.sessionName), [closesFirstCreatedLast ? "first" : "second"])
+            reopened.configureInitialSession("newer")
+            lastClosed.stop()
+            let data = try XCTUnwrap(defaults.data(forKey: "HerdrConnectionsWindow.\(restoredKey)"))
+            let saved = try JSONDecoder().decode(HerdrConnectionWindowState.self, from: data)
+            XCTAssertEqual(saved.opened.map(\.session), ["newer"], "Repeated cleanup must not overwrite the reopened window's state")
+            let additional = HerdrDestinations()
+            XCTAssertNotEqual(additional.restoreWindow("", defaults: defaults), restoredKey,
+                              "Repeated cleanup must not release the reopened window's claim")
+            additional.stop()
+        }
+    }
+
     func testNewProfilesRemainAvailableWithoutAutomaticallyOpeningConnections() async {
         let notifier = HerdrNotifier()
         let destinations = HerdrDestinations(store: store, notifier: notifier)

@@ -86,6 +86,79 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertEqual(retained.session.documents.count, 2, "Recovery must not rewrite or discard the original clean tab inventory")
     }
 
+    func testClosedConnectionRecoversIndependentFileBuffersWithUniqueIdentitiesAfterReopening() async throws {
+        let root = URL(fileURLWithPath: sandbox.path("draft-recovery"))
+        let persistence = WorkspaceSessionPersistence(root: root)
+        let space = "retired-profile|space"
+        var first = WorkspaceDocument(space: space, location: repo, path: "a.txt", kind: .file)
+        first.text = "first window edit"
+        first.savedText = "one\n"
+        var second = first
+        second.backupID = UUID()
+        second.text = "second window edit"
+        try await persistence.save(WorkspaceSessionSnapshot(space: space,
+            documents: [WorkspaceDocumentSnapshot(first), WorkspaceDocumentSnapshot(second)]))
+        let recovery = WorkspaceDocumentStore(persistence: persistence, backupDelay: 60_000_000_000, watchesOpenFiles: false)
+        recovery.permitsBackgroundAccess = { _ in false }
+        await recovery.recoverConnectionDrafts(in: [space])
+        XCTAssertEqual(recovery.documents.count, 2)
+        XCTAssertEqual(Set(recovery.documents.map(\.id)).count, 2)
+        let draft = try XCTUnwrap(recovery.documents.first { $0.isUntitled })
+        XCTAssertEqual(draft.originalPath, "a.txt")
+        XCTAssertEqual(draft.backupID, second.backupID)
+        XCTAssertEqual(recovery.document(draft.id)?.text, second.text)
+
+        await recovery.recoverConnectionDrafts(in: [space])
+        recovery.showSpace(space)
+        await recovery.waitForRestoration()
+        XCTAssertEqual(recovery.documents.count, 2, "Opening the connection must not recover the same backup again")
+        XCTAssertEqual(Set(recovery.documents.map(\.id)).count, 2)
+        XCTAssertEqual(Set(recovery.documents.map(\.backupID)), [first.backupID, second.backupID])
+        XCTAssertEqual(Set(recovery.documents.map(\.text)), [first.text, second.text])
+        try await recovery.flushPersistence()
+        let restarted = WorkspaceDocumentStore(persistence: WorkspaceSessionPersistence(root: root),
+            backupDelay: 60_000_000_000, watchesOpenFiles: false)
+        restarted.showSpace(space)
+        await restarted.waitForRestoration()
+        XCTAssertEqual(restarted.documents.count, 2)
+        XCTAssertEqual(Set(restarted.documents.map(\.id)).count, 2)
+        XCTAssertEqual(Set(restarted.documents.map(\.text)), [first.text, second.text])
+    }
+
+    func testClosedConnectionContinuesRecoveringAfterInvalidDraftAndRetainsWarnings() async throws {
+        let persistence = WorkspaceSessionPersistence(root: URL(fileURLWithPath: sandbox.path("draft-recovery")))
+        let space = "retired-profile|space"
+        var valid = WorkspaceDocument(space: space, location: repo, path: "a.txt", kind: .file)
+        valid.text = "healthy dirty buffer"
+        var invalid = WorkspaceDocumentSnapshot(valid)
+        invalid.backupID = UUID()
+        invalid.path = "../invalid.txt"
+        try await persistence.save(WorkspaceSessionSnapshot(space: space,
+            documents: [invalid, WorkspaceDocumentSnapshot(valid)]))
+        let laterSpace = "another-retired-profile|space"
+        var later = valid
+        later.space = laterSpace
+        later.backupID = UUID()
+        later.text = "another healthy buffer"
+        var anotherInvalid = invalid
+        anotherInvalid.space = laterSpace
+        anotherInvalid.backupID = UUID()
+        anotherInvalid.location = WorkspaceFileLocation(machine: nil, session: "default", workspaceID: "w1",
+                                                        workspaceLabel: "project", root: "relative-root")
+        try await persistence.save(WorkspaceSessionSnapshot(space: laterSpace,
+            documents: [anotherInvalid, WorkspaceDocumentSnapshot(later)]))
+        let recovery = WorkspaceDocumentStore(persistence: persistence, watchesOpenFiles: false)
+        recovery.permitsBackgroundAccess = { _ in false }
+        await recovery.recoverConnectionDrafts(in: [space, laterSpace])
+        XCTAssertEqual(Set(recovery.documents.map(\.text)), [valid.text, later.text])
+        let warnings = try XCTUnwrap(recovery.persistenceError)
+        XCTAssertTrue(warnings.contains("Invalid session root"))
+        XCTAssertEqual(warnings.components(separatedBy: "\n").count, 2, "Report failures from both Spaces")
+        XCTAssertTrue(recovery.documents.allSatisfy { !$0.isLoading })
+        let retained = try await persistence.restore(space)
+        XCTAssertEqual(retained.session.documents.count, 2, "The invalid backup remains available for recovery")
+    }
+
     func testTabTitlesDistinguishHomonymousFilesWithTheirDiffs() {
         let documents = ["a/Config.swift", "b/Config.swift"].flatMap { path in
             [WorkspaceDocumentKind.file, .change].map { WorkspaceDocument(location: repo, path: path, kind: $0) }

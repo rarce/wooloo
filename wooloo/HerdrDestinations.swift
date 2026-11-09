@@ -102,6 +102,7 @@ final class HerdrDestinations: ObservableObject {
     private var restorationKey: String?
     private var restorationDefaults: UserDefaults?
     private var restorationFailed = false
+    private var hasWindowClaim = false
     private static var claimedWindows: Set<String> = []
     private(set) var isRunning = false
     private var subscriptions: [ObjectIdentifier: AnyCancellable] = [:]
@@ -129,6 +130,7 @@ final class HerdrDestinations: ObservableObject {
         let key = candidate.flatMap { !$0.isEmpty && !Self.claimedWindows.contains($0) ? $0 : nil }
             ?? UUID().uuidString
         Self.claimedWindows.insert(key)
+        hasWindowClaim = true
         restorationKey = key
         requiresFreshCatalog = true
         restorationDefaults = defaults
@@ -194,7 +196,7 @@ final class HerdrDestinations: ObservableObject {
     }
 
     private func persistWindow() {
-        guard !restorationFailed, let restorationKey, let defaults = restorationDefaults else { return }
+        guard hasWindowClaim, !restorationFailed, let restorationKey, let defaults = restorationDefaults else { return }
         let state = HerdrConnectionWindowState(root: HerdrStore.sessionRoot.standardizedFileURL.path,
             opened: stores.map(descriptor), retired: retired,
             selected: isActiveDestinationOpen ? active.contextID : nil)
@@ -222,7 +224,10 @@ final class HerdrDestinations: ObservableObject {
     }
 
     func start() {
-        if let restorationKey { Self.claimedWindows.insert(restorationKey) }
+        if let restorationKey {
+            Self.claimedWindows.insert(restorationKey)
+            hasWindowClaim = true
+        }
         isRunning = true
         if catalogSubscription == nil, let pool {
             catalogSubscription = pool.profiles.sink { [weak self] profiles in
@@ -246,7 +251,13 @@ final class HerdrDestinations: ObservableObject {
 
     func stop() {
         persistWindow()
-        if let restorationKey { Self.claimedWindows.remove(restorationKey) }
+        if hasWindowClaim, let restorationKey {
+            Self.claimedWindows.remove(restorationKey)
+            hasWindowClaim = false
+            if Self.claimedWindows.isEmpty {
+                restorationDefaults?.set(restorationKey, forKey: "HerdrConnectionsLastWindow")
+            }
+        }
         isRunning = false
         acknowledgeTask?.cancel()
         navigation = UUID()
