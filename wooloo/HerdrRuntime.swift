@@ -43,9 +43,8 @@ enum HerdrRuntimePaths {
     }
 
     static func validateSession(_ name: String) throws {
-        guard !name.isEmpty, name.utf8.count <= 64,
-              name.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
-            throw HerdrRuntimeError.message("Use 1–64 letters, numbers, hyphens, or underscores for the session name.")
+        guard HerdrSessionName.isValid(name) else {
+            throw HerdrRuntimeError.message("Use 1–64 letters, numbers, dots, hyphens, or underscores for the session name.")
         }
     }
 
@@ -162,17 +161,20 @@ actor HerdrRuntimeService {
 
     /// Whether a compatible server answers on `path`. Throws for a server wooloo cannot use.
     private func isHealthy(_ path: String) throws -> Bool {
-        guard let health = try? HerdrSocket.request(path: path, method: "ping") else { return false }
-        try Self.validateHealth(health)
-        return true
+        do {
+            let health = try HerdrSocket.request(path: path, method: "ping")
+            try Self.validateHealth(health)
+            return true
+        } catch HerdrSocketError.notRunning { return false }
     }
 
     private func launch(_ executable: URL, session: String, path: String) throws {
         // A reachable but unresponsive server may still own live terminals. Never replace it.
-        if let fd = try? HerdrSocket.open(path: path) {
+        do {
+            let fd = try HerdrSocket.open(path: path)
             close(fd)
             throw HerdrRuntimeError.message("Herdr is reachable but is not responding. Retry when the server is ready.")
-        }
+        } catch HerdrSocketError.notRunning { /* Only a verified absent listener may be started. */ }
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw HerdrRuntimeError.message("The Herdr executable is missing. Run setup again to repair it.")
         }
@@ -322,8 +324,9 @@ final class HerdrRuntimeModel: ObservableObject {
 
     /// Starts a session whose server is not running, with the user's Herdr or else the included
     /// one. launchd keeps it running after wooloo quits; the store reconnects on its own.
-    func startServer(session: String) async {
-        guard !isBusy, !isStartingServer else { return }
+    @discardableResult
+    func startServer(session: String) async -> Bool {
+        guard !isBusy, !isStartingServer else { return false }
         isStartingServer = true
         serverStartError = nil
         defer { isStartingServer = false }
@@ -338,8 +341,11 @@ final class HerdrRuntimeModel: ObservableObject {
                 executable = try await service.installBundledExecutable()
             }
             try await service.ensureServer(executable: executable, session: session)
+            serverStartError = nil
+            return true
         } catch {
             serverStartError = error.localizedDescription
+            return false
         }
     }
 

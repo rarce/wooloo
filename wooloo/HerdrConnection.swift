@@ -769,14 +769,14 @@ final class HerdrStore: ObservableObject {
     private var lastBootID: String?
     @Published private(set) var destinationEnabled = true
 
-    func setDestinationEnabled(_ enabled: Bool) {
+    func setDestinationEnabled(_ enabled: Bool, reason: String? = nil, startImmediately: Bool = true) {
         guard destinationEnabled != enabled else { return }
         destinationEnabled = enabled
-        if enabled { start() }
+        if enabled { if startImmediately { start() } }
         else {
             stop()
             snapshot = nil
-            errorMessage = "This destination was disabled or removed. Choose another destination or enable it in Manage Remote Hosts."
+            errorMessage = reason ?? "This destination was disabled or removed. Choose another destination in Connections."
         }
     }
     private var presentationEpoch = UUID()
@@ -926,19 +926,19 @@ final class HerdrStore: ObservableObject {
         }
     }
 
-    func connect(to machine: HerdrMachineProfile) {
-        switchConnection(to: machine.session, machine: machine)
+    func connect(to machine: HerdrMachineProfile, startImmediately: Bool = true) {
+        switchConnection(to: machine.session, machine: machine, startImmediately: startImmediately)
     }
 
-    func connect(to name: String, remember: Bool = true) {
-        switchConnection(to: name, machine: nil, remember: remember)
+    func connect(to name: String, remember: Bool = true, startImmediately: Bool = true) {
+        switchConnection(to: name, machine: nil, remember: remember, startImmediately: startImmediately)
     }
 
-    private func switchConnection(to name: String, machine: HerdrMachineProfile?, remember: Bool = true) {
+    private func switchConnection(to name: String, machine: HerdrMachineProfile?, remember: Bool = true,
+                                  startImmediately: Bool = true) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.utf8.count <= 64,
-              trimmed.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else {
-            sessionSelectionError = "Use letters, numbers, hyphens, or underscores"
+        guard HerdrSessionName.isValid(trimmed) else {
+            sessionSelectionError = "Use 1–64 letters, numbers, dots, hyphens, or underscores"
             return
         }
         sessionSelectionError = nil
@@ -963,7 +963,7 @@ final class HerdrStore: ObservableObject {
         inputError = nil
         actionError = nil
         pendingInput = []
-        start()
+        if startImmediately { start() }
     }
 
     func start() {

@@ -255,7 +255,7 @@ struct WoolooCommandItem: Identifiable, Equatable {
         .init("settings", "Herdr", "Settings…", KeyboardShortcut(",", modifiers: .command)),
         .init("reload_config", "Herdr", "Reload Config", requires: .connected),
         .init("previous_context", "Herdr", "Back to Previous Context"),
-        .init("switch_session", "Herdr", "Switch Session…"),
+        .init("switch_session", "Herdr", "Connections…"),
         .init("remote_access", "Herdr", "Remote Access…"),
         .init("help", "Help", "Keyboard Shortcuts"),
         .init("command_palette", "View", "Command Palette…", KeyboardShortcut("p", modifiers: [.command, .shift])),

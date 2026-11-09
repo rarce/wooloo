@@ -205,6 +205,27 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    func testConnectionsPanel() throws {
+        let defaultsName = "connections-snapshot-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        defaults.set(true, forKey: HerdrRuntimePaths.completedKey)
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let store = HerdrStore()
+        store.connect(to: "wooloo-ui-test", remember: false, startImmediately: false)
+        let destinations = HerdrDestinations(store: store, notifier: HerdrNotifier())
+        let sessions = try JSONDecoder().decode([HerdrLocalSession].self, from: Data(#"[{"name":"default","running":true},{"name":"wooloo-ui-test","running":false}]"#.utf8))
+        let machine = HerdrMachineProfile(id: "demo", label: "erp-dev", target: "erp-dev", session: "default", enabled: true)
+        let catalog = HerdrConnectionCatalog(machines: [machine], sessions: sessions, refreshesInventory: false)
+        let view = HerdrConnectionsView(destinations: destinations, documents: WorkspaceDocumentStore(persistence: nil),
+            catalog: catalog, runtime: HerdrRuntimeModel(defaults: defaults), closeConnection: { destinations.remove($0) })
+        let image = render(view, size: NSSize(width: 760, height: 510), settle: 2)
+        let output = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("build/connections-panel.png")
+        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: output)
+        try assertSnapshot(image, named: "connections-panel")
+        try skipIfRecorded()
+    }
+
     func testDiskComparison() throws {
         let location = WorkspaceFileLocation(machine: nil, session: "test", workspaceID: "w", workspaceLabel: "w",
                                              root: "/private/tmp/wooloo-no-such-comparison-repo")

@@ -320,7 +320,7 @@ final class HerdrStoreTests: XCTestCase {
 
     func testSessionNamesAreValidated() {
         store.connect(to: "../etc")
-        XCTAssertEqual(store.sessionSelectionError, "Use letters, numbers, hyphens, or underscores")
+        XCTAssertEqual(store.sessionSelectionError, "Use 1–64 letters, numbers, dots, hyphens, or underscores")
         store.connect(to: " ")
         XCTAssertNotNil(store.sessionSelectionError)
     }
@@ -1750,6 +1750,238 @@ final class HerdrStoreTests: XCTestCase {
         server.emit(["event": "workspace.renamed"])
         await waitUntil("background metadata continues") { store.snapshot?.workspaces.first?.label == "background update" }
         XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 1)
+    }
+
+    func testRemovingDestinationReleasesOnlyThisWindowsSharedLease() async throws {
+        let notifier = HerdrNotifier()
+        let pool = HerdrMetadataPool(notifier: notifier)
+        let first = HerdrDestinations(store: store, notifier: notifier, pool: pool)
+        let second = HerdrDestinations(notifier: notifier, pool: pool)
+        first.start()
+        second.start()
+        defer { first.stop(); second.stop(); notifier.reset() }
+        await waitUntil("both connected") { first.active.isConnected && second.active.isConnected }
+        let shared = first.active.metadataSource
+        let oldAction = HerdrActionConnection(first.active)
+        first.remove(first.active)
+        XCTAssertFalse(first.isActiveDestinationOpen)
+        XCTAssertTrue(first.stores.isEmpty)
+        XCTAssertNil(first.active.metadataSource)
+        XCTAssertFalse(first.active.destinationEnabled)
+        XCTAssertNil(oldAction.validStore)
+        XCTAssertTrue(second.active.metadataSource === shared)
+        state.update { $0.workspaces[0]["label"] = "other window still works" }
+        server.emit(["event": "workspace.renamed"])
+        await waitUntil("remaining lease receives updates") {
+            second.active.snapshot?.workspaces.first?.label == "other window still works"
+        }
+        first.active.sendText("closed input", to: "w1:p1")
+        first.createSpace(on: first.active)
+        XCTAssertFalse(server.requests.contains { $0.method == "server.stop" || $0.method == "workspace.create" })
+        XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 1)
+    }
+
+    func testRemovingActiveDestinationRestoresNeutralWithoutOpeningRemainingDestination() async throws {
+        let suite = "connections-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let notifier = HerdrNotifier()
+        let first = HerdrDestinations(store: store, notifier: notifier)
+        let key = first.restoreWindow("", defaults: defaults)
+        first.start()
+        await waitUntil("connected") { store.isConnected }
+        first.localSession("other")
+        let closed = first.active
+        first.remove(closed)
+        XCTAssertFalse(first.isActiveDestinationOpen)
+        XCTAssertEqual(first.stores.count, 1)
+        XCTAssertNil(first.previous)
+        first.goBack()
+        XCTAssertTrue(first.active === closed)
+        first.stop()
+        let second = HerdrDestinations(notifier: notifier)
+        XCTAssertEqual(second.restoreWindow(key, defaults: defaults), key)
+        defer { second.stop(); notifier.reset() }
+        XCTAssertFalse(second.isActiveDestinationOpen)
+        XCTAssertEqual(second.stores.map(\.sessionName), ["default"])
+        XCTAssertEqual(second.active.sessionName, "other")
+        XCTAssertTrue(second.stores.allSatisfy { $0.snapshot == nil && $0.metadataSource == nil })
+        second.start()
+        second.localSession("other")
+        XCTAssertTrue(second.isActiveDestinationOpen)
+        XCTAssertEqual(second.active.sessionName, "other")
+        XCTAssertEqual(second.stores.count, 2)
+    }
+
+    func testNewProfilesRemainAvailableWithoutAutomaticallyOpeningConnections() async {
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        let originalSSH = WorkspaceFiles.sshExecutable
+        WorkspaceFiles.sshExecutable = "/usr/bin/false"
+        defer { WorkspaceFiles.sshExecutable = originalSSH }
+        let a = HerdrMachineProfile(id: "a", label: "Local", target: "same", session: "agents", enabled: true)
+        let b = HerdrMachineProfile(id: "b", label: "Local", target: "same", session: "agents", enabled: true)
+        destinations.refresh([a, b])
+        XCTAssertEqual(destinations.stores.count, 1)
+        destinations.openMachine(a)
+        XCTAssertEqual(destinations.stores.count, 2)
+        XCTAssertEqual(destinations.active.machine?.id, "a")
+        destinations.openMachine(b)
+        XCTAssertEqual(destinations.stores.count, 3)
+        XCTAssertNotEqual(destinations.stores[1].contextID, destinations.stores[2].contextID)
+        let removed = destinations.active
+        destinations.remove(removed)
+        destinations.refresh([a, b])
+        XCTAssertFalse(destinations.stores.contains { $0.machine?.id == "b" })
+        XCTAssertFalse(destinations.isActiveDestinationOpen)
+        destinations.openMachine(b)
+        XCTAssertTrue(destinations.active === removed)
+    }
+
+    func testRestoredRemoteIsPassiveUntilItsExactProfileIsVerified() throws {
+        let suite = "connections-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let machine = HerdrMachineProfile(id: "saved", label: "Dev", target: "old-target", session: "agents", enabled: true)
+        let descriptor = HerdrWindowConnection(session: "agents", machine: machine, spaces: [machine.contextID(session: "agents") + "|draft-space"])
+        let record = HerdrConnectionWindowState(root: root.standardizedFileURL.path, opened: [descriptor], retired: [], selected: descriptor.id)
+        let key = UUID().uuidString
+        defaults.set(try JSONEncoder().encode(record), forKey: "HerdrConnectionsWindow.\(key)")
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(notifier: notifier)
+        destinations.restoreWindow(key, defaults: defaults)
+        XCTAssertEqual(destinations.active.machine, machine)
+        XCTAssertFalse(destinations.active.destinationEnabled)
+        XCTAssertFalse(destinations.canAccessActiveDestination)
+        XCTAssertNil(destinations.active.metadataSource)
+        XCTAssertNil(destinations.active.snapshot)
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        let changed = HerdrMachineProfile(id: "saved", label: "Dev", target: "new-target", session: "agents", enabled: true)
+        destinations.refresh([changed])
+        XCTAssertFalse(destinations.isActiveDestinationOpen)
+        XCTAssertEqual(destinations.active.machine?.target, "old-target")
+        XCTAssertTrue(destinations.stores.isEmpty)
+        XCTAssertEqual(destinations.retired.first?.id, descriptor.id)
+        XCTAssertEqual(destinations.recoverySpaces, descriptor.spaces)
+    }
+
+    func testRestoredRemoteIgnoresThePoolsPreviouslyCachedCatalog() throws {
+        let suite = "connections-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let machine = HerdrMachineProfile(id: "old", label: "Old", target: "removed-host", session: "agents", enabled: true)
+        let descriptor = HerdrWindowConnection(session: machine.session, machine: machine)
+        let record = HerdrConnectionWindowState(root: root.standardizedFileURL.path, opened: [descriptor], retired: [], selected: descriptor.id)
+        let key = UUID().uuidString
+        defaults.set(try JSONEncoder().encode(record), forKey: "HerdrConnectionsWindow.\(key)")
+        let notifier = HerdrNotifier()
+        let pool = HerdrMetadataPool(notifier: notifier)
+        pool.profiles.send([machine])
+        let destinations = HerdrDestinations(notifier: notifier, pool: pool)
+        destinations.restoreWindow(key, defaults: defaults)
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        XCTAssertNil(destinations.active.metadataSource)
+        XCTAssertFalse(destinations.canAccessActiveDestination)
+        destinations.refresh([])
+        XCTAssertTrue(destinations.stores.isEmpty)
+        XCTAssertEqual(destinations.retired.first?.machine, machine)
+    }
+
+    func testCatalogPublishesFreshnessForRepeatedIdenticalInventories() async throws {
+        let oldCandidates = WorkspaceFiles.herdrCandidates
+        defer { WorkspaceFiles.herdrCandidates = oldCandidates }
+        let executable = root.appendingPathComponent("herdr-freshness")
+        let script = "#!/bin/sh\nif [ \"$1\" = machine ]; then echo '[]'; else echo '{\"sessions\":[]}'; fi\n"
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        WorkspaceFiles.herdrCandidates = [executable.path]
+        let catalog = HerdrConnectionCatalog()
+        let initial = catalog.generation
+        var published = 0
+        let subscription = catalog.$generation.dropFirst().sink { _ in published += 1 }
+        _ = await catalog.freshMachines()
+        let first = catalog.generation
+        _ = await catalog.freshMachines()
+        XCTAssertNotEqual(initial, first)
+        XCTAssertNotEqual(first, catalog.generation)
+        XCTAssertEqual(published, 2, "Pending windows must observe successful reads even when the profiles are equal")
+        subscription.cancel()
+    }
+
+    func testReopeningRenamedProfileUpdatesItsArchivedStore() async {
+        let oldSSH = WorkspaceFiles.sshExecutable
+        WorkspaceFiles.sshExecutable = "/usr/bin/false"
+        defer { WorkspaceFiles.sshExecutable = oldSSH }
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.start()
+        defer { destinations.stop(); notifier.reset() }
+        let original = HerdrMachineProfile(id: "rename", label: "Old", target: "same-target", session: "agents", enabled: true)
+        destinations.refresh([original])
+        destinations.openMachine(original)
+        let archived = destinations.active
+        destinations.remove(archived)
+        let renamed = HerdrMachineProfile(id: "rename", label: "New", target: "same-target", session: "agents", enabled: true)
+        destinations.refresh([renamed])
+        destinations.openMachine(renamed)
+        XCTAssertTrue(destinations.active === archived)
+        XCTAssertEqual(destinations.active.machine?.label, "New")
+    }
+
+    func testFirstSetupReplacesTheUnstartedDefaultInsteadOfOpeningAPhantomConnection() {
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.configureInitialSession("wooloo-ui-test")
+        XCTAssertEqual(destinations.stores.map(\.sessionName), ["wooloo-ui-test"])
+        XCTAssertTrue(destinations.active === destinations.stores.first)
+        XCTAssertNil(destinations.active.snapshot)
+        XCTAssertFalse(destinations.isRunning)
+        destinations.stop()
+        notifier.reset()
+    }
+
+    func testProfileMutationRevalidatesTheCLIRecordInsteadOfTrustingCachedConfirmation() async throws {
+        let oldCandidates = WorkspaceFiles.herdrCandidates
+        defer { WorkspaceFiles.herdrCandidates = oldCandidates }
+        let profile = HerdrMachineProfile(id: "same-id", label: "Dev", target: "old-host", session: "agents", enabled: true)
+        let changed = HerdrMachineProfile(id: profile.id, label: "Dev", target: "new-host", session: "agents", enabled: true)
+        let inventory = root.appendingPathComponent("machines.json")
+        let marker = root.appendingPathComponent("mutated")
+        let executable = root.appendingPathComponent("herdr-catalog")
+        try JSONEncoder().encode([changed]).write(to: inventory)
+        let script = "#!/bin/sh\nif [ \"$1\" = machine ] && [ \"$2\" = list ]; then cat \(WorkspaceFiles.quote(inventory.path)); else touch \(WorkspaceFiles.quote(marker.path)); fi\n"
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        WorkspaceFiles.herdrCandidates = [executable.path]
+        let catalog = HerdrConnectionCatalog(machines: [profile])
+        do {
+            try await catalog.manage(["remove", profile.id], expected: profile)
+            XCTFail("The changed profile must require a new confirmation")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("profile changed")) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testCorruptWindowRecordDoesNotReconnectOrOverwriteSavedState() throws {
+        let suite = "connections-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = UUID().uuidString
+        let corrupt = Data("unsupported or corrupt".utf8)
+        defaults.set(corrupt, forKey: "HerdrConnectionsWindow.\(key)")
+        let notifier = HerdrNotifier()
+        let destinations = HerdrDestinations(store: store, notifier: notifier)
+        destinations.restoreWindow(key, defaults: defaults)
+        destinations.start()
+        destinations.stop()
+        notifier.reset()
+        XCTAssertTrue(destinations.stores.isEmpty)
+        XCTAssertFalse(store.destinationEnabled)
+        XCTAssertNotNil(destinations.catalogError)
+        XCTAssertEqual(defaults.data(forKey: "HerdrConnectionsWindow.\(key)"), corrupt)
     }
 
     func testMetadataPoolSharesOneSubscriptionAndKeepsWindowSelectionsIndependent() async throws {

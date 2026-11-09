@@ -21,6 +21,71 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         sandbox.tearDown()
     }
 
+    func testClosedConnectionKeepsDirtyTextWithoutDiskChecksSavesOrReloads() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "preserved draft")
+        store.permitsBackgroundAccess = { _ in false }
+        store.connectionAccessChanged()
+        try sandbox.write(["a.txt": "changed while closed"], in: "repo")
+        await store.checkDisk().value
+        store.load(document.id)
+        store.save(document.id)
+        store.compareWithDisk(document.id)
+        XCTAssertEqual(store.document(document.id)?.text, "preserved draft")
+        XCTAssertEqual(store.document(document.id)?.savedText, "one\n")
+        XCTAssertNil(store.diskComparison)
+        XCTAssertFalse(store.document(document.id)?.isSaving ?? true)
+        XCTAssertEqual(try WorkspaceFiles.read("a.txt", at: repo).text, "changed while closed")
+        store.permitsBackgroundAccess = { _ in true }
+        await store.checkDisk().value
+        guard case .changed = store.document(document.id)?.diskState else { return XCTFail("Reopening resumes disk comparisons") }
+    }
+
+    func testClosingConnectionRevokesASaveQueuedForAWorkerSlot() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "must not be sent after closing")
+        for _ in 0..<BlockingWork.limit { try await BlockingWork.slots.acquire() }
+        var holding = true
+        defer { if holding { for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() } } }
+        store.save(document.id)
+        await Task.yield()
+        store.permitsBackgroundAccess = { _ in false }
+        store.connectionAccessChanged()
+        for _ in 0..<BlockingWork.limit { BlockingWork.slots.release() }
+        holding = false
+        await settle()
+        XCTAssertEqual(try WorkspaceFiles.read("a.txt", at: repo).text, "one\n")
+        XCTAssertEqual(store.document(document.id)?.text, "must not be sent after closing")
+        XCTAssertTrue(store.document(document.id)?.isDirty == true)
+    }
+
+    func testClosedConnectionDraftsRecoverWithoutReadingCleanFilesOrTheirHost() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp/wooloo-draft-recovery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = WorkspaceSessionPersistence(root: root)
+        let space = "retired-profile|space"
+        var dirty = WorkspaceDocument(space: space, location: repo, path: "a.txt", kind: .file)
+        dirty.text = "unreachable host draft"
+        dirty.savedText = "old"
+        dirty.version = "old-version"
+        var clean = WorkspaceDocument(space: space, location: repo, path: "b.txt", kind: .file)
+        clean.text = "clean"
+        clean.savedText = "clean"
+        try await persistence.save(WorkspaceSessionSnapshot(space: space, documents: [WorkspaceDocumentSnapshot(dirty), WorkspaceDocumentSnapshot(clean)]))
+        let recovery = WorkspaceDocumentStore(persistence: persistence, watchesOpenFiles: false)
+        recovery.permitsBackgroundAccess = { _ in false }
+        await recovery.recoverConnectionDrafts(in: [space])
+        XCTAssertEqual(recovery.documents.map(\.text), ["unreachable host draft"])
+        XCTAssertFalse(recovery.documents[0].isLoading)
+        await recovery.recoverConnectionDrafts(in: [space])
+        XCTAssertEqual(recovery.documents.count, 1)
+        try await recovery.flushPersistence()
+        let retained = try await persistence.restore(space)
+        XCTAssertEqual(retained.session.documents.count, 2, "Recovery must not rewrite or discard the original clean tab inventory")
+    }
+
     func testTabTitlesDistinguishHomonymousFilesWithTheirDiffs() {
         let documents = ["a/Config.swift", "b/Config.swift"].flatMap { path in
             [WorkspaceDocumentKind.file, .change].map { WorkspaceDocument(location: repo, path: path, kind: $0) }
