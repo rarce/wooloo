@@ -51,7 +51,7 @@ struct HerdrConnectionsView: View {
         return result
     }
     private var selected: HerdrWindowConnection? { connections.first { $0.id == selection } }
-    private var drafts: [WorkspaceDocument] { documents.documents.filter { $0.isDirty || $0.isUntitled || $0.isDeletedOnDisk } }
+    private var drafts: [WorkspaceDocument] { documents.preservedTextDrafts }
     private func opened(_ connection: HerdrWindowConnection) -> HerdrStore? {
         destinations.stores.first { $0.contextID == connection.id }
     }
@@ -335,6 +335,7 @@ struct HerdrConnectionsView: View {
     }
 
     private func export(_ document: WorkspaceDocument) {
+        guard document.canSave else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = document.isUntitled ? "Draft.txt" : (document.path as NSString).lastPathComponent
         panel.begin { response in

@@ -39,10 +39,13 @@ final class WorkspaceDocumentStore: ObservableObject {
     private var recentFiles: [(space: String?, location: String, path: String)] = []
     /// The Space whose documents are shown and where new ones open.
     @Published private(set) var space: String?
+    var preservedTextDrafts: [WorkspaceDocument] { documents.filter(\.canSave) }
 
     /// Closed connections retain their buffers, without continuing background SSH/file work.
     var permitsBackgroundAccess: (WorkspaceFileLocation) -> Bool = { _ in true }
     private var connectionTokens: [String: HerdrRequestToken] = [:]
+    /// Backup identities survive tab moves and cannot be reused by a replacement preview.
+    private var deferredInitialLoads: Set<UUID> = []
 
     private func connectionToken(_ location: WorkspaceFileLocation) -> HerdrRequestToken {
         if let token = connectionTokens[location.identity], token.isValid { return token }
@@ -63,6 +66,16 @@ final class WorkspaceDocumentStore: ObservableObject {
             task.cancel()
             queuedDiskChecks.remove(identity)
         }
+        resumeDeferredInitialLoads()
+    }
+
+    private func resumeDeferredInitialLoads() {
+        deferredInitialLoads.formIntersection(documents.map(\.backupID))
+        let pending = documents.filter {
+            deferredInitialLoads.contains($0.backupID) && permitsBackgroundAccess($0.location)
+                && !loadsInFlight.contains($0.loadRequest)
+        }
+        for document in pending { load(document.id) }
     }
 
     /// Recover backed-up text even when its host/profile no longer exists. Do not register
@@ -572,8 +585,18 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     /// Reads a document's file, diff or commit diff from disk or over SSH.
     func load(_ id: String) {
-        guard let initialIndex = documents.firstIndex(where: { $0.id == id }),
-              permitsBackgroundAccess(documents[initialIndex].location) else { return }
+        guard let initialIndex = documents.firstIndex(where: { $0.id == id }) else { return }
+        guard permitsBackgroundAccess(documents[initialIndex].location) else {
+            if documents[initialIndex].version == nil && !documents[initialIndex].isUntitled {
+                deferredInitialLoads.insert(documents[initialIndex].backupID)
+            }
+            return
+        }
+        let resuming = deferredInitialLoads.remove(documents[initialIndex].backupID) != nil
+        if resuming {
+            documents[initialIndex].isLoading = true
+            documents[initialIndex].error = nil
+        }
         let request = UUID()
         documents[initialIndex].loadRequest = request
         loadsInFlight.insert(request)
@@ -607,6 +630,14 @@ final class WorkspaceDocumentStore: ObservableObject {
             loadsInFlight.remove(request)
             guard let index = documents.firstIndex(where: { $0.id == id && $0.loadRequest == request }) else { return }
             documents[index].isLoading = false
+            if case .failure(let failure) = result, failure is CancellationError, !access.isValid,
+               documents[index].version == nil, !documents[index].isUntitled {
+                deferredInitialLoads.insert(documents[index].backupID)
+                documents[index].error = nil
+                // Access may have returned while this cancelled read was still queued.
+                resumeDeferredInitialLoads()
+                return
+            }
             if case .success = result {
                 documents[index].diskState = .current
                 documents[index].asksToOverwrite = false
@@ -637,7 +668,8 @@ final class WorkspaceDocumentStore: ObservableObject {
                     // asks before overwriting the newer file.
                     documents[index].diskState = .changed(version: content.version)
                 } else {
-                    if documents[index].text == document.text, documents[index].text != content.text {
+                    if documents[index].text == document.text, documents[index].text != content.text,
+                       !(resuming && document.isDirty) {
                         documents[index].text = content.text
                         documents[index].diskReload = UUID()
                     }
@@ -820,6 +852,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return true }
         if documents[index].isDirty && !force { return false }
         let key = WorkspaceSessionPersistence.key(for: documents[index].space)
+        deferredInitialLoads.remove(documents[index].backupID)
         discardedBySpace[key, default: []].insert(documents[index].backupID)
         closedBeforeRestoration.insert(id)
         documents.remove(at: index)
