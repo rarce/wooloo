@@ -23,6 +23,7 @@ struct NotebookPreviewView: View {
     var onEdit: ((NotebookEdit, String, NotebookEditing.Outcome) -> Bool)?
     @State private var notebook: NotebookDocument?
     @State private var error: String?
+    @State private var hasStartedParsing = false
 
     var body: some View {
         Group {
@@ -48,8 +49,14 @@ struct NotebookPreviewView: View {
         .background(theme.contentBackground)
         .task(id: text) {
             onSearchText([])
-            // Coalesce raw-source edits, and never perform JSON parsing on the UI thread.
-            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            // The first open has no preceding edit to coalesce. Later source changes retain
+            // their debounce; JSON parsing always stays off the UI thread.
+            if hasStartedParsing {
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            } else {
+                guard !Task.isCancelled else { return }
+                hasStartedParsing = true
+            }
             let source = text
             let result = await Task.detached(priority: .userInitiated) { Result { try NotebookDocument.parse(source) } }.value
             guard !Task.isCancelled else { return }
@@ -132,7 +139,9 @@ struct NotebookWebView: NSViewRepresentable {
             }
             let palette = Self.palette(theme: owner.theme, typography: owner.typography)
             let editable = owner.onEdit != nil
-            if owner.notebook.identity != lastModelID || palette != lastPalette || editable != lastEditable {
+            let typographyChanged = palette["--body-size"] != lastPalette["--body-size"]
+                || palette["--code-size"] != lastPalette["--code-size"]
+            if owner.notebook.identity != lastModelID || typographyChanged || editable != lastEditable {
                 if owner.notebook.identity != lastModelID {
                     lastJSON = owner.notebook.previewJSON; lastModelID = owner.notebook.identity
                 }
@@ -149,6 +158,11 @@ struct NotebookWebView: NSViewRepresentable {
                 webView.callAsyncJavaScript("window.notebook.render(JSON.parse(payload), token, palette, editable, start)",
                                             arguments: ["payload": json, "token": revision, "palette": palette,
                                                         "editable": editable, "start": start],
+                                            in: nil, in: .page, completionHandler: { _ in })
+            } else if palette != lastPalette {
+                lastPalette = palette
+                // Color changes do not replace cells, reset MIME choices or discard an editor.
+                webView.callAsyncJavaScript("window.notebook.setPalette(palette)", arguments: ["palette": palette],
                                             in: nil, in: .page, completionHandler: { _ in })
             }
             updateFind()

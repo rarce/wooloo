@@ -14,6 +14,7 @@
 		AFE300000000000000000000 /* HerdrRemoteBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE300000000000000000001 /* HerdrRemoteBridgeTests.swift */; };
 		B63000000000000000000001 /* WorkspaceDiskComparisonView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */; };
 		B90000000000000000000001 /* HerdrRemoteBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000002 /* HerdrRemoteBridge.swift */; };
+		D41100000000000000000001 /* NotebookEditableBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D41100000000000000000002 /* NotebookEditableBenchmarks.swift */; };
 		D40000000000000000000003 /* NotebookPreviewBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */; };
 		D40000000000000000000001 /* MarkdownTableBenchmarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000002 /* MarkdownTableBenchmarks.swift */; };
 		C3000000000000000000B101 /* HerdrRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000B102 /* HerdrRuntimeTests.swift */; };
@@ -184,6 +185,7 @@
 		AFE300000000000000000001 /* HerdrRemoteBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRemoteBridgeTests.swift; sourceTree = "<group>"; };
 		B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiskComparisonView.swift; sourceTree = "<group>"; };
 		B90000000000000000000002 /* HerdrRemoteBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRemoteBridge.swift; sourceTree = "<group>"; };
+		D41100000000000000000002 /* NotebookEditableBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookEditableBenchmarks.swift; sourceTree = "<group>"; };
 		D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookPreviewBenchmarks.swift; sourceTree = "<group>"; };
 		D40000000000000000000002 /* MarkdownTableBenchmarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownTableBenchmarks.swift; sourceTree = "<group>"; };
 		C3000000000000000000B102 /* HerdrRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrRuntimeTests.swift; sourceTree = "<group>"; };
@@ -455,6 +457,7 @@
 				B20000000000000000000013 /* TerminalRenderHarness.swift */,
 				B20000000000000000000014 /* TerminalRenderingTests.swift */,
 				D40000000000000000000002 /* MarkdownTableBenchmarks.swift */,
+				D41100000000000000000002 /* NotebookEditableBenchmarks.swift */,
 				D40000000000000000000004 /* NotebookPreviewBenchmarks.swift */,
 				B20000000000000000000015 /* TerminalPipelineBenchmarks.swift */,
 				B20000000000000000000016 /* WorkspaceFilesBenchmarks.swift */,
@@ -745,6 +748,7 @@
 				B20000000000000000000023 /* TerminalRenderHarness.swift in Sources */,
 				B20000000000000000000024 /* TerminalRenderingTests.swift in Sources */,
 				D40000000000000000000001 /* MarkdownTableBenchmarks.swift in Sources */,
+				D41100000000000000000001 /* NotebookEditableBenchmarks.swift in Sources */,
 				D40000000000000000000003 /* NotebookPreviewBenchmarks.swift in Sources */,
 				B20000000000000000000025 /* TerminalPipelineBenchmarks.swift in Sources */,
 				B20000000000000000000026 /* WorkspaceFilesBenchmarks.swift in Sources */,

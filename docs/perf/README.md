@@ -518,11 +518,11 @@ Measured on 2026-10-15, Mac16,5, macOS 26.6.2, three repetitions, Document style
 
 ## Jupyter notebook preview
 
-`scripts/notebook-bench.sh` measures the actual `NotebookPreviewView` in Release, including its 150 ms edit debounce, off-main-thread JSON parsing, WebKit startup, bundled assets, rendered text indexing and the first viewport capture. The source JSON is already in memory; file I/O and Source-editor setup are excluded. A separate `parse` phase measures parsing/projection without WebKit. The other phases match the Markdown suite: resize from 1000×800 to 780×800, cached viewport capture, and scroll to the end of both the page and nested output areas (including horizontal dataframe overflow). Lazy image height changes are included until the final page bottom is reached. WebKit renders in another process, so captures use `WKWebView.takeSnapshot` after layout, fonts and visible image decoding, using its `afterScreenUpdates` paint barrier; AppKit's `cacheDisplay` would not measure the final web content. Capture phases include this synchronization and image-transfer overhead, and are not frame-rate or pure JavaScript timings.
+`scripts/notebook-bench.sh` measures the actual `NotebookPreviewView` in Release, including off-main-thread JSON parsing, the subsequent-source-change debounce, WebKit startup, bundled assets, rendered text indexing and the first viewport capture. The first open starts immediately; subsequent source changes retain their 150 ms debounce. The source JSON is already in memory; file I/O and Source-editor setup are excluded. A separate `parse` phase measures parsing/projection without WebKit. The other phases match the Markdown suite: resize from 1000×800 to 780×800, cached viewport capture, and scroll to the end of both the page and nested output areas (including horizontal dataframe overflow). Lazy image height changes are included until the final page bottom is reached. WebKit renders in another process, so captures use `WKWebView.takeSnapshot` after layout, fonts and visible image decoding, using its `afterScreenUpdates` paint barrier; AppKit's `cacheDisplay` would not measure the final web content. Capture phases include this synchronization and image-transfer overhead, and are not frame-rate or pure JavaScript timings.
 
 The v6 capture protocol records the effective CSS viewport and scrollbar gutter per rendering stage, checks it stays the same across repetitions, and rejects a different viewport during comparison. Automatic macOS scrollbar changes can narrow the content by 17 points while the nominal window still measures 1000 points. Notebook snapshots retain references for each effective viewport, including the original overlay-scroller references; the app and renderer keep the system scrollbar behavior.
 
-The deterministic format-4.5 fixtures cover 20 Markdown cells, ten Markdown tables, a 100-row HTML dataframe, a 12-column HTML dataframe, 100 mixed math/code/output cells, a multi-megabyte saved stream (display truncation remains active), and twelve saved PNG plots. Every workload runs in both Theme and Document styles, seven times by default to reduce WebKit image-loading variance. The timing test holds a user-initiated, latency-critical activity to avoid App Nap and timer coalescing between windows. The test verifies cell/table/image counts, actual viewport resizing and reaching the bottom, and records input/source SHA-256, cell/DOM-node counts, typography, machine, OS and load. Package resolution stays pinned to the versions in `main`, which are also recorded in the results. It requires neither Python nor a live kernel and does not read private notebooks.
+The deterministic format-4.5 fixtures cover 20 Markdown cells, ten Markdown tables, a 100-row HTML dataframe, a 12-column HTML dataframe, 100 and 4,096 mixed math/code/output cells, a multi-megabyte saved stream (display truncation remains active), and twelve saved PNG plots. Every workload runs in both Theme and Document styles, seven times by default to reduce WebKit image-loading variance. The timing test holds a user-initiated, latency-critical activity to avoid App Nap and timer coalescing between windows. The test verifies cell/table/image counts, actual viewport resizing and reaching the bottom, and records input/source SHA-256, cell/DOM-node counts, typography, machine, OS and load. Package resolution stays pinned to the versions in `main`, which are also recorded in the results. It requires neither Python nor a live kernel and does not read private notebooks.
 
 ```sh
 scripts/notebook-bench.sh
@@ -531,6 +531,26 @@ scripts/notebook-bench.sh --baseline /path/to/reference.jsonl
 scripts/notebook-bench.sh --save-baseline
 WOOLOO_BENCH_REPEAT=5 scripts/notebook-bench.sh --check
 ```
+
+The existing series uses a read-only preview (`onEdit == nil`). The separate editable series
+exercises the real `NotebookPreviewView` callback, native `DocumentFindModel` and applied
+`NotebookEditing` source change for 100 and 4,096 cells, in both styles:
+
+```sh
+scripts/notebook-editable-bench.sh --no-baseline
+WOOLOO_BENCH_REPEAT=7 scripts/notebook-editable-bench.sh --baseline /path/to/editable-control.jsonl --check
+```
+
+Its `first-render` requires the full search index and the same font/image/snapshot barrier.
+`find-last-paint` includes native search, SwiftUI/coordinator updates, reveal and capture;
+`edit-paint` includes the actual edit callback, JSON change, debounce, parsing, complete
+reindexing and capture. `first-viewport` is a DOM-ready checkpoint observed by a JavaScript
+round trip, **not** a pre-index first-paint measurement: synchronous rendering has completed
+before that query returns. `full-index` records when native search text has arrived.
+Five repetitions are the default. This script verifies application Swift/project and
+Notebook asset hashes stayed unchanged during the run and fingerprints both benchmark
+sources and their fixtures. Its reference is supplied explicitly; it cannot overwrite the
+read-only references. The two capture protocols are intentionally distinct.
 
 The shared preview comparator (`scripts/markdown-perf.py --kind Notebook`) fails `--check` for median increases over both 25% and 10 ms in parsing or synchronous JavaScript range construction. Notebook viewport captures (first render, resize, cached draw, scroll and Find paint) use 25% and 50 ms: unchanged-code controls varied by up to 34 ms in those cross-process captures. Missing/changed workloads or incompatible viewport, typography, renderer or capture protocols also fail. Markdown retains its original 25% / 10 ms gate. Run on the same machine/OS without competing CPU-heavy work. `WOOLOO_DERIVED_DATA` selects the build directory. Notebook rendering/parser/resource tests and the two notebook snapshots run alongside the benchmark; ordinary tests skip timing measurements. A normal interaction test verifies that native Find reaches and expands a collapsed table beyond the first viewport after resizing, then checks the MIME selector.
 
@@ -542,7 +562,7 @@ Find now indexes each matched group's text leaves once per call and locates matc
 
 Text truncation walks only the permitted prefix and reuses the result for the source warning, rather than counting the entire string first (twice for source cells). The 500,000-grapheme limit, suffix and original Source document remain unchanged. Parser tests check below/exact/above-limit inputs, emoji and combining sequences across source, streams, errors, rich output and attachments.
 
-The 150 ms edit debounce, eager cell creation and full rerender on palette changes remain opportunities for separate work. These measurements focus on the verified Find and truncation bottlenecks. Manual local testing also showed that the existing Find reveal logic centers the searchable output group, so an individual selected row in a very tall table can remain offscreen; locating that row is a separate correctness follow-up.
+The October reference below predates the November 7 follow-up at the end of this document. That follow-up removes the initial debounce and color-only rerenders, defers controls/highlighting, and reuses unchanged static Markdown on edits; eager initial Markdown creation remains. These October measurements focus on the verified Find and truncation bottlenecks. Manual local testing also showed that the existing Find reveal logic centers the searchable output group, so an individual selected row in a very tall table can remain offscreen; locating that row is a separate correctness follow-up.
 
 <!-- notebook-measurements -->
 Measured on 2026-10-16, Mac16,5 / macOS 26.6.2, seven repetitions (median). Document style unless specified; timings include the activity and synchronization described above. These local wall-clock values remain sensitive to competing host work.
@@ -858,3 +878,332 @@ The migrated-file concurrency audit, 21 Python performance-tool contract tests a
 `git diff --check` passed. Pixel snapshot suites were excluded as in CI. Native hosted
 controls and synthetic input were exercised; interactive controls against an isolated
 Herdr session and a live SSH server were not verified.
+
+## Measurement review (2026-11-07)
+
+Measured commit `ab35b3f`, with a clean tracked checkout, on Mac16,5 / macOS 26.6.2 /
+Xcode 26.6, using the pinned packages and signed Release builds. The six suites ran
+sequentially with their default repetitions (terminal 3, workspace/editor 5, Markdown 3,
+notebook 7). One-minute host load at suite boundaries ranged from 3.97 to 6.80 on 16
+logical CPUs. Every run verified unchanged application sources, fixtures and environment.
+No default baseline was replaced.
+
+| Operation | Median | Assessment |
+| --- | ---: | --- |
+| Terminal synthetic burst, 200×60 | 318–708 fps | Compatible stage comparison: throughput ranges from 7% below to 5% above the reference; no large regression in this run |
+| Local Git refresh, 40 / 20,000 files | 182 / 306 ms | 12 subprocesses per refresh; worth profiling before changing the cache/batch path |
+| SSH Git refresh, 20,000 files | 116 ms | One batched subprocess; remote environment changed, so no historical ratio |
+| Highlight a large diff, local | 160–161 ms | Substantial CPU work, already performed off the UI thread |
+| Editor 2.16 MB wrapped line, open / insert / resize | 89 / 74 / 81 ms | Existing long-line bottleneck; compatible comparison passes the regression gate |
+| Editor 20,000 Unicode lines, open / insert / resize | 39 / 7 / 10 ms | Native Find 1.4 ms; Quick Open match over 100,000 paths 5.0 ms |
+| Markdown 100-row table, Theme / Document opening | 439 / 533 ms | Confirmed expensive native table layout; resize 100 / 152 ms |
+| Markdown 12-column table, Theme / Document opening | 195 / 272 ms | Also expensive; prose opens in 24 / 55 ms |
+| Notebook 4,096 cells, Theme / Document opening | 2,064 / 1,968 ms | Largest opening cost; parse 75 / 74 ms, cached viewport capture 2.3 / 2.4 ms |
+| Notebook 5,001 Find matches, Theme / Document paint | 98 / 98 ms | JavaScript range construction 6 / 5 ms; most elapsed time is outside range construction |
+
+The editor comparison uses `editor-todos-after.jsonl`, which has the same fixture and
+capture configuration. The default editor and Markdown references have different fixture
+fingerprints; notebook also differs in scrollbar policy. The workspace reference has an
+older remote kernel (7.2.9 versus 7.2.12). Their strict comparisons were rejected rather than
+printing historical speedups. Terminal E2E used a 100×50 grid (67×41 when shrunk), versus
+140×48 in the default reference, so its historical comparison was rejected too.
+
+### Live terminal and repeated findings
+
+The complete E2E run received 2,497 frames across its measured phases. ASCII, color,
+graphics, typing, keys, split output and selection had no skipped revisions. Arrival to draw
+was 0.8–4.6 ms at p50 for those output workloads. Keystroke to draw was 1.32 ms p50 /
+1.60 ms p95; estimated keystroke to screen was 10.94 ms p50 at 120 Hz. The key matcher
+attributed 99 of 100 injected events; this is not evidence of a lost key.
+
+| Resize experiment | Event → draw p50 / p95 | Event → estimated screen p50 / p95 | Pauses >50 ms / maximum gap | Intermediate revisions skipped |
+| --- | ---: | ---: | ---: | ---: |
+| Complete run, after selection | 43 / 68 ms | 53 / 84 ms | 7 / 132 ms | 31 |
+| Unicode, mouse, resize repeat | 26 / 34 ms | 38 / 46 ms | 0 / 50 ms | 7 |
+| Selection, resize repeat | 35 / 40 ms | 50 / 56 ms | 5 / 63 ms | 15 |
+
+Resize stalls reproduced in both sequences that followed selection, but these runs do not
+establish that selection causes them. Event-to-socket-send p50 was 10–20 ms, Herdr's answer
+5–14 ms and receive-to-draw 6–10 ms: the cost spans the UI and server paths. The first run's
+last revision inside the resize measurement window was not drawn; later output continued,
+and final trace replay passed. Skipped intermediate revisions do not by themselves mean
+lost final content. Unicode's initial 74 ms pause and four skipped revisions did not repeat
+(24 ms maximum gap, none skipped), so they remain an isolated observation.
+
+Split dragging consistently published store changes about once per move: 51 / 48 events in
+the full run and 48 / 48 in the repeat, with 17 / 16 terminal SwiftUI updates. Event-to-draw
+p95 was 26 / 17 ms. This is repeatable update work worth profiling; the metrics do not label
+the published property, and incompatible historical grids prevent calling it a measured
+regression against the old zero-publish reference.
+
+All six suite commands and all three reference-decoder replays passed; the 43 Python
+performance-tool contract tests passed. Notebook tests skipped one optional Python-generated
+fixture test. Workspace benchmarking emitted Thread Performance Checker priority-inversion
+warnings from synchronous test calls to `WorkspaceFiles.run`; ordinary model loads use
+`BlockingWork`, so these warnings alone do not demonstrate a main-thread stall in the app.
+The E2E explorer also showed a reproducible Apple Git 2.50.1 `ls-files` error when its root
+was the ignored `build/perf` subdirectory; terminal replay still passed. These terminal
+runs do not constitute a manual file-explorer check, a sustained resource test or a memory
+measurement. The isolated `wooloo-perf` server was confirmed stopped afterward.
+
+Complete samples and metadata are retained in [20261107/](20261107/):
+`terminal.jsonl`, `workspace.jsonl`, `editor.jsonl`, `markdown.jsonl`, `notebook.jsonl`,
+`e2e.json`, `e2e-unicode-mouse-resize.json` and `e2e-selection-resize.json` (each E2E summary
+has its sibling `.metadata.json`). Raw logs, metrics and traces remain under
+`build/perf/*20261107*`.
+
+### Notebook and table optimizations (2026-11-07)
+
+The notebook's initial visible cells were mounted one at a time. Each mount read slot
+positions and then changed the DOM, forcing another layout of all 4,096 slots before the
+next cell. A separate diagnostic run attributed 714–728 ms to this mounting phase, versus
+606–607 ms to building the cells. The renderer now reads a batch of waiting slot positions
+before inserting that batch. If estimated heights exceeded actual heights, it fills the
+remaining viewport before the first paint. Cell content, complete Find indexing, scroll
+anchors and the later intersection-observer path are unchanged.
+
+Native Markdown table cells applied four nested safe-area inset layouts, one per edge.
+They now use one `EdgeInsets` operation on supported platforms, preserving directional
+padding and retaining the old implementation on older platforms. Existing table and
+Markdown pixel snapshots pass without changed references. The table Grid, native text,
+custom decorations, links and selection behavior retain their existing implementation.
+
+| Operation, p50 | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| Notebook 4,096 cells, open, Theme | 2,064 ms | 1,500 ms | 27% |
+| Notebook 4,096 cells, open, Document | 1,968 ms | 1,512 ms | 23% |
+| Markdown 100-row table, open, Theme | 439 ms | 324 ms | 26% |
+| Markdown 100-row table, open, Document | 533 ms | 376 ms | 30% |
+| Markdown 12-column table, open, Theme | 195 ms | 147 ms | 25% |
+| Markdown 12-column table, open, Document | 272 ms | 200 ms | 26% |
+| Markdown 100-row table, resize, Theme | 100 ms | 76 ms | 23% |
+| Markdown 100-row table, resize, Document | 152 ms | 123 ms | 19% |
+
+The final notebook run uses seven repetitions; the table run uses five. Both use the same
+machine, OS, Xcode, pinned packages, fixture fingerprints, viewports, fonts and capture
+protocols as the earlier measurements above. Both strict comparisons pass their regression
+gates. Complete samples, p95s and unchanged-source/environment verification are retained in
+[notebook-after.jsonl](20261107/notebook-after.jsonl) and
+[markdown-after.jsonl](20261107/markdown-after.jsonl), against `notebook.jsonl` and
+`markdown.jsonl` in the same directory. No default baseline was overwritten. These are
+layout/capture timings, not physical display presentation latency. Large notebooks still
+construct and index every cell, and large tables still lay out every row.
+
+The Release notebook selection passed 25 tests (one optional fixture test skipped), including
+a new regression that uses deliberately excessive height estimates and checks both a filled
+initial viewport and restoration of an offscreen cell before painting in both styles. The
+Markdown selection passed 11 tests, including rendering, interaction and existing snapshots.
+All 43 Python tooling contract tests passed. The signed full Debug build with complete
+concurrency checking ran 1,303 tests, with 11 skipped and one failure:
+`TerminalRenderingTests.testSnapshotsMatch` reports 5,480 differing pixels for
+`unicode-scroll.png`. An isolated repeat produced the same mismatch. Terminal rendering
+sources and snapshots were not changed. Consequently the full-suite/concurrency audit is
+not claimed as passing.
+
+A separately signed Release app opened a real 4,096-cell notebook against an isolated
+`wooloo-ui-test` server with synthetic files under `/private/tmp`. Native Find found the
+last cell, scrolled near the end, and switching to Document kept that position. The same
+app opened the 100-row Markdown file and found its final-row query. Native automation lost
+the window during the subsequent scroll check, so that check is not claimed; automated
+scroll, interaction and snapshot checks passed. The separate app and its temporary server
+were stopped. Raw logs and diagnostic CPU samples remain in `build/perf/`.
+
+
+### Notebook second opinion and follow-up (2026-11-07)
+
+An independent Astra review found that the first batching change still constructed all
+Markdown, math, outputs and code trees, and that the original benchmark omitted editing
+controls. The second pass tests the editable path separately and retains the original
+read-only fixtures, timing protocol and baseline files.
+
+The first open now starts parsing immediately; later source changes keep the 150 ms
+coalescing delay. Color-only changes update CSS variables without replacing cells,
+resource revisions, MIME selections, Find ranges or an unsaved editor. Typography changes
+still take the full render path. Above 200 cells, editing controls and ordinary LF code
+highlighting are created when a cell is mounted. CR/CRLF/NUL code retains the eager path
+because HTML parsing can normalize those characters and change indexed UTF-16 offsets.
+MIME changes and image fallback activate new visible code before publishing the index.
+
+Subsequent renders reuse unchanged static Markdown only when its ID, source, index,
+cell count, editability and typography match. Attachments, images (including failed
+images), rich outputs and open/pending editors are excluded. New slots and current cell
+records are assigned on every render; Find classes and ranges are cleared before reuse.
+This preserves the original source/revision/resource validation path and the complete
+search index. A 4,096-cell mixed notebook reuses its 2,048 static Markdown cells after a
+code edit; a diagnostic experiment reduced cell construction from 358–384 ms to 28–29 ms.
+Those diagnostic figures describe the **edit render**, not opening.
+
+Find resolves and activates its destination before creating any DOM ranges, including
+ranges for earlier matches in that same block. It mounts the destination neighborhood
+in one batch: the full cell, the existing 1,500 px margin and one viewport on each side.
+The observer owns removal, and manually mounted slots are reobserved. An earlier variant
+that removed slots directly failed the existing fast-return-to-top interaction test;
+that variant was corrected before acceptance. Initial versions also regressed Document
+Find to 308 ms and then 217 ms; those experiments are retained rather than presented as
+passing candidates. Initial rich-output construction no longer scans every previous
+section, and callbacks from replaced renders are filtered using current-section membership.
+
+The original read-only series passes its strict gate against the first batching iteration,
+with seven repetitions on each side, overlay scrollbars and a 1000 px effective viewport:
+
+| Read-only operation, 4,096 cells | First batch p50 | Second pass p50 | Second pass p95 |
+| --- | ---: | ---: | ---: |
+| Open, Theme | 1,500 ms | 962 ms | 1,014 ms |
+| Open, Document | 1,512 ms | 969 ms | 1,004 ms |
+| Resize, Theme | 88 ms | 72 ms | 74 ms |
+| Resize, Document | 87 ms | 75 ms | 78 ms |
+
+The tail-scroll median is 2 ms in both styles, but Theme still has a 150 ms p95
+(Document: 4 ms). Passing the median regression gate does not establish stall-free
+scrolling. These measurements include capture synchronization and are not frame-rate
+measurements. The complete original-series results are retained in
+[notebook-second-pass.jsonl](20261107/notebook-second-pass.jsonl).
+
+The final editable comparison uses **seven repetitions for both control and candidate**,
+classic scrollbars, and a 983 px effective viewport. Its control contains the first batching
+optimization, before the second-pass changes. It passes the strict comparison gate:
+
+| Editable operation, 4,096 cells | Control p50 | Second pass p50 | Second pass p95 | Median reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Open, Theme | 1,532 ms | 1,126 ms | 1,134 ms | 27% |
+| Open, Document | 1,540 ms | 1,138 ms | 1,159 ms | 26% |
+| Apply one cell edit, Theme | 1,334 ms | 633 ms | 641 ms | 53% |
+| Apply one cell edit, Document | 1,301 ms | 633 ms | 642 ms | 51% |
+| Find last cell, Theme | 220 ms | 150 ms | 156 ms | 32% |
+| Find last cell, Document | 218 ms | 155 ms | 157 ms | 29% |
+
+The 100-cell editable opening falls from 418 ms to 244–249 ms; its edit and Find
+medians remain around 221 ms and 15 ms. The full data, input fingerprints and verified
+source/environment metadata are in [editable control](20261107/notebook-editable-control.jsonl)
+and [editable final](20261107/notebook-editable-final.jsonl).
+[The control patch](20261107/notebook-editable-control.patch) reconstructs the measured
+control from the current application sources, including the November 8 corrections below;
+`git apply --check` verifies that patch. The November 8 regeneration retains the exact
+original control sources and does not replace either measured series.
+It changes only the Notebook renderer/view; benchmark fixtures stay identical.
+
+Automatic scrollbar selection changed during this work. Earlier exploratory editable
+runs reported preferred style 1 while their effective viewport was 983 px, whereas the
+original read-only series used style 1 and a 1000 px viewport. Incompatible runs were
+rejected. The accepted read-only run explicitly used `WhenScrolling`; the new editable
+control and final run explicitly used `Always`, with an AppKit setting-change notification
+before launch. Both stages record and compare the actual CSS viewport as well as the
+preferred style. The previous global and application preferences were preserved and
+restored after measurement (both keys were originally absent and are absent again).
+No default benchmark reference was overwritten. Each series must be compared within
+its own protocol and viewport, not against the other series.
+
+Exploratory data are retained separately as `notebook-editable-exploratory-control.jsonl`,
+`notebook-editable-stage1.jsonl`, `notebook-editable-stage1-fixed.jsonl`,
+`notebook-editable-reuse.jsonl`, `notebook-editable-neighborhood.jsonl` and
+`notebook-editable-exploratory-final.jsonl` in the same directory. Those exploratory
+comparisons used three control repetitions and three or seven candidate repetitions;
+they are not substitutes for the final seven-versus-seven comparison.
+
+This is not a complete lazy-content or bounded-memory redesign. Initial Markdown,
+sanitation, KaTeX and complete Find indexing still process every cell. Deferred controls
+and syntax spans remain in detached trees after a cell has been visited. Resource-free
+Markdown reuse improves subsequent renders; code, rich outputs and image content still
+rebuild. No memory reduction or stall-free scrolling is claimed. A records/transient-index
+redesign remains separate work that needs memory measurements and MIME/image/index-version
+coverage. Astra's initial November 7 read-only review found no blockers in this narrower
+implementation; the subsequent adversarial review and corrections are recorded below.
+
+
+Validation performed on November 7, before the adversarial corrections below:
+
+- The original Release selection passes 31 tests (one optional Python-fixture test skipped),
+  including both unchanged Notebook pixel snapshots. The editable timing series passes
+  with seven repetitions and verified unchanged sources/environment. A separate selection
+  of rendering, editing and interaction tests passes 30 tests (one skipped).
+- The signed Debug CI-equivalent run with `SWIFT_STRICT_CONCURRENCY=complete` passes
+  1,283 tests, with 12 skipped and no failures. It uses CI's exclusions for `ViewSnapshotTests`
+  and `TerminalRenderingTests/testSnapshotsMatch`; the Notebook snapshots were checked
+  separately above. The migrated-file concurrency gate passes. The compiler still reports
+  repository warnings (1,079 distinct diagnostics in this complete-concurrency build),
+  including two in unchanged Notebook delegate/resource code; this is not a warning-free
+  build. The earlier full-suite Terminal Unicode snapshot mismatch described above was
+  not rerun or fixed by this work.
+- All 43 Python tooling contracts pass, and `zsh -n` and `git diff --check` pass.
+  `actionlint` is not installed; no workflow YAML was changed.
+- A separately signed copy (`dev.wooloo.notebook-review`) connected only to a fresh
+  `wooloo-ui-test` server/configuration under `/private/tmp`. The 4,096-cell synthetic
+  file opened in Preview; native Find found `NeedleAtEnd` and reached the last cell.
+  Double-click editing and applying a changed source marked the document unsaved;
+  native undo restored the saved state and the Find result. Switching to Document
+  showed the white page with that final result still visible. The app and isolated
+  server were stopped, and SHA-256 checks confirmed both fixture files stayed intact.
+  Native automation took several minutes to acquire the app despite its requested
+  timeout; that automation delay is excluded from benchmark timings.
+
+Raw build, benchmark, diagnostic and validation logs remain under `build/perf/`;
+the final CI log is `notebook-proposals-ci.log`. The isolated app/server logs remain
+under `/private/tmp/wooloo-notebook-review-20261107/`.
+
+
+### Notebook adversarial corrections — 2026-11-08
+
+A fresh Astra adversarial review reproduced two editing regressions relative to HEAD.
+Saved Markdown or output HTML containing `class="cell-tools"` could suppress the real
+editing toolbar and its Enter/double-click handlers. A rejected type change on reused
+Markdown could leave the selector showing Code while the native model remained Markdown.
+
+The renderer now identifies its toolbar using a private DOM reference and restores the
+selector from the model when reusing a cell. Resource-free Markdown reuse stays enabled.
+The editable benchmark's asset digest also includes `Vendor/NotebookPreview` (JavaScript,
+CSS and fonts), and each new record states its asset scope. Application or vendor asset
+changes during a run abort before comparison. Historical measurement files are unchanged.
+The control patch above was regenerated against the corrected renderer and still applies
+cleanly to reconstruct the exact original control sources.
+
+Validation:
+
+- The two regression tests fail against the preceding renderer with 17 assertions, then
+  pass after correction. They cover toolbar/Enter/double-click editing in Markdown and
+  HTML outputs, both 2-cell and virtualized 250-cell documents, and rejection through
+  the native edit callback while preserving another Markdown cell's DOM identity.
+- The signed Release Notebook selection passes 45 tests, with one optional fixture test
+  skipped and no failures, including both unchanged pixel snapshots. All 45 Python tooling
+  contracts pass; the new contracts exercise app JS, vendor JS, CSS and font mutations.
+- Astra independently reran its original WebKit cases: one real toolbar, Enter editing
+  available, selector and model both Markdown after restore, and the same cell DOM reused.
+  Its bounded static review found no new issue in these fixes.
+- A freshly signed app copy using only a fresh `wooloo-ui-test` server/configuration under
+  `/private/tmp/wooloo-notebook-fix-review-20261108/` opens the colliding-HTML fixture.
+  Edit, Enter and double-click open the Markdown editor; Edit also opens the code editor
+  whose saved output uses the same class. Cancelling leaves the fixture's SHA-256 unchanged.
+  The app and isolated server were stopped. Native callback rejection is covered by the
+  automated test above.
+- A five-repetition editable benchmark passes the regression gate against the November 7
+  seven-repetition optimized series, with verified stable sources/assets/environment and
+  the same scrollbar style 0 and effective 983 × 800 viewport. The previous global scrollbar
+  preference was restored (the key was absent before and is absent again). The result is
+  [adversarial fixes](20261108/notebook-adversarial-fixes.jsonl); no default reference changed.
+
+| Editable operation, 4,096 cells | Previous optimized p50 | Corrected p50 | Corrected p95 |
+| --- | ---: | ---: | ---: |
+| Open, Theme | 1,126 ms | 1,134 ms | 1,159 ms |
+| Open, Document | 1,138 ms | 1,153 ms | 1,179 ms |
+| Apply one cell edit, Theme | 633 ms | 620 ms | 621 ms |
+| Apply one cell edit, Document | 633 ms | 622 ms | 693 ms |
+| Find last cell, Theme | 150 ms | 151 ms | 164 ms |
+| Find last cell, Document | 155 ms | 154 ms | 168 ms |
+
+This bounded rerun preserves the earlier gains within the configured gate; it does not
+establish new gains or bounded memory. The full Debug CI-equivalent suite was not repeated
+during this bounded correction run; the November 9 pre-PR validation below covers the final sources. Logs are `build/perf/notebook-adversarial-{red,green,tooling}-20261108.log`
+and `build/perf/notebook-adversarial-perf-20261108.txt`.
+
+
+### Pre-PR validation — 2026-11-09
+
+The final sources pass the signed Debug CI-equivalent selection with
+`SWIFT_STRICT_CONCURRENCY=complete`: 1,285 tests, 12 skipped, no failures. This uses CI's
+exclusions for `ViewSnapshotTests` and `TerminalRenderingTests/testSnapshotsMatch`; the
+unchanged Notebook and Markdown pixel snapshots passed in the Release selections above.
+All four migrated concurrency sources compiled and their audit gate passes. Repository
+compiler warnings remain; the build is not warning-free. All 45 Python tooling contracts,
+shell syntax, staged `git diff --check` and the control patch's applicability also pass.
+The compiler/test log is `build/perf/notebook-pr-ci-20261109.log`, with its audit in
+`build/perf/notebook-pr-concurrency-20261109.txt`; the test result bundle is
+`build/notebook-pr-20261109.xcresult`. No additional performance timings were collected.

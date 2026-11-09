@@ -21,11 +21,12 @@
     const priority = ["text/html", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "text/markdown", "text/latex", "application/json", "text/plain"];
     let revision = "", pendingSource = null, imagePrefix = "", imageCounter = 0, svgCounter = 0, groups = [], pendingImages = new Map(), editable = false, rendering = false, last = null;
     // Every cell's section, in order, whether or not it is in the document; see `mount`.
-    let sections = [], observer = null, mounted = new Set(), lastFind = null, activeFind = [], finding = false;
+    let sections = [], currentSections = new WeakSet(), observer = null, mounted = new Set(), lastFind = null, activeFind = [], finding = false;
     // Above this many cells only the cells near the viewport stay in the document: the rest wait,
     // fully built, in slots of their measured or estimated height. With 4,096 cells, WebKit's
     // style, layout and painting of every cell took several seconds, and resizing a quarter second.
     const virtualizeAbove = 200, nearViewport = 1500;
+    let deferVisuals = false, diagnostics = {};
     // A cell's place on the page: its slot when the page has slots, which holds it once mounted.
     const cellBox = section => section.cellSlot ?? section;
     // The cell at the top of the viewport and how far its top is from the viewport's, by a binary
@@ -118,8 +119,11 @@
             ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"]
         });
     };
-    const highlight = (element, language) => {
+    const highlight = (element, language, defer = deferVisuals) => {
         if (language && hljs.getLanguage(language)) {
+            // HTML parsing normalizes CR/CRLF and NUL. Keep those uncommon sources eager
+            // so the Find index has exactly the text the highlighted DOM will have.
+            if (defer && !/[\r\0]/.test(element.textContent)) {element.dataset.notebookLanguage = language;return;}
             element.innerHTML = hljs.highlight(element.textContent, {language, ignoreIllegals:true}).value;
         }
     };
@@ -154,6 +158,8 @@
     const markdown = (text, cell) => {
         const element = sanitized(md.render(text));
         element.classList.add("markdown");
+        // Remember images even if loading replaces them with an error placeholder.
+        element.hasNotebookImages = Boolean(element.querySelector("img"));
         images(element, cell);
         element.querySelectorAll("pre code").forEach(code => highlight(code, (code.className.match(/language-([\w+-]+)/) || [])[1]));
         math(element);
@@ -200,9 +206,16 @@
         if (!choices.length) return inspectUnsupported(all);
         const area = node("div", undefined, "rich-output");
         let picker;
+        const changed = () => {
+            const section = container.closest(".cell");
+            // Initial construction and callbacks from a replaced render have no current section.
+            if (!section || !currentSections.has(section)) return;
+            if (section.isConnected) activate(section);
+            collectSearch();
+        };
         const display = (index) => {
             area.replaceChildren();
-            if (index >= choices.length) { area.append(inspectUnsupported(all)); collectSearch(); return; }
+            if (index >= choices.length) { area.append(inspectUnsupported(all)); changed(); return; }
             const item = choices[index];
             if (picker) picker.value = String(index);
             let content;
@@ -226,7 +239,7 @@
                 } else content = ansi(item.text);
                 area.append(content);
             } catch { display(index + 1); return; }
-            if (sections.some(section => section.contains(container))) collectSearch();
+            changed();
         };
         if (choices.length > 1) {
             const label = node("label", "Display as ", "mime-picker");picker = node("select");picker.setAttribute("aria-label", "Output representation");
@@ -284,14 +297,26 @@
         lastFind = next.length ? {next, selected} : null;
         // Index each matched group once per call, rather than walking a large output
         // for every match. Keeping the cache local also handles replaced MIME nodes.
+        // Apply styling before mounting's layout reads, including for a detached match.
+        const currentMatch = next.find(match => match.index === selected);
+        const currentElement = currentMatch && groups[currentMatch.block];
+        if (currentElement) {currentElement.classList.add("find-active");activeFind.push(currentElement);}
+        // Mount before building *any* range: an earlier match can share the selected
+        // block, and activation replaces its text nodes with syntax spans.
+        const selectedMatch = reveal && next.find(match => match.index === selected);
+        const selectedElement = selectedMatch && groups[selectedMatch.block];
+        if (selectedElement) {
+            for (let parent = selectedElement.parentElement; parent; parent = parent.parentElement) {if (parent.tagName === "DETAILS") parent.open = true;}
+            show(selectedElement);
+        }
         const ranges = [], active = [], cache = new Map();
         for (const match of next) {
             const element = groups[match.block];if (!element) continue;
             const range = rangeFor(element, match.lower, match.upper, cache);if (!range) continue;
             ranges.push(range);
             if (match.index === selected) {
-                active.push(range);element.classList.add("find-active");activeFind.push(element);
-                if (reveal) {for (let parent = element.parentElement; parent; parent = parent.parentElement) {if (parent.tagName === "DETAILS") parent.open = true;}show(element);element.scrollIntoView({block:"center"});}
+                active.push(range);
+                if (reveal) element.scrollIntoView({block:"center"});
             }
         }
         if (CSS.highlights && window.Highlight) {
@@ -315,6 +340,7 @@
     // collapses the find ranges inside it, so they are made again for cells that come back.
     const update = (coming, leaving) => {
         coming = coming.filter(slot => !mounted.has(slot));
+        coming.forEach(slot => activate(slot.cellSection));
         // A cell with focus or an open editor stays.
         leaving = leaving.filter(slot => mounted.has(slot) && !slot.cellSection.contains(document.activeElement)
             && !slot.cellSection.querySelector("textarea.cell-editor"));
@@ -333,10 +359,28 @@
         // Not while revealing a match: that call makes the ranges itself.
         if (coming.length && lastFind && !finding) setFind(lastFind.next, lastFind.selected, false);
     };
-    // Makes sure the cell holding `element` is in the document, as before scrolling to it.
+    // A Find jump needs the destination viewport, not just the matched cell. Mount its
+    // neighborhood together so scrolling does not trigger several more layout/observer
+    // rounds. Keep the same overscan on both sides, plus room for the destination viewport.
     const show = (element) => {
         const slot = element.closest(".cell")?.cellSlot;
-        if (slot) update([slot], []);
+        if (!slot) return;
+        pinned = null;
+        const rect = slot.getBoundingClientRect();
+        const lower = rect.top - innerHeight - nearViewport, upper = rect.bottom + innerHeight + nearViewport;
+        let low = 0, high = sections.length;
+        while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (cellBox(sections[middle]).getBoundingClientRect().bottom < lower) low = middle + 1;else high = middle;
+        }
+        const coming = [];
+        while (low < sections.length && cellBox(sections[low]).getBoundingClientRect().top <= upper) coming.push(sections[low++].cellSlot);
+        const newlyMounted = coming.filter(slot => !mounted.has(slot));
+        update(coming, []);
+        // The observer owns removal. Removing a still-intersecting slot here could miss
+        // a fast scroll back before its first "outside" notification. Reobserve manually
+        // mounted neighbors so those outside the eventual viewport are also removed.
+        newlyMounted.forEach(slot => {observer?.unobserve(slot);observer?.observe(slot);});
     };
     // Only an entry's latest state counts: a slot can cross out and back within one batch.
     const observe = (entries) => {
@@ -398,7 +442,7 @@
         if (!["code", "markdown", "raw"].includes(cell.kind)) {const option = node("option", cell.kind);option.value = cell.kind;option.disabled = true;kind.append(option);}
         kind.value = cell.kind;
         kind.addEventListener("change", () => edit({op:"kind", cell:cellIndex, id:cell.id, value:kind.value}));
-        bar.append(kind);
+        bar.append(kind);bar.kindControl = kind;
         button("↑", "Move the cell up", () => edit({op:"move", cell:cellIndex, id:cell.id, offset:-1}), cellIndex === 0);
         button("↓", "Move the cell down", () => edit({op:"move", cell:cellIndex, id:cell.id, offset:1}), cellIndex === count - 1);
         button("+ Code", "Insert a code cell below", () => edit({op:"insert", cell:cellIndex, id:cell.id, value:"code"}));
@@ -406,21 +450,65 @@
         button("Delete", "Delete the cell", () => edit({op:"delete", cell:cellIndex, id:cell.id}));
         return bar;
     };
+    const activate = section => {
+        const record = section.cellRecord;
+        // Saved HTML can use the same CSS classes. Only our own reference marks an
+        // initialized toolbar, including its keyboard and double-click listeners.
+        if (record && editable && !section.cellTools) {
+            const {cell, index, count} = record;
+            section.cellTools = tools(section, cell, index, count);
+            section.prepend(section.cellTools);
+            section.addEventListener("dblclick", event => {
+                if (event.target.closest(".source, .markdown") && !event.target.closest("a")) beginEdit(section, cell, index);
+            });
+            section.addEventListener("keydown", event => {
+                if (event.key === "Enter" && event.target === section) {event.preventDefault();beginEdit(section, cell, index);}
+            });
+        }
+        section.querySelectorAll('[data-notebook-language]').forEach(code => {
+            const language = code.dataset.notebookLanguage;
+            delete code.dataset.notebookLanguage;highlight(code, language, false);
+        });
+    };
+    const setPalette = palette => {
+        for (const [key,value] of Object.entries(palette)) document.documentElement.style.setProperty(key,value);
+        if (last) last.palette = palette;
+    };
     window.notebook = {
+        setPalette,
+        diagnostics() {
+            return {...diagnostics, cells:sections.length, mounted:mounted.size,
+                controls:sections.filter(section => section.cellTools).length,
+                pendingHighlight:sections.filter(section => section.querySelector('[data-notebook-language]')).length};
+        },
         // `start` is where the document's preview was left, for a page that shows no cells yet.
         render(data, token, palette, canEdit, start) {
+            const renderStart = performance.now();
+            diagnostics = {reused:0};
+            // Retain only resource-free Markdown whose listeners still have the same index
+            // and bounds. Rich outputs, image callbacks and open editors get a fresh tree.
+            const reuse = last && Boolean(last.canEdit) === Boolean(canEdit) && last.data.cells.length === data.cells.length
+                && last.palette["--body-size"] === palette["--body-size"] && last.palette["--code-size"] === palette["--code-size"]
+                ? sections.map(section => {
+                    const cell = section.cellRecord?.cell;
+                    return cell?.kind === "markdown" && cell.editable && !cell.outputs.length && !Object.keys(cell.attachments).length
+                        && !section.querySelector(".cell-editor,.cell-editor-hint") && !section.querySelector(".markdown").hasNotebookImages ? section : null;
+                }) : [];
             editable = Boolean(canEdit);last = {data, palette, canEdit};
             const anchor = topCell();
             const anchorID = anchor ? anchor.section.id : start?.cell, offset = anchor ? anchor.offset : start?.offset;
             const collapsed = new Set(sections.flatMap(section => Array.from(section.querySelectorAll("details[data-output]")))
                 .filter(item => !item.open).map(item => item.dataset.output));
-            observer?.disconnect();observer = null;sections = [];mounted = new Set();lastFind = null;activeFind = [];
+            activeFind.forEach(element => element.classList.remove("find-active"));
+            CSS.highlights?.delete("notebook-find");CSS.highlights?.delete("notebook-current");
+            observer?.disconnect();observer = null;sections = [];currentSections = new WeakSet();mounted = new Set();lastFind = null;activeFind = [];
             revision = token;imagePrefix = `wooloo-notebook://${token}/image/`;pendingImages.clear();
-            for (const [key,value] of Object.entries(palette)) document.documentElement.style.setProperty(key,value);
+            setPalette(palette);
             rendering = true;
             try {root.replaceChildren();} finally {rendering = false;}
             root.dataset.cells = String(data.cells.length);
             const virtual = data.cells.length > virtualizeAbove;
+            deferVisuals = virtual;
             // `update` keeps what is on screen in place itself; WebKit doing the same would double it.
             document.documentElement.style.overflowAnchor = virtual ? "none" : "";
             const header = node("header");header.append(node("h1", "Notebook"));
@@ -437,19 +525,23 @@
                     root.append(add);
                 }
             }
+            const buildStart = performance.now();
             data.cells.forEach((cell, cellIndex) => {
-                const section = node("section", undefined, "cell");section.id = "cell-" + cell.id;section.tabIndex = 0;
+                const previous = reuse[cellIndex], old = previous?.cellRecord.cell;
+                const unchanged = old && cell.kind === old.kind && cell.id === old.id && cell.source === old.source
+                    && cell.editable === old.editable && !cell.outputs.length && !Object.keys(cell.attachments).length;
+                const section = unchanged ? previous : node("section", undefined, "cell");
+                section.id = "cell-" + cell.id;section.tabIndex = 0;section.cellSlot = null;
+                section.cellRecord = {cell, index:cellIndex, count:data.cells.length};
                 section.setAttribute("aria-label", `${cell.kind} cell ${cellIndex+1}`);
-                if (editable) {
-                    section.append(tools(section, cell, cellIndex, data.cells.length));
-                    section.addEventListener("dblclick", event => {
-                        if (event.target.closest(".source, .markdown") && !event.target.closest("a")) beginEdit(section, cell, cellIndex);
-                    });
-                    section.addEventListener("keydown", event => {
-                        if (event.key === "Enter" && event.target === section) {event.preventDefault();beginEdit(section, cell, cellIndex);}
-                    });
+                if (unchanged) {
+                    diagnostics.reused += 1;
+                    // A rejected type edit changed the control, not the model. Reusing
+                    // the cell must restore its controls just as rebuilding it would.
+                    const kind = section.cellTools?.kindControl;
+                    if (kind) kind.value = cell.kind;
                 }
-                if (cell.kind === "markdown") section.append(markdown(cell.source, cell));
+                else if (cell.kind === "markdown") section.append(markdown(cell.source, cell));
                 else {
                     const label = node("div", undefined, "cell-label");
                     label.append(node("span", cell.kind === "code" ? `In [${cell.executionCount ?? " "}]:` : cell.kind, "count"));
@@ -467,11 +559,13 @@
                         if (output.text.length > 10000) content.classList.add("long-output");details.append(content);section.append(details);
                     });
                 }
-                sections.push(section);
-                if (!virtual) { root.append(section);return; }
+                sections.push(section);currentSections.add(section);
+                if (!virtual) {activate(section);root.append(section);return;}
                 const slot = node("div", undefined, "cell-slot");slot.cellSection = section;section.cellSlot = slot;
                 slot.style.height = estimate(cell) + "px";root.append(slot);
             });
+            diagnostics.build_ms = performance.now() - buildStart;
+            const mountStart = performance.now();
             const anchorSection = anchorID && sections.find(section => section.id === anchorID);
             if (virtual) {
                 // Fill the screen now, from the cell that was at the top, rather than after a
@@ -481,15 +575,28 @@
                 // heights, so this is one layout and `topCell`'s binary search.
                 const first = topCell();
                 const low = first ? sections.indexOf(first.section) : sections.length - 1;
-                for (let index = Math.max(low, 0); index < sections.length; index++) {
-                    if (sections[index].cellSlot.getBoundingClientRect().top > innerHeight + nearViewport) break;
-                    update([sections[index].cellSlot], []);
+                let index = Math.max(low, 0);
+                while (index < sections.length) {
+                    // Read the waiting slots before inserting any cells. Updating one at a time
+                    // would lay out every slot again after each insertion in a large notebook.
+                    const coming = [];
+                    while (index < sections.length && sections[index].cellSlot.getBoundingClientRect().top <= innerHeight + nearViewport) {
+                        coming.push(sections[index++].cellSlot);
+                    }
+                    if (!coming.length) break;
+                    update(coming, []);
+                    // Estimates can exceed actual heights. Fill any space left by this batch
+                    // before the first paint, including when restoring a saved scroll position.
                 }
                 observer = new IntersectionObserver(observe, {rootMargin: `${nearViewport}px 0px`});
                 sections.forEach(section => observer.observe(section.cellSlot));
             } else if (anchorSection) window.scrollBy(0, anchorSection.getBoundingClientRect().top - offset);
             pinned = anchorSection ? {section:anchorSection, offset} : null;
+            diagnostics.mount_ms = performance.now() - mountStart;
+            const indexStart = performance.now();
             collectSearch();setFind([],null,false);
+            diagnostics.index_ms = performance.now() - indexStart;
+            diagnostics.total_ms = performance.now() - renderStart;
         },
         // The whole source of a truncated cell, asked for by `beginEdit`, for the cell still shown.
         // A null `text` means the app could not read it.

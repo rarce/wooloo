@@ -359,6 +359,106 @@ final class NotebookEditingTests: XCTestCase {
         XCTAssertEqual(edits, [.setSource(cell: 0, text: String(repeating: "x", count: NotebookDocument.maximumTextCharacters) + "done")])
     }
 
+    private func editablePage(_ source: String,
+                              onEdit: @escaping (NotebookEdit, String, NotebookEditing.Outcome) -> Bool) async throws -> WKWebView {
+        window?.close()
+        let model = try NotebookDocument.parse(source)
+        let location = WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test", workspaceID: "test",
+                                             workspaceLabel: "Notebook test", root: "/private/tmp")
+        let view = NotebookWebView(notebook: model, path: "edit.ipynb", location: location,
+                                   theme: WoolooTheme.all[0], typography: WoolooTypography(), matches: [],
+                                   currentMatch: nil, revealRequest: 0, onOpenFile: { _ in },
+                                   onSearchText: { _ in }, onFindCommand: { _, _, _ in }, onEdit: onEdit)
+        let host = NSHostingView(rootView: view)
+        window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 650),
+                          styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window?.isReleasedWhenClosed = false; window?.contentView = host; window?.makeKeyAndOrderFront(nil)
+        func findWebView(_ view: NSView) -> WKWebView? {
+            if let web = view as? WKWebView { return web }
+            return view.subviews.lazy.compactMap(findWebView).first
+        }
+        for _ in 0..<200 {
+            if let web = findWebView(host),
+               (try? await web.evaluateJavaScript("Number(document.getElementById('notebook')?.dataset.cells)")) as? Int == model.cells.count {
+                return web
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw NotebookDocument.ParseError.message("Editable notebook did not render")
+    }
+
+    func testNotebookHTMLClassesCannotDisableCellEditing() async throws {
+        for count in [2, 250] {
+            let html = "<div class=\"cell-tools\">Ordinary exported HTML</div>"
+            let cells = (0..<count).map { index in
+                index == 1
+                    ? NotebookPreviewFixtures.cell("code", index, source: "print('saved')", outputs: [
+                        NotebookPreviewFixtures.display(["text/html": html])])
+                    : NotebookPreviewFixtures.cell("markdown", index, source: index == 0 ? html : "Cell \(index)")
+            }
+            let workload = try NotebookPreviewFixtures.make("html-cell-controls", cells: cells)
+            let page = try await editablePage(workload.source) { _, _, _ in
+                XCTFail("Opening and cancelling the editor must not edit the document")
+                return false
+            }
+            let results = try await page.evaluateJavaScript("""
+                [0,1].map(index => {
+                    const section=document.getElementById('cell-fixture-'+index);
+                    const toolbar=section.querySelector(':scope > [role="toolbar"]');
+                    const opened=() => !!section.querySelector('textarea.cell-editor');
+                    const cancel=() => section.querySelector('textarea.cell-editor')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+                    toolbar?.querySelector('button').click(); const button=opened(); cancel();
+                    section.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); const enter=opened(); cancel();
+                    section.querySelector('.markdown,.source').dispatchEvent(new MouseEvent('dblclick',{bubbles:true})); const doubleClick=opened(); cancel();
+                    return {button,enter,doubleClick,toolbars:section.querySelectorAll(':scope > [role="toolbar"]').length};
+                })
+                """) as? [[String: Any]]
+            XCTAssertEqual(results?.count, 2)
+            for result in results ?? [] {
+                XCTAssertEqual(result["toolbars"] as? Int, 1, "\(count) cells")
+                for action in ["button", "enter", "doubleClick"] {
+                    XCTAssertEqual(result[action] as? Bool, true, "\(action), \(count) cells")
+                }
+            }
+        }
+    }
+
+    func testRejectedMarkdownKindChangeRestoresTheSelectorAndKeepsOtherCells() async throws {
+        let workload = try NotebookPreviewFixtures.make("rejected-markdown-kind", cells: [
+            NotebookPreviewFixtures.cell("markdown", 0, source: "Original Markdown"),
+            NotebookPreviewFixtures.cell("markdown", 1, source: "Unchanged Markdown")
+        ])
+        var edits: [NotebookEdit] = []
+        let page = try await editablePage(workload.source) { edit, base, _ in
+            XCTAssertEqual(base, workload.source)
+            edits.append(edit)
+            return false
+        }
+        _ = try await page.evaluateJavaScript("""
+            window.unchangedCell=document.getElementById('cell-fixture-1');
+            document.querySelector('header').dataset.stale='1';
+            const select=document.querySelector('#cell-fixture-0 > [role="toolbar"] select');
+            select.value='code'; select.dispatchEvent(new Event('change'));
+            """)
+        for _ in 0..<100 {
+            if (try await page.evaluateJavaScript("document.querySelector('header').dataset.stale === undefined")) as? Bool == true { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(edits, [.setKind(cell: 0, kind: "code")])
+        let result = try await page.evaluateJavaScript("""
+            ({restored:document.querySelector('header').dataset.stale === undefined,
+              kind:document.querySelector('#cell-fixture-0 > [role="toolbar"] select').value,
+              source:document.querySelector('#cell-fixture-0 .markdown').textContent.trim(),
+              keptOther:unchangedCell === document.getElementById('cell-fixture-1'),
+              toolbars:document.querySelectorAll('#cell-fixture-0 > [role="toolbar"]').length})
+            """) as? [String: Any]
+        XCTAssertEqual(result?["restored"] as? Bool, true)
+        XCTAssertEqual(result?["kind"] as? String, "markdown")
+        XCTAssertEqual(result?["source"] as? String, "Original Markdown")
+        XCTAssertEqual(result?["keptOther"] as? Bool, true)
+        XCTAssertEqual(result?["toolbars"] as? Int, 1)
+    }
+
     func testAReadOnlyPreviewHasNoCellToolbar() async throws {
         let location = WorkspaceFileLocation(machine: nil, session: "wooloo-ui-test", workspaceID: "test",
                                              workspaceLabel: "Notebook test", root: "/private/tmp")
