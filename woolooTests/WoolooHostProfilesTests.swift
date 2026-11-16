@@ -14,11 +14,11 @@ final class WoolooHostProfilesTests: XCTestCase {
 
     func testHostsAreSavedPrivatelyAndDeduplicated() throws {
         let url = directory.appendingPathComponent("hosts.json")
-        let host = try WoolooHostProfiles.add(target: "dev@box.example:2222", label: nil, session: "agents", at: url)
+        let host = try WoolooHostProfiles.add(target: "ssh://dev@box.example:2222", label: nil, session: "agents", at: url)
         XCTAssertTrue(WoolooHostProfiles.isOwned(host))
         XCTAssertEqual(host.label, "dev@box.example")
         XCTAssertTrue(host.enabled)
-        XCTAssertEqual(try WoolooHostProfiles.add(target: "dev@box.example:2222", label: "Box", session: "agents", at: url), host)
+        XCTAssertEqual(try WoolooHostProfiles.add(target: "ssh://dev@box.example:2222", label: "Box", session: "agents", at: url), host)
         XCTAssertEqual(WoolooHostProfiles.load(at: url), [host])
         let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(permissions?.intValue, 0o600)
