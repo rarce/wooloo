@@ -92,7 +92,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                                                 cellWidth: self.cellWidth, cellHeight: self.cellHeight)
                 attached?.grid = Self.blankGrid(cols: self.cols, rows: self.rows)
             }
-            return (connection, attached)
+            return (self.connection, attached)
         }
         guard let connection, let attachment else { return }
         var size = Data()
@@ -110,7 +110,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             self.theme = colors
             self.focused = focused
             if let attachment = attached { Self.apply(colors, to: attachment.emulator) }
-            return (connection, attached)
+            return (self.connection, attached)
         }
         guard let connection, let attachment else { return }
         try? connection.send(CoreFrame(channel: attachment.channel, kind: .focus, payload: Data([focused ? 1 : 0])))
@@ -141,7 +141,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             case .key(let name): bytes = attachment.emulator.encodeKey(name)
             case .mouse: bytes = nil // Mouse reporting arrives with the mouse encoder (later in Phase 4).
             }
-            return (connection, attachment.channel, bytes)
+            return (self.connection, attachment.channel, bytes)
         }
         guard let connection, let channel, let bytes, !bytes.isEmpty else { return false }
         do {
@@ -234,7 +234,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 facts["bg"] = theme.background.hex
                 facts["cursor"] = theme.cursor.hex
             }
-            return (connection, attached?.channel, facts)
+            return (self.connection, attached?.channel, facts)
         }
         guard let connection, let channel, let payload = try? JSONSerialization.data(withJSONObject: facts) else { return }
         try? connection.send(CoreFrame(channel: channel, kind: .facts, payload: payload))
