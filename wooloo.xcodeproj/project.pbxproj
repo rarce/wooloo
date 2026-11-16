@@ -40,6 +40,7 @@
 		C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000071 /* HerdrSettingsModel.swift */; };
 		A10000000000000000000014 /* HerdrConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* HerdrConnection.swift */; };
 		C3000000000000000000E203 /* TUISessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E204 /* TUISessionBackend.swift */; };
+		C3000000000000000000E209 /* TerminalSurfaceConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E20A /* TerminalSurfaceConnection.swift */; };
 		C3000000000000000000E201 /* SessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E202 /* SessionBackend.swift */; };
 		C3000000000000000000E105 /* HerdrSessionAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E106 /* HerdrSessionAdapter.swift */; };
 		C3000000000000000000E103 /* WoolooSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E104 /* WoolooSession.swift */; };
@@ -225,6 +226,7 @@
 		C30000000000000000000071 /* HerdrSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* HerdrConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConnection.swift; sourceTree = "<group>"; };
 		C3000000000000000000E204 /* TUISessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUISessionBackend.swift; sourceTree = "<group>"; };
+		C3000000000000000000E20A /* TerminalSurfaceConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurfaceConnection.swift; sourceTree = "<group>"; };
 		C3000000000000000000E202 /* SessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBackend.swift; sourceTree = "<group>"; };
 		C3000000000000000000E106 /* HerdrSessionAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSessionAdapter.swift; sourceTree = "<group>"; };
 		C3000000000000000000E104 /* WoolooSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooSession.swift; sourceTree = "<group>"; };
@@ -389,6 +391,7 @@
 				C30000000000000000000071 /* HerdrSettingsModel.swift */,
 				A10000000000000000000015 /* HerdrConnection.swift */,
 				C3000000000000000000E204 /* TUISessionBackend.swift */,
+				C3000000000000000000E20A /* TerminalSurfaceConnection.swift */,
 				C3000000000000000000E202 /* SessionBackend.swift */,
 				C3000000000000000000E106 /* HerdrSessionAdapter.swift */,
 				C3000000000000000000E104 /* WoolooSession.swift */,
@@ -706,6 +709,7 @@
 				C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */,
 				A10000000000000000000014 /* HerdrConnection.swift in Sources */,
 				C3000000000000000000E203 /* TUISessionBackend.swift in Sources */,
+				C3000000000000000000E209 /* TerminalSurfaceConnection.swift in Sources */,
 				C3000000000000000000E201 /* SessionBackend.swift in Sources */,
 				C3000000000000000000E105 /* HerdrSessionAdapter.swift in Sources */,
 				C3000000000000000000E103 /* WoolooSession.swift in Sources */,

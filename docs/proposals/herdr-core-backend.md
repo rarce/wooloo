@@ -141,7 +141,10 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
 
   Space moves report `SessionMoveError`.
 - `HerdrStore` keeps the generic flow: one Space move at a time, the documents check before a Space closes, refreshing after a failure, and following the moved pane.
-- Still TUI-only inside the store: the event stream and snapshot refresh, and the terminal surface and input.
+- **Third step, in the same change.**
+  - `TerminalSurfaceConnection` is the protocol for the selected tab's live presentation: input, resize, host colours and focus, pane and tab focus, split ratios, and popups. `HerdrStore` holds one instead of a `HerdrSurfaceStream`, and the TUI's binary endpoint conforms unchanged. The Core terminal path (emulator and compositor) will be a second conformer.
+  - `HerdrWindowConnection` records its backend kind. Nil means the TUI, so saved windows keep their exact format, and a Core connection's ID is prefixed `core:`.
+- Still TUI-only inside the store: the event stream and snapshot refresh, and creating the surface connection.
 
 ### 3. Connection descriptor and hosts
 

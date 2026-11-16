@@ -541,7 +541,7 @@ final class HerdrStore: ObservableObject {
     private var paneTask: Task<Void, Never>?
     private var surfaceTask: Task<Void, Never>?
     private var eventStream: HerdrEventStream?
-    private var surfaceStream: HerdrSurfaceStream?
+    private var surfaceStream: (any TerminalSurfaceConnection)?
     private(set) var generation = 0
     private var actionToken = HerdrRequestToken()
     private(set) var actionEpoch = UUID() {

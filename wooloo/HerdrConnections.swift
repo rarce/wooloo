@@ -28,7 +28,14 @@ struct HerdrWindowConnection: Codable, Equatable, Identifiable {
     let session: String
     let machine: HerdrMachineProfile?
     var spaces: [String] = []
-    var id: String { machine?.contextID(session: session) ?? session }
+    /// The server kind; nil is the Herdr TUI, so windows saved before herdr-core support keep
+    /// their exact format (pinned by PersistedKeyGoldenTests).
+    var backend: BackendKind?
+    var backendKind: BackendKind { backend ?? .tui }
+    var id: String {
+        let context = machine?.contextID(session: session) ?? session
+        return backendKind == .tui ? context : "\(backendKind.rawValue):\(context)"
+    }
     var label: String { "\(machine?.label ?? "Local") · \(session)" }
 
     @MainActor
@@ -44,10 +51,11 @@ struct HerdrWindowConnection: Codable, Equatable, Identifiable {
         }
     }
 
-    init(session: String, machine: HerdrMachineProfile? = nil, spaces: [String] = []) {
+    init(session: String, machine: HerdrMachineProfile? = nil, spaces: [String] = [], backend: BackendKind? = nil) {
         self.session = session
         self.machine = machine
         self.spaces = spaces
+        self.backend = backend
     }
 }
 
