@@ -449,7 +449,7 @@ final class HerdrDestinations: ObservableObject {
             return navigation == intent && active === store && shouldFollow()
         }, onFollow: { [weak self, weak store] pane in
             guard let self, let store, active === store else { return }
-            requestTerminal(context: store.contextID, pane: pane.paneID)
+            requestTerminal(context: store.contextID, pane: pane.id)
         })
     }
 

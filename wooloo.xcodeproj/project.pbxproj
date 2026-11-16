@@ -28,6 +28,7 @@
 		C3000000000000000000E001 /* PersistedKeyGoldenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E002 /* PersistedKeyGoldenTests.swift */; };
 		C3000000000000000000E107 /* WoolooSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E108 /* WoolooSessionTests.swift */; };
 		C3000000000000000000E205 /* SessionCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E206 /* SessionCommandTests.swift */; };
+		C3000000000000000000E207 /* TUISessionBackendTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E208 /* TUISessionBackendTests.swift */; };
 		A1000000000000000000AF01 /* WorkspaceSessionPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */; };
 		C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000AE02 /* PDFPreviewTests.swift */; };
 		A1000000000000000000AE01 /* PDFPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AE02 /* PDFPreviewView.swift */; };
@@ -39,6 +40,7 @@
 		C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000071 /* HerdrSettingsModel.swift */; };
 		A10000000000000000000014 /* HerdrConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* HerdrConnection.swift */; };
 		C3000000000000000000E203 /* TUISessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E204 /* TUISessionBackend.swift */; };
+		C3000000000000000000E209 /* TerminalSurfaceConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E20A /* TerminalSurfaceConnection.swift */; };
 		C3000000000000000000E201 /* SessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E202 /* SessionBackend.swift */; };
 		C3000000000000000000E105 /* HerdrSessionAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E106 /* HerdrSessionAdapter.swift */; };
 		C3000000000000000000E103 /* WoolooSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E104 /* WoolooSession.swift */; };
@@ -212,6 +214,7 @@
 		C3000000000000000000E002 /* PersistedKeyGoldenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistedKeyGoldenTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000E108 /* WoolooSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooSessionTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000E206 /* SessionCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCommandTests.swift; sourceTree = "<group>"; };
+		C3000000000000000000E208 /* TUISessionBackendTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUISessionBackendTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionPersistence.swift; sourceTree = "<group>"; };
 		C3000000000000000000AE02 /* PDFPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFPreviewTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000AE02 /* PDFPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFPreviewView.swift; sourceTree = "<group>"; };
@@ -223,6 +226,7 @@
 		C30000000000000000000071 /* HerdrSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* HerdrConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConnection.swift; sourceTree = "<group>"; };
 		C3000000000000000000E204 /* TUISessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUISessionBackend.swift; sourceTree = "<group>"; };
+		C3000000000000000000E20A /* TerminalSurfaceConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurfaceConnection.swift; sourceTree = "<group>"; };
 		C3000000000000000000E202 /* SessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBackend.swift; sourceTree = "<group>"; };
 		C3000000000000000000E106 /* HerdrSessionAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSessionAdapter.swift; sourceTree = "<group>"; };
 		C3000000000000000000E104 /* WoolooSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooSession.swift; sourceTree = "<group>"; };
@@ -387,6 +391,7 @@
 				C30000000000000000000071 /* HerdrSettingsModel.swift */,
 				A10000000000000000000015 /* HerdrConnection.swift */,
 				C3000000000000000000E204 /* TUISessionBackend.swift */,
+				C3000000000000000000E20A /* TerminalSurfaceConnection.swift */,
 				C3000000000000000000E202 /* SessionBackend.swift */,
 				C3000000000000000000E106 /* HerdrSessionAdapter.swift */,
 				C3000000000000000000E104 /* WoolooSession.swift */,
@@ -548,6 +553,7 @@
 				C3000000000000000000E002 /* PersistedKeyGoldenTests.swift */,
 				C3000000000000000000E108 /* WoolooSessionTests.swift */,
 				C3000000000000000000E206 /* SessionCommandTests.swift */,
+				C3000000000000000000E208 /* TUISessionBackendTests.swift */,
 				C3000000000000000000AD02 /* NotebookTests.swift */,
 				F7E100000000000000000008 /* NotebookEditingTests.swift */,
 				C3000000000000000000AE02 /* PDFPreviewTests.swift */,
@@ -703,6 +709,7 @@
 				C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */,
 				A10000000000000000000014 /* HerdrConnection.swift in Sources */,
 				C3000000000000000000E203 /* TUISessionBackend.swift in Sources */,
+				C3000000000000000000E209 /* TerminalSurfaceConnection.swift in Sources */,
 				C3000000000000000000E201 /* SessionBackend.swift in Sources */,
 				C3000000000000000000E105 /* HerdrSessionAdapter.swift in Sources */,
 				C3000000000000000000E103 /* WoolooSession.swift in Sources */,
@@ -852,6 +859,7 @@
 				C3000000000000000000E001 /* PersistedKeyGoldenTests.swift in Sources */,
 				C3000000000000000000E107 /* WoolooSessionTests.swift in Sources */,
 				C3000000000000000000E205 /* SessionCommandTests.swift in Sources */,
+				C3000000000000000000E207 /* TUISessionBackendTests.swift in Sources */,
 				C3000000000000000000AD01 /* NotebookTests.swift in Sources */,
 				F7E100000000000000000007 /* NotebookEditingTests.swift in Sources */,
 				C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */,

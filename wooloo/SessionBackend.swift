@@ -31,12 +31,73 @@ enum SessionCommand: Hashable, Sendable {
     }
 }
 
-/// Carries out session commands for one connection.
+/// Something the UI opens in the connected session; the backend answers with its new ID.
+enum SessionCreation: Hashable, Sendable {
+    /// A Space in `cwd`, or beside `sourceSpaceID` (in its folder) when `cwd` is nil.
+    case space(sourceSpaceID: String?, cwd: String?, label: String?)
+    /// The Space of a Git worktree checkout: the one already open there, or a new one.
+    /// `repository` is the main checkout; without one, a plain Space opens in the checkout.
+    case worktreeSpace(checkout: String, repository: String?)
+    case tab(spaceID: String, cwd: String?)
+}
+
+/// Where a pane moves.
+enum PaneDestination: Hashable, Sendable {
+    /// Into a new tab of its Space.
+    case newTab
+    /// Beside `targetPaneID` in tab `tabID`, splitting it `split` ("right" or "down"). With
+    /// `swapAfter`, the two panes then trade places, which puts the pane left of or above the
+    /// target. `detachFirst` takes the pane out of its tab first, for moves within one tab.
+    case beside(targetPaneID: String, tabID: String, split: String, swapAfter: Bool, detachFirst: Bool)
+}
+
+/// Carries out session commands for one connection. Every method blocks until the server has
+/// answered: call them inside `BlockingWork`, like every other blocking request. `checkpoint`
+/// throws once the caller no longer wants the result, so a long operation stops between steps.
 protocol SessionBackend: Sendable {
     var kind: BackendKind { get }
-    /// Performs `command`, blocking until the server has applied it. Call it inside
-    /// `BlockingWork`, like every other blocking request.
     func perform(_ command: SessionCommand) throws
+    /// Opens `item` and returns its ID: a Space's for Spaces and worktrees, a tab's for tabs.
+    func create(_ item: SessionCreation) throws -> String
+    /// Moves a Space beside another, against the server's latest order; does nothing when it
+    /// would stay where it is.
+    func moveSpace(_ spaceID: String, beside anchorID: String, after: Bool,
+                   checkpoint: @Sendable () throws -> Void) throws
+    /// Moves a single-pane tab to another Space, or to a new Space when `spaceID` is nil, and
+    /// returns its pane where it landed. `lastTabWasChecked` says whether the caller cleared
+    /// closing the source Space; without it, a tab that became the last one is refused.
+    func moveTab(_ tabID: String, toSpace spaceID: String?, lastTabWasChecked: Bool,
+                 checkpoint: @Sendable () throws -> Void) throws -> WoolooPane
+    func movePane(_ paneID: String, to destination: PaneDestination,
+                  checkpoint: @Sendable () throws -> Void) throws
+
+    /// The session's state. `HerdrSnapshot` is the format `HerdrStore` keeps (Spaces, tabs,
+    /// panes, layouts, agents and focus); a backend other than the TUI builds one from its own
+    /// records, as `HerdrSnapshot.session(backend:)` maps it the other way for the UI.
+    func snapshot() throws -> HerdrSnapshot
+    /// A new watcher for state changes; `HerdrStore` runs one at a time, reconnecting after it ends.
+    func makeWatcher() -> any SessionWatcher
+    /// A pane's working directory, when the server knows it.
+    func paneDirectory(_ paneID: String) throws -> String?
+    /// A pane's screen as text, for the plain view shown while no live surface is available.
+    func paneText(_ paneID: String) throws -> String
+    /// Typed text or named keys sent without the live surface, which carries all other input.
+    func sendInput(to paneID: String, text: String?, keys: [String]) throws
+}
+
+/// Follows a session's state while connected.
+protocol SessionWatcher: AnyObject, Sendable {
+    /// Calls `onChange` with fresh state after every change, starting with the current state,
+    /// and blocks until the connection ends or `cancel` is called. Throws when it could not
+    /// connect or the connection failed.
+    func run(onChange: @escaping @Sendable (HerdrSnapshot) -> Void) throws
+    func cancel()
+}
+
+/// A refusal to show as it is, such as a Space move the server's latest state no longer allows.
+struct SessionMoveError: LocalizedError, Equatable {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 extension SessionCommand {

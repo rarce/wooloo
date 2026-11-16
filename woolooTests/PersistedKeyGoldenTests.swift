@@ -36,6 +36,22 @@ final class PersistedKeyGoldenTests: XCTestCase {
         XCTAssertEqual(HerdrWindowConnection(session: "agents", machine: machine).id, remoteContext)
     }
 
+    /// A herdr-core connection keeps its own namespace; TUI connections keep theirs and omit the
+    /// backend field when saved.
+    func testCoreWindowConnectionsAreScopedAndSavedWithTheirBackend() throws {
+        let core = HerdrWindowConnection(session: "agents", backend: .core)
+        XCTAssertEqual(core.id, "core:agents")
+        XCTAssertEqual(HerdrWindowConnection(session: "agents", backend: .tui).id, "agents")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        XCTAssertEqual(String(decoding: try encoder.encode(core), as: UTF8.self),
+                       #"{"backend":"core","session":"agents","spaces":[]}"#)
+        XCTAssertEqual(String(decoding: try encoder.encode(HerdrWindowConnection(session: "agents")), as: UTF8.self),
+                       #"{"session":"agents","spaces":[]}"#)
+        let decoded = try JSONDecoder().decode(HerdrWindowConnection.self, from: Data(#"{"session":"agents","spaces":[]}"#.utf8))
+        XCTAssertEqual(decoded.backendKind, .tui)
+    }
+
     func testDocumentSessionKeys() {
         XCTAssertEqual(WorkspaceSessionPersistence.key(for: nil),
                        "2f23e841e448e200fd6a93f331ec1a6b945fb030f2314f7a07a8aa0ec89c4f36")
