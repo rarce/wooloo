@@ -88,6 +88,10 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
 - **Ids.** Ids inside a session stay the backend's raw strings, and the session carries one `BackendID` that scopes them all, instead of a pair on every id. `WoolooSession.spaceKey` builds the persisted Space key, and `BackendID.persistentKey` keeps TUI keys unchanged.
 - **Move rules.** The rules (`paneToSplit`, `spaceMoveIndex`, `tabSpaceMoveRefusal`) take their TUI restrictions from `BackendCapabilities.herdrTUI`. A test checks them against the snapshot's rules for every pair of tabs and Spaces in a fixture. The snapshot versions stay until their callers inside `HerdrStore` move.
 - **First reader.** `HerdrStore.session` caches the mapping per snapshot and context. `HerdrStore.tabSpaceMoveRefusal` is the first reader moved to it.
+- **Second step.** These readers now take `WoolooSession`:
+  - **`HerdrNotifier`:** agent transitions, toasts and per-tab counts. `process(session:)` takes `AgentState`, and the snapshot entry point now delegates to it, so the existing notification tests check the new path.
+  - **`WorkspaceGitBar` and `WorkspaceBrowserView`:** worktree Spaces, through `WoolooSpace.worktreePath` and `state`.
+  - **`HerdrStore`:** `moveWorkspace`, `canSplit` and `splitTab` read the current session. Requests that read a fresh snapshot from the socket stay TUI-backend code.
 
 ### 2. Backend protocol behind `HerdrStore`
 

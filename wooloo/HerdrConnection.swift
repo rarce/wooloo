@@ -1243,8 +1243,8 @@ final class HerdrStore: ObservableObject {
     /// Sidebar reorders use a stable row anchor, resolved against the server's latest order.
     @discardableResult
     func moveWorkspace(_ workspaceID: String, beside anchorID: String, after: Bool) -> Bool {
-        guard isConnected, !spaceMoveInFlight, let snapshot,
-              snapshot.workspaceMoveIndex(workspaceID, beside: anchorID, after: after) != nil else { return false }
+        guard isConnected, !spaceMoveInFlight, let session,
+              session.spaceMoveIndex(workspaceID, beside: anchorID, after: after) != nil else { return false }
         runSpaceMove { path, token, _ in
             let fresh = try HerdrSocket.snapshot(path: path)
             guard let gap = fresh.workspaceMoveIndex(workspaceID, beside: anchorID, after: after) else { return nil }
@@ -1395,7 +1395,7 @@ final class HerdrStore: ObservableObject {
 
     /// Whether the terminal tab `tabID`, dragged over the selected tab's panes, may split into them.
     func canSplit(tabID: String) -> Bool {
-        isConnected && snapshot?.paneToSplit(fromTab: tabID, into: selectedTabID) != nil
+        isConnected && session?.paneToSplit(fromTab: tabID, into: selectedTabID) != nil
     }
 
     /// Moves the only pane of tab `tabID` into the selected tab next to `targetPaneID`, on its
@@ -1405,9 +1405,9 @@ final class HerdrStore: ObservableObject {
     /// Returns false, sending nothing, when the drop is not allowed.
     @discardableResult
     func splitTab(_ tabID: String, nextTo targetPaneID: String, edge: TerminalDropEdge) -> Bool {
-        guard isConnected, let into = selectedTabID, let snapshot,
-              let paneID = snapshot.paneToSplit(fromTab: tabID, into: into),
-              snapshot.panes.contains(where: { $0.paneID == targetPaneID && $0.tabID == into }) else { return false }
+        guard isConnected, let into = selectedTabID, let session,
+              let paneID = session.paneToSplit(fromTab: tabID, into: into),
+              session.panes(in: into).contains(where: { $0.id == targetPaneID }) else { return false }
         return movePane(paneID, nextTo: targetPaneID, edge: edge)
     }
 

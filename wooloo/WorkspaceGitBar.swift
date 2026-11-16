@@ -14,7 +14,7 @@ struct WorkspaceGitBar: View {
     let onOpenWorktree: ((_ path: String, _ repository: String?) -> Void)?
     let onError: (String) -> Void
     /// The Herdr Spaces of this Mac, to tell which worktrees already have one.
-    var spaces: [HerdrWorkspace] = []
+    var spaces: [WoolooSpace] = []
 
     /// Injectable so tests can wait for its load.
     @StateObject var model = WorkspaceGitBarModel()
@@ -436,23 +436,23 @@ final class WorkspaceGitBarModel: ObservableObject {
 
     /// Each worktree with the Herdr Space open on it, if any.
     static func spaces(of trees: [WorkspaceWorktree],
-                       in spaces: [HerdrWorkspace]) -> [(tree: WorkspaceWorktree, space: HerdrWorkspace?)] {
-        var byCheckout: [String: HerdrWorkspace] = [:]
+                       in spaces: [WoolooSpace]) -> [(tree: WorkspaceWorktree, space: WoolooSpace?)] {
+        var byCheckout: [String: WoolooSpace] = [:]
         for space in spaces {
-            if let path = space.worktree?.checkoutPath, byCheckout[path] == nil { byCheckout[path] = space }
+            if let path = space.worktreePath, byCheckout[path] == nil { byCheckout[path] = space }
         }
         return trees.map { ($0, byCheckout[$0.path]) }
     }
 
     /// A worktree's row among those with a Space: its name, the Space's label when it differs, and
     /// its agents' status when they are working or waiting.
-    static func spaceTitle(_ name: String, space: HerdrWorkspace?) -> String {
+    static func spaceTitle(_ name: String, space: WoolooSpace?) -> String {
         var title = name
         if let label = space?.label, label != name { title += " — " + label }
-        switch space?.agentStatus {
-        case "working": title += " · working"
-        case "blocked": title += " · needs input"
-        case "done": title += " · done"
+        switch space?.state {
+        case .working?: title += " · working"
+        case .blocked?: title += " · needs input"
+        case .done?: title += " · done"
         default: break
         }
         return title

@@ -24,7 +24,7 @@ struct WorkspaceBrowserView: View {
     /// Receives the command palette's file commands, listed while a tree has focus.
     var commandTarget: ExplorerCommandTarget?
     /// Used only to mark worktrees that already have a Space; never determines file location.
-    var spaces: [HerdrWorkspace] = []
+    var spaces: [WoolooSpace] = []
     @State private var commandToken = UUID()
 
     /// Not private so snapshot tests can open folders and select a row before it appears.

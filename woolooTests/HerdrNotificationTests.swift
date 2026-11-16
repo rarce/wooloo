@@ -193,6 +193,26 @@ final class HerdrNotifierTests: XCTestCase {
         XCTAssertEqual(counts.requests, 0)
     }
 
+    /// The neutral-session entry points behave as the snapshot ones they replace.
+    func testSessionEntryPointsMatchTheSnapshotOnes() throws {
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        let backend = BackendID.tui(contextID: "")
+        notifier.process(session: try snapshot(["w2:p1": "working", "w2:p2": "done"]).session(backend: backend),
+                         selectedPaneID: nil)
+        notifier.process(session: try snapshot(["w2:p1": "idle", "w2:p2": "blocked"]).session(backend: backend),
+                         selectedPaneID: nil)
+        XCTAssertEqual(notifier.attention, ["w2:p1": .done, "w2:p2": .request])
+        let idle = try snapshot(["w2:p1": "idle", "w2:p2": "blocked"])
+        let fromSession = notifier.attentionCount(inTab: "w2:t1", session: idle.session(backend: backend))
+        let fromSnapshot = notifier.attentionCount(inTab: "w2:t1", snapshot: idle)
+        XCTAssertEqual(fromSession.done, fromSnapshot.done)
+        XCTAssertEqual(fromSession.requests, fromSnapshot.requests)
+        XCTAssertEqual(fromSession.done + fromSession.requests, 2)
+        notifier.process(session: nil, selectedPaneID: nil)
+        XCTAssertTrue(notifier.attention.isEmpty)
+    }
+
     func testMarksClearWhenTheAgentMovesOnOrClosed() throws {
         let notifier = HerdrNotifier()
         defer { notifier.reset() }
