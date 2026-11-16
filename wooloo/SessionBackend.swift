@@ -70,6 +70,28 @@ protocol SessionBackend: Sendable {
                  checkpoint: @Sendable () throws -> Void) throws -> WoolooPane
     func movePane(_ paneID: String, to destination: PaneDestination,
                   checkpoint: @Sendable () throws -> Void) throws
+
+    /// The session's state. `HerdrSnapshot` is the format `HerdrStore` keeps (Spaces, tabs,
+    /// panes, layouts, agents and focus); a backend other than the TUI builds one from its own
+    /// records, as `HerdrSnapshot.session(backend:)` maps it the other way for the UI.
+    func snapshot() throws -> HerdrSnapshot
+    /// A new watcher for state changes; `HerdrStore` runs one at a time, reconnecting after it ends.
+    func makeWatcher() -> any SessionWatcher
+    /// A pane's working directory, when the server knows it.
+    func paneDirectory(_ paneID: String) throws -> String?
+    /// A pane's screen as text, for the plain view shown while no live surface is available.
+    func paneText(_ paneID: String) throws -> String
+    /// Typed text or named keys sent without the live surface, which carries all other input.
+    func sendInput(to paneID: String, text: String?, keys: [String]) throws
+}
+
+/// Follows a session's state while connected.
+protocol SessionWatcher: AnyObject, Sendable {
+    /// Calls `onChange` with fresh state after every change, starting with the current state,
+    /// and blocks until the connection ends or `cancel` is called. Throws when it could not
+    /// connect or the connection failed.
+    func run(onChange: @escaping @Sendable (HerdrSnapshot) -> Void) throws
+    func cancel()
 }
 
 /// A refusal to show as it is, such as a Space move the server's latest state no longer allows.

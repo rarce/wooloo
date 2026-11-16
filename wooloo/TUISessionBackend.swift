@@ -5,6 +5,8 @@ import Foundation
 /// `BlockingWork.run`.
 struct TUISessionBackend: SessionBackend {
     let socketPath: String
+    /// The binary client endpoint for live terminal surfaces, `herdr-client.sock`.
+    var surfacePath = ""
 
     var kind: BackendKind { .tui }
 
@@ -108,6 +110,22 @@ struct TUISessionBackend: SessionBackend {
         }
     }
 
+    func snapshot() throws -> HerdrSnapshot { try HerdrSocket.snapshot(path: socketPath) }
+
+    func makeWatcher() -> any SessionWatcher { TUISessionWatcher(socketPath: socketPath) }
+
+    func paneDirectory(_ paneID: String) throws -> String? {
+        try HerdrSocket.paneDirectory(path: socketPath, paneID: paneID)
+    }
+
+    func paneText(_ paneID: String) throws -> String {
+        try HerdrSocket.paneText(path: socketPath, paneID: paneID)
+    }
+
+    func sendInput(to paneID: String, text: String?, keys: [String]) throws {
+        try HerdrSocket.sendInput(path: socketPath, paneID: paneID, text: text, keys: keys)
+    }
+
     /// Herdr answers a move or swap it did not make with `changed: false` and a reason, not an error.
     static func requireChange(_ response: Data, in key: String, doing action: String) throws {
         guard let root = try JSONSerialization.jsonObject(with: response) as? [String: Any],
@@ -131,4 +149,18 @@ struct TUISessionBackend: SessionBackend {
             throw HerdrConfigError.validation("Herdr reload: \(status). \(details)")
         }
     }
+}
+
+/// Herdr's `events.subscribe` stream: each event triggers a fresh `session.snapshot`.
+final class TUISessionWatcher: SessionWatcher, @unchecked Sendable {
+    private let socketPath: String
+    private let stream = HerdrEventStream()
+
+    init(socketPath: String) { self.socketPath = socketPath }
+
+    func run(onChange: @escaping @Sendable (HerdrSnapshot) -> Void) throws {
+        try stream.run(path: socketPath, onSnapshot: onChange)
+    }
+
+    func cancel() { stream.cancel() }
 }

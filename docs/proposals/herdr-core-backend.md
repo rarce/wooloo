@@ -144,7 +144,12 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
 - **Third step, in the same change.**
   - `TerminalSurfaceConnection` is the protocol for the selected tab's live presentation: input, resize, host colours and focus, pane and tab focus, split ratios, and popups. `HerdrStore` holds one instead of a `HerdrSurfaceStream`, and the TUI's binary endpoint conforms unchanged. The Core terminal path (emulator and compositor) will be a second conformer.
   - `HerdrWindowConnection` records its backend kind. Nil means the TUI, so saved windows keep their exact format, and a Core connection's ID is prefixed `core:`.
-- Still TUI-only inside the store: the event stream and snapshot refresh, and creating the surface connection.
+- **Fourth step, in the same change: state and presentation come from the backend.**
+  - `SessionBackend` also provides `snapshot()`, `makeWatcher()` (a `SessionWatcher` that reports state after every change), `paneDirectory`, `paneText` and `sendInput` (the JSON fallback while no live surface is up).
+  - `HerdrStore` no longer calls `HerdrSocket` or `HerdrEventStream` itself.
+  - `HerdrSnapshot` stays the state format the store keeps. It is a plain description of Spaces, tabs, panes, layouts, agents and focus, which a Core backend can build from its terminals and structure document.
+  - The live terminal comes from a `TerminalPresentationProvider`. The TUI's provider wraps `HerdrSurfaceStream` with its endpoint path (`TUITerminalPresentation`).
+- Phase 2's seams are now in place. The TUI-specific code left in `HerdrStore` is the remote bridge, session discovery and the optimistic tab reorder. The bridge and discovery move with host profiles in Phase 3; the reorder uses the snapshot's own rule.
 
 ### 3. Connection descriptor and hosts
 
