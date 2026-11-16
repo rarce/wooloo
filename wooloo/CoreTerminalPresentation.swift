@@ -195,12 +195,12 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         }
         connection.route(channel: channel, onData: { [weak self] data in
             guard let self else { return }
-            lock.withLock { inbox.append(data) }
-            wake.signal()
+            self.lock.withLock { self.inbox.append(data) }
+            self.wake.signal()
         }, onClose: { [weak self] in
             guard let self else { return }
-            lock.withLock { if attached?.channel == channel { attached = nil } }
-            wake.signal()
+            self.lock.withLock { if self.attached?.channel == channel { self.attached = nil } }
+            self.wake.signal()
         })
         sendFacts()
     }
