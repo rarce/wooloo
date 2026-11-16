@@ -277,6 +277,11 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
         return count(attention.filter { panes.contains($0.key) })
     }
 
+    func attentionCount(inWorkspace workspaceID: String, session: WoolooSession?, contextID: String = "") -> (requests: Int, done: Int) {
+        let panes = Set(session?.panes.filter { $0.spaceID == workspaceID }.map { key($0.id, context: contextID) } ?? [])
+        return count(attention.filter { panes.contains($0.key) })
+    }
+
     func attentionCount(inTab tabID: String, session: WoolooSession?, contextID: String = "") -> (requests: Int, done: Int) {
         let panes = Set(session?.panes(in: tabID).map { key($0.id, context: contextID) } ?? [])
         return count(attention.filter { panes.contains($0.key) })

@@ -83,6 +83,17 @@ final class HerdrSnapshotTests: XCTestCase {
         XCTAssertEqual(WoolooTheme.agentStatusMark(nil), .faint)
     }
 
+    /// The neutral states draw exactly as the Herdr status strings they come from.
+    func testAgentStateMarksAndColorsMatchTheStatusStrings() {
+        for status in ["working", "blocked", "done", "idle", "unknown", "error", "paused", nil] as [String?] {
+            let state = status.map { AgentState($0) }
+            XCTAssertEqual(WoolooTheme.agentStateMark(state), WoolooTheme.agentStatusMark(status), status ?? "nil")
+            for theme in WoolooTheme.all {
+                XCTAssertEqual(theme.agentStateColor(state), theme.agentStatus(status), "\(theme.id) \(status ?? "nil")")
+            }
+        }
+    }
+
     /// The Space's files come from its worktree, else the directory of its first tab's root pane
     /// (first in the layout, not in `panes`), as Herdr names it; the focused pane does not move them.
     func testFileLocationFollowsWorktreeThenRootPane() throws {

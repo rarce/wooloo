@@ -21,11 +21,7 @@ extension HerdrSnapshot {
                 WoolooPane(id: $0.paneID, spaceID: $0.workspaceID, tabID: $0.tabID, cwd: $0.cwd,
                            state: $0.agentStatus.map { AgentState($0) })
             },
-            agents: agents.map {
-                WoolooAgent(paneID: $0.paneID, spaceID: $0.workspaceID, tabID: $0.tabID, kind: $0.agent,
-                            name: $0.displayName, detail: $0.detail, state: AgentState($0.agentStatus),
-                            statusLabel: $0.displayStatus, progress: $0.stateChangeSeq)
-            },
+            agents: agents.map(\.woolooAgent),
             layouts: layouts.map { layout in
                 WoolooTabLayout(tabID: layout.tabID, area: WoolooRect(layout.area),
                                 panes: layout.panes.map { .init(paneID: $0.paneID, rect: WoolooRect($0.rect)) },
@@ -34,6 +30,15 @@ extension HerdrSnapshot {
             focusedSpaceID: focusedWorkspaceID,
             focusedTabID: focusedTabID,
             focusedPaneID: focusedPaneID)
+    }
+}
+
+extension HerdrAgent {
+    /// This agent as the neutral model shows it. Herdr's agent views list `HerdrAgent`s too.
+    var woolooAgent: WoolooAgent {
+        WoolooAgent(paneID: paneID, spaceID: workspaceID, tabID: tabID, kind: agent, name: displayName,
+                    detail: detail, state: AgentState(agentStatus), statusLabel: displayStatus,
+                    progress: stateChangeSeq)
     }
 }
 

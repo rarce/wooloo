@@ -563,7 +563,7 @@ enum TerminalTypingProbe {
         switch kind {
         case "tabs":
             guard let store, let workspace = store.selectedWorkspaceID,
-                  let tabs = store.snapshot?.tabs.filter({ $0.workspaceID == workspace }).map(\.tabID),
+                  let tabs = store.session?.tabs(in: workspace).map(\.id),
                   tabs.count >= 2, let current = store.selectedTabID
             else { return NSLog("wooloo UI probe: the selected Space has fewer than two tabs") }
             let other = current == tabs[0] ? tabs[1] : tabs[0]

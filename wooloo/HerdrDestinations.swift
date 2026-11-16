@@ -404,7 +404,7 @@ final class HerdrDestinations: ObservableObject {
         guard let previous, stores.contains(where: { $0 === previous }) else { return }
         let selection = previousSelection
         select(previous, workspaceID: selection?.space)
-        if let tab = selection?.tab, previous.snapshot?.tabs.contains(where: { $0.tabID == tab && $0.workspaceID == previous.selectedWorkspaceID }) == true {
+        if let tab = selection?.tab, previous.session?.tabs.contains(where: { $0.id == tab && $0.spaceID == previous.selectedWorkspaceID }) == true {
             previous.select(tabID: tab)
         }
         if let pane = selection?.pane { previous.select(paneID: pane) }
@@ -462,9 +462,9 @@ final class HerdrDestinations: ObservableObject {
 
     private func open(context: String, pane: String) -> Bool {
         guard let store = stores.first(where: { $0.contextID == context }),
-              let target = store.snapshot?.panes.first(where: { $0.paneID == pane }) else { return false }
+              let target = store.session?.panes.first(where: { $0.id == pane }) else { return false }
         nativeWindow?.makeKeyAndOrderFront(nil)
-        select(store, workspaceID: target.workspaceID)
+        select(store, workspaceID: target.spaceID)
         store.select(tabID: target.tabID)
         store.select(paneID: pane)
         requestTerminal(context: context, pane: pane)
@@ -524,8 +524,8 @@ struct HerdrDestinationSection: View {
     var remove: () -> Void = {}
     let select: (String) -> Void
     let create: () -> Void
-    let rename: (HerdrWorkspace) -> Void
-    let close: (HerdrWorkspace) -> Void
+    let rename: (WoolooSpace) -> Void
+    let close: (WoolooSpace) -> Void
     @State private var collapsed = false
     @StateObject private var ports = ListeningPortsMonitor()
     @Environment(\.woolooTheme) private var theme
@@ -537,6 +537,9 @@ struct HerdrDestinationSection: View {
         guard store.isConnected, activeState != .inactive else { return nil }
         return .init(machine: store.machine, session: store.sessionName)
     }
+
+    /// The connection's Spaces, or the last known ones while it is disconnected.
+    private var spaces: [WoolooSpace] { store.displaySession?.spaces ?? [] }
 
     private func updatePorts(_ target: ListeningPortsMonitor.Target?) {
         if let target { ports.start(target) } else { ports.stop() }
@@ -555,12 +558,12 @@ struct HerdrDestinationSection: View {
                     }
                     .buttonStyle(.plain)
                     .help(store.errorMessage ?? "Expand or collapse Spaces")
-                    let marks = (store.snapshot ?? store.cachedSnapshot)?.workspaces.reduce((requests: 0, done: 0)) { sum, space in
-                        let count = notifier.attentionCount(inWorkspace: space.workspaceID,
-                            snapshot: store.snapshot ?? store.cachedSnapshot, contextID: store.contextID)
+                    let marks = spaces.reduce((requests: 0, done: 0)) { sum, space in
+                        let count = notifier.attentionCount(inWorkspace: space.id,
+                            session: store.displaySession, contextID: store.contextID)
                         return (sum.requests + count.requests, sum.done + count.done)
                     }
-                    HerdrAttentionBadge(requests: marks?.requests ?? 0, done: marks?.done ?? 0)
+                    HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                     Image(systemName: store.isConnected ? "circle.fill" : "exclamationmark.circle")
                         .font(.system(size: 7))
                         .foregroundStyle(store.isConnected ? theme.accent : theme.warning)
@@ -581,21 +584,21 @@ struct HerdrDestinationSection: View {
             }
             if !collapsed {
                 if !store.isConnected {
-                    Text(store.cachedSnapshot == nil ? "Connecting…" : "Disconnected · last known Spaces")
+                    Text(store.displaySession == nil ? "Connecting…" : "Disconnected · last known Spaces")
                         .font(.caption).foregroundStyle(.secondary)
                     if store.errorMessage != nil {
                         Button("Reconnect") { store.stop(); store.start() }.buttonStyle(.plain)
                             .font(.caption).disabled(!store.destinationEnabled)
                     }
                 }
-                ForEach((store.snapshot ?? store.cachedSnapshot)?.workspaces ?? []) { space in
+                ForEach(spaces) { space in
                     HStack(spacing: 4) {
-                        Button { select(space.workspaceID) } label: {
+                        Button { select(space.id) } label: {
                             HStack(spacing: 7) {
-                                AgentStatusDot(status: space.agentStatus)
+                                AgentStatusDot(state: space.state)
                                 Text(space.label).lineLimit(1)
                                 Spacer(minLength: 0)
-                                if let git = store.workspaceGitStatuses[space.workspaceID] {
+                                if let git = store.workspaceGitStatuses[space.id] {
                                     HStack(spacing: 4) {
                                         if git.ahead > 0 { Text("↑\(git.ahead)") }
                                         if git.behind > 0 { Text("↓\(git.behind)") }
@@ -603,27 +606,27 @@ struct HerdrDestinationSection: View {
                                     .font(.system(size: typography.secondary)).monospacedDigit()
                                     .foregroundStyle(.secondary).fixedSize()
                                 }
-                                let marks = notifier.attentionCount(inWorkspace: space.workspaceID,
-                                    snapshot: store.snapshot ?? store.cachedSnapshot, contextID: store.contextID)
+                                let marks = notifier.attentionCount(inWorkspace: space.id,
+                                    session: store.displaySession, contextID: store.contextID)
                                 HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .onDrag { spaceDrag.begin(space.workspaceID, store: store) }
-                        .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: space.workspaceID))
-                        .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: space.workspaceID) }
+                        .onDrag { spaceDrag.begin(space.id, store: store) }
+                        .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: space.id))
+                        .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: space.id) }
                               ?? "Drag to reorder Spaces, or drop a terminal tab to move it here")
                         .contextMenu {
                             Button("New Tab in Space", systemImage: "plus") {
-                                select(space.workspaceID)
+                                select(space.id)
                                 store.createTab()
                             }.disabled(!store.isConnected)
                             Button("Rename Space…", systemImage: "pencil") { rename(space) }
                                 .disabled(!store.isConnected)
-                            if let snapshot = store.snapshot,
-                               let location = WorkspaceFiles.location(snapshot: snapshot, workspaceID: space.workspaceID,
+                            if let model = store.session,
+                               let location = WorkspaceFiles.location(in: model, spaceID: space.id,
                                    session: store.sessionName, machine: store.machine) {
                                 Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(location.root) }
                                 if location.isLocal {
@@ -633,13 +636,13 @@ struct HerdrDestinationSection: View {
                             Button("Close Space…", systemImage: "xmark", role: .destructive) { close(space) }.disabled(!store.isConnected)
                         }
                         // Beside the row's button rather than in it, so a tag's click is its own.
-                        let spacePorts = ports.ports(inSpace: space.workspaceID)
+                        let spacePorts = ports.ports(inSpace: space.id)
                         if !spacePorts.isEmpty {
                             SpacePortTags(ports: spacePorts, machine: store.machine)
                         }
                     }
                     .font(.system(size: typography.emphasis, weight: .medium))
-                    .sidebarRow(selected: active && store.selectedWorkspaceID == space.workspaceID)
+                    .sidebarRow(selected: active && store.selectedWorkspaceID == space.id)
                     .opacity(store.isConnected ? 1 : 0.5)
                 }
                 if tabDrag.isDraggingTerminalTab,
