@@ -217,6 +217,13 @@ struct CoreReadResult: Codable, Sendable {
 struct CoreAttachResult: Codable, Sendable {
     let channel: UInt32
     let terminal: CoreTerminal
+    /// Whether the whole path accepts AUTOMATIC_INPUT frames; absent means send DATA.
+    let automaticInput: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case channel, terminal
+        case automaticInput = "automatic_input"
+    }
 }
 
 /// One notification on an events channel. `type` is nil for a heartbeat, which only carries

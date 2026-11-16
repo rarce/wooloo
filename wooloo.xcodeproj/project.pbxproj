@@ -44,6 +44,7 @@
 		C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000071 /* HerdrSettingsModel.swift */; };
 		A10000000000000000000014 /* HerdrConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* HerdrConnection.swift */; };
 		C3000000000000000000E203 /* TUISessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E204 /* TUISessionBackend.swift */; };
+		C3000000000000000000E604 /* CoreTerminalPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E605 /* CoreTerminalPresentation.swift */; };
 		C3000000000000000000E501 /* WoolooHostProfiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E502 /* WoolooHostProfiles.swift */; };
 		C3000000000000000000E307 /* HerdrCoreSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E308 /* HerdrCoreSupport.swift */; };
 		C3000000000000000000E305 /* CoreSessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E306 /* CoreSessionBackend.swift */; };
@@ -134,6 +135,7 @@
 		A10000000000000000000035 /* CodeEditLanguages in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000037 /* CodeEditLanguages */; };
 		A1000000000000000000004D /* BeautifulMermaid in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000004F /* BeautifulMermaid */; };
 		A1000000000000000000004A /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000004C /* MarkdownView */; };
+		C3000000000000000000E603 /* WoolooTerminalEngine in Frameworks */ = {isa = PBXBuildFile; productRef = C3000000000000000000E602 /* WoolooTerminalEngine */; };
 		B20000000000000000000001 /* TerminalPipelineMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* TerminalPipelineMetrics.swift */; };
 		B20000000000000000000020 /* SurfaceFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* SurfaceFixtures.swift */; };
 		B20000000000000000000021 /* ReferenceSurfaceDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000011 /* ReferenceSurfaceDecoder.swift */; };
@@ -239,6 +241,7 @@
 		C30000000000000000000071 /* HerdrSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSettingsModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* HerdrConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrConnection.swift; sourceTree = "<group>"; };
 		C3000000000000000000E204 /* TUISessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUISessionBackend.swift; sourceTree = "<group>"; };
+		C3000000000000000000E605 /* CoreTerminalPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTerminalPresentation.swift; sourceTree = "<group>"; };
 		C3000000000000000000E502 /* WoolooHostProfiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooHostProfiles.swift; sourceTree = "<group>"; };
 		C3000000000000000000E308 /* HerdrCoreSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrCoreSupport.swift; sourceTree = "<group>"; };
 		C3000000000000000000E306 /* CoreSessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSessionBackend.swift; sourceTree = "<group>"; };
@@ -409,6 +412,7 @@
 				C30000000000000000000071 /* HerdrSettingsModel.swift */,
 				A10000000000000000000015 /* HerdrConnection.swift */,
 				C3000000000000000000E204 /* TUISessionBackend.swift */,
+				C3000000000000000000E605 /* CoreTerminalPresentation.swift */,
 				C3000000000000000000E502 /* WoolooHostProfiles.swift */,
 				C3000000000000000000E308 /* HerdrCoreSupport.swift */,
 				C3000000000000000000E306 /* CoreSessionBackend.swift */,
@@ -616,6 +620,7 @@
 				A10000000000000000000034 /* CodeEditSourceEditor */,
 				A10000000000000000000037 /* CodeEditLanguages */,
 				A1000000000000000000004C /* MarkdownView */,
+				C3000000000000000000E602 /* WoolooTerminalEngine */,
 				A1000000000000000000C005 /* Sparkle */,
 			);
 			productName = wooloo;
@@ -673,6 +678,7 @@
 				A10000000000000000000036 /* XCRemoteSwiftPackageReference "CodeEditLanguages" */,
 				A1000000000000000000004E /* XCLocalSwiftPackageReference "BeautifulMermaid" */,
 				A1000000000000000000004B /* XCLocalSwiftPackageReference "MarkdownView" */,
+				C3000000000000000000E601 /* XCLocalSwiftPackageReference "GhosttyVt" */,
 				A1000000000000000000C004 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			productRefGroup = A10000000000000000000008 /* Products */;
@@ -736,6 +742,7 @@
 				C30000000000000000000070 /* HerdrSettingsModel.swift in Sources */,
 				A10000000000000000000014 /* HerdrConnection.swift in Sources */,
 				C3000000000000000000E203 /* TUISessionBackend.swift in Sources */,
+				C3000000000000000000E604 /* CoreTerminalPresentation.swift in Sources */,
 				C3000000000000000000E501 /* WoolooHostProfiles.swift in Sources */,
 				C3000000000000000000E307 /* HerdrCoreSupport.swift in Sources */,
 				C3000000000000000000E305 /* CoreSessionBackend.swift in Sources */,
@@ -920,6 +927,7 @@
 				A10000000000000000000035 /* CodeEditLanguages in Frameworks */,
 				A1000000000000000000004D /* BeautifulMermaid in Frameworks */,
 				A1000000000000000000004A /* MarkdownView in Frameworks */,
+				C3000000000000000000E603 /* WoolooTerminalEngine in Frameworks */,
 				A1000000000000000000C003 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1087,6 +1095,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Vendor/BeautifulMermaid;
 		};
+		C3000000000000000000E601 /* XCLocalSwiftPackageReference "GhosttyVt" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/GhosttyVt;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1133,6 +1145,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A1000000000000000000C004 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		C3000000000000000000E602 /* WoolooTerminalEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C3000000000000000000E601 /* XCLocalSwiftPackageReference "GhosttyVt" */;
+			productName = WoolooTerminalEngine;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
