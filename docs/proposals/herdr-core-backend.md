@@ -120,6 +120,17 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
 
 **Performance rule for both backends:** the session-model publisher must only publish on structural change, never per frame or per keystroke (CLAUDE.md, "Terminal pipeline").
 
+**Progress (Phase 2, first step).**
+- `SessionCommand` (`SessionBackend.swift`, Foundation-only) lists the structural changes the UI asks for: focus, split, zoom, rename and close Space, tab and pane, rename agent, reorder tabs, and reload the configuration. The protocol `SessionBackend` carries them out.
+- `TUISessionBackend` sends each command as the same JSON request `HerdrStore` sent before. `SessionCommandTests` pins every method and parameter.
+- `HerdrStore.performAction` takes a command and keeps the generic flow: connection check, action epoch, refreshing the snapshot, and following the server's focus after focus moves and splits.
+- `TUISessionBackend` validates Herdr's reload answer, which reports a status and diagnostics rather than an error.
+- Still TUI-only inside the store:
+  - Space and pane moves, whose gaps and detach/swap choreography read Herdr's own answers;
+  - opening Spaces and worktrees, which return new IDs;
+  - the event stream;
+  - the terminal surface and input.
+
 ### 3. Connection descriptor and hosts
 
 - A connection descriptor gains `backend: .tui | .core`.
