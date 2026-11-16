@@ -17,6 +17,8 @@ struct HerdrConnectionsView: View {
     @State private var session = "default"
     @State private var target = ""
     @State private var label = ""
+    /// Adds a herdr-core session instead of a Herdr TUI one; offered behind `HerdrCoreSupport`.
+    @State private var usesCore = false
     @State private var rename: HerdrMachineProfile?
     @State private var newLabel = ""
     @State private var confirmation: ProfileAction?
@@ -56,10 +58,12 @@ struct HerdrConnectionsView: View {
         destinations.stores.first { $0.contextID == connection.id }
     }
     private func nativeSession(_ connection: HerdrWindowConnection) -> HerdrLocalSession? {
-        catalog.sessions.first { $0.name == connection.session }
+        guard connection.backendKind == .tui else { return nil }
+        return catalog.sessions.first { $0.name == connection.session }
     }
     private func status(_ connection: HerdrWindowConnection) -> String {
         if let store = opened(connection), store.isConnected { return "Connected" }
+        if connection.backendKind == .core { return opened(connection)?.errorMessage ?? "herdr-core · not open" }
         if let profile = connection.machine {
             if !catalog.machinesLoaded { return "Checking saved profile…" }
             if !catalog.machines.contains(where: { $0 == profile }) { return "Profile changed or removed" }
@@ -165,7 +169,8 @@ struct HerdrConnectionsView: View {
     private func detail(_ connection: HerdrWindowConnection) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(connection.session).font(.title3.weight(.semibold)).textSelection(.enabled)
-            Text(connection.machine.map { "SSH · \($0.label) · \($0.target)" } ?? "Local · This Mac")
+            Text((connection.machine.map { "SSH · \($0.label) · \($0.target)" } ?? "Local · This Mac")
+                 + (connection.backendKind == .core ? " · herdr-core" : ""))
                 .foregroundStyle(.secondary).textSelection(.enabled)
             Text(status(connection))
             if let native = nativeSession(connection), connection.machine == nil, let failure = native.connectionError {
@@ -185,6 +190,11 @@ struct HerdrConnectionsView: View {
                 if connection.machine == nil, nativeSession(connection)?.isVerifiedStopped == true {
                     Button("Start and Connect") { open(connection, start: true) }
                 }
+            } else if connection.backendKind == .core {
+                Button("Open in This Window") {
+                    destinations.openCore(session: connection.session, machine: connection.machine)
+                    dismiss()
+                }.buttonStyle(.borderedProminent)
             } else if let profile = connection.machine {
                 if catalog.machines.contains(profile) {
                     Button("Open in This Window") { openRemote(profile) }
@@ -200,6 +210,15 @@ struct HerdrConnectionsView: View {
                 }.buttonStyle(.borderedProminent)
             } else {
                 Button("Check State") { catalog.refresh() }
+            }
+            if HerdrCoreSupport.isEnabled, let profile = connection.machine, connection.backendKind == .tui,
+               catalog.machines.contains(profile), opened(connection) == nil {
+                Button("Open herdr-core Session on This Host") {
+                    destinations.openCore(session: profile.session, machine: profile)
+                    dismiss()
+                }
+                Text("Preview: connects to herdr-core (hc) on the host over SSH, in the same session name.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let profile = connection.machine, catalog.machines.contains(profile) {
                 Divider()
@@ -227,6 +246,11 @@ struct HerdrConnectionsView: View {
                 Text("SSH profile").tag(true)
             }.pickerStyle(.segmented)
             TextField("Herdr session", text: $session)
+            if HerdrCoreSupport.isEnabled, !isSSH {
+                Toggle("herdr-core session (preview)", isOn: $usesCore)
+                Text("Connects to the herdr-core (hc) installed on this Mac. Terminals show as text until live terminals arrive.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if isSSH {
                 TextField("SSH alias, user@host, or ssh://user@host:port", text: $target)
                 TextField("Label (optional)", text: $label)
@@ -288,6 +312,12 @@ struct HerdrConnectionsView: View {
 
     private func add() {
         let name = session.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !isSSH, usesCore, HerdrCoreSupport.isEnabled {
+            adding = false
+            destinations.openCore(session: name)
+            selection = HerdrWindowConnection(session: name, backend: .core).id
+            return
+        }
         if !isSSH {
             adding = false
             // The session might have changed since the catalog was read. Do not turn an

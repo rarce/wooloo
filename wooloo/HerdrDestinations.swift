@@ -168,7 +168,7 @@ final class HerdrDestinations: ObservableObject {
             } else {
                 active.setDestinationEnabled(false, reason: "No connections are open in this window.")
             }
-            lastLocal = stores.first { $0.machine == nil }
+            lastLocal = stores.first { $0.machine == nil && $0.backendKind == .tui }
         }
         persistWindow()
         return key
@@ -178,7 +178,9 @@ final class HerdrDestinations: ObservableObject {
         let store = HerdrStore()
         store.requiresSurfaceForInput = true
         store.setPresentationActive(false)
-        if let machine = descriptor.machine {
+        if descriptor.backendKind == .core {
+            store.connect(toCore: descriptor.session, machine: descriptor.machine, startImmediately: false)
+        } else if let machine = descriptor.machine {
             store.connect(to: machine, startImmediately: false)
             store.setDestinationEnabled(false, reason: "Checking saved SSH profile…")
         } else {
@@ -217,7 +219,7 @@ final class HerdrDestinations: ObservableObject {
          pool: HerdrMetadataPool? = nil) {
         let store = store ?? HerdrStore()
         active = store
-        lastLocal = store.machine == nil ? store : nil
+        lastLocal = store.machine == nil && store.backendKind == .tui ? store : nil
         stores = [store]
         self.notifier = notifier ?? .shared
         self.pool = pool
@@ -274,7 +276,7 @@ final class HerdrDestinations: ObservableObject {
     }
 
     private func attachMetadata(_ store: HerdrStore) {
-        guard store.destinationEnabled, let pool, store.metadataSource == nil else { return }
+        guard store.destinationEnabled, store.backendKind == .tui, let pool, store.metadataSource == nil else { return }
         store.metadataSource = pool.acquire(machine: store.machine, session: store.sessionName)
     }
 
@@ -346,7 +348,7 @@ final class HerdrDestinations: ObservableObject {
         subscriptions.removeValue(forKey: ObjectIdentifier(store))
         stores.removeAll { $0 === store }
         onConnectionsChanged()
-        if lastLocal === store { lastLocal = stores.first { $0.machine == nil } }
+        if lastLocal === store { lastLocal = stores.first { $0.machine == nil && $0.backendKind == .tui } }
         persistWindow()
     }
 
@@ -355,6 +357,13 @@ final class HerdrDestinations: ObservableObject {
               current == profile, current.enabled else { return }
         if let store = stores.first(where: { $0.machine?.id == profile.id }) { select(store); return }
         open(HerdrWindowConnection(session: profile.session, machine: profile))
+    }
+
+    /// Opens a herdr-core session in this window, or shows it when it is open already.
+    func openCore(session: String, machine: HerdrMachineProfile? = nil) {
+        let descriptor = HerdrWindowConnection(session: session, machine: machine, backend: .core)
+        if let store = stores.first(where: { $0.contextID == descriptor.id }) { select(store); return }
+        open(descriptor)
     }
 
     private func open(_ descriptor: HerdrWindowConnection) {
@@ -390,7 +399,7 @@ final class HerdrDestinations: ObservableObject {
             active.setPresentationActive(false)
             active = store
         }
-        if store.machine == nil {
+        if store.machine == nil, store.backendKind == .tui {
             lastLocal = store
             UserDefaults.standard.set(store.sessionName, forKey: "HerdrLastSession")
         }
@@ -418,7 +427,7 @@ final class HerdrDestinations: ObservableObject {
             return
         }
         sessionSelectionError = nil
-        if let store = stores.first(where: { $0.machine == nil && $0.sessionName == name }) {
+        if let store = stores.first(where: { $0.machine == nil && $0.backendKind == .tui && $0.sessionName == name }) {
             select(store)
             return
         }

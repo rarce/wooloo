@@ -404,7 +404,7 @@ final class HerdrStore: ObservableObject {
     var session: WoolooSession? {
         guard let snapshotValue else { return nil }
         if let sessionCache { return sessionCache }
-        let mapped = snapshotValue.session(backend: .tui(contextID: contextID))
+        let mapped = snapshotValue.session(backend: backendID, capabilities: backendCapabilities)
         sessionCache = mapped
         return mapped
     }
@@ -414,11 +414,21 @@ final class HerdrStore: ObservableObject {
         if let session { return session }
         guard let cachedSnapshot else { return nil }
         if let cachedSessionCache { return cachedSessionCache }
-        let mapped = cachedSnapshot.session(backend: .tui(contextID: contextID))
+        let mapped = cachedSnapshot.session(backend: backendID, capabilities: backendCapabilities)
         cachedSessionCache = mapped
         return mapped
     }
     private var cachedSessionCache: WoolooSession?
+    /// Which server this store talks to: the Herdr TUI, or herdr-core behind the
+    /// `HerdrCoreSupport` setting (docs/proposals/herdr-core-backend.md, Phase 3).
+    @Published private(set) var backendKind: BackendKind = .tui {
+        didSet { sessionCache = nil; cachedSessionCache = nil }
+    }
+    private var coreBackend: CoreSessionBackend?
+    private var backendID: BackendID { BackendID(kind: backendKind, context: baseContextID) }
+    private var backendCapabilities: BackendCapabilities {
+        backendKind == .core ? CoreSessionBackend.capabilities : .herdrTUI
+    }
     private(set) var cachedSnapshot: HerdrSnapshot? { didSet { cachedSessionCache = nil } }
     private var snapshotValue: HerdrSnapshot?
     private let publishedSnapshots = CurrentValueSubject<HerdrSnapshot?, Never>(nil)
@@ -574,7 +584,7 @@ final class HerdrStore: ObservableObject {
     var requiresSurfaceForInput = false
     @Published private(set) var presentationEstablished = false
     var inputReady: Bool {
-        presentationActive && isConnected && (!requiresSurfaceForInput ||
+        presentationActive && isConnected && (!requiresSurfaceForInput || presentationProvider == nil ||
             (presentationEstablished && surfaceStream?.isReady == true))
     }
 
@@ -697,10 +707,13 @@ final class HerdrStore: ObservableObject {
 
     @Published private(set) var machine: HerdrMachineProfile? { didSet { sessionCache = nil; cachedSessionCache = nil } }
     /// Keep the existing local document keys; remote IDs are scoped to their machine.
-    var legacyContextID: String { machine.map { "ssh:\($0.id)|\(sessionName)" } ?? sessionName }
-    var contextID: String {
-        machine?.contextID(session: sessionName) ?? sessionName
+    var legacyContextID: String {
+        let base = machine.map { "ssh:\($0.id)|\(sessionName)" } ?? sessionName
+        return backendKind == .tui ? base : "\(backendKind.rawValue):\(base)"
     }
+    /// The TUI's keys are unchanged; herdr-core connections add their own `core:` namespace.
+    var contextID: String { backendID.persistentKey }
+    private var baseContextID: String { machine?.contextID(session: sessionName) ?? sessionName }
     private var remoteBridge: HerdrRemoteBridge?
     /// App-wide passive API connection; terminal presentation remains owned by this window.
     var metadataSource: HerdrStore?
@@ -723,18 +736,37 @@ final class HerdrStore: ObservableObject {
         switchConnection(to: name, machine: nil, remember: remember, startImmediately: startImmediately)
     }
 
+    /// Connects to a herdr-core session on this Mac, or on `machine` over SSH.
+    func connect(toCore session: String, machine: HerdrMachineProfile? = nil, startImmediately: Bool = true) {
+        switchConnection(to: session, machine: machine, remember: false, startImmediately: startImmediately,
+                         backend: .core)
+    }
+
     private func switchConnection(to name: String, machine: HerdrMachineProfile?, remember: Bool = true,
-                                  startImmediately: Bool = true) {
+                                  startImmediately: Bool = true, backend kind: BackendKind = .tui) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard HerdrSessionName.isValid(trimmed) else {
             sessionSelectionError = "Use 1–64 letters, numbers, dots, hyphens, or underscores"
             return
         }
         sessionSelectionError = nil
-        if self.machine == machine, sessionName == trimmed, eventTask != nil || metadataSubscription != nil { return }
+        if self.machine == machine, sessionName == trimmed, backendKind == kind,
+           eventTask != nil || metadataSubscription != nil { return }
         stop()
         self.machine = machine
         sessionName = trimmed
+        backendKind = kind
+        coreBackend?.disconnect()
+        coreBackend = nil
+        if kind == .core {
+            do {
+                coreBackend = try Self.makeCoreBackend(trimmed, machine)
+                coreError = nil
+            }
+            catch { coreError = error.localizedDescription }
+        } else {
+            coreError = nil
+        }
         if machine == nil && remember { UserDefaults.standard.set(trimmed, forKey: Self.lastSessionKey) }
         snapshot = nil
         cachedSnapshot = nil
@@ -755,10 +787,21 @@ final class HerdrStore: ObservableObject {
         if startImmediately { start() }
     }
 
+    /// Why a herdr-core connection could not be set up, such as `hc` missing on this Mac.
+    private var coreError: String?
+    /// Creates the backend of a herdr-core connection; tests replace it with an in-memory core.
+    static var makeCoreBackend: (String, HerdrMachineProfile?) throws -> CoreSessionBackend = { session, machine in
+        CoreSessionBackend(target: try HerdrCoreSupport.target(session: session, machine: machine))
+    }
+
     func start() {
         guard destinationEnabled else { return }
         guard eventTask == nil, metadataSubscription == nil else { return }
-        if let source = metadataSource {
+        if backendKind == .core, coreBackend == nil {
+            errorMessage = coreError ?? "herdr-core is not available for this connection."
+            return
+        }
+        if backendKind == .tui, let source = metadataSource {
             source.start()
             let currentGeneration = generation
             metadataSubscription = source.snapshotPublisher.combineLatest(source.$errorMessage)
@@ -778,7 +821,7 @@ final class HerdrStore: ObservableObject {
             if presentationActive { startPresentation() }
             return
         }
-        if let machine, remoteBridge == nil {
+        if backendKind == .tui, let machine, remoteBridge == nil {
             do { remoteBridge = try HerdrRemoteBridge(machine: machine) }
             catch { errorMessage = error.localizedDescription; return }
         }
@@ -833,7 +876,7 @@ final class HerdrStore: ObservableObject {
     }
 
     private func startPresentation() {
-        guard presentationActive, surfaceTask == nil else { return }
+        guard presentationActive, surfaceTask == nil, paneTask == nil else { return }
         #if WOOLOO_PROBES
         TerminalTypingProbe.store = self
         #endif
@@ -864,7 +907,7 @@ final class HerdrStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
-        let provider = presentationProvider
+        guard let provider = presentationProvider else { return }
         let endpointTimeouts = self.endpointTimeouts
         surfaceTask = Task.detached(priority: .utility) { [weak self] in
             guard let store = self else { return }
@@ -1467,9 +1510,10 @@ final class HerdrStore: ObservableObject {
     }
 
     /// The backend that carries out this connection's session commands.
-    var backend: any SessionBackend { tuiBackend }
-    /// Makes the live terminal presentation for this connection.
-    var presentationProvider: any TerminalPresentationProvider { tuiBackend }
+    var backend: any SessionBackend { coreBackend ?? tuiBackend }
+    /// Makes the live terminal presentation for this connection; nil until herdr-core
+    /// connections get their terminal path (Phase 4), when panes show their text instead.
+    var presentationProvider: (any TerminalPresentationProvider)? { backendKind == .tui ? tuiBackend : nil }
     private var tuiBackend: TUISessionBackend {
         TUISessionBackend(socketPath: socketPath, surfacePath: clientSocketPath)
     }

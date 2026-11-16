@@ -36,12 +36,13 @@ struct HerdrWindowConnection: Codable, Equatable, Identifiable {
         let context = machine?.contextID(session: session) ?? session
         return backendKind == .tui ? context : "\(backendKind.rawValue):\(context)"
     }
-    var label: String { "\(machine?.label ?? "Local") · \(session)" }
+    var label: String { "\(machine?.label ?? "Local") · \(session)" + (backendKind == .core ? " · herdr-core" : "") }
 
     @MainActor
     init(_ store: HerdrStore) {
         session = store.sessionName
         machine = store.machine
+        backend = store.backendKind == .tui ? nil : store.backendKind
         spaces = Array(Set(store.displaySession?.spaces.map {
             "\(store.contextID)|\($0.id)"
         } ?? [] )).sorted()

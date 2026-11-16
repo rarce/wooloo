@@ -329,6 +329,42 @@ Core has "no separate API password or per-client permission check" (Core `docs/s
 - **Writes** are compare-and-set only, and only to wooloo's own document and the documented `herdr.seen`/`herdr.pinned` labels.
 - **Installs** are user-initiated and hash-pinned (§8). Detection never runs a command that starts a core (§7).
 
+## Phase 3 progress (2026-11-16)
+
+Done in one change:
+
+- **Protocol client** (`CoreProtocol.swift`, `CoreConnection.swift`, Foundation-only, in the concurrency audit):
+  - frames and a partial-frame decoder with the 16 MiB limit;
+  - the plain `hello`, then framed mode, gated on generation 1, version 0.1.21 or later, and the required methods;
+  - concurrent calls on channel 0, with JSON-RPC errors carrying `data.kind`;
+  - stream channels credited byte for byte, and CLOSE handling;
+  - a login greeting skipped until `CoreTarget.banner`.
+- **`CoreSessionBackend`** (`SessionBackend` over Core):
+  - Until Phase 5, every live terminal of the core is a tab with one pane in a single Space named after the core. Machine-prefixed and finished terminals are left out.
+  - New Spaces and tabs are `terminal.run` with a `wooloo.space` label. Rename is the `wooloo.name` label, and close is `terminal.kill`.
+  - Panes show `terminal.read` text. Keys go through `terminal.keys`; typed text goes through a short attach at the terminal's own size, so the size does not change.
+  - Splits, zoom, moves and reload report `CoreProtocolError.unsupported`. `CoreSessionBackend.capabilities` hides cross-Space moves.
+- **`CoreSessionWatcher`:** an unfiltered `events.subscribe` on its own connection. It takes a terminal list after each terminal event (not heartbeats or `doc` events), and fails after 45 s of silence.
+- **`HerdrStore`:**
+  - `connect(toCore:machine:)` and `backendKind`. Core contexts and window connections use the `core:` namespace; TUI keys are unchanged.
+  - No metadata pool, remote bridge or live surface for Core. Input works without a surface, through the fallback.
+- **SSH:** `HerdrRemoteBridge.coreArguments` has the bridge's options plus `ControlMaster=no` with the shared ControlPath, so the stream reuses a master but never becomes one. The script finds `hc`, exits 127 when it is missing, prints the banner and execs `hc connect --session`.
+- **This Mac:** `HerdrCoreSupport` looks for `hc` by file only, without running anything (Phase 0 found that `hc server status` starts a core). Nothing is installed (D3).
+- **Opt-in:** the Connections window offers herdr-core sessions only with `defaults write dev.wooloo.app WoolooHerdrCoreConnections -bool true`:
+  - a toggle in Add Connection for a session on this Mac;
+  - "Open herdr-core Session on This Host" on saved SSH profiles.
+- **Tests:**
+  - `FakeCore` is an in-memory core with several connections and shared state.
+  - `CoreConnectionTests` covers frames, the handshake, the version gate, calls and errors, credit, the backend and the watcher.
+  - The live test runs with `WOOLOO_CORE_LIVE_HC`; it passed against hc 0.1.21 on Linux in an isolated session.
+  - `HerdrStoreCoreTests` drives the store against `FakeCore`.
+
+Still to do from the Phase 3 scope:
+- wooloo-owned host profiles (SSH Core still uses Herdr's saved profiles);
+- wooloo-owned settings (shortcuts, theme and sounds still come from Herdr's `config.toml` when present);
+- a full no-`herdr` path: the setup wizard and runtime still assume the TUI;
+- a live SSH run.
+
 ## Phases
 
 Each phase ends with:

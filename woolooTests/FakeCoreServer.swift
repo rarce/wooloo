@@ -1,0 +1,176 @@
+import Foundation
+@testable import wooloo
+
+/// An in-memory herdr-core. Each `connect()` is one client connection: it answers `hello` in
+/// plain mode, then framed JSON-RPC calls, and can push events on its subscription channel.
+/// Connections share the core's terminals, screens and the record of calls.
+final class FakeCore: @unchecked Sendable {
+    struct Call { let method: String; let params: [String: Any] }
+
+    let lock = NSLock()
+    var version = "0.1.21"
+    var methods: [String] = Array(CoreProtocol.requiredMethods) + ["hello", "rpc.discover"]
+    var terminals: [CoreTerminal] = []
+    var screens: [String: String] = [:]
+    var greeting: [String] = []
+    /// Answers to calls by method; a nil answer is a JSON-RPC error.
+    var overrides: [String: ([String: Any]) -> Any?] = [:]
+    var calls: [Call] = []
+    private(set) var connections: [FakeCoreServer] = []
+
+    func connect() -> FakeCoreServer {
+        let server = FakeCoreServer(core: self)
+        lock.withLock { connections.append(server) }
+        return server
+    }
+
+    func callsTo(_ method: String) -> [Call] { lock.withLock { calls.filter { $0.method == method } } }
+    func update(_ change: (FakeCore) -> Void) { lock.withLock { change(self) } }
+}
+
+final class FakeCoreServer: CoreTransport, @unchecked Sendable {
+    let core: FakeCore
+    init(core: FakeCore) {
+        self.core = core
+        // A remote script prints its greeting and banner before the protocol starts.
+        for text in core.greeting { outgoing.append(Data((text + "\n").utf8)) }
+    }
+
+    private var lock: NSLock { core.lock }
+    private let available = DispatchSemaphore(value: 0)
+    private var outgoing = Data()
+    private var incoming = Data()
+    private var framed = false
+    private var closed = false
+    private var decoder = CoreFrameDecoder()
+    private(set) var streamFrames: [CoreFrame] = []
+    private(set) var credits: [UInt32: Int] = [:]
+    private var nextChannel: UInt32 = 1
+    private(set) var eventsChannel: UInt32?
+    private var seq: UInt64 = 0
+
+    // MARK: CoreTransport
+
+    func read() throws -> Data {
+        while true {
+            let data = lock.withLock { () -> Data? in
+                if !outgoing.isEmpty { defer { outgoing = Data() }; return outgoing }
+                return closed ? Data() : nil
+            }
+            if let data { return data }
+            available.wait()
+        }
+    }
+
+    func write(_ data: Data) throws {
+        try lock.withLock {
+            guard !closed else { throw CoreProtocolError.closed }
+            incoming.append(data)
+            try process()
+        }
+    }
+
+    func close() {
+        lock.withLock { closed = true }
+        available.signal()
+    }
+
+    // MARK: Server side
+
+    /// Pushes one event notification on the subscription channel.
+    func emit(type: String?, terminal: String? = nil) {
+        lock.withLock {
+            guard let channel = eventsChannel else { return }
+            seq += 1
+            var params: [String: Any] = ["seq": seq]
+            if let type { params["type"] = type }
+            if let terminal { params["terminal"] = terminal }
+            let line = try! JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "method": "event", "params": params])
+            enqueue(CoreFrame(channel: channel, kind: .data, payload: line + Data([0x0a])).encoded())
+        }
+    }
+
+    /// Ends a stream from the core's side.
+    func closeChannel(_ channel: UInt32) {
+        lock.withLock { enqueue(CoreFrame(channel: channel, kind: .close, payload: Data()).encoded()) }
+    }
+
+    private func enqueue(_ data: Data) {
+        outgoing.append(data)
+        available.signal()
+    }
+
+    private func process() throws {
+        if !framed {
+            guard let newline = incoming.firstIndex(of: 0x0a) else { return }
+            let line = Data(incoming[incoming.startIndex..<newline])
+            incoming = Data(incoming[(newline + 1)...])
+            let request = try JSONSerialization.jsonObject(with: line) as? [String: Any] ?? [:]
+            core.calls.append(FakeCore.Call(method: request["method"] as? String ?? "", params: request["params"] as? [String: Any] ?? [:]))
+            let hello: [String: Any] = [
+                "core": ["id": "0123456789abcdef", "name": "box"], "features": ["framed", "automatic_input"],
+                "framed": true, "generation": 1, "methods": core.methods, "version": core.version,
+            ]
+            enqueue(try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": request["id"] ?? 0,
+                                                                "result": hello]) + Data([0x0a]))
+            framed = true
+            decoder.append(incoming)
+            incoming = Data()
+        } else {
+            decoder.append(incoming)
+            incoming = Data()
+        }
+        while let frame = try decoder.next() {
+            if frame.channel == 0, frame.kind == .data { try answer(frame.payload) }
+            else if frame.kind == .credit {
+                credits[frame.channel, default: 0] += Int(frame.payload.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+            } else { streamFrames.append(frame) }
+        }
+    }
+
+    private func answer(_ payload: Data) throws {
+        let request = try JSONSerialization.jsonObject(with: payload) as? [String: Any] ?? [:]
+        let method = request["method"] as? String ?? ""
+        let params = request["params"] as? [String: Any] ?? [:]
+        core.calls.append(FakeCore.Call(method: method, params: params))
+        let result: Any?
+        if let override = core.overrides[method] {
+            result = override(params)
+        } else {
+            switch method {
+            case "terminal.list": result = ["terminals": try encoded(core.terminals), "hidden_finished": 0, "machines": []]
+            case "events.subscribe":
+                eventsChannel = nextChannel
+                nextChannel += 1
+                result = ["channel": eventsChannel!, "seq": seq, "terminals": try encoded(core.terminals)]
+            case "terminal.read":
+                result = ["text": core.screens[params["terminal"] as? String ?? ""] ?? "", "complete": true, "how": "screen"]
+            case "terminal.run":
+                let terminal = CoreTerminal(address: "t\(core.terminals.count + 1)", argv: ["/bin/zsh"],
+                                            cwd: params["cwd"] as? String ?? "/",
+                                            labels: params["labels"] as? [String: String] ?? [:])
+                core.terminals.append(terminal)
+                result = try encoded(terminal)
+            case "terminal.kill":
+                core.terminals.removeAll { $0.address == params["terminal"] as? String }
+                result = ["address": params["terminal"] ?? ""]
+            case "terminal.attach":
+                let channel = nextChannel
+                nextChannel += 1
+                let terminal = core.terminals.first { $0.address == params["terminal"] as? String }
+                result = ["channel": channel, "terminal": try terminal.map(encoded) ?? [:],
+                          "resize_notifications": false, "automatic_input": true]
+            case "terminal.keys": result = ["turn": 0, "status": NSNull()]
+            default: result = [:]
+            }
+        }
+        let reply: [String: Any] = result.map { ["jsonrpc": "2.0", "id": request["id"] ?? 0, "result": $0] }
+            ?? ["jsonrpc": "2.0", "id": request["id"] ?? 0,
+                "error": ["code": -32000, "message": "refused \(method)", "data": ["kind": "refused"]]]
+        enqueue(CoreFrame(channel: 0, kind: .data, payload: try JSONSerialization.data(withJSONObject: reply)).encoded())
+    }
+
+    private func encoded<Value: Encodable>(_ value: Value) throws -> Any {
+        try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+    }
+}
