@@ -1012,12 +1012,13 @@ final class HerdrStore: ObservableObject {
         }
     }
 
-    func visibleAgents(inSelectedSpaceOnly spaceOnly: Bool, followHerdrView: Bool = true) -> [HerdrAgent] {
+    func visibleAgents(inSelectedSpaceOnly spaceOnly: Bool, followHerdrView: Bool = true) -> [WoolooAgent] {
         if let state = agentViewState, state.label != nil || state.view != nil {
             return state.agents(workspaceID: selectedWorkspaceID, tabID: selectedTabID,
                                 spaceOnly: spaceOnly, followView: followHerdrView, prioritySort: agentPrioritySort)
+                .map(\.woolooAgent)
         }
-        return (snapshot?.agents ?? []).filter { !spaceOnly || $0.workspaceID == selectedWorkspaceID }
+        return (session?.agents ?? []).filter { !spaceOnly || $0.spaceID == selectedWorkspaceID }
     }
 
     func reloadAgentViewSettings() {

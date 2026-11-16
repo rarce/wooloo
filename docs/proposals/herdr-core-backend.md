@@ -96,7 +96,11 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
   - `HerdrStore.selectedWorkspace`, `selectedTabs` and `selectedPanes` now return `WoolooSpace`, `WoolooTab` and `WoolooPane`.
   - Through them, `ContentView` (the window title and Space menu, tab row, all-tabs menu, pane grid and pane drops) and `ContentCommands` (tab cycling, rename, close and pane directory commands) read the neutral model.
   - A cached `session` read now does no work: a new snapshot, session name or machine clears the cache.
-  - Still on the snapshot in `ContentView`: the sidebar Space rows and the agents list, which come next.
+- **Fourth step: the agents list and Space folders.**
+  - `HerdrStore.visibleAgents` returns `WoolooAgent`, including agents from Herdr's agent views (`HerdrAgent.woolooAgent`).
+  - The agents list, the agent focus action and `AgentStatusDot` read `AgentState`. Theme colours and marks for states are tested against the status strings.
+  - A Space's folder comes from the session, through `WorkspaceFiles.location(in:spaceID:…)`. The snapshot variant delegates to it, so the existing explorer tests cover it.
+  - `ContentView` no longer reads the snapshot. The sidebar's Space rows live in `HerdrDestinations`, which still reads `snapshot ?? cachedSnapshot` and comes next.
 
 ### 2. Backend protocol behind `HerdrStore`
 

@@ -52,10 +52,9 @@ struct WorkspaceContext: Equatable {
         destinationID = store.contextID
         let selectedID = store.selectedWorkspaceID
         workspaceID = selectedID
-        location = store.snapshot.flatMap { snapshot in
+        location = store.session.flatMap { model in
             selectedID.flatMap {
-                WorkspaceFiles.location(snapshot: snapshot, workspaceID: $0,
-                                        session: store.sessionName, machine: store.machine)
+                WorkspaceFiles.location(in: model, spaceID: $0, session: store.sessionName, machine: store.machine)
             }
         }
     }
@@ -428,19 +427,25 @@ enum WorkspaceFiles {
 
     static func location(snapshot: HerdrSnapshot, workspaceID: String,
                          session: String, machine: HerdrMachineProfile?) -> WorkspaceFileLocation? {
-        guard let workspace = snapshot.workspaces.first(where: { $0.workspaceID == workspaceID }) else { return nil }
+        location(in: snapshot.session(backend: .tui(contextID: session)), spaceID: workspaceID,
+                 session: session, machine: machine)
+    }
+
+    static func location(in model: WoolooSession, spaceID: String,
+                         session: String, machine: HerdrMachineProfile?) -> WorkspaceFileLocation? {
+        guard let space = model.spaces.first(where: { $0.id == spaceID }) else { return nil }
         // Herdr names a Space after its first tab's root pane, so reordering tabs moves the files
         // as it renames the Space; other panes, other tabs and focus leave them alone. The snapshot
         // omits the root pane, so this takes the first pane of the tab's layout, where Herdr
         // promotes a new root. That differs only after a pane is swapped or moved in before it.
-        let firstTab = snapshot.tabs.first(where: { $0.workspaceID == workspaceID })?.tabID
-        let rootPane = snapshot.layouts.first(where: { $0.tabID == firstTab })?.panes.first?.paneID
-        let root = workspace.worktree?.checkoutPath
-            ?? snapshot.panes.first(where: { $0.paneID == rootPane })?.cwd
-            ?? snapshot.panes.first(where: { $0.workspaceID == workspaceID })?.cwd
+        let firstTab = model.tabs.first(where: { $0.spaceID == spaceID })?.id
+        let rootPane = model.layouts.first(where: { $0.tabID == firstTab })?.panes.first?.paneID
+        let root = space.worktreePath
+            ?? model.panes.first(where: { $0.id == rootPane })?.cwd
+            ?? model.panes.first(where: { $0.spaceID == spaceID })?.cwd
         guard let root, root.hasPrefix("/") else { return nil }
         return WorkspaceFileLocation(machine: machine, session: session,
-                                     workspaceID: workspaceID, workspaceLabel: workspace.label, root: root)
+                                     workspaceID: spaceID, workspaceLabel: space.label, root: root)
     }
 
     /// What a path printed in a terminal names on the machine running it: its real path, whether

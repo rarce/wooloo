@@ -190,6 +190,16 @@ extension WoolooTheme {
         }
     }
 
+    func agentStateColor(_ state: AgentState?) -> Color {
+        switch state {
+        case .working?: return Self.color(herdr.yellow)
+        case .blocked?: return Self.color(herdr.red)
+        case .done?: return Self.color(herdr.teal)
+        case .idle?: return Self.color(herdr.green)
+        default: return muted
+        }
+    }
+
     /// How Herdr's default `dots` indicators draw a state (`status_icon`, same file): a dot,
     /// a ring once a finished agent has been seen (`idle`), or a faint dot when unknown.
     enum AgentStatusMark: Equatable { case dot, ring, faint }
@@ -198,6 +208,14 @@ extension WoolooTheme {
         switch status {
         case "working", "blocked", "done": return .dot
         case "idle": return .ring
+        default: return .faint
+        }
+    }
+
+    static func agentStateMark(_ state: AgentState?) -> AgentStatusMark {
+        switch state {
+        case .working?, .blocked?, .done?: return .dot
+        case .idle?: return .ring
         default: return .faint
         }
     }

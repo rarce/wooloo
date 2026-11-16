@@ -538,17 +538,17 @@ private struct DestinationContentView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 7) {
-                                        AgentStatusDot(status: agent.agentStatus)
+                                        AgentStatusDot(state: agent.state)
                                         Text(agentLocation(agent))
                                             .lineLimit(1)
                                         Spacer(minLength: 0)
-                                        Text(agent.displayStatus)
+                                        Text(agent.statusLabel)
                                             .lineLimit(1)
                                     }
                                     .font(.system(size: typography.secondary))
                                     .foregroundStyle(.secondary)
                                     HStack(spacing: 5) {
-                                        Text(agent.displayName)
+                                        Text(agent.name)
                                             .font(.system(size: typography.body, weight: .medium))
                                             .lineLimit(1)
                                         if let alert = notifier.attention(for: agent.paneID, contextID: herdr.contextID) {
@@ -583,11 +583,11 @@ private struct DestinationContentView: View {
                                 }
                                 Divider()
                                 Button("Rename Agent…", systemImage: "pencil") {
-                                    window.renameText = agent.displayName
+                                    window.renameText = agent.name
                                     window.renameTarget = .agent(agent.paneID)
                                 }
                                 Button("Copy Agent Name", systemImage: "doc.on.doc") {
-                                    AppActions.copy(agent.displayName)
+                                    AppActions.copy(agent.name)
                                 }
                                 Divider()
                                 Button("Close Pane…", systemImage: "xmark.square", role: .destructive) {
@@ -1418,8 +1418,8 @@ private struct DestinationContentView: View {
 
     @ViewBuilder
     private func spaceActions(_ workspace: WoolooSpace) -> some View {
-        let root = herdr.snapshot.flatMap {
-            WorkspaceFiles.location(snapshot: $0, workspaceID: workspace.id,
+        let root = herdr.session.flatMap {
+            WorkspaceFiles.location(in: $0, spaceID: workspace.id,
                                     session: herdr.sessionName, machine: herdr.machine)?.root
         }
         Button("New Tab in Space", systemImage: "plus") {
@@ -1507,13 +1507,13 @@ private struct DestinationContentView: View {
         herdr.openWorktree(path, repository: repository)
     }
 
-    private func focusAgent(_ agent: HerdrAgent) {
+    private func focusAgent(_ agent: WoolooAgent) {
         focusPane(agent.paneID)
     }
 
     private func focusPane(_ paneID: String) {
-        guard let pane = herdr.snapshot?.panes.first(where: { $0.paneID == paneID }) else { return }
-        herdr.select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
+        guard let pane = herdr.session?.panes.first(where: { $0.id == paneID }) else { return }
+        herdr.select(workspaceID: pane.spaceID, tabID: pane.tabID, paneID: pane.id)
         activeDocumentID = nil
         notifier.acknowledge(paneID: paneID, contextID: herdr.contextID)
     }
@@ -1663,15 +1663,15 @@ private struct DestinationContentView: View {
         .padding(.vertical, 3)
     }
 
-    private func agentLocation(_ agent: HerdrAgent) -> String {
-        let workspace = herdr.snapshot?.workspaces.first { $0.workspaceID == agent.workspaceID }?.label
-            ?? agent.workspaceID ?? "Space"
-        let tab = herdr.snapshot?.tabs.first { $0.tabID == agent.tabID }?.label
+    private func agentLocation(_ agent: WoolooAgent) -> String {
+        let workspace = herdr.session?.spaces.first { $0.id == agent.spaceID }?.label
+            ?? agent.spaceID ?? "Space"
+        let tab = herdr.session?.tabs.first { $0.id == agent.tabID }?.label
         return tab.map { "\(workspace) · \($0)" } ?? workspace
     }
 
-    private func agentTooltip(_ agent: HerdrAgent) -> String {
-        var lines = [agent.displayName, agentLocation(agent), agent.displayStatus]
+    private func agentTooltip(_ agent: WoolooAgent) -> String {
+        var lines = [agent.name, agentLocation(agent), agent.statusLabel]
         if let detail = agent.detail { lines.append(detail) }
         return lines.joined(separator: "\n")
     }
@@ -1858,13 +1858,17 @@ final class ResizeHandleView: NSView {
 /// finished and unseen, a ring once seen. Herdr marks panes seen when their tab is focused,
 /// which selecting a Space, tab or pane here does.
 struct AgentStatusDot: View {
-    let status: String?
+    let state: AgentState?
     @Environment(\.woolooTheme) private var theme
 
+    init(state: AgentState?) { self.state = state }
+    /// A Herdr status string, such as a Space's aggregate `agent_status`.
+    init(status: String?) { state = status.map { AgentState($0) } }
+
     var body: some View {
-        let color = theme.agentStatus(status)
+        let color = theme.agentStateColor(state)
         Group {
-            switch WoolooTheme.agentStatusMark(status) {
+            switch WoolooTheme.agentStateMark(state) {
             case .dot: Circle().fill(color)
             case .ring: Circle().strokeBorder(color, lineWidth: 1.25)
             case .faint: Circle().fill(color).padding(1.5)
