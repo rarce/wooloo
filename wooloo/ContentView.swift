@@ -90,9 +90,9 @@ private struct DestinationContentView: View {
     private var sidebarBackground: Color { theme.sidebarBackground }
     private var barBackground: Color { theme.barBackground }
 
-    private var selectedWorkspace: HerdrWorkspace? { herdr.selectedWorkspace }
-    private var selectedTabs: [HerdrTab] { herdr.selectedTabs }
-    private var selectedPanes: [HerdrPane] { herdr.selectedPanes }
+    private var selectedWorkspace: WoolooSpace? { herdr.selectedWorkspace }
+    private var selectedTabs: [WoolooTab] { herdr.selectedTabs }
+    private var selectedPanes: [WoolooPane] { herdr.selectedPanes }
 
 
     private func presentPopup(_ terminalID: String?) {
@@ -780,7 +780,7 @@ private struct DestinationContentView: View {
             GeometryReader { geometry in
                 TerminalPaneView(
                     text: "",
-                    paneID: herdr.selectedPaneID ?? selectedPanes[0].paneID,
+                    paneID: herdr.selectedPaneID ?? selectedPanes[0].id,
                     surfaceFeed: herdr.surfaceFeed,
                     onPresentSurface: { herdr.acknowledgeAgentSurface($0) },
                     sendPopupInput: { event, id, boot in herdr.sendPopupInput(event, terminalID: id, bootID: boot) },
@@ -801,11 +801,11 @@ private struct DestinationContentView: View {
                 .onAppear { resizeSurface(to: geometry.size) }
                 .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }
             }
-        } else if let layout = herdr.snapshot?.layouts.first(where: { $0.tabID == herdr.selectedTabID }),
+        } else if let layout = herdr.selectedTabID.flatMap({ herdr.session?.layout(of: $0) }),
            !layout.panes.isEmpty {
             GeometryReader { geometry in
                 ForEach(layout.panes, id: \.paneID) { item in
-                    if let pane = selectedPanes.first(where: { $0.paneID == item.paneID }) {
+                    if let pane = selectedPanes.first(where: { $0.id == item.paneID }) {
                         let width = geometry.size.width * CGFloat(item.rect.width) / CGFloat(max(layout.area.width, 1))
                         let height = geometry.size.height * CGFloat(item.rect.height) / CGFloat(max(layout.area.height, 1))
                         let x = geometry.size.width * CGFloat(item.rect.x - layout.area.x) / CGFloat(max(layout.area.width, 1)) + width / 2
@@ -981,7 +981,7 @@ private struct DestinationContentView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 0) {
                             ForEach(Array(selectedTabs.enumerated()), id: \.element.id) { index, tab in
-                                terminalTab(tab, index: index).id(tab.tabID)
+                                terminalTab(tab, index: index).id(tab.id)
                             }
                             if !documents.isEmpty || window.showsSearchTab {
                                 Divider().frame(height: textScale.metric(17)).padding(.horizontal, 3)
@@ -1020,7 +1020,7 @@ private struct DestinationContentView: View {
                 // window controls, creation buttons or dedicated window drag region.
                 .overlay {
                     TerminalPaneTabDropView(accent: NSColor(theme.accent), canDetach: { pane in
-                        herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.paneID == pane }
+                        herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.id == pane }
                     }, detach: { pane in
                         guard herdr.detachPane(pane) else { return false }
                         activeDocumentID = nil
@@ -1064,10 +1064,10 @@ private struct DestinationContentView: View {
             if !selectedTabs.isEmpty {
                 Section("Terminals") {
                     ForEach(selectedTabs) { tab in
-                        Button { herdr.select(tabID: tab.tabID); activeDocumentID = nil; commands.focusPanel(.main) } label: {
-                            Label(tabMenuTitle(tab.label, id: tab.tabID), systemImage: tabIsFocused(tab.tabID) ? "checkmark" : "terminal")
+                        Button { herdr.select(tabID: tab.id); activeDocumentID = nil; commands.focusPanel(.main) } label: {
+                            Label(tabMenuTitle(tab.label, id: tab.id), systemImage: tabIsFocused(tab.id) ? "checkmark" : "terminal")
                         }
-                        .accessibilityLabel(terminalTabAccessibilityLabel(tab) + ", " + tabAccessibilityState(tab.tabID))
+                        .accessibilityLabel(terminalTabAccessibilityLabel(tab) + ", " + tabAccessibilityState(tab.id))
                     }
                 }
             }
@@ -1115,18 +1115,18 @@ private struct DestinationContentView: View {
         TabDropEnd(lastIndex: selectedTabs.count - 1, onMove: { herdr.moveTab($0, to: $1) })
     }
 
-    private func terminalTabAccessibilityLabel(_ tab: HerdrTab) -> String {
-        let marks = notifier.attentionCount(inTab: tab.tabID, session: herdr.session, contextID: herdr.contextID)
+    private func terminalTabAccessibilityLabel(_ tab: WoolooTab) -> String {
+        let marks = notifier.attentionCount(inTab: tab.id, session: herdr.session, contextID: herdr.contextID)
         var label = "Terminal: \(tab.label)"
         if marks.requests > 0 { label += ", \(marks.requests) attention requests" }
         if marks.done > 0 { label += ", \(marks.done) completed" }
         return label
     }
 
-    private func terminalTab(_ tab: HerdrTab, index: Int) -> some View {
+    private func terminalTab(_ tab: WoolooTab, index: Int) -> some View {
         HStack(spacing: 0) {
             Button {
-                herdr.select(tabID: tab.tabID)
+                herdr.select(tabID: tab.id)
                 activeDocumentID = nil
                 commands.focusPanel(.main)
             } label: {
@@ -1135,7 +1135,7 @@ private struct DestinationContentView: View {
                         .font(.system(size: textScale.secondary))
                     Text(tab.label).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: textScale.base * 12)
-                    let marks = notifier.attentionCount(inTab: tab.tabID, session: herdr.session, contextID: herdr.contextID)
+                    let marks = notifier.attentionCount(inTab: tab.id, session: herdr.session, contextID: herdr.contextID)
                     HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                 }
                 .font(.system(size: textScale.body))
@@ -1146,15 +1146,15 @@ private struct DestinationContentView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(terminalTabAccessibilityLabel(tab))
-            .accessibilityValue(tabAccessibilityState(tab.tabID))
-            .accessibilityAddTraits(tabIsFocused(tab.tabID) ? .isSelected : [])
-            tabCloseButton(title: tab.label, visible: hoveredTabID == tab.tabID || tabIsFocused(tab.tabID)) { closeTerminalTab(tab) }
+            .accessibilityValue(tabAccessibilityState(tab.id))
+            .accessibilityAddTraits(tabIsFocused(tab.id) ? .isSelected : [])
+            tabCloseButton(title: tab.label, visible: hoveredTabID == tab.id || tabIsFocused(tab.id)) { closeTerminalTab(tab) }
         }
-        .modifier(EditorTabStyle(selected: tabIsFocused(tab.tabID),
-                                 presence: tabBackground(nil, inMain: activeDocumentID == nil && herdr.selectedTabID == tab.tabID)))
+        .modifier(EditorTabStyle(selected: tabIsFocused(tab.id),
+                                 presence: tabBackground(nil, inMain: activeDocumentID == nil && herdr.selectedTabID == tab.id)))
         .fixedSize(horizontal: true, vertical: false)
         .help(tab.label)
-        .onHover { hoveredTabID = $0 ? tab.tabID : nil }
+        .onHover { hoveredTabID = $0 ? tab.id : nil }
         .onMiddleClick { closeTerminalTab(tab) }
         .contextMenu {
             Button("New Tab", systemImage: "plus") {
@@ -1163,12 +1163,12 @@ private struct DestinationContentView: View {
             }
             Button("Rename Tab…", systemImage: "pencil") {
                 window.renameText = tab.label
-                window.renameTarget = .tab(tab.tabID)
+                window.renameTarget = .tab(tab.id)
             }
             Divider()
             Button("Close Tab…", systemImage: "xmark", role: .destructive) { closeTerminalTab(tab) }
         }
-        .tabReorder(.terminal, id: tab.tabID, index: index, drag: window.tabDrag,
+        .tabReorder(.terminal, id: tab.id, index: index, drag: window.tabDrag,
                     connection: HerdrActionConnection(herdr), destinations: destinations,
                     shouldFollow: { [weak documentStore, weak window, weak destinations, weak herdr,
                                      documentRevision = documentStore.navigationRevision,
@@ -1193,18 +1193,18 @@ private struct DestinationContentView: View {
                 return herdr.splitTab(tabID, nextTo: paneID, edge: edge)
             },
             targets: { [herdr] source in
-                herdr.selectedPanes.filter { herdr.canMovePane(source, nextTo: $0.paneID) }
-                    .map { (id: $0.paneID, title: $0.paneID) }
+                herdr.selectedPanes.filter { herdr.canMovePane(source, nextTo: $0.id) }
+                    .map { (id: $0.id, title: $0.id) }
             },
             movePane: { [herdr] in herdr.movePane($0, nextTo: $1, edge: $2) },
             canDetach: { [herdr] source in
-                herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.paneID == source }
+                herdr.selectedPanes.count > 1 && herdr.selectedPanes.contains { $0.id == source }
             },
             detach: { [herdr] in herdr.detachPane($0) })
     }
 
     /// Asks before closing a terminal tab, or its Space when this is the last tab.
-    private func closeTerminalTab(_ tab: HerdrTab) {
+    private func closeTerminalTab(_ tab: WoolooTab) {
         commands.requestCloseTab(tab)
     }
 
@@ -1279,11 +1279,11 @@ private struct DestinationContentView: View {
                     onMove: { documentStore.move($0, to: $1) })
     }
 
-    private func terminalPane(_ pane: HerdrPane) -> some View {
+    private func terminalPane(_ pane: WoolooPane) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
                 Image(systemName: "terminal")
-                Text(pane.paneID).fontWeight(.medium)
+                Text(pane.id).fontWeight(.medium)
                 Spacer(minLength: 5)
                 if let error = herdr.inputError {
                     Image(systemName: "exclamationmark.triangle")
@@ -1300,18 +1300,18 @@ private struct DestinationContentView: View {
             .frame(height: typography.metric(26))
             .background(barBackground)
             .contentShape(Rectangle())
-            .onTapGesture { herdr.selectedPaneID = pane.paneID }
+            .onTapGesture { herdr.selectedPaneID = pane.id }
             .contextMenu {
                 Button("Split Right", systemImage: "rectangle.split.2x1") {
-                    herdr.selectedPaneID = pane.paneID
+                    herdr.selectedPaneID = pane.id
                     herdr.splitPane("right")
                 }
                 Button("Split Down", systemImage: "rectangle.split.1x2") {
-                    herdr.selectedPaneID = pane.paneID
+                    herdr.selectedPaneID = pane.id
                     herdr.splitPane("down")
                 }
                 Button("Zoom Pane", systemImage: "arrow.up.left.and.arrow.down.right") {
-                    herdr.selectedPaneID = pane.paneID
+                    herdr.selectedPaneID = pane.id
                     herdr.zoomPane()
                 }
                 if let cwd = pane.cwd {
@@ -1321,13 +1321,13 @@ private struct DestinationContentView: View {
                 }
                 Divider()
                 Button("Close Pane…", systemImage: "xmark.square", role: .destructive) {
-                    commands.requestClosePane(pane.paneID)
+                    commands.requestClosePane(pane.id)
                 }
             }
             Divider()
             TerminalPaneView(
-                text: herdr.paneText[pane.paneID] ?? "Reading pane…",
-                paneID: pane.paneID,
+                text: herdr.paneText[pane.id] ?? "Reading pane…",
+                paneID: pane.id,
                 shortcutMap: shortcutMap,
                 onShortcut: handleShortcut,
                 onPrefixChanged: { shortcutPrefixActive = $0 },
@@ -1338,12 +1338,12 @@ private struct DestinationContentView: View {
                 setSplitRatio: { path, ratio in herdr.setSplitRatio(path: path, ratio: ratio) },
                 tabDrop: terminalTabDrop
             )
-            .id(pane.paneID)
+            .id(pane.id)
         }
         .background(theme.contentBackground)
         .overlay {
             Rectangle()
-                .stroke(pane.paneID == herdr.selectedPaneID ? theme.accent.opacity(0.45) : Color.clear, lineWidth: 1)
+                .stroke(pane.id == herdr.selectedPaneID ? theme.accent.opacity(0.45) : Color.clear, lineWidth: 1)
         }
     }
 
@@ -1417,19 +1417,19 @@ private struct DestinationContentView: View {
     }
 
     @ViewBuilder
-    private func spaceActions(_ workspace: HerdrWorkspace) -> some View {
+    private func spaceActions(_ workspace: WoolooSpace) -> some View {
         let root = herdr.snapshot.flatMap {
-            WorkspaceFiles.location(snapshot: $0, workspaceID: workspace.workspaceID,
+            WorkspaceFiles.location(snapshot: $0, workspaceID: workspace.id,
                                     session: herdr.sessionName, machine: herdr.machine)?.root
         }
         Button("New Tab in Space", systemImage: "plus") {
-            herdr.select(workspaceID: workspace.workspaceID)
+            herdr.select(workspaceID: workspace.id)
             activeDocumentID = nil
             herdr.createTab()
         }
         Button("Rename Space…", systemImage: "pencil") {
             window.renameText = workspace.label
-            window.renameTarget = .workspace(workspace.workspaceID)
+            window.renameTarget = .workspace(workspace.id)
             window.renameConnection = HerdrActionConnection(herdr)
         }
         if let root {
@@ -1441,7 +1441,7 @@ private struct DestinationContentView: View {
         }
         Divider()
         Button("Close Space…", systemImage: "xmark", role: .destructive) {
-            window.closeTarget = .workspace(workspace.workspaceID, workspace.label)
+            window.closeTarget = .workspace(workspace.id, workspace.label)
             window.closeConnection = HerdrActionConnection(herdr)
         }
     }

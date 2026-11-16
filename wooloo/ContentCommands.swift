@@ -65,17 +65,19 @@ enum DocumentOverwriteChoice: CaseIterable {
 }
 
 extension HerdrStore {
-    var selectedWorkspace: HerdrWorkspace? {
-        snapshot?.workspaces.first { $0.workspaceID == selectedWorkspaceID }
+    var selectedWorkspace: WoolooSpace? {
+        session?.spaces.first { $0.id == selectedWorkspaceID }
     }
 
-    /// The tabs of the selected Space, in Herdr's order.
-    var selectedTabs: [HerdrTab] {
-        snapshot?.tabs.filter { $0.workspaceID == selectedWorkspaceID } ?? []
+    /// The tabs of the selected Space, in the backend's order.
+    var selectedTabs: [WoolooTab] {
+        session?.tabs.filter { $0.spaceID == selectedWorkspaceID } ?? []
     }
 
     /// The panes of the selected tab.
-    var selectedPanes: [HerdrPane] { panes(inTab: selectedTabID) }
+    var selectedPanes: [WoolooPane] {
+        session?.panes.filter { $0.tabID == selectedTabID } ?? []
+    }
 }
 
 /// The main window's own state: sidebars, sheets, the Search tab and the rename or close
@@ -243,12 +245,12 @@ struct ContentCommands {
             herdr.createTab()
         case .newUntitledFile: newUntitledFile()
         case .cycleTab(let delta):
-            guard let tabID = HerdrCommand.tab(delta, from: herdr.selectedTabID, in: tabs.map(\.tabID)) else { return }
+            guard let tabID = HerdrCommand.tab(delta, from: herdr.selectedTabID, in: tabs.map(\.id)) else { return }
             herdr.select(tabID: tabID)
             documents.activeID = nil
         case .switchTab(let number):
             guard tabs.indices.contains(number - 1) else { return }
-            herdr.select(tabID: tabs[number - 1].tabID)
+            herdr.select(tabID: tabs[number - 1].id)
             documents.activeID = nil
         case .toggleSidebar: window.showsSidebar.toggle()
         case .focusPane(let direction): herdr.focusPane(direction)
@@ -271,16 +273,16 @@ struct ContentCommands {
         case .renameWorkspace:
             guard let workspace = herdr.selectedWorkspace else { return }
             window.renameText = workspace.label
-            window.renameTarget = .workspace(workspace.workspaceID)
+            window.renameTarget = .workspace(workspace.id)
         case .closeWorkspace:
             guard let workspace = herdr.selectedWorkspace else { return }
-            window.closeTarget = .workspace(workspace.workspaceID, workspace.label)
+            window.closeTarget = .workspace(workspace.id, workspace.label)
         case .renameTab:
-            guard let tab = tabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
+            guard let tab = tabs.first(where: { $0.id == herdr.selectedTabID }) else { return }
             window.renameText = tab.label
-            window.renameTarget = .tab(tab.tabID)
+            window.renameTarget = .tab(tab.id)
         case .closeTab:
-            guard let tab = tabs.first(where: { $0.tabID == herdr.selectedTabID }) else { return }
+            guard let tab = tabs.first(where: { $0.id == herdr.selectedTabID }) else { return }
             requestCloseTab(tab)
         case .closeCurrentTab:
             if focusedDocumentID == WorkspaceSearchModel.tabID {
@@ -332,7 +334,7 @@ struct ContentCommands {
                 window.commandPalette.present(items, bindings: bindings)
             }
         case .copyPaneDirectory, .revealPaneDirectory:
-            guard let cwd = herdr.selectedPanes.first(where: { $0.paneID == herdr.selectedPaneID })?.cwd else { return }
+            guard let cwd = herdr.selectedPanes.first(where: { $0.id == herdr.selectedPaneID })?.cwd else { return }
             if command == .copyPaneDirectory { effects.copy(cwd) } else { effects.reveal(cwd) }
         }
     }
@@ -539,14 +541,14 @@ struct ContentCommands {
 
     /// The last terminal is a decision about the Space. Keep its live agent/session intact
     /// until the user confirms, so cancelling cannot restart or resume a different session.
-    func requestCloseTab(_ tab: HerdrTab) {
-        guard let snapshot = herdr.snapshot,
-              snapshot.tabs.contains(where: { $0.tabID == tab.tabID }) else { return }
-        if snapshot.tabs.filter({ $0.workspaceID == tab.workspaceID }).count == 1,
-           let workspace = snapshot.workspaces.first(where: { $0.workspaceID == tab.workspaceID }) {
-            window.closeTarget = .lastTab(workspace.workspaceID, workspace.label)
+    func requestCloseTab(_ tab: WoolooTab) {
+        guard let session = herdr.session,
+              session.tabs.contains(where: { $0.id == tab.id }) else { return }
+        if session.tabs(in: tab.spaceID).count == 1,
+           let workspace = session.spaces.first(where: { $0.id == tab.spaceID }) {
+            window.closeTarget = .lastTab(workspace.id, workspace.label)
         } else {
-            window.closeTarget = .tab(tab.tabID, tab.label)
+            window.closeTarget = .tab(tab.id, tab.label)
         }
     }
 

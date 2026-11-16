@@ -92,6 +92,11 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
   - **`HerdrNotifier`:** agent transitions, toasts and per-tab counts. `process(session:)` takes `AgentState`, and the snapshot entry point now delegates to it, so the existing notification tests check the new path.
   - **`WorkspaceGitBar` and `WorkspaceBrowserView`:** worktree Spaces, through `WoolooSpace.worktreePath` and `state`.
   - **`HerdrStore`:** `moveWorkspace`, `canSplit` and `splitTab` read the current session. Requests that read a fresh snapshot from the socket stay TUI-backend code.
+- **Third step: the selection.**
+  - `HerdrStore.selectedWorkspace`, `selectedTabs` and `selectedPanes` now return `WoolooSpace`, `WoolooTab` and `WoolooPane`.
+  - Through them, `ContentView` (the window title and Space menu, tab row, all-tabs menu, pane grid and pane drops) and `ContentCommands` (tab cycling, rename, close and pane directory commands) read the neutral model.
+  - A cached `session` read now does no work: a new snapshot, session name or machine clears the cache.
+  - Still on the snapshot in `ContentView`: the sidebar Space rows and the agents list, which come next.
 
 ### 2. Backend protocol behind `HerdrStore`
 

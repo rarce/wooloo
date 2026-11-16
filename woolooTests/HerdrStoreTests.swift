@@ -352,7 +352,7 @@ final class HerdrStoreTests: XCTestCase {
         await waitUntil("third tab") { store.selectedTabs.count == 3 }
 
         store.moveTab("w1:t1", to: 3)
-        XCTAssertEqual(store.selectedTabs.map(\.tabID), ["w1:t2", "w1:t3", "w1:t1"], "Shown before Herdr answers")
+        XCTAssertEqual(store.selectedTabs.map(\.id), ["w1:t2", "w1:t3", "w1:t1"], "Shown before Herdr answers")
         await waitUntil("move requested") { server.requests.contains { $0.method == "tab.move" } }
         let request = server.requests.first { $0.method == "tab.move" }
         XCTAssertEqual(request?.params["tab_id"] as? String, "w1:t1")
@@ -361,12 +361,12 @@ final class HerdrStoreTests: XCTestCase {
 
         await waitUntil("Herdr's order") { store.snapshot?.tabs.map(\.tabID) == ["w1:t2", "w1:t3", "w1:t1"] }
         store.moveTab("w1:t3", to: 1)
-        XCTAssertEqual(store.selectedTabs.map(\.tabID), ["w1:t2", "w1:t3", "w1:t1"], "A move in place does nothing")
+        XCTAssertEqual(store.selectedTabs.map(\.id), ["w1:t2", "w1:t3", "w1:t1"], "A move in place does nothing")
         XCTAssertEqual(server.requests.filter { $0.method == "tab.move" }.count, 1, "A move in place is not sent")
 
         store.moveTab("w1:t1", to: 0)
         await waitUntil("moved first") { state.lock.withLock { state.tabs.first?["tab_id"] as? String } == "w1:t1" }
-        await waitUntil("snapshot read") { store.selectedTabs.map(\.tabID) == ["w1:t1", "w1:t2", "w1:t3"] }
+        await waitUntil("snapshot read") { store.selectedTabs.map(\.id) == ["w1:t1", "w1:t2", "w1:t3"] }
         XCTAssertEqual(store.selectedTabID, "w1:t1", "The selection stays on its tab")
         XCTAssertNil(store.actionError)
     }
@@ -677,10 +677,10 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertTrue(store.canSplit(tabID: "w1:t2"))
         XCTAssertFalse(store.canSplit(tabID: "w1:t1"), "Not the selected tab")
         XCTAssertTrue(store.splitTab("w1:t2", nextTo: "w1:p2", edge: .right))
-        await waitUntil("pane moved") { store.selectedPanes.map(\.paneID) == ["w1:p1", "w1:p2", "w1:p3"] }
+        await waitUntil("pane moved") { store.selectedPanes.map(\.id) == ["w1:p1", "w1:p2", "w1:p3"] }
         await waitUntil("moved pane selected") { store.selectedPaneID == "w1:p3" }
         XCTAssertEqual(store.selectedTabID, "w1:t1")
-        XCTAssertEqual(store.selectedTabs.map(\.tabID), ["w1:t1"], "Herdr closed the emptied tab")
+        XCTAssertEqual(store.selectedTabs.map(\.id), ["w1:t1"], "Herdr closed the emptied tab")
         let moves = server.requests.filter { $0.method == "pane.move" }
         XCTAssertEqual(moves.count, 1)
         XCTAssertEqual(moves.first?.params["pane_id"] as? String, "w1:p3")
@@ -1105,7 +1105,7 @@ final class HerdrStoreTests: XCTestCase {
 
         state.update { $0.panes.removeAll { $0["pane_id"] as? String == "w1:p2" } }
         server.emit(["event": "pane.closed"])
-        await waitUntil("pane closed") { store.selectedPanes.map(\.paneID) == ["w1:p1"] }
+        await waitUntil("pane closed") { store.selectedPanes.map(\.id) == ["w1:p1"] }
         var published = 0
         let subscription = store.objectWillChange.sink { published += 1 }
         defer { subscription.cancel() }

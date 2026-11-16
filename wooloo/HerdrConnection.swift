@@ -399,12 +399,12 @@ final class HerdrStore: ObservableObject {
         }
     }
     /// `snapshot` in the backend-neutral model (docs/proposals/herdr-core-backend.md), mapped
-    /// at most once per snapshot and context. It publishes with `snapshot`.
+    /// at most once per snapshot and context: a new snapshot, session name or machine clears
+    /// it. It publishes with `snapshot`. Read on hot paths, so a cached read does no work.
     var session: WoolooSession? {
         guard let snapshotValue else { return nil }
-        let backend = BackendID.tui(contextID: contextID)
-        if let sessionCache, sessionCache.backend == backend { return sessionCache }
-        let mapped = snapshotValue.session(backend: backend)
+        if let sessionCache { return sessionCache }
+        let mapped = snapshotValue.session(backend: .tui(contextID: contextID))
         sessionCache = mapped
         return mapped
     }
@@ -526,7 +526,7 @@ final class HerdrStore: ObservableObject {
     private static let lastSessionKey = "HerdrLastSession"
 
     @Published private(set) var sessionName = UserDefaults.standard.string(forKey: lastSessionKey)
-        ?? defaultSessionName
+        ?? defaultSessionName { didSet { sessionCache = nil } }
     private var eventTask: Task<Void, Never>?
     private var paneTask: Task<Void, Never>?
     private var surfaceTask: Task<Void, Never>?
@@ -685,7 +685,7 @@ final class HerdrStore: ObservableObject {
         return Self.sessionDirectory(sessionName).appendingPathComponent("herdr-client.sock").path
     }
 
-    @Published private(set) var machine: HerdrMachineProfile?
+    @Published private(set) var machine: HerdrMachineProfile? { didSet { sessionCache = nil } }
     /// Keep the existing local document keys; remote IDs are scoped to their machine.
     var legacyContextID: String { machine.map { "ssh:\($0.id)|\(sessionName)" } ?? sessionName }
     var contextID: String {
@@ -948,7 +948,7 @@ final class HerdrStore: ObservableObject {
     /// or the tab was just selected and its first surface has not arrived yet.
     var showsLiveSurface: Bool {
         guard let surfaceLayout else { return false }
-        let panes = Set(selectedPanes.map(\.paneID))
+        let panes = Set(selectedPanes.map(\.id))
         guard !panes.isEmpty else { return false }
         return Set(surfaceLayout.paneIDs) == panes || (surfaceSwitchTabID != nil && surfaceSwitchTabID == selectedTabID)
     }
@@ -958,7 +958,7 @@ final class HerdrStore: ObservableObject {
     @discardableResult
     private func beginSurfaceSwitch() -> Bool {
         guard surfaceStream != nil, let surfaceLayout, let selectedTabID,
-              Set(surfaceLayout.paneIDs) != Set(selectedPanes.map(\.paneID)) else {
+              Set(surfaceLayout.paneIDs) != Set(selectedPanes.map(\.id)) else {
             endSurfaceSwitch()
             return false
         }
@@ -988,7 +988,7 @@ final class HerdrStore: ObservableObject {
             }
             lastBootID = boot
         }
-        let showsTab = surface.map { Set($0.paneIDs) == Set(selectedPanes.map(\.paneID)) } ?? false
+        let showsTab = surface.map { Set($0.paneIDs) == Set(selectedPanes.map(\.id)) } ?? false
         if showsTab && !presentationEstablished { presentationEstablished = true }
         if surface == nil { presentationEstablished = false }
         let completesSwitch = showsTab && surfaceSwitchTabID != nil
@@ -1803,7 +1803,7 @@ final class HerdrStore: ObservableObject {
             selectedPaneID = preferredPane(in: selectedTabID)
         }
         if !presentationEstablished, let surface,
-           Set(surface.paneIDs) == Set(selectedPanes.map(\.paneID)) {
+           Set(surface.paneIDs) == Set(selectedPanes.map(\.id)) {
             presentationEstablished = true
         }
     }
