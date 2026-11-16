@@ -147,7 +147,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     /// Whether wooloo is the frontmost app; tests replace it.
     var isAppActive: () -> Bool = { NSApp.isActive }
 
-    private var statuses: [String: String] = [:]
+    private var statuses: [String: AgentState] = [:]
     private var hasBaseline = false
     private var sounds: [String: NSSound] = [:]
 
@@ -184,7 +184,13 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
 
     /// Compares agent statuses with the previous snapshot and raises alerts on transitions.
     func process(_ snapshot: HerdrSnapshot?, selectedPaneID: String?, contextID: String = "") {
-        guard let snapshot else {
+        process(session: snapshot?.session(backend: .tui(contextID: contextID)), selectedPaneID: selectedPaneID,
+                contextID: contextID)
+    }
+
+    /// Compares agent states with the previous session and raises alerts on transitions.
+    func process(session: WoolooSession?, selectedPaneID: String?, contextID: String = "") {
+        guard let session else {
             // A disconnected destination retains unread marks; reconnect establishes a baseline.
             if contextID.isEmpty { reset() }
             else {
@@ -193,8 +199,8 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
             }
             return
         }
-        var next: [String: String] = [:]
-        for agent in snapshot.agents { next[key(agent.paneID, context: contextID)] = agent.agentStatus ?? "unknown" }
+        var next: [String: AgentState] = [:]
+        for agent in session.agents { next[key(agent.paneID, context: contextID)] = agent.state }
         let scoped = statusScopes[contextID] ?? []
         defer {
             for id in scoped { statuses[id] = nil }
@@ -206,7 +212,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
             let stale = attention.keys.filter { pane in
                 guard scoped.contains(pane) || next[pane] != nil else { return false }
                 guard let status = next[pane] else { return true }
-                return status == "working" || (attention[pane] == .request && status != "blocked")
+                return status == .working || (attention[pane] == .request && status != .blocked)
             }
             if !stale.isEmpty {
                 for pane in stale { attention[pane] = nil }
@@ -214,19 +220,19 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
             }
         }
         guard contextID.isEmpty ? hasBaseline : contextBaselines.contains(contextID) else { return }
-        for agent in snapshot.agents {
+        for agent in session.agents {
             let paneKey = key(agent.paneID, context: contextID)
-            let status = next[paneKey] ?? "unknown"
+            let status = next[paneKey] ?? .unknown
             guard let previous = statuses[paneKey], previous != status else { continue }
             let kind: HerdrAlertKind
             switch status {
-            case "blocked": kind = .request
-            case "done": kind = .done
+            case .blocked: kind = .request
+            case .done: kind = .done
             // Herdr reports idle instead of done when a client was watching the pane.
-            case "idle" where previous == "working": kind = .done
+            case .idle where previous == .working: kind = .done
             default: continue
             }
-            raise(kind, agent: agent, snapshot: snapshot, selectedPaneID: selectedPaneID, contextID: contextID)
+            raise(kind, agent: agent, session: session, selectedPaneID: selectedPaneID, contextID: contextID)
         }
     }
 
@@ -271,11 +277,16 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
         return count(attention.filter { panes.contains($0.key) })
     }
 
+    func attentionCount(inTab tabID: String, session: WoolooSession?, contextID: String = "") -> (requests: Int, done: Int) {
+        let panes = Set(session?.panes(in: tabID).map { key($0.id, context: contextID) } ?? [])
+        return count(attention.filter { panes.contains($0.key) })
+    }
+
     private func count(_ marks: [String: HerdrAlertKind]) -> (requests: Int, done: Int) {
         (marks.values.filter { $0 == .request }.count, marks.values.filter { $0 == .done }.count)
     }
 
-    private func raise(_ kind: HerdrAlertKind, agent: HerdrAgent, snapshot: HerdrSnapshot,
+    private func raise(_ kind: HerdrAlertKind, agent: WoolooAgent, session: WoolooSession,
                        selectedPaneID: String?, contextID: String) {
         HangWatchdog.shared.record("alert raised kind=\(kind) pane=\(agent.paneID) context=\(contextID)")
         // Herdr's terminal UI shows one workspace at a time, so it sounds only for background
@@ -289,17 +300,17 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
         if !isWatched {
             attention[paneKey] = kind
             updateDockBadge()
-            if settings.playsSound(for: agent.agent) { playSound(kind) }
+            if settings.playsSound(for: agent.kind) { playSound(kind) }
         }
         if kind == .request, !isAppActive(), bouncesDock {
             NSApp.requestUserAttention(.informationalRequest)
         }
         guard !isWatched, settings.delivery != .off else { return }
 
-        let workspace = snapshot.workspaces.first { $0.workspaceID == agent.workspaceID }?.label
-        let tab = snapshot.tabs.first { $0.tabID == agent.tabID }?.label
+        let workspace = session.spaces.first { $0.id == agent.spaceID }?.label
+        let tab = session.tabs.first { $0.id == agent.tabID }?.label
         let toast = HerdrToast(kind: kind, paneID: agent.paneID,
-                               title: kind == .done ? "\(agent.displayName) finished" : "\(agent.displayName) needs input",
+                               title: kind == .done ? "\(agent.name) finished" : "\(agent.name) needs input",
                                body: [workspace, tab.map { "Tab \($0)" }].compactMap { $0 }.joined(separator: " · "), contextID: contextID)
         let delay = settings.delaySeconds
         let generation = deliveryGeneration

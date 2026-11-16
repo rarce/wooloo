@@ -184,9 +184,9 @@ final class WorkspaceGitBarModelTests: XCTestCase {
     func testWorktreesWithASpace() {
         let tree = WorkspaceWorktree(path: "/r/feature", branch: "feature", isBare: false, isLocked: false,
                                      isPrunable: false)
-        func space(_ path: String, _ label: String, _ status: String?) -> HerdrWorkspace {
-            HerdrWorkspace(workspaceID: "w1", label: label, agentStatus: status, activeTabID: nil,
-                           worktree: HerdrWorktree(checkoutPath: path))
+        func space(_ path: String, _ label: String, _ status: String?) -> WoolooSpace {
+            WoolooSpace(id: "w1", label: label, state: status.map { AgentState($0) }, activeTabID: nil,
+                        worktreePath: path)
         }
         XCTAssertNil(WorkspaceGitBarModel.spaces(of: [tree], in: [space("/r", "r", nil)]).first?.space)
         let open = WorkspaceGitBarModel.spaces(of: [tree], in: [space("/r", "r", nil),

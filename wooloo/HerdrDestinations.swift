@@ -61,7 +61,8 @@ final class HerdrMetadataPool {
         if let machine { store.connect(to: machine) } else { store.connect(to: session, remember: false) }
         let subscription = store.snapshotPublisher.sink { [weak self, weak store] snapshot in
             guard let self, let store else { return }
-            notifier.process(snapshot, selectedPaneID: nil, contextID: store.contextID)
+            notifier.process(session: snapshot?.session(backend: .tui(contextID: store.contextID)), selectedPaneID: nil,
+                             contextID: store.contextID)
         }
         entries[id] = Entry(store: store, subscription: subscription, users: 1)
         return store
@@ -282,7 +283,10 @@ final class HerdrDestinations: ObservableObject {
         guard subscriptions[key] == nil else { return }
         subscriptions[key] = store.snapshotPublisher.sink { [weak self, weak store] snapshot in
             guard let self, let store else { return }
-            if self.pool == nil { notifier.process(snapshot, selectedPaneID: nil, contextID: store.contextID) }
+            if self.pool == nil {
+                notifier.process(session: snapshot?.session(backend: .tui(contextID: store.contextID)), selectedPaneID: nil,
+                                 contextID: store.contextID)
+            }
             self.persistWindow()
         }
     }

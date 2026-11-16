@@ -405,7 +405,7 @@ private struct DestinationContentView: View {
                                          openDocument(.change, path: path, at: location, scope: scope)
                                      },
                                      commandTarget: window.explorer,
-                                     spaces: herdr.snapshot?.workspaces ?? [])
+                                     spaces: herdr.session?.spaces ?? [])
                     .frame(width: filesSidebarWidth)
             }
         }
@@ -1116,7 +1116,7 @@ private struct DestinationContentView: View {
     }
 
     private func terminalTabAccessibilityLabel(_ tab: HerdrTab) -> String {
-        let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot, contextID: herdr.contextID)
+        let marks = notifier.attentionCount(inTab: tab.tabID, session: herdr.session, contextID: herdr.contextID)
         var label = "Terminal: \(tab.label)"
         if marks.requests > 0 { label += ", \(marks.requests) attention requests" }
         if marks.done > 0 { label += ", \(marks.done) completed" }
@@ -1135,7 +1135,7 @@ private struct DestinationContentView: View {
                         .font(.system(size: textScale.secondary))
                     Text(tab.label).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: textScale.base * 12)
-                    let marks = notifier.attentionCount(inTab: tab.tabID, snapshot: herdr.snapshot, contextID: herdr.contextID)
+                    let marks = notifier.attentionCount(inTab: tab.tabID, session: herdr.session, contextID: herdr.contextID)
                     HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                 }
                 .font(.system(size: textScale.body))
