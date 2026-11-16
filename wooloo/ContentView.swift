@@ -161,6 +161,13 @@ private struct DestinationContentView: View {
             guard managesRuntime, herdr.machine == nil else { return }
             if showsSetup {
                 herdr.stop()
+            } else if let core = runtime.chosenCoreSession, runtime.connectedSession == nil {
+                // herdr-core chosen instead of the TUI setup: no local Herdr session to open.
+                if !destinations.isRunning { destinations.configureInitialSession(core, backend: .core) }
+                destinations.start()
+                destinations.openCore(session: core)
+                window.commandStore = destinations.active
+                shortcutStore.reload()
             } else {
                 if !destinations.isRunning {
                     destinations.configureInitialSession(runtime.connectedSession ?? herdr.sessionName)
@@ -264,8 +271,9 @@ private struct DestinationContentView: View {
         }
         .sheet(isPresented: $window.showsSettings) {
             if destinations.canAccessActiveDestination {
-                HerdrSettingsView(socketPath: herdr.socketPath, sessionName: herdr.sessionName,
-                              machine: herdr.machine,
+                // A herdr-core connection has no Herdr TUI to reload: its window edits this Mac's settings.
+                HerdrSettingsView(socketPath: herdr.backendKind == .tui ? herdr.socketPath : "", sessionName: herdr.sessionName,
+                              machine: herdr.backendKind == .tui ? herdr.machine : nil,
                               showShortcuts: window.settingsShowShortcuts,
                               showRemoteAccess: window.settingsShowRemoteAccess)
                     .environment(\.woolooTheme, theme)

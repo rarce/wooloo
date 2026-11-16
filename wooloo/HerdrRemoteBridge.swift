@@ -157,6 +157,40 @@ final class HerdrRemoteBridge: Sendable {
         return args
     }
 
+    /// `ssh … hc connect --session <session>` for a herdr-core session on `machine`. The stream
+    /// lasts as long as the connection, so it reuses a running ControlMaster but never becomes
+    /// one: closing it must not cut the file and Git sessions sharing that master. The script
+    /// finds `hc` without installing anything, then prints `CoreTarget.banner` so a login's
+    /// greeting cannot be mistaken for the protocol.
+    static func coreArguments(_ machine: HerdrMachineProfile, session: String) -> [String] {
+        let endpoint = WorkspaceFiles.SSHEndpoint(machine.target)
+        var args = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                    "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=2"]
+        if let directory = WorkspaceFiles.sshControlDirectory {
+            args += ["-o", "ControlMaster=no", "-o", "ControlPath=\(directory)/%C"]
+        }
+        if let port = endpoint.port { args += ["-p", port] }
+        let script = coreDiscoveryScript + "\n"
+            + "printf '%s\\n' \(quote(CoreTarget.banner))\n"
+            + "exec \"$h\" connect --session \(quote(session))"
+        args += [endpoint.destination, "/bin/sh -c " + quote(script)]
+        return args
+    }
+
+    /// Finds herdr-core on PATH or in common installation locations; exit 127 when missing.
+    static let coreDiscoveryScript = """
+        h=
+        for candidate in "$(command -v hc 2>/dev/null)" "$(command -v herdr-core 2>/dev/null)" "$HOME/.local/bin/hc" "$HOME/.local/bin/herdr-core" /opt/homebrew/bin/hc /usr/local/bin/hc /home/linuxbrew/.linuxbrew/bin/hc "$HOME/.nix-profile/bin/hc" /run/current-system/sw/bin/hc; do
+            [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+            h=$candidate
+            break
+        done
+        if [ -z "$h" ]; then
+            printf '%s\\n' 'herdr-core (hc) is not installed on this host' >&2
+            exit 127
+        fi
+        """
+
     /// Config validation must select the same compatible installation as the terminal bridge.
     static func executableDiscoveryScript(session: String) -> String {
         """

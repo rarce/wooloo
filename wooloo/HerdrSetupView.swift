@@ -71,6 +71,10 @@ struct HerdrSetupView: View {
                         if runtime.canDismissSetup {
                             Button("Cancel") { runtime.showsSetup = false }
                         }
+                        if HerdrCoreSupport.isEnabled, HerdrCoreSupport.locateLocal() != nil {
+                            Button("Use herdr-core Instead") { runtime.chooseCore() }
+                                .help("Preview: connect to the herdr-core (hc) installed on this Mac, without setting up the Herdr TUI.")
+                        }
                         Button(useBundled ? "Create Space and Start" : "Connect") {
                             Task {
                                 await runtime.finish(useBundled: useBundled, executable: executable,

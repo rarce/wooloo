@@ -258,7 +258,7 @@ final class HerdrSettingsModel: ObservableObject {
     }
 
     private func performReload() async {
-        guard let path = destination.socketPath else {
+        guard let path = destination.socketPath, !path.isEmpty else {
             outcome = .reloadFailed
             message = "Saved config.toml. No Herdr session was captured for reload."
             return

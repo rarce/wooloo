@@ -21,12 +21,26 @@ enum HerdrConfigError: LocalizedError {
 }
 
 enum HerdrConfigFile {
+    /// Herdr's `config.toml`, which wooloo shares with the TUI. On a Mac with no Herdr TUI at all
+    /// (a herdr-core-only setup), shortcuts, theme and sounds live in wooloo's own copy instead,
+    /// which is saved without Herdr's validation or reload (docs/proposals/herdr-core-backend.md, §10).
     static var url: URL {
         if let override = ProcessInfo.processInfo.environment["HERDR_CONFIG_PATH"], !override.isEmpty {
             return URL(fileURLWithPath: override).standardizedFileURL
         }
-        return HerdrRuntimePaths.configRoot.appendingPathComponent("config.toml")
+        let herdr = herdrURL
+        if FileManager.default.fileExists(atPath: herdr.path) || herdrAvailable { return herdr }
+        return woolooURL
     }
+
+    static var herdrURL: URL { HerdrRuntimePaths.configRoot.appendingPathComponent("config.toml") }
+    /// wooloo's own settings, used only while no Herdr TUI is installed.
+    static var woolooURL: URL { HerdrRuntimePaths.supportRoot.appendingPathComponent("config.toml") }
+    static var herdrAvailable: Bool {
+        WorkspaceFiles.herdrCandidates.contains(where: FileManager.default.isExecutableFile(atPath:))
+    }
+    /// Whether `url` is wooloo's own settings file rather than Herdr's.
+    static func isWoolooOwned(_ url: URL) -> Bool { url.standardizedFileURL == woolooURL.standardizedFileURL }
 
     static func read(at url: URL) throws -> String {
         guard FileManager.default.fileExists(atPath: url.path) else { return "" }
@@ -67,7 +81,8 @@ enum HerdrConfigFile {
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     static func save(_ text: String, original: String, at url: URL) throws {
         guard try read(at: url) == original else { throw HerdrConfigError.changedOnDisk }
-        try validate(text)
+        // wooloo's own copy has no Herdr to check it; the settings screens write known keys.
+        if !(isWoolooOwned(url) && !herdrAvailable) { try validate(text) }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         try text.write(to: url, atomically: true, encoding: .utf8)
@@ -79,6 +94,7 @@ enum HerdrConfigFile {
     static func saveAndReload(_ text: String, original: String, at url: URL,
                               socketPath: String, session: String) throws -> String {
         try save(text, original: original, at: url)
+        if isWoolooOwned(url) { return "Saved wooloo's settings. No Herdr TUI is installed, so no session reloads." }
         do {
             return try reloadServer(socketPath: socketPath)
         } catch {
