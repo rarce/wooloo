@@ -98,9 +98,18 @@ final class ListeningPortsTests: XCTestCase {
     /// The script finds a real listener on this Mac, started with a Herdr pane's environment,
     /// both directly and over a fake ssh. This checks `lsof` and `ps -E` on the running macOS.
     func testScriptFindsAListenerStartedInAPane() throws {
+        let sandbox = try WorkspaceGitSandbox()
+        defer {
+            WorkspaceFiles.sshExecutable = "/usr/bin/ssh"
+            sandbox.tearDown()
+        }
+        // macOS hides the environment of Apple platform binaries from ps -E.
+        // Use an ad hoc signed copy so this behaves like a pane's dev server.
+        try FileManager.default.copyItem(atPath: "/usr/bin/nc", toPath: sandbox.path("nc"))
+        try sandbox.sh("/usr/bin/codesign --force --sign - nc")
         let port = try XCTUnwrap(LocalPorts.ephemeral())
         let listener = Process()
-        listener.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+        listener.executableURL = URL(fileURLWithPath: sandbox.path("nc"))
         listener.arguments = ["-l", "127.0.0.1", String(port)]
         listener.environment = ["PATH": "/usr/bin:/bin", "HERDR_WORKSPACE_ID": "w9", "HERDR_SESSION": "wooloo-ports-test"]
         listener.standardInput = Pipe()
@@ -117,11 +126,6 @@ final class ListeningPortsTests: XCTestCase {
         XCTAssertEqual(found.map(\.port), [port])
         XCTAssertEqual(found.first?.pid, listener.processIdentifier)
 
-        let sandbox = try WorkspaceGitSandbox()
-        defer {
-            WorkspaceFiles.sshExecutable = "/usr/bin/ssh"
-            sandbox.tearDown()
-        }
         try sandbox.write(["bin/ssh": """
             #!/bin/sh
             for command; do :; done
