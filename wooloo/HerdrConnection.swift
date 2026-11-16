@@ -1207,48 +1207,38 @@ final class HerdrStore: ObservableObject {
 
     func focusPane(_ direction: String) {
         guard let paneID = selectedPaneID else { return }
-        performAction(method: "pane.focus_direction", params: [
-            "pane_id": paneID, "direction": direction
-        ], followServerFocus: true)
+        performAction(.focusPane(paneID: paneID, direction: direction))
     }
 
     func splitPane(_ direction: String) {
         guard let paneID = selectedPaneID, let workspaceID = selectedWorkspaceID else { return }
-        performAction(method: "pane.split", params: [
-            "workspace_id": workspaceID, "target_pane_id": paneID,
-            "direction": direction, "focus": true
-        ], followServerFocus: true)
+        performAction(.splitPane(spaceID: workspaceID, paneID: paneID, direction: direction))
     }
 
     func zoomPane() {
         guard let paneID = selectedPaneID else { return }
-        performAction(method: "pane.zoom", params: ["pane_id": paneID], followServerFocus: false)
+        performAction(.zoomPane(paneID: paneID))
     }
 
     func renameWorkspace(_ workspaceID: String, to label: String) {
-        performAction(method: "workspace.rename", params: [
-            "workspace_id": workspaceID, "label": label
-        ], followServerFocus: false)
+        performAction(.renameSpace(spaceID: workspaceID, label: label))
     }
 
     func closeWorkspace(_ workspaceID: String) {
-        performAction(method: "workspace.close", params: ["workspace_id": workspaceID],
-                      followServerFocus: false)
+        performAction(.closeSpace(spaceID: workspaceID))
     }
 
     /// Renames the agent in a pane; a nil name restores the detected agent name.
     func renameAgent(_ paneID: String, to name: String?) {
-        performAction(method: "agent.rename", params: ["target": paneID, "name": name ?? NSNull()],
-                      followServerFocus: false)
+        performAction(.renameAgent(paneID: paneID, name: name))
     }
 
     func renameTab(_ tabID: String, to label: String) {
-        performAction(method: "tab.rename", params: ["tab_id": tabID, "label": label],
-                      followServerFocus: false)
+        performAction(.renameTab(tabID: tabID, label: label))
     }
 
     func closeTab(_ tabID: String) {
-        performAction(method: "tab.close", params: ["tab_id": tabID], followServerFocus: false)
+        performAction(.closeTab(tabID: tabID))
     }
 
     /// Sidebar reorders use a stable row anchor, resolved against the server's latest order.
@@ -1377,6 +1367,7 @@ final class HerdrStore: ObservableObject {
         guard isConnected, let current = snapshot, let moved = current.movingTab(tabID, to: insertIndex) else { return }
         snapshot = moved
         let path = socketPath
+        let backend = self.backend
         let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
         let currentEpoch = actionEpoch
@@ -1386,8 +1377,7 @@ final class HerdrStore: ObservableObject {
             let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> Void in
                     try requestToken.check()
-                    _ = try HerdrSocket.request(path: path, method: "tab.move",
-                                                params: ["tab_id": tabID, "insert_index": insertIndex])
+                    try backend.perform(.moveTab(tabID: tabID, insertIndex: insertIndex))
                 }
             }
             // Read Herdr's order even when the move failed, to undo the one shown.
@@ -1519,12 +1509,12 @@ final class HerdrStore: ObservableObject {
     }
 
     func closePane(_ paneID: String) {
-        performAction(method: "pane.close", params: ["pane_id": paneID], followServerFocus: false)
+        performAction(.closePane(paneID: paneID))
     }
 
     func reloadConfig() {
         guard isConnected else { return }
-        let path = socketPath
+        let backend = self.backend
         let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
         let currentEpoch = actionEpoch
@@ -1534,16 +1524,7 @@ final class HerdrStore: ObservableObject {
             let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> Void in
                     try requestToken.check()
-                    let data = try HerdrSocket.request(path: path, method: "server.reload_config")
-                    guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let response = root["result"] as? [String: Any],
-                          let status = response["status"] as? String else {
-                        throw HerdrConfigError.validation("Unexpected response from Herdr reload")
-                    }
-                    if status != "applied" {
-                        let details = (response["diagnostics"] as? [String] ?? []).joined(separator: "\n")
-                        throw HerdrConfigError.validation("Herdr reload: \(status). \(details)")
-                    }
+                    try backend.perform(.reloadConfig)
                 }
             }
             guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
@@ -1552,9 +1533,13 @@ final class HerdrStore: ObservableObject {
         }
     }
 
-    private func performAction(method: String, params: [String: Any], followServerFocus: Bool) {
+    /// The backend that carries out this connection's session commands.
+    var backend: any SessionBackend { TUISessionBackend(socketPath: socketPath) }
+
+    private func performAction(_ command: SessionCommand) {
         guard isConnected else { return }
         let path = socketPath
+        let backend = self.backend
         let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
         let currentEpoch = actionEpoch
@@ -1564,7 +1549,7 @@ final class HerdrStore: ObservableObject {
             let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> HerdrSnapshot in
                     try requestToken.check()
-                    _ = try HerdrSocket.request(path: path, method: method, params: params)
+                    try backend.perform(command)
                     return try HerdrSocket.snapshot(path: path)
                 }
             }
@@ -1572,7 +1557,7 @@ final class HerdrStore: ObservableObject {
             switch result {
             case .success(let fresh):
                 snapshot = fresh
-                if followServerFocus, let workspaceID = fresh.focusedWorkspaceID {
+                if command.followsServerFocus, let workspaceID = fresh.focusedWorkspaceID {
                     select(workspaceID: workspaceID, tabID: fresh.focusedTabID,
                            paneID: fresh.focusedPaneID)
                 } else {
