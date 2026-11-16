@@ -21,7 +21,18 @@ TEST_RUNNER_WOOLOO_RECORD_SNAPSHOTS=1 xcodebuild ... test -only-testing:woolooTe
 scripts/terminal-bench.sh [--save-baseline]   # decode/layout/draw stage benchmarks
 scripts/terminal-e2e.sh                       # live run on its own `wooloo-perf` Herdr session
 scripts/workspace-bench.sh                    # WorkspaceFiles ops; WOOLOO_BENCH_SSH_TARGET=none skips SSH
+scripts/{editor,markdown,notebook,notebook-editable}-bench.sh   # editor/preview benchmarks, same baseline scheme
+
+# Python tooling (CI policy, concurrency audit, perf helpers); runs on any OS, also in CI
+python3 -m unittest discover -s scripts/tests -v
+
+# Bundled runtime + launchd lifecycle against a real server (temporary roots, `wooloo-ui-test` session only)
+TEST_RUNNER_WOOLOO_RUNTIME_E2E=1 xcodebuild ... test -only-testing:woolooTests/HerdrRuntimeTests
 ```
+
+`xcodebuild` needs macOS with Xcode 26; on another OS only the Python tooling tests can run. When another wooloo build may be running (e.g. a concurrent worktree), add `WOOLOO_APP_BUNDLE_IDENTIFIER=dev.wooloo.<unique>` and a separate `-derivedDataPath` to the `xcodebuild` command so the test app gets its own macOS identity and preferences.
+
+CI builds tests with `SWIFT_STRICT_CONCURRENCY=complete` and `scripts/concurrency_audit.py` fails on any warning in the migrated files listed in its `MIGRATED` set (`BlockingWork`, `RemoteAccess*`, `HerdrRemoteBridge`); keep those clean and extend the set when migrating more files. Release CI also requires that audit to have run, so don't add build-product caching.
 
 Benchmarks and trace replay are skipped in normal `test` runs unless their env vars are set (the scripts do this). Pixel snapshots run locally only: CI (`.github/workflows/ci.yml`, macos-26) skips `ViewSnapshotTests` and `TerminalRenderingTests/testSnapshotsMatch` to stay fast. Terminal snapshots also need FiraCode Nerd Font Mono; view snapshots are saved per macOS version (`woolooTests/Snapshots/Views`, re-record with `TEST_RUNNER_WOOLOO_RECORD_SNAPSHOTS=1`). No linter or formatter is configured.
 
@@ -39,7 +50,13 @@ The Xcode project lists sources explicitly: adding a Swift file requires editing
 
 ## Architecture
 
-**Herdr connection (`HerdrConnection.swift`).** `HerdrStore` (the app's `ObservableObject`) talks to Herdr over two Unix sockets in the session directory (`~/.config/herdr/` for `default`, `~/.config/herdr/sessions/<name>/` otherwise; tests repoint `HerdrStore.sessionRoot`):
+**Windows and connections.** Each window chooses its own Herdr connection (local session or an SSH host): `HerdrConnectionCatalog.shared` (`HerdrConnections.swift`) lists the known connections and persists per-window state, and `HerdrDestinations` (`HerdrDestinations.swift`, one per `ContentView`) owns that window's `HerdrStore`(s), with a shared `HerdrMetadataPool` for stores other windows also need. SSH sessions go through `HerdrRemoteBridge` (Herdr's `remote-api-bridge`).
+
+**Bundled Herdr runtime (`HerdrRuntime.swift`).** The app ships a pinned universal Herdr (`scripts/bundle-herdr.sh` downloads and hash-checks it into `build/herdr/<version>` at build time). `HerdrRuntimeService` installs it under `~/Library/Application Support/wooloo/runtime` and runs the server as a user launchd job that outlives the app; `HerdrSetupView` is the first-run wizard (app-managed `wooloo` session). `WOOLOO_RUNTIME_ROOT`, `WOOLOO_SETUP_SESSION` and `XDG_CONFIG_HOME`/`XDG_STATE_HOME` redirect it for isolated runs.
+
+**Blocking work (`BlockingWork.swift`).** Processes, SSH commands, socket requests and file reads run on dedicated threads via `BlockingWork`, never the cooperative pool, with a concurrency limit per machine (an SSH ControlMaster allows ~10 sessions). Start Space/machine work through `WorkspaceFiles.blocking(at:)` / `blocking(on:)` so it counts against the right machine; long-lived streams pass `limited: false`. Synchronous blocking APIs are `@available(*, noasync)` — call them inside the `BlockingWork` closure.
+
+**Herdr connection (`HerdrConnection.swift`).** `HerdrStore` (one per connected session, `ObservableObject`) talks to Herdr over two Unix sockets in the session directory (`~/.config/herdr/` for `default`, `~/.config/herdr/sessions/<name>/` otherwise; tests repoint `HerdrStore.sessionRoot`):
 - `herdr.sock`: newline-delimited JSON. A persistent `events.subscribe` stream (`HerdrEventStream`) triggers a fresh `session.snapshot` on each event; commands (`workspace.create`, `tab.create`, `pane.split`, `server.reload_config`, …) are one-shot requests via `HerdrSocket`. `herdr api schema --json` is the method contract.
 - `herdr-client.sock`: binary generation-1 client endpoint for the selected tab — streams terminal surfaces and carries keyboard, paste, mouse and split-resize input. `pane.read` / JSON `pane.send_input` are fallbacks when it is unavailable.
 
@@ -59,7 +76,7 @@ The Xcode project lists sources explicitly: adding a Swift file requires editing
 
 **Hangs.** `HangWatchdog` pings the main thread from a background thread; after 3 s without an answer it runs `/usr/bin/sample` on the app into `~/Library/Logs/wooloo/Hangs` (mode 0600, UTC names, last 20 kept, at most one per minute), not while hosting tests, under a debugger or with `WOOLOO_DISABLE_HANG_WATCHDOG` set. Releases attach `wooloo-X.Y.Z.dSYM.zip` to symbolicate crash (`~/Library/Logs/DiagnosticReports/wooloo-*.ips`) and hang reports.
 
-**Instrumentation env vars** (read by the app): `WOOLOO_DISABLE_UPDATES`, `WOOLOO_METRICS_FILE`, `WOOLOO_SURFACE_TRACE`, `WOOLOO_WINDOW_SIZE`, and `WOOLOO_TYPING_PROBE*`, which works only in builds with the `WOOLOO_PROBES` compilation condition (set by `scripts/terminal-e2e.sh`). Trace files are created with mode 0600. Signposts use subsystem `dev.wooloo.terminal`.
+**Instrumentation env vars** (read by the app): `WOOLOO_DISABLE_UPDATES`, `WOOLOO_DISABLE_HANG_WATCHDOG`, `WOOLOO_SESSION_STORAGE_ROOT`, `WOOLOO_METRICS_FILE`, `WOOLOO_METRICS_DIGESTS`, `WOOLOO_SURFACE_TRACE`, `WOOLOO_WINDOW_SIZE`, and `WOOLOO_TYPING_PROBE*`, which works only in builds with the `WOOLOO_PROBES` compilation condition (set by `scripts/terminal-e2e.sh`). Trace files are created with mode 0600. Signposts use subsystem `dev.wooloo.terminal`.
 
 ## Working here
 
