@@ -1112,14 +1112,10 @@ final class HerdrStore: ObservableObject {
     func createWorkspace(cwd: String? = nil, label: String? = nil,
                          selectOnOpen: Bool = true, onCreated: @escaping @MainActor (String) -> Void = { _ in }) {
         let source = cwd == nil ? selectedWorkspaceID : nil
-        openSpace(selectOnOpen: selectOnOpen, onOpened: onCreated) { path in
-            try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: source, cwd: cwd, label: label)
+        openSpace(selectOnOpen: selectOnOpen, onOpened: onCreated) { backend in
+            try backend.create(.space(sourceSpaceID: source, cwd: cwd, label: label))
         }
     }
-
-    /// The Herdr refusals after which a worktree opens in a plain Space: the source is not a main
-    /// checkout or not in Git (a bare repository), or the server predates `worktree.open`.
-    static let worktreeFallbackCodes: Set<String> = ["linked_worktree_source", "not_git_worktree", "invalid_request"]
 
     /// Focuses the Space of a Git worktree checkout, opening one there if none is, as Herdr's
     /// `worktree.open` does: each checkout has one Space, and the Spaces of other checkouts keep
@@ -1134,14 +1130,8 @@ final class HerdrStore: ObservableObject {
             return
         }
         guard openingWorktrees.insert(checkout).inserted else { return }
-        let label = (checkout as NSString).lastPathComponent
-        openSpace(finished: { [weak self] in self?.openingWorktrees.remove(checkout) }) { path in
-            if let repository {
-                do {
-                    return try HerdrSocket.openWorktree(path: path, checkout: checkout, repository: repository)
-                } catch HerdrSocketError.refused(let code, _) where Self.worktreeFallbackCodes.contains(code) {}
-            }
-            return try HerdrSocket.createWorkspace(path: path, sourceWorkspaceID: nil, cwd: checkout, label: label)
+        openSpace(finished: { [weak self] in self?.openingWorktrees.remove(checkout) }) { backend in
+            try backend.create(.worktreeSpace(checkout: checkout, repository: repository))
         }
     }
 
@@ -1149,9 +1139,10 @@ final class HerdrStore: ObservableObject {
     private func openSpace(finished: @escaping @MainActor () -> Void = {},
                            selectOnOpen: Bool = true,
                            onOpened: @escaping @MainActor (String) -> Void = { _ in },
-                           _ open: @escaping @Sendable (String) throws -> String) {
+                           _ open: @escaping @Sendable (any SessionBackend) throws -> String) {
         guard isConnected else { return finished() }
         let path = socketPath
+        let backend = self.backend
         let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
         let currentEpoch = actionEpoch
@@ -1161,7 +1152,7 @@ final class HerdrStore: ObservableObject {
             let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> (String, HerdrSnapshot) in
                     try requestToken.check()
-                    let id = try open(path)
+                    let id = try open(backend)
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
             }
@@ -1181,6 +1172,7 @@ final class HerdrStore: ObservableObject {
     func createTab(cwd: String? = nil) {
         guard isConnected, let workspaceID = selectedWorkspaceID else { return }
         let path = socketPath
+        let backend = self.backend
         let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
         let currentEpoch = actionEpoch
@@ -1190,7 +1182,7 @@ final class HerdrStore: ObservableObject {
             let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> (String, HerdrSnapshot) in
                     try requestToken.check()
-                    let id = try HerdrSocket.createTab(path: path, workspaceID: workspaceID, cwd: cwd)
+                    let id = try backend.create(.tab(spaceID: workspaceID, cwd: cwd))
                     return (id, try HerdrSocket.snapshot(path: path))
                 }
             }
@@ -1246,12 +1238,8 @@ final class HerdrStore: ObservableObject {
     func moveWorkspace(_ workspaceID: String, beside anchorID: String, after: Bool) -> Bool {
         guard isConnected, !spaceMoveInFlight, let session,
               session.spaceMoveIndex(workspaceID, beside: anchorID, after: after) != nil else { return false }
-        runSpaceMove { path, token, _ in
-            let fresh = try HerdrSocket.snapshot(path: path)
-            guard let gap = fresh.workspaceMoveIndex(workspaceID, beside: anchorID, after: after) else { return nil }
-            try token.check()
-            _ = try HerdrSocket.request(path: path, method: "workspace.move",
-                                        params: ["workspace_id": workspaceID, "insert_index": gap])
+        runSpaceMove { backend, token, _ in
+            try backend.moveSpace(workspaceID, beside: anchorID, after: after, checkpoint: { try token.check() })
             return nil
         }
         return true
@@ -1270,54 +1258,32 @@ final class HerdrStore: ObservableObject {
     /// Herdr moves a pane, not a whole tab. A single-pane tab can be relocated atomically.
     @discardableResult
     func moveTab(_ tabID: String, toWorkspace workspaceID: String?, shouldFollow: @escaping () -> Bool = { true },
-                 onFollow: @escaping (HerdrPane) -> Void = { _ in }) -> Bool {
+                 onFollow: @escaping (WoolooPane) -> Void = { _ in }) -> Bool {
         guard tabSpaceMoveRefusal(tabID, to: workspaceID) == nil,
-              let tab = snapshot?.tabs.first(where: { $0.tabID == tabID }) else { return false }
-        let space = "\(contextID)|\(tab.workspaceID)"
+              let tab = session?.tabs.first(where: { $0.id == tabID }) else { return false }
+        let space = "\(contextID)|\(tab.spaceID)"
         let revision = selectionRevision
         let follow = selectedTabID == tabID
         runSpaceMove(prepare: {
             guard await WorkspaceSessionRegistry.shared.canRemoveSpace(space) else {
-                throw Self.spaceMoveError("Leave another terminal tab in the source Space, or recover and close its open or backed-up documents first.")
+                throw SessionMoveError(message: "Leave another terminal tab in the source Space, or recover and close its open or backed-up documents first.")
             }
-        }, onlyPrepareIfLastTab: tabID, followRevision: follow ? revision : nil, shouldFollow: shouldFollow, onFollow: onFollow) { path, token, lastTabWasChecked in
-            let fresh = try HerdrSocket.snapshot(path: path)
-            if let reason = fresh.tabSpaceMoveRefusal(tabID, to: workspaceID) { throw Self.spaceMoveError(reason) }
-            guard let currentTab = fresh.tabs.first(where: { $0.tabID == tabID }),
-                  let pane = fresh.panes.first(where: { $0.tabID == tabID }) else { throw Self.spaceMoveError("The source tab disappeared.") }
-            // The actor checked documents before starting this worker. If another client
-            // removes a sibling tab after that check, fail closed rather than close the Space.
-            if fresh.tabs.filter({ $0.workspaceID == currentTab.workspaceID }).count == 1,
-               lastTabWasChecked == false { throw Self.spaceMoveError("The source Space changed. Try the drag again.") }
-            let destination: [String: Any] = workspaceID.map {
-                ["type": "new_tab", "workspace_id": $0, "label": currentTab.label]
-            } ?? ["type": "new_workspace", "label": currentTab.label, "tab_label": currentTab.label]
-            try token.check()
-            let response = try HerdrSocket.request(path: path, method: "pane.move",
-                params: ["pane_id": pane.paneID, "destination": destination, "focus": false])
-            try Self.requireChange(response, in: "move_result", doing: "move the terminal tab")
-            guard let root = try JSONSerialization.jsonObject(with: response) as? [String: Any],
-                  let result = root["result"] as? [String: Any],
-                  let move = result["move_result"] as? [String: Any], let moved = move["pane"] else {
-                throw Self.spaceMoveError("Herdr did not return the moved pane. Refresh before trying again.")
-            }
-            return try JSONDecoder().decode(HerdrPane.self, from: JSONSerialization.data(withJSONObject: moved))
+        }, onlyPrepareIfLastTab: tabID, followRevision: follow ? revision : nil, shouldFollow: shouldFollow, onFollow: onFollow) { backend, token, lastTabWasChecked in
+            try backend.moveTab(tabID, toSpace: workspaceID, lastTabWasChecked: lastTabWasChecked,
+                                checkpoint: { try token.check() })
         }
         return true
-    }
-
-    nonisolated private static func spaceMoveError(_ message: String) -> NSError {
-        NSError(domain: "WoolooSpaceMove", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     /// One sidebar mutation at a time; always reconcile uncertain replies without retrying.
     private func runSpaceMove(prepare: @escaping @MainActor () async throws -> Void = {},
                               onlyPrepareIfLastTab tabID: String? = nil, followRevision: UInt64? = nil,
                               shouldFollow: @escaping () -> Bool = { true },
-                              onFollow: @escaping (HerdrPane) -> Void = { _ in },
-                              action: @escaping (String, HerdrRequestToken, Bool) throws -> HerdrPane?) {
+                              onFollow: @escaping (WoolooPane) -> Void = { _ in },
+                              action: @escaping (any SessionBackend, HerdrRequestToken, Bool) throws -> WoolooPane?) {
         spaceMoveInFlight = true
         let path = socketPath
+        let backend = self.backend
         let reaching = BlockingWorkMachine(machine)
         let currentGeneration = generation
         let currentEpoch = actionEpoch
@@ -1327,7 +1293,7 @@ final class HerdrStore: ObservableObject {
                 Result { try token.check(); return try HerdrSocket.snapshot(path: path) }
             }
             guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
-            let result: Result<HerdrPane?, Error>
+            let result: Result<WoolooPane?, Error>
             do {
                 let fresh = try preflight.get()
                 let lastTab = tabID.flatMap { id in fresh.tabs.first { $0.tabID == id } }.map { tab in
@@ -1336,7 +1302,7 @@ final class HerdrStore: ObservableObject {
                 if lastTab { try await prepare() }
                 try token.check()
                 result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
-                    Result { try token.check(); return try action(path, token, lastTab) }
+                    Result { try token.check(); return try action(backend, token, lastTab) }
                 }
             } catch { result = .failure(error) }
             let fresh = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
@@ -1347,8 +1313,8 @@ final class HerdrStore: ObservableObject {
             if let fresh {
                 snapshot = fresh
                 if case .success(let pane?) = result, followRevision == selectionRevision, shouldFollow(),
-                   fresh.panes.contains(where: { $0.paneID == pane.paneID && $0.tabID == pane.tabID && $0.workspaceID == pane.workspaceID }) {
-                    select(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.paneID)
+                   fresh.panes.contains(where: { $0.paneID == pane.id && $0.tabID == pane.tabID && $0.workspaceID == pane.spaceID }) {
+                    select(workspaceID: pane.spaceID, tabID: pane.tabID, paneID: pane.id)
                     onFollow(pane)
                 } else { repairSelection() }
             } else { repairSelection() }
@@ -1425,8 +1391,7 @@ final class HerdrStore: ObservableObject {
     func detachPane(_ paneID: String) -> Bool {
         guard isConnected, let snapshot, let source = snapshot.panes.first(where: { $0.paneID == paneID }),
               snapshot.panes.filter({ $0.tabID == source.tabID }).count > 1 else { return false }
-        relocatePane(paneID, destination: ["type": "new_tab"], targetPaneID: nil, edge: nil,
-                     detachFirst: false)
+        relocatePane(paneID, to: .newTab)
         return true
     }
 
@@ -1435,17 +1400,16 @@ final class HerdrStore: ObservableObject {
         guard canMovePane(paneID, nextTo: targetPaneID), let snapshot,
               let source = snapshot.panes.first(where: { $0.paneID == paneID }),
               let target = snapshot.panes.first(where: { $0.paneID == targetPaneID }) else { return false }
-        relocatePane(paneID, destination: ["type": "tab", "tab_id": target.tabID, "split": edge.split,
-                                          "target_pane_id": targetPaneID],
-                     targetPaneID: targetPaneID, edge: edge, detachFirst: source.tabID == target.tabID)
+        relocatePane(paneID, to: .beside(targetPaneID: targetPaneID, tabID: target.tabID, split: edge.split,
+                                         swapAfter: edge.swapsAfterMove, detachFirst: source.tabID == target.tabID))
         return true
     }
 
     /// Herdr refuses same-tab moves. Temporarily detach the pane, then insert it beside the
     /// target. Always refresh after a partial failure so the surviving terminal remains reachable.
-    private func relocatePane(_ paneID: String, destination: [String: Any], targetPaneID: String?,
-                              edge: TerminalDropEdge?, detachFirst: Bool) {
+    private func relocatePane(_ paneID: String, to destination: PaneDestination) {
         let path = socketPath
+        let backend = self.backend
         let reaching = BlockingWorkMachine(machine)
         let originalTab = snapshot?.panes.first(where: { $0.paneID == paneID })?.tabID
         let originalSelection = selectedTabID
@@ -1456,22 +1420,7 @@ final class HerdrStore: ObservableObject {
             guard requestToken.isValid else { return }
             let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> Void in
-                    try requestToken.check()
-                    if detachFirst {
-                        let detached = try HerdrSocket.request(path: path, method: "pane.move", params: [
-                            "pane_id": paneID, "destination": ["type": "new_tab"], "focus": false
-                        ])
-                        try Self.requireChange(detached, in: "move_result", doing: "detach the pane")
-                    }
-                    let moved = try HerdrSocket.request(path: path, method: "pane.move", params: [
-                        "pane_id": paneID, "destination": destination, "focus": true
-                    ])
-                    try Self.requireChange(moved, in: "move_result", doing: "move the pane")
-                    guard edge?.swapsAfterMove == true, let targetPaneID else { return }
-                    let swapped = try HerdrSocket.request(path: path, method: "pane.swap", params: [
-                        "source_pane_id": paneID, "target_pane_id": targetPaneID
-                    ])
-                    try Self.requireChange(swapped, in: "swap", doing: "place the pane on that side")
+                    try backend.movePane(paneID, to: destination, checkpoint: { try requestToken.check() })
                 }
             }
             // Read Herdr's layout even after a failure, which may follow a successful move.
@@ -1495,17 +1444,6 @@ final class HerdrStore: ObservableObject {
             case .failure(let error): actionError = error.localizedDescription
             }
         }
-    }
-
-    /// Herdr answers a move or swap it did not make with `changed: false` and a reason, not an error.
-    nonisolated private static func requireChange(_ response: Data, in key: String, doing action: String) throws {
-        guard let root = try JSONSerialization.jsonObject(with: response) as? [String: Any],
-              let result = (root["result"] as? [String: Any])?[key] as? [String: Any] else {
-            throw HerdrSocketError.message("Unexpected response from Herdr")
-        }
-        guard result["changed"] as? Bool != true else { return }
-        let reason = (result["reason"] as? String)?.replacingOccurrences(of: "_", with: " ")
-        throw HerdrSocketError.message("Herdr could not \(action)" + (reason.map { ": \($0)" } ?? ""))
     }
 
     func closePane(_ paneID: String) {

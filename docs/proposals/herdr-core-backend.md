@@ -125,11 +125,23 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
 - `TUISessionBackend` sends each command as the same JSON request `HerdrStore` sent before. `SessionCommandTests` pins every method and parameter.
 - `HerdrStore.performAction` takes a command and keeps the generic flow: connection check, action epoch, refreshing the snapshot, and following the server's focus after focus moves and splits.
 - `TUISessionBackend` validates Herdr's reload answer, which reports a status and diagnostics rather than an error.
-- Still TUI-only inside the store:
-  - Space and pane moves, whose gaps and detach/swap choreography read Herdr's own answers;
-  - opening Spaces and worktrees, which return new IDs;
-  - the event stream;
-  - the terminal surface and input.
+
+**Progress (Phase 2, second step).**
+- `SessionBackend` also opens and moves:
+  - `create(_:)` for Spaces, worktree Spaces and tabs, which returns the new ID;
+  - `moveSpace`;
+  - `moveTab(_:toSpace:)`, which returns the landed `WoolooPane`;
+  - `movePane(_:to:)`, with `PaneDestination` as a new tab or beside a pane.
+- Each takes a `checkpoint` so a cancelled action stops between steps.
+- `TUISessionBackend` holds Herdr's details, moved from `HerdrStore` unchanged:
+  - the worktree fallback codes;
+  - gaps computed against a fresh snapshot;
+  - the detach-then-move and move-then-swap steps;
+  - `changed: false` refusals.
+
+  Space moves report `SessionMoveError`.
+- `HerdrStore` keeps the generic flow: one Space move at a time, the documents check before a Space closes, refreshing after a failure, and following the moved pane.
+- Still TUI-only inside the store: the event stream and snapshot refresh, and the terminal surface and input.
 
 ### 3. Connection descriptor and hosts
 

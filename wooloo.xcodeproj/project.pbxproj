@@ -28,6 +28,7 @@
 		C3000000000000000000E001 /* PersistedKeyGoldenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E002 /* PersistedKeyGoldenTests.swift */; };
 		C3000000000000000000E107 /* WoolooSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E108 /* WoolooSessionTests.swift */; };
 		C3000000000000000000E205 /* SessionCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E206 /* SessionCommandTests.swift */; };
+		C3000000000000000000E207 /* TUISessionBackendTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E208 /* TUISessionBackendTests.swift */; };
 		A1000000000000000000AF01 /* WorkspaceSessionPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */; };
 		C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000AE02 /* PDFPreviewTests.swift */; };
 		A1000000000000000000AE01 /* PDFPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AE02 /* PDFPreviewView.swift */; };
@@ -212,6 +213,7 @@
 		C3000000000000000000E002 /* PersistedKeyGoldenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistedKeyGoldenTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000E108 /* WoolooSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooSessionTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000E206 /* SessionCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCommandTests.swift; sourceTree = "<group>"; };
+		C3000000000000000000E208 /* TUISessionBackendTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUISessionBackendTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionPersistence.swift; sourceTree = "<group>"; };
 		C3000000000000000000AE02 /* PDFPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFPreviewTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000AE02 /* PDFPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFPreviewView.swift; sourceTree = "<group>"; };
@@ -548,6 +550,7 @@
 				C3000000000000000000E002 /* PersistedKeyGoldenTests.swift */,
 				C3000000000000000000E108 /* WoolooSessionTests.swift */,
 				C3000000000000000000E206 /* SessionCommandTests.swift */,
+				C3000000000000000000E208 /* TUISessionBackendTests.swift */,
 				C3000000000000000000AD02 /* NotebookTests.swift */,
 				F7E100000000000000000008 /* NotebookEditingTests.swift */,
 				C3000000000000000000AE02 /* PDFPreviewTests.swift */,
@@ -852,6 +855,7 @@
 				C3000000000000000000E001 /* PersistedKeyGoldenTests.swift in Sources */,
 				C3000000000000000000E107 /* WoolooSessionTests.swift in Sources */,
 				C3000000000000000000E205 /* SessionCommandTests.swift in Sources */,
+				C3000000000000000000E207 /* TUISessionBackendTests.swift in Sources */,
 				C3000000000000000000AD01 /* NotebookTests.swift in Sources */,
 				F7E100000000000000000007 /* NotebookEditingTests.swift in Sources */,
 				C3000000000000000000AE01 /* PDFPreviewTests.swift in Sources */,
