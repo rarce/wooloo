@@ -263,7 +263,7 @@ final class PortForwards: ObservableObject {
     }
 
     static let maximumForwards = 32
-    static let readyMarker = "wooloo-forward-ready"
+    nonisolated static let readyMarker = "wooloo-forward-ready"
 
     @Published private(set) var states: [Key: State] = [:]
     private var processes: [Key: Process] = [:]
@@ -272,9 +272,9 @@ final class PortForwards: ObservableObject {
 
     /// Tests replace how a forward starts: given ssh's arguments, it returns the running
     /// process once the forward is ready, or why it failed.
-    var launcher: @Sendable (_ arguments: [String]) -> Result<ForwardProcess, Error> = PortForwards.launch
+    var launcher: @Sendable (_ arguments: [String]) -> Result<ForwardProcess, Error> = { PortForwards.launch($0) }
 
-    static func key(machine: HerdrMachineProfile, port: ListeningPort) -> Key {
+    nonisolated static func key(machine: HerdrMachineProfile, port: ListeningPort) -> Key {
         Key(machineID: machine.id, remoteHost: port.bind.host, remotePort: port.port)
     }
 
@@ -354,7 +354,7 @@ final class PortForwards: ObservableObject {
         states.removeValue(forKey: key)
     }
 
-    static func arguments(machine: HerdrMachineProfile, key: Key, localPort: Int) -> [String] {
+    nonisolated static func arguments(machine: HerdrMachineProfile, key: Key, localPort: Int) -> [String] {
         let endpoint = WorkspaceFiles.SSHEndpoint(machine.target)
         var arguments = ["-N", "-T",
                          "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",

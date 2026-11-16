@@ -178,7 +178,7 @@ final class ListeningPortsTests: XCTestCase {
         address.sin_port = 0
         address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
         let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
         }
         XCTAssertEqual(bound, 0)
         XCTAssertEqual(listen(fd, 1), 0)
@@ -209,7 +209,8 @@ final class ListeningPortsTests: XCTestCase {
         let port = ListeningPort(port: 3000, bind: .any, pid: 1, process: "node")
         let key = PortForwards.key(machine: machine, port: port)
 
-        let local = try XCTUnwrap(await forwards.forward(port, on: machine))
+        let started = await forwards.forward(port, on: machine)
+        let local = try XCTUnwrap(started)
         XCTAssertEqual(forwards.state(key), .active(localPort: local))
         XCTAssertEqual(launched.count, 1)
         // A second click reuses the running forward.
@@ -253,7 +254,8 @@ final class ListeningPortsTests: XCTestCase {
         }
         for number in [3000, 3001] {
             let port = ListeningPort(port: number, bind: .loopback, pid: 1, process: "node")
-            _ = try XCTUnwrap(await forwards.forward(port, on: machine))
+            let started = await forwards.forward(port, on: machine)
+            XCTAssertNotNil(started)
         }
         XCTAssertEqual(launched.count, 2)
         XCTAssertEqual(forwards.states.count, 2)
