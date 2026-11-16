@@ -523,8 +523,20 @@ struct HerdrDestinationSection: View {
     let rename: (HerdrWorkspace) -> Void
     let close: (HerdrWorkspace) -> Void
     @State private var collapsed = false
+    @StateObject private var ports = ListeningPortsMonitor()
     @Environment(\.woolooTheme) private var theme
     @Environment(\.woolooTypography) private var typography
+    @Environment(\.controlActiveState) private var activeState
+
+    /// Ports are scanned while the connection is up and its window is active.
+    private var portTarget: ListeningPortsMonitor.Target? {
+        guard store.isConnected, activeState != .inactive else { return nil }
+        return .init(machine: store.machine, session: store.sessionName)
+    }
+
+    private func updatePorts(_ target: ListeningPortsMonitor.Target?) {
+        if let target { ports.start(target) } else { ports.stop() }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -573,49 +585,58 @@ struct HerdrDestinationSection: View {
                     }
                 }
                 ForEach((store.snapshot ?? store.cachedSnapshot)?.workspaces ?? []) { space in
-                    Button { select(space.workspaceID) } label: {
-                        HStack(spacing: 7) {
-                            AgentStatusDot(status: space.agentStatus)
-                            Text(space.label).lineLimit(1)
-                            Spacer(minLength: 0)
-                            if let git = store.workspaceGitStatuses[space.workspaceID] {
-                                HStack(spacing: 4) {
-                                    if git.ahead > 0 { Text("↑\(git.ahead)") }
-                                    if git.behind > 0 { Text("↓\(git.behind)") }
+                    HStack(spacing: 4) {
+                        Button { select(space.workspaceID) } label: {
+                            HStack(spacing: 7) {
+                                AgentStatusDot(status: space.agentStatus)
+                                Text(space.label).lineLimit(1)
+                                Spacer(minLength: 0)
+                                if let git = store.workspaceGitStatuses[space.workspaceID] {
+                                    HStack(spacing: 4) {
+                                        if git.ahead > 0 { Text("↑\(git.ahead)") }
+                                        if git.behind > 0 { Text("↓\(git.behind)") }
+                                    }
+                                    .font(.system(size: typography.secondary)).monospacedDigit()
+                                    .foregroundStyle(.secondary).fixedSize()
                                 }
-                                .font(.system(size: typography.secondary)).monospacedDigit()
-                                .foregroundStyle(.secondary).fixedSize()
+                                let marks = notifier.attentionCount(inWorkspace: space.workspaceID,
+                                    snapshot: store.snapshot ?? store.cachedSnapshot, contextID: store.contextID)
+                                HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                             }
-                            let marks = notifier.attentionCount(inWorkspace: space.workspaceID,
-                                snapshot: store.snapshot ?? store.cachedSnapshot, contextID: store.contextID)
-                            HerdrAttentionBadge(requests: marks.requests, done: marks.done)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
-                        .font(.system(size: typography.emphasis, weight: .medium))
-                        .sidebarRow(selected: active && store.selectedWorkspaceID == space.workspaceID)
-                        .opacity(store.isConnected ? 1 : 0.5)
-                    }
-                    .buttonStyle(.plain)
-                    .onDrag { spaceDrag.begin(space.workspaceID, store: store) }
-                    .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: space.workspaceID))
-                    .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: space.workspaceID) }
-                          ?? "Drag to reorder Spaces, or drop a terminal tab to move it here")
-                    .contextMenu {
-                        Button("New Tab in Space", systemImage: "plus") {
-                            select(space.workspaceID)
-                            store.createTab()
-                        }.disabled(!store.isConnected)
-                        Button("Rename Space…", systemImage: "pencil") { rename(space) }
-                            .disabled(!store.isConnected)
-                        if let snapshot = store.snapshot,
-                           let location = WorkspaceFiles.location(snapshot: snapshot, workspaceID: space.workspaceID,
-                               session: store.sessionName, machine: store.machine) {
-                            Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(location.root) }
-                            if location.isLocal {
-                                Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.root) }
+                        .buttonStyle(.plain)
+                        .onDrag { spaceDrag.begin(space.workspaceID, store: store) }
+                        .modifier(SpaceDropModifier(store: store, spaces: spaceDrag, tabs: tabDrag, workspaceID: space.workspaceID))
+                        .help(tabDrag.draggedTerminalTab.flatMap { store.tabSpaceMoveRefusal($0, to: space.workspaceID) }
+                              ?? "Drag to reorder Spaces, or drop a terminal tab to move it here")
+                        .contextMenu {
+                            Button("New Tab in Space", systemImage: "plus") {
+                                select(space.workspaceID)
+                                store.createTab()
+                            }.disabled(!store.isConnected)
+                            Button("Rename Space…", systemImage: "pencil") { rename(space) }
+                                .disabled(!store.isConnected)
+                            if let snapshot = store.snapshot,
+                               let location = WorkspaceFiles.location(snapshot: snapshot, workspaceID: space.workspaceID,
+                                   session: store.sessionName, machine: store.machine) {
+                                Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(location.root) }
+                                if location.isLocal {
+                                    Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.root) }
+                                }
                             }
+                            Button("Close Space…", systemImage: "xmark", role: .destructive) { close(space) }.disabled(!store.isConnected)
                         }
-                        Button("Close Space…", systemImage: "xmark", role: .destructive) { close(space) }.disabled(!store.isConnected)
+                        // Beside the row's button rather than in it, so a tag's click is its own.
+                        let spacePorts = ports.ports(inSpace: space.workspaceID)
+                        if !spacePorts.isEmpty {
+                            SpacePortTags(ports: spacePorts, machine: store.machine)
+                        }
                     }
+                    .font(.system(size: typography.emphasis, weight: .medium))
+                    .sidebarRow(selected: active && store.selectedWorkspaceID == space.workspaceID)
+                    .opacity(store.isConnected ? 1 : 0.5)
                 }
                 if tabDrag.isDraggingTerminalTab,
                    tabDrag.spaceConnection?.validStore === store {
@@ -635,6 +656,9 @@ struct HerdrDestinationSection: View {
                 }
             }
         }
+        .onAppear { updatePorts(portTarget) }
+        .onChange(of: portTarget) { _, target in updatePorts(target) }
+        .onDisappear { ports.stop() }
         .onChange(of: active) { _, active in if active { collapsed = false } }
         .onChange(of: store.selectedWorkspaceID) { _, _ in if active { collapsed = false } }
     }

@@ -27,6 +27,7 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 - The Agents section shows every agent with its Space, tab, summary and status, and can be filtered to the selected Space.
 - Alerts when an agent finishes or needs input: Herdr's sounds, in-app toasts or system notifications, with unread marks until you look at the pane.
 - The connected host's CPU, memory, disk and uptime, local or over SSH.
+- `HTTP` tags on a Space for the TCP ports its processes listen on. Hover for the port; click to open it in the browser. On an SSH machine, a click first forwards the port to this Mac with `ssh -L`, and the tag turns green while forwarded. Forwards end when the port closes or wooloo quits.
 - Optional Claude Code and Codex plan usage in the sidebar (see [Agent quotas](#agent-quotas)).
 - A session picker for any Herdr session on the machine.
 - Mobile access to local sessions through a Cloudflare Tunnel or to remote servers over direct SSH, with public-key authorization (see [Remote access](#remote-access)).
