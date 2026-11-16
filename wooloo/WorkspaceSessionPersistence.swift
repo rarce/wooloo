@@ -398,8 +398,10 @@ final class WoolooAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The tunnel belongs to wooloo; cloudflared would otherwise keep publishing SSH after quitting.
+    /// Port forwards are wooloo's `ssh` processes too.
     func applicationWillTerminate(_ notification: Notification) {
         RemoteAccessModel.shared.stop()
+        PortForwards.shared.stopAll()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

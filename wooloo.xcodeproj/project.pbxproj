@@ -74,6 +74,8 @@
 		A1000000000000000000C201 /* BlockingWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000C202 /* BlockingWork.swift */; };
 		A1000000000000000000D901 /* HangWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000D902 /* HangWatchdog.swift */; };
 		A1000000000000000000005E /* HostStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005F /* HostStatsView.swift */; };
+		D70000000000000000000003 /* ListeningPortsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70000000000000000000004 /* ListeningPortsView.swift */; };
+		D70000000000000000000001 /* ListeningPorts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70000000000000000000002 /* ListeningPorts.swift */; };
 		A1D000000000000000000101 /* RemoteAccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000101 /* RemoteAccessView.swift */; };
 		A1D000000000000000000103 /* MobileSSHAccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D100000000000000000103 /* MobileSSHAccessView.swift */; };
 		A1000000000000000000C001 /* AppUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000C002 /* AppUpdater.swift */; };
@@ -98,6 +100,7 @@
 		A10000000000000000000F0D /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000F0E /* CommandPaletteView.swift */; };
 		C30000000000000000000F0F /* CommandPaletteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000F10 /* CommandPaletteTests.swift */; };
 		C30000000000000000000060 /* HostStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000061 /* HostStatsTests.swift */; };
+		D70000000000000000000005 /* ListeningPortsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70000000000000000000006 /* ListeningPortsTests.swift */; };
 		C3D000000000000000000100 /* RemoteAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D100000000000000000100 /* RemoteAccessTests.swift */; };
 		AFE200000000000000000002 /* RemoteAccessLineBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFE200000000000000000003 /* RemoteAccessLineBufferTests.swift */; };
 		C3D000000000000000000102 /* MobileSSHAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D100000000000000000102 /* MobileSSHAccessTests.swift */; };
@@ -247,6 +250,8 @@
 		A1000000000000000000C202 /* BlockingWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingWork.swift; sourceTree = "<group>"; };
 		A1000000000000000000D902 /* HangWatchdog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HangWatchdog.swift; sourceTree = "<group>"; };
 		A1000000000000000000005F /* HostStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsView.swift; sourceTree = "<group>"; };
+		D70000000000000000000004 /* ListeningPortsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListeningPortsView.swift; sourceTree = "<group>"; };
+		D70000000000000000000002 /* ListeningPorts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListeningPorts.swift; sourceTree = "<group>"; };
 		A1D100000000000000000101 /* RemoteAccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessView.swift; sourceTree = "<group>"; };
 		A1D100000000000000000103 /* MobileSSHAccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSSHAccessView.swift; sourceTree = "<group>"; };
 		A1000000000000000000C002 /* AppUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdater.swift; sourceTree = "<group>"; };
@@ -271,6 +276,7 @@
 		A10000000000000000000F0E /* CommandPaletteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteView.swift; sourceTree = "<group>"; };
 		C30000000000000000000F10 /* CommandPaletteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteTests.swift; sourceTree = "<group>"; };
 		C30000000000000000000061 /* HostStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatsTests.swift; sourceTree = "<group>"; };
+		D70000000000000000000006 /* ListeningPortsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListeningPortsTests.swift; sourceTree = "<group>"; };
 		C3D100000000000000000100 /* RemoteAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessTests.swift; sourceTree = "<group>"; };
 		AFE200000000000000000003 /* RemoteAccessLineBufferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAccessLineBufferTests.swift; sourceTree = "<group>"; };
 		C3D100000000000000000102 /* MobileSSHAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSSHAccessTests.swift; sourceTree = "<group>"; };
@@ -423,6 +429,8 @@
 				A1000000000000000000C202 /* BlockingWork.swift */,
 				A1000000000000000000D902 /* HangWatchdog.swift */,
 				A1000000000000000000005F /* HostStatsView.swift */,
+				D70000000000000000000004 /* ListeningPortsView.swift */,
+				D70000000000000000000002 /* ListeningPorts.swift */,
 				A1D100000000000000000101 /* RemoteAccessView.swift */,
 				A1D100000000000000000103 /* MobileSSHAccessView.swift */,
 				A1D100000000000000000100 /* RemoteAccess.swift */,
@@ -482,6 +490,7 @@
 				C3000000000000000000B102 /* HerdrRuntimeTests.swift */,
 				C30000000000000000000035 /* WorkspaceFilesRemoteTests.swift */,
 				C30000000000000000000061 /* HostStatsTests.swift */,
+				D70000000000000000000006 /* ListeningPortsTests.swift */,
 				C3D100000000000000000100 /* RemoteAccessTests.swift */,
 				AFE200000000000000000003 /* RemoteAccessLineBufferTests.swift */,
 				C3D100000000000000000102 /* MobileSSHAccessTests.swift */,
@@ -727,6 +736,8 @@
 				A1000000000000000000C201 /* BlockingWork.swift in Sources */,
 				A1000000000000000000D901 /* HangWatchdog.swift in Sources */,
 				A1000000000000000000005E /* HostStatsView.swift in Sources */,
+				D70000000000000000000003 /* ListeningPortsView.swift in Sources */,
+				D70000000000000000000001 /* ListeningPorts.swift in Sources */,
 				A1D000000000000000000101 /* RemoteAccessView.swift in Sources */,
 				A1D000000000000000000103 /* MobileSSHAccessView.swift in Sources */,
 				A1D000000000000000000100 /* RemoteAccess.swift in Sources */,
@@ -775,6 +786,7 @@
 				C3000000000000000000B101 /* HerdrRuntimeTests.swift in Sources */,
 				C30000000000000000000034 /* WorkspaceFilesRemoteTests.swift in Sources */,
 				C30000000000000000000060 /* HostStatsTests.swift in Sources */,
+				D70000000000000000000005 /* ListeningPortsTests.swift in Sources */,
 				C3D000000000000000000100 /* RemoteAccessTests.swift in Sources */,
 				AFE200000000000000000002 /* RemoteAccessLineBufferTests.swift in Sources */,
 				C3D000000000000000000102 /* MobileSSHAccessTests.swift in Sources */,
