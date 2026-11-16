@@ -409,7 +409,17 @@ final class HerdrStore: ObservableObject {
         return mapped
     }
     private var sessionCache: WoolooSession?
-    private(set) var cachedSnapshot: HerdrSnapshot?
+    /// The current session, or the last known one while disconnected (`cachedSnapshot`).
+    var displaySession: WoolooSession? {
+        if let session { return session }
+        guard let cachedSnapshot else { return nil }
+        if let cachedSessionCache { return cachedSessionCache }
+        let mapped = cachedSnapshot.session(backend: .tui(contextID: contextID))
+        cachedSessionCache = mapped
+        return mapped
+    }
+    private var cachedSessionCache: WoolooSession?
+    private(set) var cachedSnapshot: HerdrSnapshot? { didSet { cachedSessionCache = nil } }
     private var snapshotValue: HerdrSnapshot?
     private let publishedSnapshots = CurrentValueSubject<HerdrSnapshot?, Never>(nil)
     /// Each published snapshot, starting with the current one, like `@Published`'s publisher.
@@ -526,7 +536,7 @@ final class HerdrStore: ObservableObject {
     private static let lastSessionKey = "HerdrLastSession"
 
     @Published private(set) var sessionName = UserDefaults.standard.string(forKey: lastSessionKey)
-        ?? defaultSessionName { didSet { sessionCache = nil } }
+        ?? defaultSessionName { didSet { sessionCache = nil; cachedSessionCache = nil } }
     private var eventTask: Task<Void, Never>?
     private var paneTask: Task<Void, Never>?
     private var surfaceTask: Task<Void, Never>?
@@ -685,7 +695,7 @@ final class HerdrStore: ObservableObject {
         return Self.sessionDirectory(sessionName).appendingPathComponent("herdr-client.sock").path
     }
 
-    @Published private(set) var machine: HerdrMachineProfile? { didSet { sessionCache = nil } }
+    @Published private(set) var machine: HerdrMachineProfile? { didSet { sessionCache = nil; cachedSessionCache = nil } }
     /// Keep the existing local document keys; remote IDs are scoped to their machine.
     var legacyContextID: String { machine.map { "ssh:\($0.id)|\(sessionName)" } ?? sessionName }
     var contextID: String {

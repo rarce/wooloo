@@ -100,7 +100,11 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
   - `HerdrStore.visibleAgents` returns `WoolooAgent`, including agents from Herdr's agent views (`HerdrAgent.woolooAgent`).
   - The agents list, the agent focus action and `AgentStatusDot` read `AgentState`. Theme colours and marks for states are tested against the status strings.
   - A Space's folder comes from the session, through `WorkspaceFiles.location(in:spaceID:…)`. The snapshot variant delegates to it, so the existing explorer tests cover it.
-  - `ContentView` no longer reads the snapshot. The sidebar's Space rows live in `HerdrDestinations`, which still reads `snapshot ?? cachedSnapshot` and comes next.
+  - `ContentView` no longer reads the snapshot.
+- **Fifth step, in the same change: the rest of the UI.**
+  - `HerdrStore.displaySession` is the current session, or the last known one while disconnected, from `cachedSnapshot`, cached the same way.
+  - The sidebar's Space rows and attention counts read it (`HerdrDestinationSection`, with `WoolooSpace` in its rename and close actions), as do window membership (`HerdrWindowConnection`), back navigation and notification clicks, closing panes, and the UI probes.
+  - Outside the TUI backend itself (`HerdrStore` requests and events, `HerdrRuntime`, `HerdrAgentView` and the remote snapshot helper), only the snapshot entry points kept for tests remain. They delegate to the session ones.
 
 ### 2. Backend protocol behind `HerdrStore`
 

@@ -468,10 +468,10 @@ private struct DestinationContentView: View {
                                 create: { destinations.createSpace(on: store) },
                                 rename: { space in
                                     window.renameText = space.label
-                                    window.renameTarget = .workspace(space.workspaceID)
+                                    window.renameTarget = .workspace(space.id)
                                     window.renameConnection = HerdrActionConnection(store)
                                 }, close: { space in
-                                    window.closeTarget = .workspace(space.workspaceID, space.label)
+                                    window.closeTarget = .workspace(space.id, space.label)
                                     window.closeConnection = HerdrActionConnection(store)
                                 })
                         }

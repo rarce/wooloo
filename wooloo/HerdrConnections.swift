@@ -35,8 +35,8 @@ struct HerdrWindowConnection: Codable, Equatable, Identifiable {
     init(_ store: HerdrStore) {
         session = store.sessionName
         machine = store.machine
-        spaces = Array(Set((store.snapshot ?? store.cachedSnapshot)?.workspaces.map {
-            "\(store.contextID)|\($0.workspaceID)"
+        spaces = Array(Set(store.displaySession?.spaces.map {
+            "\(store.contextID)|\($0.id)"
         } ?? [] )).sorted()
         if let selected = store.selectedWorkspaceID {
             let key = "\(store.contextID)|\(selected)"

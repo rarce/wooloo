@@ -553,11 +553,11 @@ struct ContentCommands {
     }
 
     func requestClosePane(_ paneID: String) {
-        guard let snapshot = herdr.snapshot,
-              let pane = snapshot.panes.first(where: { $0.paneID == paneID }) else { return }
-        if snapshot.panes.filter({ $0.workspaceID == pane.workspaceID }).count == 1,
-           let workspace = snapshot.workspaces.first(where: { $0.workspaceID == pane.workspaceID }) {
-            window.closeTarget = .lastTab(workspace.workspaceID, workspace.label)
+        guard let session = herdr.session,
+              let pane = session.panes.first(where: { $0.id == paneID }) else { return }
+        if session.panes.filter({ $0.spaceID == pane.spaceID }).count == 1,
+           let workspace = session.spaces.first(where: { $0.id == pane.spaceID }) {
+            window.closeTarget = .lastTab(workspace.id, workspace.label)
         } else {
             window.closeTarget = .pane(paneID)
         }
@@ -568,7 +568,7 @@ struct ContentCommands {
         // Cancelling an old destination's confirmation must not alter this window's new context.
         if let captured = window.closeConnection, captured.validStore !== herdr { return }
         if case .lastTab(let id, _) = window.closeTarget,
-           herdr.snapshot?.workspaces.contains(where: { $0.workspaceID == id }) == true {
+           herdr.session?.spaces.contains(where: { $0.id == id }) == true {
             documents.activeID = nil
             herdr.select(workspaceID: id)
             focusPanel(.main)
