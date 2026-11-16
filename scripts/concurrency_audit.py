@@ -16,6 +16,9 @@ MIGRATED = frozenset({
     "wooloo/RemoteAccessLineBuffer.swift",
     "wooloo/RemoteAccess.swift",
     "wooloo/HerdrRemoteBridge.swift",
+    "wooloo/HerdrSnapshotModel.swift",
+    "wooloo/WoolooSession.swift",
+    "wooloo/HerdrSessionAdapter.swift",
 })
 DIAGNOSTIC = re.compile(r"^(.+?):(\d+)(?::(\d+))?: (warning|error): (.+)$")
 COMPILE = re.compile(r"^SwiftCompile\s+\S+\s+\S+\s+(.+?)(?: \(in target .+\))?$")

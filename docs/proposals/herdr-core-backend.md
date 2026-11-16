@@ -78,6 +78,17 @@ Introduce plain wooloo types for what the UI shows. Working names: `WoolooSessio
 - **Adapter.** The TUI snapshot decodes into these types through an adapter, and the `Decodable` TUI structs become private to the TUI backend. TUI-specific rules move into that backend's capability answers.
 - **Migration order.** Readers move off `HerdrSnapshot` one file at a time.
 
+**Progress (Phase 1, first step).**
+- **New Foundation-only files:**
+  - `WoolooSession.swift`: the model, `BackendID`, `AgentState` and `BackendCapabilities`.
+  - `HerdrSessionAdapter.swift`: `HerdrSnapshot.session(backend:)`.
+  - `HerdrSnapshotModel.swift`: the TUI snapshot types, moved out of `HerdrConnection.swift` unchanged.
+
+  Being Foundation-only, these files and `WoolooSessionTests` also build and run with Swift on Linux. All three are in the concurrency audit.
+- **Ids.** Ids inside a session stay the backend's raw strings, and the session carries one `BackendID` that scopes them all, instead of a pair on every id. `WoolooSession.spaceKey` builds the persisted Space key, and `BackendID.persistentKey` keeps TUI keys unchanged.
+- **Move rules.** The rules (`paneToSplit`, `spaceMoveIndex`, `tabSpaceMoveRefusal`) take their TUI restrictions from `BackendCapabilities.herdrTUI`. A test checks them against the snapshot's rules for every pair of tabs and Spaces in a fixture. The snapshot versions stay until their callers inside `HerdrStore` move.
+- **First reader.** `HerdrStore.session` caches the mapping per snapshot and context. `HerdrStore.tabSpaceMoveRefusal` is the first reader moved to it.
+
 ### 2. Backend protocol behind `HerdrStore`
 
 `HerdrStore` keeps its public API and becomes the façade of one backend connection. A `SessionBackend` protocol covers:
