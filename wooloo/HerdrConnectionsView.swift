@@ -19,6 +19,8 @@ struct HerdrConnectionsView: View {
     @State private var label = ""
     /// Adds a herdr-core session instead of a Herdr TUI one; offered behind `HerdrCoreSupport`.
     @State private var usesCore = false
+    /// Hosts wooloo keeps itself for herdr-core over SSH (`WoolooHostProfiles`).
+    @State private var coreHosts = WoolooHostProfiles.load()
     @State private var rename: HerdrMachineProfile?
     @State private var newLabel = ""
     @State private var confirmation: ProfileAction?
@@ -45,6 +47,9 @@ struct HerdrConnectionsView: View {
         result.sort { $0.session == "default" ? $1.session != "default" : $1.session != "default" && $0.session < $1.session }
         for profile in catalog.machines {
             result.append(HerdrWindowConnection(session: profile.session, machine: profile))
+        }
+        for host in coreHosts {
+            result.append(HerdrWindowConnection(session: host.session, machine: host, backend: .core))
         }
         for item in destinations.stores.map(HerdrWindowConnection.init) + destinations.retired
             where item.machine != nil && !result.contains(where: { $0.id == item.id }) {
@@ -211,6 +216,17 @@ struct HerdrConnectionsView: View {
             } else {
                 Button("Check State") { catalog.refresh() }
             }
+            if let host = connection.machine, WoolooHostProfiles.isOwned(host), opened(connection) == nil {
+                Button("Remove Saved Host", role: .destructive) {
+                    do {
+                        try WoolooHostProfiles.remove(id: host.id)
+                        coreHosts = WoolooHostProfiles.load()
+                        selection = nil
+                    } catch { self.error = error.localizedDescription }
+                }
+                Text("wooloo keeps this herdr-core host itself; removing it leaves the host and its terminals alone.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if HerdrCoreSupport.isEnabled, let profile = connection.machine, connection.backendKind == .tui,
                catalog.machines.contains(profile), opened(connection) == nil {
                 Button("Open herdr-core Session on This Host") {
@@ -246,9 +262,10 @@ struct HerdrConnectionsView: View {
                 Text("SSH profile").tag(true)
             }.pickerStyle(.segmented)
             TextField("Herdr session", text: $session)
-            if HerdrCoreSupport.isEnabled, !isSSH {
+            if HerdrCoreSupport.isEnabled {
                 Toggle("herdr-core session (preview)", isOn: $usesCore)
-                Text("Connects to the herdr-core (hc) installed on this Mac. Terminals show as text until live terminals arrive.")
+                Text(isSSH ? "Connects over SSH to the herdr-core (hc) installed on that host. wooloo saves the host itself; Herdr's profiles are not changed."
+                           : "Connects to the herdr-core (hc) installed on this Mac. Terminals show as text until live terminals arrive.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if isSSH {
@@ -263,7 +280,7 @@ struct HerdrConnectionsView: View {
             HStack {
                 Button("Cancel") { adding = false }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button(isSSH ? "Prepare, Save and Open" : "Create/Start and Open") { add() }
+                Button(usesCore && HerdrCoreSupport.isEnabled ? (isSSH ? "Save and Open" : "Open") : isSSH ? "Prepare, Save and Open" : "Create/Start and Open") { add() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!HerdrSessionName.isValid(session.trimmingCharacters(in: .whitespacesAndNewlines))
                               || (isSSH && (target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || target.hasPrefix("-"))))
@@ -312,10 +329,19 @@ struct HerdrConnectionsView: View {
 
     private func add() {
         let name = session.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !isSSH, usesCore, HerdrCoreSupport.isEnabled {
+        if usesCore, HerdrCoreSupport.isEnabled {
             adding = false
-            destinations.openCore(session: name)
-            selection = HerdrWindowConnection(session: name, backend: .core).id
+            guard isSSH else {
+                destinations.openCore(session: name)
+                selection = HerdrWindowConnection(session: name, backend: .core).id
+                return
+            }
+            do {
+                let host = try WoolooHostProfiles.add(target: target, label: label, session: name)
+                coreHosts = WoolooHostProfiles.load()
+                destinations.openCore(session: name, machine: host)
+                selection = HerdrWindowConnection(session: name, machine: host, backend: .core).id
+            } catch { self.error = error.localizedDescription }
             return
         }
         if !isSSH {

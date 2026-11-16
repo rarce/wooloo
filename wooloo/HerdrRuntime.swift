@@ -286,6 +286,19 @@ final class HerdrRuntimeModel: ObservableObject {
         // Preserve the session of existing installations. Fresh installs get the wizard.
         showsSetup = !defaults.bool(forKey: HerdrRuntimePaths.completedKey)
             && (defaults.string(forKey: "HerdrLastSession") ?? "").isEmpty
+            && defaults.string(forKey: Self.coreSessionKey) == nil
+    }
+
+    /// The herdr-core session chosen instead of setting up the Herdr TUI (preview).
+    static let coreSessionKey = "WoolooSetupCoreSession"
+    var chosenCoreSession: String? { defaults.string(forKey: Self.coreSessionKey) }
+
+    /// Skips the Herdr TUI setup and connects the window to herdr-core instead. Nothing is
+    /// installed or started: the core is the one the user installed (`HerdrCoreSupport`).
+    func chooseCore(session: String = "default") {
+        defaults.set(session, forKey: Self.coreSessionKey)
+        error = nil
+        showsSetup = false
     }
 
     var managedSessionName: String {
@@ -296,6 +309,7 @@ final class HerdrRuntimeModel: ObservableObject {
     var canDismissSetup: Bool {
         defaults.bool(forKey: HerdrRuntimePaths.completedKey)
             || !(defaults.string(forKey: "HerdrLastSession") ?? "").isEmpty
+            || chosenCoreSession != nil
     }
 
     func prepare(session: String) async -> Bool {

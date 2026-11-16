@@ -189,9 +189,9 @@ final class HerdrDestinations: ObservableObject {
         return store
     }
 
-    func configureInitialSession(_ name: String) {
+    func configureInitialSession(_ name: String, backend: BackendKind = .tui) {
         guard !isRunning, HerdrSessionName.isValid(name) else { return }
-        let store = makeStore(HerdrWindowConnection(session: name))
+        let store = makeStore(HerdrWindowConnection(session: name, backend: backend == .tui ? nil : backend))
         stores = [store]
         active = store
         lastLocal = store
@@ -309,7 +309,8 @@ final class HerdrDestinations: ObservableObject {
             return
         }
         savedMachines = machines
-        for store in stores where store.machine != nil {
+        // Hosts wooloo keeps itself are not in Herdr's catalog.
+        for store in stores where store.machine.map({ !WoolooHostProfiles.isOwned($0) }) ?? false {
             guard let profile = enabled.first(where: { $0.id == store.machine?.id }),
                   profile.target == store.machine?.target, profile.session == store.sessionName else {
                 remove(store)

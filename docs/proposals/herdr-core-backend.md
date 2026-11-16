@@ -359,11 +359,21 @@ Done in one change:
   - The live test runs with `WOOLOO_CORE_LIVE_HC`; it passed against hc 0.1.21 on Linux in an isolated session.
   - `HerdrStoreCoreTests` drives the store against `FakeCore`.
 
-Still to do from the Phase 3 scope:
-- wooloo-owned host profiles (SSH Core still uses Herdr's saved profiles);
-- wooloo-owned settings (shortcuts, theme and sounds still come from Herdr's `config.toml` when present);
-- a full no-`herdr` path: the setup wizard and runtime still assume the TUI;
-- a live SSH run.
+Also done, in the same change:
+
+- **wooloo-owned host profiles** (`WoolooHostProfiles`): SSH hosts for herdr-core, kept in wooloo's support folder (`hosts.json`, mode 0600, IDs prefixed `wooloo-`).
+  - Targets and sessions are validated as for the bridge, and the same target and session are not saved twice.
+  - Herdr's catalog refresh leaves these hosts' stores alone.
+  - The Connections window adds them (herdr-core + SSH), lists them, and removes them. Herdr's profiles are not changed.
+- **Settings:**
+  - `HerdrConfigFile.url` falls back to wooloo's own `config.toml` only when there is no Herdr TUI at all: no `config.toml` and no Herdr executable. That copy is saved without `herdr config check` or a reload. Releases bundle Herdr, so for them this only matters on builds without the bundle.
+  - herdr-core windows edit this Mac's settings and do not try to reload a TUI session.
+  - The keys stay those of Herdr's `config.toml` (shortcuts, theme, sounds), so moving between the two keeps them.
+- **No-TUI first run:** with the preview on and `hc` installed, the setup screen offers "Use herdr-core Instead". It opens a herdr-core session (default `default`) without setting up, installing or starting the Herdr TUI, and later launches restore that window.
+
+Still open:
+- a live SSH run against a real host;
+- new windows opened after a herdr-core-only first run start on the TUI's default session until a herdr-core connection is added.
 
 ## Phases
 
