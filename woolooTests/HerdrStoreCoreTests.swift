@@ -54,7 +54,8 @@ final class HerdrStoreCoreTests: XCTestCase {
         let created = try XCTUnwrap(store.session?.tabs.last?.id)
         XCTAssertEqual(store.selectedTabID, created)
         core.update { $0.terminals.removeAll { $0.address == "t1" } }
-        core.connections.first { $0.eventsChannel != nil }?.emit(type: "removed", terminal: "t1")
+        // The watcher and the live presentation each subscribe; a real core tells every subscriber.
+        for server in core.connections where server.eventsChannel != nil { server.emit(type: "removed", terminal: "t1") }
         await waitUntil("removed tab") { store.session?.tabs.map(\.id) == [created] }
     }
 
