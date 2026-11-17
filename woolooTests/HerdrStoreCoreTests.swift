@@ -202,7 +202,7 @@ final class HerdrStoreCoreTests: XCTestCase {
         let (server, channel) = try XCTUnwrap(attachedServer())
         await waitUntil("surface") { store.surface?.paneIDs == ["t1"] }
         server.send(Data("watched".utf8), on: channel)
-        let firstRow = { store.surface.map { $0.cells.row(0).prefix(7).map(\.symbol).joined() } }
+        let firstRow = { self.store.surface.map { $0.cells.row(0).prefix(7).map(\.symbol).joined() } }
         // Data sent before the presentation routes its channel would be lost, so the surface comes first.
         for _ in 0..<500 where firstRow() != "watched" { try? await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertEqual(firstRow(), "watched")
