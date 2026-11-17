@@ -1,0 +1,83 @@
+import XCTest
+@testable import wooloo
+
+/// The user-initiated herdr-core install on a remote host: pinned builds, an existing core
+/// kept, and a download that fails its checksum installing nothing. The remote command runs
+/// locally through a fake `ssh`, in a temporary home, with a fake `curl`.
+final class HerdrCoreInstallTests: XCTestCase {
+    private var home: String!
+    private let machine = HerdrMachineProfile(id: "dev", label: "Dev", target: "dev.example.test",
+                                              session: "default", enabled: true)
+
+    override func setUpWithError() throws {
+        home = "/private/tmp/wooloo-tests/core-install-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: home + "/fakebin", withIntermediateDirectories: true)
+        let ssh = home + "/ssh"
+        // Runs the remote command locally, as if the remote user's home were `home`, with only
+        // the fake tools and the system's own on PATH.
+        try write("""
+            #!/bin/sh
+            for command; do :; done
+            HOME='\(home!)' PATH='\(home!)/fakebin:/usr/bin:/bin' exec /bin/sh -c "$command"
+            """, to: ssh)
+        // A download that is not the pinned build.
+        try write("""
+            #!/bin/sh
+            while [ $# -gt 0 ]; do [ "$1" = -o ] && { printf 'not herdr-core' > "$2"; exit 0; }; shift; done
+            exit 1
+            """, to: home + "/fakebin/curl")
+        WorkspaceFiles.sshExecutable = ssh
+    }
+
+    override func tearDown() {
+        WorkspaceFiles.sshExecutable = "/usr/bin/ssh"
+        try? FileManager.default.removeItem(atPath: home)
+    }
+
+    private func write(_ text: String, to path: String) throws {
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+    }
+
+    private func install() async throws -> HerdrCoreInstall.Outcome {
+        let machine = self.machine
+        return try await WorkspaceFiles.blocking(on: machine) { try HerdrCoreInstall.install(on: machine) }
+    }
+
+    func testEveryPlatformIsPinned() {
+        XCTAssertEqual(Set(HerdrCoreInstall.builds.keys), ["linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"])
+        for (target, build) in HerdrCoreInstall.builds {
+            XCTAssertEqual(build.sha256.count, 64, target)
+            XCTAssertTrue(build.url.hasPrefix("https://releases.herdr.dev/core/\(HerdrCoreInstall.version)/"), target)
+            XCTAssertTrue(HerdrCoreInstall.script.contains("want=\(build.sha256)"), target)
+        }
+        XCTAssertFalse(HerdrCoreInstall.script.contains("exit 127"), "Finding no core is where the install starts")
+    }
+
+    func testOutcomesAreReadFromTheLastLine() {
+        XCTAssertEqual(HerdrCoreInstall.outcome(of: "noise\nwooloo-core-installed /home/u/.local/bin/herdr-core\n"),
+                       .installed("/home/u/.local/bin/herdr-core"))
+        XCTAssertEqual(HerdrCoreInstall.outcome(of: "wooloo-core-present /usr/bin/hc"), .present("/usr/bin/hc"))
+        XCTAssertNil(HerdrCoreInstall.outcome(of: "wooloo-core-installed"))
+        XCTAssertNil(HerdrCoreInstall.outcome(of: ""))
+    }
+
+    func testAnExistingCoreIsKept() async throws {
+        try FileManager.default.createDirectory(atPath: home + "/.local/bin", withIntermediateDirectories: true)
+        try write("#!/bin/sh\necho 'hc 0.0.1'\n", to: home + "/.local/bin/hc")
+        let outcome = try await install()
+        XCTAssertEqual(outcome, .present(home + "/.local/bin/hc"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.local/bin/herdr-core"))
+    }
+
+    func testADownloadThatFailsItsChecksumInstallsNothing() async throws {
+        do {
+            _ = try await install()
+            XCTFail("The install should fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("checksum"), error.localizedDescription)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.local/bin/herdr-core"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.local/bin/hc"))
+    }
+}

@@ -148,6 +148,10 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     var isAppActive: () -> Bool = { NSApp.isActive }
 
     private var statuses: [String: AgentState] = [:]
+    /// Each agent's last `progress`, so a herdr-core turn that finishes while the previous one
+    /// is still unseen (done, then done again) alerts too. TUI progress only rises with a
+    /// state change, which already alerts.
+    private var progresses: [String: UInt64] = [:]
     private var hasBaseline = false
     private var sounds: [String: NSSound] = [:]
 
@@ -172,6 +176,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
     /// Clears everything, e.g. when switching sessions.
     func reset() {
         statuses = [:]
+        progresses = [:]
         hasBaseline = false
         contextBaselines = []
         contextEpochs = [:]
@@ -200,11 +205,17 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
             return
         }
         var next: [String: AgentState] = [:]
-        for agent in session.agents { next[key(agent.paneID, context: contextID)] = agent.state }
+        var nextProgress: [String: UInt64] = [:]
+        for agent in session.agents {
+            next[key(agent.paneID, context: contextID)] = agent.state
+            nextProgress[key(agent.paneID, context: contextID)] = agent.progress
+        }
+        let previousProgress = progresses
         let scoped = statusScopes[contextID] ?? []
         defer {
-            for id in scoped { statuses[id] = nil }
+            for id in scoped { statuses[id] = nil; progresses[id] = nil }
             statuses.merge(next) { _, new in new }
+            progresses.merge(nextProgress) { _, new in new }
             hasBaseline = true
             contextBaselines.insert(contextID)
             statusScopes[contextID] = Set(next.keys)
@@ -223,7 +234,10 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
         for agent in session.agents {
             let paneKey = key(agent.paneID, context: contextID)
             let status = next[paneKey] ?? .unknown
-            guard let previous = statuses[paneKey], previous != status else { continue }
+            guard let previous = statuses[paneKey] else { continue }
+            let finishedAnotherTurn = previous == .done && status == .done
+                && (nextProgress[paneKey] ?? 0) > (previousProgress[paneKey] ?? .max)
+            guard previous != status || finishedAnotherTurn else { continue }
             let kind: HerdrAlertKind
             switch status {
             case .blocked: kind = .request
@@ -256,7 +270,7 @@ final class HerdrNotifier: NSObject, ObservableObject, UNUserNotificationCenterD
 
     func forget(contextID: String) {
         let scoped = statusScopes.removeValue(forKey: contextID) ?? []
-        for id in scoped { statuses[id] = nil; attention[id] = nil }
+        for id in scoped { statuses[id] = nil; progresses[id] = nil; attention[id] = nil }
         contextBaselines.remove(contextID)
         contextEpochs[contextID] = UUID()
         toasts.removeAll { $0.contextID == contextID }

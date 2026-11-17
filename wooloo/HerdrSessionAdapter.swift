@@ -38,7 +38,7 @@ extension HerdrAgent {
     var woolooAgent: WoolooAgent {
         WoolooAgent(paneID: paneID, spaceID: workspaceID, tabID: tabID, kind: agent, name: displayName,
                     detail: detail, state: AgentState(agentStatus), statusLabel: displayStatus,
-                    progress: stateChangeSeq)
+                    progress: stateChangeSeq, pinned: pinned)
     }
 }
 

@@ -62,9 +62,9 @@ final class HerdrStoreCoreTests: XCTestCase {
         store.connect(toCore: "wooloo-ui-test")
         await waitUntil("connected") { store.isConnected }
         store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
-        store.zoomPane()
+        store.reloadConfig()
         await waitUntil("error") { store.actionError != nil }
-        XCTAssertEqual(store.actionError, CoreProtocolError.unsupported("zoom panes").localizedDescription)
+        XCTAssertEqual(store.actionError, CoreProtocolError.unsupported("reload the configuration").localizedDescription)
     }
 
     private func attachedServer() -> (FakeCoreServer, UInt32)? {
@@ -128,6 +128,20 @@ final class HerdrStoreCoreTests: XCTestCase {
         await waitUntil("right output") {
             store.surface.map { s in (0..<10).map { s.cells[right.x + $0, 0].symbol }.joined() } == "right side"
         }
+        // Zoom is this window's own: the selected pane fills the tab, the other is detached.
+        store.zoomPane()
+        await waitUntil("zoomed") { store.surface?.paneRects["t2"]?.width == surface.width }
+        XCTAssertEqual(store.surface?.paneRects["t1"]?.width, 0)
+        XCTAssertEqual(store.surface?.paneIDs, ["t1", "t2"], "The surface still names every pane of the tab")
+        XCTAssertEqual(store.surface?.splits, [])
+        XCTAssertEqual(store.session?.layout(of: "tab-t1")?.zoomed, true)
+        XCTAssertFalse(core.lock.withLock { () -> Bool in
+            let document = core.documents[CoreStructure.documentName]?.value
+            return (try? JSONSerialization.data(withJSONObject: document ?? [:])).map { String(decoding: $0, as: UTF8.self) }?
+                .contains("zoom") ?? false
+        }, "Zoom is not written to the shared document")
+        store.zoomPane()
+        await waitUntil("unzoomed") { store.surface?.paneRects["t1"]?.width == left.width }
         // A dragged split moves at once and is written to the document once it rests.
         store.setSplitRatio(path: [], ratio: 0.25)
         await waitUntil("moved split") { (store.surface?.paneRects["t1"]?.width ?? 0) < left.width }
@@ -139,15 +153,42 @@ final class HerdrStoreCoreTests: XCTestCase {
         }
     }
 
-    func testShowingADoneTurnMarksItSeen() async throws {
+    func testShowingADoneTurnMarksItSeenOnlyInFrontOfSomeone() async throws {
         core.terminals = [CoreTerminal(address: "t1", argv: ["claude"], cols: 100, rows: 30, cwd: "/src/app",
                                        status: CoreStatus(state: "done", app: "claude", msg: nil, title: nil), turn: 4)]
         store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
         await waitUntil("connected") { store.isConnected }
         store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("drawn") { store.surface?.paneIDs == ["t1"] }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(core.callsTo("terminal.label").isEmpty, "Not seen while the window's terminal is not focused")
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
         await waitUntil("seen") {
             core.callsTo("terminal.label").contains { ($0.params["labels"] as? [String: String]) == ["herdr.seen": "4"] }
         }
+    }
+
+    func testPinnedAgentsListFirstAndAnUnreadTurnStaysUnread() async throws {
+        let idle = CoreStatus(state: "idle", app: "claude", msg: nil, title: nil)
+        core.terminals = [CoreTerminal(address: "t1", argv: ["claude"], cols: 100, rows: 30, cwd: "/src/app",
+                                       labels: ["herdr.seen": "3"], status: idle, turn: 3),
+                          CoreTerminal(address: "t2", argv: ["codex"], cols: 100, rows: 30, cwd: "/src/app",
+                                       status: idle, turn: 0)]
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
+        await waitUntil("connected") { store.isConnected }
+        XCTAssertEqual(store.visibleAgents(inSelectedSpaceOnly: false).map(\.paneID), ["t1", "t2"])
+        store.setAgentPinned("t2", true)
+        await waitUntil("pinned first") { store.visibleAgents(inSelectedSpaceOnly: false).map(\.paneID) == ["t2", "t1"] }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("drawn") { store.surface?.paneIDs == ["t1"] }
+        store.markAgentUnread("t1")
+        await waitUntil("unread") { store.session?.agents.first { $0.paneID == "t1" }?.state == .done }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertFalse(core.callsTo("terminal.label").contains { ($0.params["labels"] as? [String: String]) == ["herdr.seen": "3"] },
+                       "The pane on screen is not marked seen again at once")
     }
 
     func testCellsUseHerdrsSurfaceEncoding() {

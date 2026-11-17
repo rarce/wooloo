@@ -126,6 +126,8 @@ struct WoolooAgent: Hashable, Identifiable, Sendable {
     let statusLabel: String
     /// Increases each time the agent's state changes (TUI `state_change_seq`, Core `turn`).
     let progress: UInt64
+    /// Pinned by a person in any client (herdr-core's `herdr.pinned`); pinned agents list first.
+    var pinned = false
 
     var id: String { paneID }
 }

@@ -213,6 +213,12 @@ enum CoreLayout {
         let path: [Bool]
     }
 
+    /// The tree a window shows: the zoomed pane alone, when it is in the tree.
+    static func visible(_ root: CoreStructure.Node, zoomed: String?) -> CoreStructure.Node {
+        guard let zoomed, root.terminals.contains(zoomed) else { return root }
+        return .terminal(zoomed)
+    }
+
     static func panes(_ node: CoreStructure.Node, in area: HerdrRect) -> [(terminal: String, rect: HerdrRect)] {
         layout(node, in: area, path: []).panes
     }

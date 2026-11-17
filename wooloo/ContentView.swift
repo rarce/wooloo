@@ -556,6 +556,12 @@ private struct DestinationContentView: View {
                                     .font(.system(size: typography.secondary))
                                     .foregroundStyle(.secondary)
                                     HStack(spacing: 5) {
+                                        if agent.pinned {
+                                            Image(systemName: "pin.fill")
+                                                .font(.system(size: typography.caption))
+                                                .foregroundStyle(.secondary)
+                                                .accessibilityLabel("Pinned")
+                                        }
                                         Text(agent.name)
                                             .font(.system(size: typography.body, weight: .medium))
                                             .lineLimit(1)
@@ -596,6 +602,18 @@ private struct DestinationContentView: View {
                                 }
                                 Button("Copy Agent Name", systemImage: "doc.on.doc") {
                                     AppActions.copy(agent.name)
+                                }
+                                if herdr.backendKind == .core {
+                                    // herdr-core labels every client shares (herdr-app's labels.md).
+                                    Divider()
+                                    Button(agent.pinned ? "Unpin Agent" : "Pin Agent",
+                                           systemImage: agent.pinned ? "pin.slash" : "pin") {
+                                        herdr.setAgentPinned(agent.paneID, !agent.pinned)
+                                    }
+                                    Button("Mark as Unread", systemImage: "envelope.badge") {
+                                        herdr.markAgentUnread(agent.paneID)
+                                    }
+                                    .disabled(agent.state != .idle)
                                 }
                                 Divider()
                                 Button("Close Pane…", systemImage: "xmark.square", role: .destructive) {

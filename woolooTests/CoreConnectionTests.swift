@@ -250,6 +250,25 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(core.callsTo("terminal.label").first?.params["labels"] as? [String: String], ["herdr.seen": "7"])
     }
 
+    func testPinsAndUnreadMarksAreSharedLabels() throws {
+        let core = FakeCore()
+        let status = CoreStatus(state: "idle", app: "claude", msg: nil, title: nil)
+        core.terminals = [CoreTerminal(address: "t1", labels: ["herdr.seen": "4"], status: status, turn: 4),
+                          CoreTerminal(address: "t2", labels: ["wooloo.name": "reviewer"], status: status, turn: 0)]
+        let backend = backend(core)
+        try backend.setPinned("t1", true)
+        try backend.markUnread("t1")
+        try backend.markUnread("t2")
+        XCTAssertEqual(core.callsTo("terminal.label").compactMap { $0.params["labels"] as? [String: String] },
+                       [["herdr.pinned": "1"], ["herdr.seen": "3"]], "Turn 0 has nothing to mark unread")
+        let agents = try backend.snapshot().agents
+        XCTAssertEqual(agents.first { $0.paneID == "t1" }?.pinned, true)
+        XCTAssertEqual(agents.first { $0.paneID == "t1" }?.agentStatus, "done", "Unread again")
+        XCTAssertEqual(agents.first { $0.paneID == "t2" }?.displayName, "reviewer", "A renamed agent shows its name")
+        try backend.setPinned("t1", false)
+        XCTAssertEqual(try backend.snapshot().agents.first { $0.paneID == "t1" }?.pinned, false)
+    }
+
     func testCommandsAndCreationUseTerminalCalls() throws {
         let core = FakeCore()
         core.terminals = [CoreTerminal(address: "t1", cols: 100, rows: 30)]
@@ -260,8 +279,8 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(core.callsTo("terminal.label").first?.params["labels"] as? [String: String], ["wooloo.name": "build"])
         try backend.perform(.closePane(paneID: "t1"))
         XCTAssertEqual(core.callsTo("terminal.kill").first?.params["terminal"] as? String, "t1")
-        XCTAssertThrowsError(try backend.perform(.zoomPane(paneID: "t1"))) {
-            XCTAssertEqual($0 as? CoreProtocolError, .unsupported("zoom panes"))
+        XCTAssertThrowsError(try backend.perform(.reloadConfig)) {
+            XCTAssertEqual($0 as? CoreProtocolError, .unsupported("reload the configuration"))
         }
     }
 
@@ -335,6 +354,14 @@ final class CoreConnectionTests: XCTestCase {
             usleep(200_000)
         }
         XCTAssertTrue(text.components(separatedBy: "wooloo-live-check").count > 2, text)
+        // An empty value removes a label on a real core too.
+        try backend.setPinned(id, true)
+        XCTAssertEqual(try backend.snapshot().agents.first { $0.paneID == id }.map(\.pinned) ?? true, true)
+        let pinned = try backend.connect().call("terminal.list", [:], as: CoreListResult.self).terminals.first { $0.address == id }
+        XCTAssertEqual(pinned?.labels["herdr.pinned"], "1")
+        try backend.setPinned(id, false)
+        let unpinned = try backend.connect().call("terminal.list", [:], as: CoreListResult.self).terminals.first { $0.address == id }
+        XCTAssertNil(unpinned?.labels["herdr.pinned"])
         XCTAssertNotNil(backend.core?.id)
     }
 }
