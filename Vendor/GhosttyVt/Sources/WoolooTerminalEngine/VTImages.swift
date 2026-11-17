@@ -90,3 +90,19 @@ enum VTSystem {
         #endif
     }()
 }
+
+/// The match a terminal search selected: its place among all matches (1 is the newest) and,
+/// when the viewport shows it, its first and last cells (both included) in the viewport.
+public struct TerminalSearchMatch: Sendable {
+    public let index: Int
+    public let total: Int
+    public let start: (column: Int, row: Int)?
+    public let end: (column: Int, row: Int)?
+
+    public init(index: Int, total: Int, start: (column: Int, row: Int)?, end: (column: Int, row: Int)?) {
+        self.index = index
+        self.total = total
+        self.start = start
+        self.end = end
+    }
+}

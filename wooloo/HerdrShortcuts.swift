@@ -63,6 +63,8 @@ enum HerdrCommand: Equatable {
     /// A file command of the focused explorer tree, from the command palette.
     case explorer(ExplorerFileCommand)
     case copyPaneDirectory, revealPaneDirectory
+    /// Find in the selected terminal's screen and scrollback (herdr-core connections).
+    case findInTerminal
 
     init?(action: String) {
         switch action {
@@ -102,6 +104,7 @@ enum HerdrCommand: Equatable {
         case "command_palette": self = .commandPalette
         case "copy_pane_cwd": self = .copyPaneDirectory
         case "reveal_pane_cwd": self = .revealPaneDirectory
+        case "find_in_terminal": self = .findInTerminal
         default:
             if let command = EditorCommand(rawValue: action) {
                 self = .editor(command)

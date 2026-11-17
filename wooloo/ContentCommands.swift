@@ -98,6 +98,9 @@ final class ContentWindowModel: ObservableObject {
     /// Bumped to reload the explorer and repository views.
     @Published var fileRefreshVersion = 0
     @Published var showsSearchTab = false
+    /// The find bar over a herdr-core terminal, and a count bumped each time it is asked for.
+    @Published var showsTerminalFind = false
+    @Published var terminalFindRequest = 0
     weak var commandStore: HerdrStore?
     var renameConnection: HerdrActionConnection?
     var closeConnection: HerdrActionConnection?
@@ -186,7 +189,8 @@ struct ContentCommands {
                                          showsSource: showsSource,
                                          explorerActions: Set(ExplorerFileCommand.paletteCommands
                                              .filter(window.explorer.isAvailable).map(\.paletteAction)),
-                                         canCheckForUpdates: effects.canCheckForUpdates())
+                                         canCheckForUpdates: effects.canCheckForUpdates(),
+                                         findsInTerminal: herdr.findsInTerminal && focusedDocumentID == nil)
     }
 
     private func acceptsFileAction(at location: WorkspaceFileLocation?) -> Bool {
@@ -333,6 +337,10 @@ struct ContentCommands {
                                           uniquingKeysWith: { first, _ in first })
                 window.commandPalette.present(items, bindings: bindings)
             }
+        case .findInTerminal:
+            guard herdr.findsInTerminal else { return }
+            window.showsTerminalFind = true
+            window.terminalFindRequest &+= 1
         case .copyPaneDirectory, .revealPaneDirectory:
             guard let cwd = herdr.selectedPanes.first(where: { $0.id == herdr.selectedPaneID })?.cwd else { return }
             if command == .copyPaneDirectory { effects.copy(cwd) } else { effects.reveal(cwd) }

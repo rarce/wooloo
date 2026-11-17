@@ -1709,6 +1709,21 @@ final class HerdrStore: ObservableObject {
         }
     }
 
+    /// Whether the selected pane's terminal can be searched: herdr-core terminals, which
+    /// wooloo emulates with their scrollback. The TUI keeps its scrollback on the server.
+    var findsInTerminal: Bool { backendKind == .core && surfaceStream != nil && selectedPaneID != nil }
+
+    /// Searches the selected pane's terminal and shows the next match, older or newer. It runs
+    /// off the main thread, since a long scrollback takes a while.
+    func findInTerminal(_ query: String, older: Bool) async -> TerminalFindResult? {
+        guard findsInTerminal, let stream = surfaceStream, let paneID = selectedPaneID else { return nil }
+        return try? await BlockingWork.run(priority: .userInitiated) { stream.find(query, in: paneID, older: older) }
+    }
+
+    func endTerminalFind() {
+        surfaceStream?.endFind()
+    }
+
     func setSplitRatio(path: [Bool], ratio: Double) {
         guard let tabID = selectedTabID, ratio.isFinite else { return }
         // Called up to 30 times a second while a split is dragged, so an unchanged error is not published again.

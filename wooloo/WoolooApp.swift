@@ -124,6 +124,8 @@ private struct WoolooCommands: Commands {
             item("focus_pane_up")
             item("focus_pane_down")
             Divider()
+            item("find_in_terminal")
+            Divider()
             item("close_pane")
         }
 

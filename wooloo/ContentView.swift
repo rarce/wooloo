@@ -827,6 +827,13 @@ private struct DestinationContentView: View {
                 .onAppear { resizeSurface(to: geometry.size) }
                 .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }
             }
+            .overlay(alignment: .topTrailing) {
+                if window.showsTerminalFind, herdr.findsInTerminal {
+                    TerminalFindBar(store: herdr, request: window.terminalFindRequest,
+                                    onClose: { window.showsTerminalFind = false })
+                        .padding(10)
+                }
+            }
         } else if let layout = herdr.selectedTabID.flatMap({ herdr.session?.layout(of: $0) }),
            !layout.panes.isEmpty {
             GeometryReader { geometry in

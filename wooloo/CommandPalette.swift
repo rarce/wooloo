@@ -20,6 +20,8 @@ struct WoolooCommandAvailability: Equatable {
     var explorerActions: Set<String> = []
     /// Sparkle runs (Release builds) and no check or update is under way.
     var canCheckForUpdates = false
+    /// The keyboard is in a terminal whose screen and scrollback wooloo can search (herdr-core).
+    var findsInTerminal = false
 }
 
 /// Actions of the open file's editor that the command palette offers. The document view runs
@@ -186,6 +188,8 @@ struct WoolooCommandItem: Identifiable, Equatable {
         case tabs(Int)
         /// The updater can start a check, as the menu item shows.
         case updates
+        /// A searchable terminal has the keyboard; otherwise ⌘F stays with the editor.
+        case terminalFind
     }
 
     let action: String
@@ -221,6 +225,7 @@ struct WoolooCommandItem: Identifiable, Equatable {
         case .explorer: return availability.explorerActions.contains(action)
         case .tabs(let count): return availability.isConnected && availability.hasSpace && availability.tabCount >= count
         case .updates: return availability.canCheckForUpdates
+        case .terminalFind: return availability.isConnected && availability.findsInTerminal
         }
     }
 
@@ -297,6 +302,8 @@ struct WoolooCommandItem: Identifiable, Equatable {
         .init("focus_pane_down", "Pane", "Focus Pane Down", KeyboardShortcut(.downArrow, modifiers: [.command, .option]),
               requires: .pane),
         .init("close_pane", "Pane", "Close Pane…", requires: .pane),
+        .init("find_in_terminal", "Pane", "Find in Terminal…", KeyboardShortcut("f", modifiers: .command),
+              requires: .terminalFind),
         .init("copy_pane_cwd", "Pane", "Copy Working Directory", requires: .pane),
         .init("reveal_pane_cwd", "Pane", "Reveal Working Directory in Finder", requires: .pane)
     ]

@@ -60,6 +60,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         var grid: [[HerdrCell]]
         var cursor: TerminalCursor?
         var images: [TerminalImage] = []
+        /// The search match shown, in viewport cells (both ends included).
+        var highlight: (start: (column: Int, row: Int), end: (column: Int, row: Int))?
         var inbox = Data()
     }
 
@@ -190,7 +192,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             switch event {
             case .mouse(let mouse):
                 let input = Self.mouseInput(mouse, to: emulator)
-                if input.scrolled { dirty = true }
+                // A match highlight is in viewport cells, so it does not follow a scroll.
+                if input.scrolled { dirty = true; attachments[paneID]?.highlight = nil }
                 return (self.connection, attachment.channel, input.bytes, input.scrolled)
             case .text(let text): bytes = Data(text.utf8)
             case .paste(let text): bytes = emulator.encodePaste(text)
@@ -198,6 +201,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             }
             // Typing returns to the live screen, as in other terminals.
             if !emulator.isAtBottom { emulator.scrollToBottom(); dirty = true }
+            if attachment.highlight != nil { attachments[paneID]?.highlight = nil; dirty = true }
             return (self.connection, attachment.channel, bytes, false)
         }
         if handled { wake.signal() }
@@ -206,6 +210,39 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             try connection.send(CoreFrame(channel: channel, kind: .data, payload: bytes))
             return true
         } catch { return false }
+    }
+
+    func find(_ query: String, in paneID: String, older: Bool) -> TerminalFindResult? {
+        let result = lock.withLock { () -> TerminalFindResult? in
+            for terminal in attachments.keys where terminal != paneID && attachments[terminal]?.highlight != nil {
+                attachments[terminal]?.highlight = nil
+            }
+            guard let attachment = attachments[paneID] else { return nil }
+            dirty = true
+            guard let match = attachment.emulator.find(query, older: older) else {
+                attachments[paneID]?.highlight = nil
+                return nil
+            }
+            if let start = match.start, let end = match.end {
+                attachments[paneID]?.highlight = (start, end)
+            } else {
+                attachments[paneID]?.highlight = nil
+            }
+            return TerminalFindResult(index: match.index, total: match.total)
+        }
+        wake.signal()
+        return result
+    }
+
+    func endFind() {
+        lock.withLock {
+            for terminal in attachments.keys {
+                attachments[terminal]?.emulator.endSearch()
+                attachments[terminal]?.highlight = nil
+            }
+            dirty = true
+        }
+        wake.signal()
     }
 
     func sendPopupInput(_ event: HerdrInputEvent, terminalID: String) -> Bool { false }
@@ -455,9 +492,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         for (terminal, rect) in panes {
             rects[terminal] = rect
             guard let pane = attachments[terminal]?.grid else { continue }
+            let highlight = attachments[terminal]?.highlight
             for (dy, row) in pane.prefix(rect.height).enumerated() where rect.y + dy < grid.count {
                 for (dx, cell) in row.prefix(rect.width).enumerated() where rect.x + dx < area.width {
-                    grid[rect.y + dy][rect.x + dx] = cell
+                    grid[rect.y + dy][rect.x + dx] = highlight.map { Self.contains($0, column: dx, row: dy) } == true
+                        ? Self.inverted(cell) : cell
                 }
             }
         }
@@ -577,6 +616,20 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         return HerdrGraphic(key: key, data: image.pixels, x: rect.x + column, y: rect.y + row, cols: cols, rows: rows,
                             sourceX: sourceX, sourceY: sourceY, sourceWidth: sourceWidth, sourceHeight: sourceHeight,
                             xOffset: offsetX, yOffset: offsetY, z: z)
+    }
+
+    /// Whether a cell is inside a match that runs from `start` to `end` in reading order.
+    static func contains(_ match: (start: (column: Int, row: Int), end: (column: Int, row: Int)), column: Int, row: Int) -> Bool {
+        guard row >= match.start.row, row <= match.end.row else { return false }
+        if row == match.start.row, column < match.start.column { return false }
+        if row == match.end.row, column > match.end.column { return false }
+        return true
+    }
+
+    /// A cell drawn with foreground and background swapped, as a search match shows.
+    static func inverted(_ cell: HerdrCell) -> HerdrCell {
+        HerdrCell(symbol: cell.symbol, foreground: cell.foreground, background: cell.background,
+                  modifier: cell.modifier ^ 64, skip: cell.skip, hyperlink: cell.hyperlink)
     }
 
     static func encode(_ rgb: TerminalRGB) -> UInt32 {

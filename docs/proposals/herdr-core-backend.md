@@ -423,9 +423,13 @@ Still open:
   - It sends no RESIZE, FOCUS or input; the wheel still scrolls its own scrollback.
   - When the window becomes key, it closes the watching stream and attaches actively. It is never demoted, so switching windows does not repaint.
   - Data from a stream the presentation closed is dropped.
-- **Still open:**
-  - find in terminal, which the TUI path does not have in wooloo either;
-  - selecting lines that scrolled off screen, since the view selects what is on screen.
+- **Find in terminal:**
+  - `VTTerminal.find` drives libghostty-vt's search over the screen and scrollback. `select_next` moves toward older matches and wraps, and it scrolls the viewport to the match.
+  - The presentation highlights the match by inverting its cells in the composed surface, so `TerminalPaneView` needed no drawing change. The highlight ends when the pane scrolls, is typed in, or the search ends.
+  - The protocol's `find`/`endFind` default to nothing, so the TUI presentation is unchanged.
+  - `TerminalFindBar` sits over the terminal; searches run off the main thread.
+  - **Find in Terminal** (Pane menu and palette, ⌘F) is available only when a herdr-core terminal has the keyboard and no document is focused, so ⌘F stays with the editor and with TUI terminals.
+- **Still open:** selecting lines that scrolled off screen. The view keeps a selection in screen cells on both backends, so it does not follow the scrollback; this needs selections in absolute rows in `TerminalPaneView`.
 
 ## Phase 5 progress (2026-11-16)
 

@@ -20,6 +20,22 @@ protocol TerminalSurfaceConnection: AnyObject, Sendable {
     func sendInput(_ event: HerdrInputEvent, to paneID: String) -> Bool
     func sendPopupInput(_ event: HerdrInputEvent, terminalID: String) -> Bool
     func closePopup() -> Bool
+    /// Finds text in a pane's terminal, scrollback included, and shows the next match, older or
+    /// newer; nil when nothing matches or the presentation cannot search (the TUI's).
+    func find(_ query: String, in paneID: String, older: Bool) -> TerminalFindResult?
+    /// Ends a search and removes its highlight.
+    func endFind()
+}
+
+/// Where a terminal search stands: the shown match's place among all of them, 1 the newest.
+struct TerminalFindResult: Equatable, Sendable {
+    let index: Int
+    let total: Int
+}
+
+extension TerminalSurfaceConnection {
+    func find(_ query: String, in paneID: String, older: Bool) -> TerminalFindResult? { nil }
+    func endFind() {}
 }
 
 extension HerdrSurfaceStream: TerminalSurfaceConnection {}

@@ -128,4 +128,40 @@ final class CoreTerminalInputTests: XCTestCase {
         XCTAssertEqual(image.format, .rgba)
         XCTAssertEqual(image.pixels, rgba)
     }
+
+    // MARK: Find
+
+    func testFindWalksMatchesFromTheNewestThroughTheScrollback() throws {
+        let terminal = try terminal((1...100).map { "line \($0)" }.joined(separator: "\r\n"))
+        let newest = try XCTUnwrap(terminal.find("line 7"))
+        XCTAssertEqual(newest.total, 11, "line 7 and line 70 to 79")
+        XCTAssertEqual(newest.index, 1)
+        // line 79 is row 78 of 100; the viewport shows rows 76 to 99.
+        XCTAssertEqual(newest.start?.row, 2)
+        XCTAssertEqual(newest.start?.column, 0)
+        XCTAssertEqual(newest.end?.column, 5)
+        XCTAssertTrue(terminal.isAtBottom, "A match on screen does not scroll")
+        var match = newest
+        for _ in 0..<10 { match = try XCTUnwrap(terminal.find("line 7")) }
+        XCTAssertEqual(match.index, 11, "The oldest: line 7")
+        XCTAssertFalse(terminal.isAtBottom, "The viewport scrolled back to it")
+        XCTAssertEqual(match.start?.column, 0)
+        XCTAssertEqual(try XCTUnwrap(terminal.find("line 7")).index, 1, "Past the oldest it wraps to the newest")
+        XCTAssertEqual(try XCTUnwrap(terminal.find("line 7", older: false)).index, 11, "and back")
+        XCTAssertNil(terminal.find("not there"))
+        XCTAssertNil(terminal.find(""))
+        terminal.endSearch()
+    }
+
+    func testAMatchIsDrawnInverted() {
+        let match = (start: (column: 3, row: 1), end: (column: 2, row: 2))
+        XCTAssertFalse(CoreTerminalPresentation.contains(match, column: 2, row: 1))
+        XCTAssertTrue(CoreTerminalPresentation.contains(match, column: 3, row: 1))
+        XCTAssertTrue(CoreTerminalPresentation.contains(match, column: 70, row: 1), "A match can run onto the next line")
+        XCTAssertTrue(CoreTerminalPresentation.contains(match, column: 0, row: 2))
+        XCTAssertFalse(CoreTerminalPresentation.contains(match, column: 3, row: 2))
+        let cell = HerdrCell(symbol: "a", foreground: 1, background: 2, modifier: 1, skip: false)
+        XCTAssertEqual(CoreTerminalPresentation.inverted(cell).modifier, 1 | 64)
+        XCTAssertEqual(CoreTerminalPresentation.inverted(CoreTerminalPresentation.inverted(cell)), cell)
+    }
 }

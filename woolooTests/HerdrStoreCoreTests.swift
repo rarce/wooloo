@@ -166,6 +166,27 @@ final class HerdrStoreCoreTests: XCTestCase {
         }
     }
 
+    func testFindInTerminalHighlightsTheMatch() async throws {
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("attached") { attachedServer() != nil }
+        let (server, channel) = try XCTUnwrap(attachedServer())
+        server.send(Data("alpha\r\nbeta\r\n".utf8), on: channel)
+        await waitUntil("output") { store.surface.map { $0.cells.row(1).prefix(4).map(\.symbol).joined() } == "beta" }
+        XCTAssertTrue(store.findsInTerminal)
+        let result = await store.findInTerminal("beta", older: true)
+        XCTAssertEqual(result, TerminalFindResult(index: 1, total: 1))
+        await waitUntil("highlight") { (store.surface?.cells[0, 1].modifier ?? 0) & 64 != 0 }
+        XCTAssertEqual((store.surface?.cells[4, 1].modifier ?? 64) & 64, 0, "Only the match")
+        let missing = await store.findInTerminal("gamma", older: true)
+        XCTAssertNil(missing)
+        await waitUntil("no highlight") { (store.surface?.cells[0, 1].modifier ?? 64) & 64 == 0 }
+        store.endTerminalFind()
+    }
+
     func testAnInactiveWindowWatchesUntilItIsActive() async throws {
         let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
         store.requiresSurfaceForInput = true

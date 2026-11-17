@@ -49,6 +49,7 @@
 		C3000000000000000000E203 /* TUISessionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E204 /* TUISessionBackend.swift */; };
 		C3000000000000000000E604 /* CoreTerminalPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E605 /* CoreTerminalPresentation.swift */; };
 		C3000000000000000000E701 /* CoreStructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E702 /* CoreStructure.swift */; };
+		C3000000000000000000E711 /* TerminalFindBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E712 /* TerminalFindBar.swift */; };
 		C3000000000000000000E705 /* HerdrCoreInstall.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E706 /* HerdrCoreInstall.swift */; };
 		C3000000000000000000E501 /* WoolooHostProfiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E502 /* WoolooHostProfiles.swift */; };
 		C3000000000000000000E307 /* HerdrCoreSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E308 /* HerdrCoreSupport.swift */; };
@@ -251,6 +252,7 @@
 		C3000000000000000000E204 /* TUISessionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TUISessionBackend.swift; sourceTree = "<group>"; };
 		C3000000000000000000E605 /* CoreTerminalPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTerminalPresentation.swift; sourceTree = "<group>"; };
 		C3000000000000000000E702 /* CoreStructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreStructure.swift; sourceTree = "<group>"; };
+		C3000000000000000000E712 /* TerminalFindBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalFindBar.swift; sourceTree = "<group>"; };
 		C3000000000000000000E706 /* HerdrCoreInstall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrCoreInstall.swift; sourceTree = "<group>"; };
 		C3000000000000000000E502 /* WoolooHostProfiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooHostProfiles.swift; sourceTree = "<group>"; };
 		C3000000000000000000E308 /* HerdrCoreSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrCoreSupport.swift; sourceTree = "<group>"; };
@@ -424,6 +426,7 @@
 				C3000000000000000000E204 /* TUISessionBackend.swift */,
 				C3000000000000000000E605 /* CoreTerminalPresentation.swift */,
 				C3000000000000000000E702 /* CoreStructure.swift */,
+				C3000000000000000000E712 /* TerminalFindBar.swift */,
 				C3000000000000000000E706 /* HerdrCoreInstall.swift */,
 				C3000000000000000000E502 /* WoolooHostProfiles.swift */,
 				C3000000000000000000E308 /* HerdrCoreSupport.swift */,
@@ -759,6 +762,7 @@
 				C3000000000000000000E203 /* TUISessionBackend.swift in Sources */,
 				C3000000000000000000E604 /* CoreTerminalPresentation.swift in Sources */,
 				C3000000000000000000E701 /* CoreStructure.swift in Sources */,
+				C3000000000000000000E711 /* TerminalFindBar.swift in Sources */,
 				C3000000000000000000E705 /* HerdrCoreInstall.swift in Sources */,
 				C3000000000000000000E501 /* WoolooHostProfiles.swift in Sources */,
 				C3000000000000000000E307 /* HerdrCoreSupport.swift in Sources */,

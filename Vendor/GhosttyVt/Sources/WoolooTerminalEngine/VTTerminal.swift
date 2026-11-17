@@ -99,6 +99,8 @@ public final class VTTerminal {
     private var mouseEncoder: GhosttyMouseEncoder?
     private var mouseEvent: GhosttyMouseEvent?
     private var imageIterator: GhosttyRenderStateImageIterator?
+    private var search: GhosttySearch?
+    private var searchNeedle: String?
     private var shownImagesGeneration: UInt64 = 0
     private var cellWidth = 8
     private var cellHeight = 16
@@ -146,6 +148,7 @@ public final class VTTerminal {
     }
 
     deinit {
+        ghostty_search_free(search)
         ghostty_render_state_image_iterator_free(imageIterator)
         ghostty_mouse_event_free(mouseEvent)
         ghostty_mouse_encoder_free(mouseEncoder)
@@ -274,6 +277,46 @@ public final class VTTerminal {
         var behavior = GhosttyTerminalScrollViewport()
         behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM
         _ = ghostty_terminal_scroll_viewport(terminal, behavior)
+    }
+
+    // MARK: Search
+
+    /// Finds `needle` in the screen and the scrollback and selects the next match: older
+    /// (upward, as a search from the prompt usually goes) or newer, wrapping around. The
+    /// viewport scrolls to show it. Nil when nothing matches.
+    public func find(_ needle: String, older: Bool = true) -> TerminalSearchMatch? {
+        guard !needle.isEmpty else { endSearch(); return nil }
+        if search == nil, ghostty_search_new(nil, &search, terminal) != GHOSTTY_SUCCESS { return nil }
+        if searchNeedle != needle {
+            let bytes = Array(needle.utf8)
+            let set = bytes.withUnsafeBufferPointer { buffer -> GhosttyResult in
+                var value = GhosttyString(ptr: buffer.baseAddress, len: buffer.count)
+                return ghostty_search_set(search, GHOSTTY_SEARCH_OPT_NEEDLE, &value)
+            }
+            guard set == GHOSTTY_SUCCESS else { return nil }
+            searchNeedle = needle
+        }
+        _ = ghostty_search_run(search)
+        guard (older ? ghostty_search_select_next(search) : ghostty_search_select_prev(search)) == GHOSTTY_SUCCESS
+        else { return nil }
+        var total = 0, index = 0
+        _ = ghostty_search_get(search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &total)
+        _ = ghostty_search_get(search, GHOSTTY_SEARCH_DATA_SELECTED_INDEX, &index)
+        var selection = GhosttySelection()
+        guard ghostty_search_get(search, GHOSTTY_SEARCH_DATA_SELECTED_MATCH, &selection) == GHOSTTY_SUCCESS else { return nil }
+        var start = GhosttyPointCoordinate(), end = GhosttyPointCoordinate()
+        let shown = ghostty_terminal_point_from_grid_ref(terminal, &selection.start, GHOSTTY_POINT_TAG_VIEWPORT, &start) == GHOSTTY_SUCCESS
+            && ghostty_terminal_point_from_grid_ref(terminal, &selection.end, GHOSTTY_POINT_TAG_VIEWPORT, &end) == GHOSTTY_SUCCESS
+        return TerminalSearchMatch(index: index + 1, total: total,
+                                   start: shown ? (Int(start.x), Int(start.y)) : nil,
+                                   end: shown ? (Int(end.x), Int(end.y)) : nil)
+    }
+
+    /// Ends a search and frees what it tracks in the terminal.
+    public func endSearch() {
+        ghostty_search_free(search)
+        search = nil
+        searchNeedle = nil
     }
 
     // MARK: Images
