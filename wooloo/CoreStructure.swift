@@ -115,9 +115,10 @@ struct CoreStructure: Equatable, Sendable {
     // MARK: Reconciliation
 
     /// The arrangement of `terminals` (live, on this core): document entries whose terminal is
-    /// gone are dropped, and live terminals no tab holds become tabs of the Space their
-    /// `wooloo.space` label names, or of an Unfiled Space at the end.
-    func reconciled(with terminals: [CoreTerminal]) -> CoreStructure {
+    /// gone are dropped. Live terminals no wooloo tab holds go, in this order, where the
+    /// official app's `herdr-app` document places them, to the Space their `wooloo.space` or
+    /// the app's `herdr.space` label names, or to an Unfiled Space at the end.
+    func reconciled(with terminals: [CoreTerminal], app: Any? = nil) -> CoreStructure {
         let live = terminals.filter { $0.state == "live" && !$0.address.contains("/") }
         let alive = Set(live.map(\.address))
         var result = CoreStructure()
@@ -128,9 +129,20 @@ struct CoreStructure: Equatable, Sendable {
             }
             if !kept.tabs.isEmpty { result.spaces.append(kept) }
         }
+        let loose = alive.subtracting(result.terminals)
+        for space in HerdrAppStructure.spaces(in: app, live: loose) {
+            if let index = result.spaces.firstIndex(where: { $0.id == space.id }) {
+                // A Space wooloo adopted earlier gets the app's newer tabs.
+                let known = Set(result.spaces[index].tabs.map(\.id))
+                result.spaces[index].tabs += space.tabs.filter { !known.contains($0.id) }
+            } else {
+                result.spaces.append(space)
+            }
+        }
         let filed = result.terminals
         for terminal in live where !filed.contains(terminal.address) {
             let wanted = terminal.labels[Self.spaceLabel]
+                ?? terminal.labels[HerdrAppStructure.spaceLabel].map { HerdrAppStructure.idPrefix + $0 }
             let tab = Tab(id: "tab-\(terminal.address)", name: nil, root: .terminal(terminal.address))
             if let wanted, let index = result.spaces.firstIndex(where: { $0.id == wanted }) {
                 result.spaces[index].tabs.append(tab)
@@ -250,5 +262,88 @@ enum CoreLayout {
             return (left.panes + right.panes,
                     [Split(direction: direction, position: position, area: area, path: path)] + left.splits + right.splits)
         }
+    }
+}
+
+/// The official app's Spaces and tabs, read from its `herdr-app` document in the core
+/// (docs/proposals/herdr-core-backend.md, Phase 6). Its format is not a contract
+/// ([herdr-app #43](https://github.com/herdrdev/herdr-app/issues/43)), so it is only read, never
+/// written, and read defensively: unknown node kinds and fields are skipped one by one, and
+/// only live terminals of this core count. Terminals the app files that no wooloo tab holds
+/// show in the app's Spaces; the `wooloo` document stays the truth for wooloo's own.
+enum HerdrAppStructure {
+    static let documentName = "herdr-app"
+    /// Prefix of the ids of Spaces and tabs read from the app, so they never meet wooloo's own.
+    static let idPrefix = "app:"
+    /// The app's terminal label naming its Space, for terminals its document does not place.
+    static let spaceLabel = "herdr.space"
+
+    static func spaces(in document: Any?, live: Set<String>) -> [CoreStructure.Space] {
+        guard let object = document as? [String: Any], let entries = object["spaces"] as? [Any] else { return [] }
+        var used = Set<String>(), ids = Set<String>(), result: [CoreStructure.Space] = []
+        for case let space as [String: Any] in entries.prefix(500) {
+            guard let rawID = space["id"] as? String, !rawID.isEmpty, rawID.count <= 128,
+                  ids.insert(rawID).inserted, let rawTabs = space["tabs"] as? [Any] else { continue }
+            let tabs = rawTabs.compactMap { $0 as? [String: Any] }
+            let id = idPrefix + rawID
+            var tabIDs = Set<String>()
+            let mapped = tabs.prefix(500).compactMap { tab -> CoreStructure.Tab? in
+                guard let tabID = tab["id"] as? String, !tabID.isEmpty, tabID.count <= 128,
+                      tabIDs.insert(tabID).inserted,
+                      let root = node(tab["root"], live: live, used: &used, depth: 0) else { return nil }
+                let name = (tab["name"] as? String).flatMap { $0.isEmpty || $0.count > 512 ? nil : $0 }
+                return CoreStructure.Tab(id: id + ":" + tabID, name: name, root: root)
+            }
+            guard !mapped.isEmpty else { continue }
+            let folder = (space["folder"] as? String).flatMap { $0.hasPrefix("/") && $0.count <= 4096 ? $0 : nil }
+            let name = (space["name"] as? String).flatMap { $0.isEmpty || $0.count > 512 ? nil : $0 }
+                ?? folder.map { ($0 as NSString).lastPathComponent } ?? "Herdr"
+            result.append(CoreStructure.Space(id: id, name: name, folder: folder, tabs: mapped))
+        }
+        return result
+    }
+
+    /// A node of the app's tree: a `block` holding a terminal, or a `row` (side by side) or
+    /// `column` (stacked) of weighted children; floating terminals join their node's tab.
+    private static func node(_ value: Any?, live: Set<String>, used: inout Set<String>, depth: Int) -> CoreStructure.Node? {
+        guard depth < 32, used.count < 4096, let object = value as? [String: Any] else { return nil }
+        var parts: [CoreStructure.Node] = []
+        if object["type"] as? String == "block" {
+            if let terminal = (object["content"] as? [String: Any])?["terminal"] as? String,
+               live.contains(terminal), used.insert(terminal).inserted {
+                parts.append(.terminal(terminal))
+            }
+        } else if let children = object["children"] as? [Any] {
+            var weighted: [(CoreStructure.Node, Double)] = []
+            for case let child as [String: Any] in children.prefix(256) {
+                guard let tree = node(child, live: live, used: &used, depth: depth + 1) else { continue }
+                let weight = ((child["size"] as? [String: Any])?["weight"] as? Double).flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 1
+                weighted.append((tree, weight))
+            }
+            if let combined = combine(weighted[...], direction: object["type"] as? String == "column" ? .down : .right) {
+                parts.append(combined)
+            }
+        }
+        for case let float as [String: Any] in (object["floating"] as? [Any] ?? []).prefix(256) {
+            if let terminal = (float["content"] as? [String: Any])?["terminal"] as? String,
+               live.contains(terminal), used.insert(terminal).inserted {
+                parts.append(.terminal(terminal))
+            }
+        }
+        guard var root = parts.first else { return nil }
+        for next in parts.dropFirst() { root = .split(.right, ratio: 0.5, first: root, second: next) }
+        return root
+    }
+
+    /// Several weighted siblings as nested two-sided splits with the same proportions.
+    private static func combine(_ nodes: ArraySlice<(CoreStructure.Node, Double)>,
+                                direction: CoreStructure.Direction) -> CoreStructure.Node? {
+        guard let first = nodes.first else { return nil }
+        if nodes.count == 1 { return first.0 }
+        let middle = nodes.startIndex + nodes.count / 2
+        let left = nodes[..<middle], right = nodes[middle...]
+        guard let a = combine(left, direction: direction), let b = combine(right, direction: direction) else { return nil }
+        let leftWeight = left.reduce(0) { $0 + $1.1 }, rightWeight = right.reduce(0) { $0 + $1.1 }
+        return .split(direction, ratio: min(max(leftWeight / (leftWeight + rightWeight), 0.05), 0.95), first: a, second: b)
     }
 }

@@ -127,4 +127,53 @@ final class CoreStructureTests: XCTestCase {
         XCTAssertEqual(state("working", turn: 1, seen: "0"), "working")
         XCTAssertNil(CoreSessionBackend.agentState(CoreTerminal(address: "t")))
     }
+
+    // MARK: The official app's document
+
+    private let appDocument: [String: Any] = ["version": 9, "spaces": [
+        ["id": "s1", "name": "", "folder": "/src/web", "tabs": [
+            ["id": "a", "name": "dev", "root": ["type": "row", "children": [
+                ["type": "block", "content": ["terminal": "t1"], "size": ["weight": 3.0]],
+                ["type": "column", "size": ["weight": 1.0], "children": [
+                    ["type": "block", "content": ["terminal": "t2"]],
+                    ["type": "block", "content": ["terminal": "t3"]],
+                    ["type": "block", "content": ["terminal": "gone"]],
+                    ["type": "webview", "content": ["url": "https://example.com"]],
+                ]],
+            ], "floating": [["content": ["terminal": "t4"]], ["content": ["mod": "clock"]]]]],
+            ["id": "b", "root": ["type": "block", "content": ["terminal": "t1"]]],
+            ["id": "a", "root": ["type": "block", "content": ["terminal": "t5"]]],
+        ]],
+        ["id": "s2", "name": "notes", "tabs": [["id": "c", "root": ["type": "block", "content": ["terminal": "t6"]]]]],
+        ["id": "s3", "name": "empty", "tabs": []],
+        "not a space",
+    ]]
+
+    func testTheAppsDocumentIsReadDefensively() {
+        let spaces = HerdrAppStructure.spaces(in: appDocument, live: ["t1", "t2", "t3", "t4", "t5", "t6"])
+        XCTAssertEqual(spaces.map(\.id), ["app:s1", "app:s2"], "Spaces with no live terminal are left out")
+        XCTAssertEqual(spaces[0].name, "web", "An unnamed Space is named after its folder")
+        XCTAssertEqual(spaces[0].tabs.map(\.id), ["app:s1:a"], "A terminal shows once; a repeated tab id is skipped")
+        XCTAssertEqual(spaces[0].tabs[0].name, "dev")
+        XCTAssertEqual(spaces[0].tabs[0].root,
+                       .split(.right, ratio: 0.5,
+                              first: .split(.right, ratio: 0.75, first: .terminal("t1"),
+                                            second: .split(.down, ratio: 0.5, first: .terminal("t2"), second: .terminal("t3"))),
+                              second: .terminal("t4")),
+                       "Weights become ratios, columns stack, floating terminals join the tab, other content is skipped")
+        XCTAssertTrue(HerdrAppStructure.spaces(in: ["spaces": "no"], live: ["t1"]).isEmpty)
+        XCTAssertTrue(HerdrAppStructure.spaces(in: nil, live: ["t1"]).isEmpty)
+    }
+
+    func testWoolooKeepsItsOwnAndTheAppFilesTheRest() {
+        let mine = CoreStructure(spaces: [.init(id: "w", name: "mine", folder: nil, tabs: [.init(id: "x", name: nil, root: .terminal("t1"))])])
+        let terminals = ["t1", "t2", "t3", "t6", "t7", "t8"].map { terminal($0) }
+            + [CoreTerminal(address: "t9", labels: [HerdrAppStructure.spaceLabel: "s2"], state: "live")]
+        let result = mine.reconciled(with: terminals, app: appDocument)
+        XCTAssertEqual(result.spaces.map(\.id), ["w", "app:s1", "app:s2", CoreStructure.unfiledID])
+        XCTAssertEqual(result.spaces[0].tabs.first?.root, .terminal("t1"), "wooloo's document wins for a terminal it holds")
+        XCTAssertEqual(result.spaces[1].tabs.first?.root.terminals, ["t2", "t3"])
+        XCTAssertEqual(result.spaces[2].tabs.map(\.root), [.terminal("t6"), .terminal("t9")], "The app's label files t9")
+        XCTAssertEqual(result.spaces[3].tabs.map(\.root), [.terminal("t7"), .terminal("t8")])
+    }
 }

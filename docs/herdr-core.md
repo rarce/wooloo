@@ -1,6 +1,6 @@
 # herdr-core 0.1.18: protocol and integration review
 
-Reviewed on 2026-11-05. This is a source-based reference for a possible future wooloo backend. wooloo currently bundles Herdr TUI 0.9.5 and uses its JSON API and native cell-surface endpoint; it does not implement herdr-core support. See the [current connection design](herdr-connection.md). For Core changes after this review, the Herdr app, and their impact on wooloo, see [Herdr app and herdr-core](herdr-app-and-core.md) (2026-11-16).
+Reviewed on 2026-11-05. This is a source-based reference for a possible future wooloo backend. At the time of this review, wooloo bundled Herdr TUI 0.9.5 and had no herdr-core support. wooloo now offers herdr-core sessions as a preview: see [herdr-core sessions](herdr-core-preview.md) and the [backend plan](proposals/herdr-core-backend.md). See the [current connection design](herdr-connection.md). For Core changes after this review, the Herdr app, and their impact on wooloo, see [Herdr app and herdr-core](herdr-app-and-core.md) (2026-11-16).
 
 ## Version baseline and verification
 

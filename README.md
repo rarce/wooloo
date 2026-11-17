@@ -30,6 +30,7 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 - `HTTP` tags on a Space for the TCP ports its processes listen on. Hover for the port; click to open it in the browser. On an SSH machine, a click first forwards the port to this Mac with `ssh -L`, and the tag turns green while forwarded. Forwards end when the port closes or wooloo quits.
 - Optional Claude Code and Codex plan usage in the sidebar (see [Agent quotas](#agent-quotas)).
 - A session picker for any Herdr session on the machine.
+- Preview, off by default: sessions of [herdr-core](https://herdr.dev/core), the server behind the official Herdr app, on this Mac or over SSH, next to the Herdr TUI. See [herdr-core sessions](docs/herdr-core-preview.md).
 - Mobile access to local sessions through a Cloudflare Tunnel or to remote servers over direct SSH, with public-key authorization (see [Remote access](#remote-access)).
 
 ### Terminal
@@ -199,6 +200,8 @@ Research and plans written while building wooloo. They describe how parts work o
 - [Git and file editing](docs/git-and-files-research.md): local and SSH implementation
 - [Jupyter notebook rendering](docs/jupyter-notebook-rendering.md): how saved notebook output is shown
 - [Herdr plugins](docs/herdr-plugins.md): a plan for integrating Herdr plugins; wooloo does not support them yet
+- [herdr-core backend](docs/proposals/herdr-core-backend.md): the plan behind herdr-core sessions, with its decisions and progress
+- [Herdr app and herdr-core](docs/herdr-app-and-core.md): how the new server and app affect wooloo
 
 ## Contributing
 

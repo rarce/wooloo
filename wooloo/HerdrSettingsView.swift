@@ -28,6 +28,7 @@ struct HerdrSettingsView: View {
     @AppStorage(WoolooTypography.codeKey) private var codeTextSize = WoolooTypography.defaultCode
     @AppStorage(HerdrShortcutMap.previousContextKey) private var previousContextShortcut = "prefix+backspace"
     @AppStorage("DimInactiveWindows") private var dimsInactiveWindows = true
+    @AppStorage(HerdrCoreSupport.settingKey) private var coreConnections = false
     @AppStorage(MarkdownPreviewStyle.storageKey) private var markdownPreviewStyle = MarkdownPreviewStyle.theme
 
     enum Category: String, CaseIterable, Identifiable {
@@ -441,6 +442,11 @@ struct HerdrSettingsView: View {
                     Toggle("Dim inactive windows", isOn: $dimsInactiveWindows)
                         .toggleStyle(.switch)
                         .accessibilityIdentifier("dim-inactive-windows")
+                }
+                field("herdr-core (preview)", hint: "Offer sessions of herdr-core (hc), the server behind the official Herdr app, in the setup and Connections windows, on this Mac or over SSH. wooloo uses an hc you installed and keeps its own Spaces in the core; the Herdr TUI keeps working as before. Applies to new connections.") {
+                    Toggle("Offer herdr-core sessions", isOn: $coreConnections)
+                        .toggleStyle(.switch)
+                        .accessibilityIdentifier("herdr-core-connections")
                 }
                 field("Interface text size", hint: "Sidebar, tabs, History, Files, and settings. Default: \(Int(WoolooTypography.defaultBase)) pt") {
                     textSizeControl($interfaceTextSize, range: WoolooTypography.baseRange,

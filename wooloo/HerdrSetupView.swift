@@ -9,6 +9,16 @@ struct HerdrSetupView: View {
     @State private var executable = HerdrRuntimePaths.externalCandidates.first(where: FileManager.default.isExecutableFile(atPath:))
         .map { URL(fileURLWithPath: $0) }
     @State private var existingSession = "default"
+    /// The herdr-core option, offered while herdr-core connections are turned on in Settings.
+    @State private var usesCore = false
+    @State private var coreExecutable = HerdrCoreSupport.locateLocal()
+    @State private var coreSession = "default"
+
+    private enum Choice: Hashable { case bundled, existing, core }
+    private var choice: Binding<Choice> {
+        Binding(get: { usesCore ? .core : useBundled ? .bundled : .existing },
+                set: { usesCore = $0 == .core; if $0 != .core { useBundled = $0 == .bundled } })
+    }
 
     var body: some View {
         ScrollView {
@@ -24,12 +34,32 @@ struct HerdrSetupView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(alignment: .leading, spacing: 18) {
-                    Picker("Herdr", selection: $useBundled) {
-                        Text("Use included Herdr").tag(true)
-                        Text("Use my existing Herdr").tag(false)
+                    Picker("Herdr", selection: choice) {
+                        Text("Use included Herdr").tag(Choice.bundled)
+                        Text("Use my existing Herdr").tag(Choice.existing)
+                        if HerdrCoreSupport.isEnabled { Text("Use herdr-core (preview)").tag(Choice.core) }
                     }
                     .pickerStyle(.segmented)
-                    if useBundled {
+                    if usesCore {
+                        if let coreExecutable {
+                            Text("Found herdr-core at \(coreExecutable).")
+                                .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        } else {
+                            HStack {
+                                Text("herdr-core (hc) is not installed on this Mac. wooloo does not install it here; its own installer and updater do.")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer()
+                                Link("Get herdr-core", destination: URL(string: "https://herdr.dev/core")!)
+                                Button("Check Again") { coreExecutable = HerdrCoreSupport.locateLocal() }
+                            }
+                        }
+                        TextField("Session", text: $coreSession)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Preview: wooloo keeps its Spaces, tabs and splits in the core, shows the official app's Spaces read-only, and draws terminals itself. Starting a session starts the core if it is not running.")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if useBundled {
                         Text("Herdr is included. No downloads or administrator password needed.")
                             .font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -71,10 +101,14 @@ struct HerdrSetupView: View {
                         if runtime.canDismissSetup {
                             Button("Cancel") { runtime.showsSetup = false }
                         }
-                        if HerdrCoreSupport.isEnabled, HerdrCoreSupport.locateLocal() != nil {
-                            Button("Use herdr-core Instead") { runtime.chooseCore() }
-                                .help("Preview: connect to the herdr-core (hc) installed on this Mac, without setting up the Herdr TUI.")
-                        }
+                        if usesCore {
+                            Button("Connect to herdr-core") {
+                                runtime.chooseCore(session: coreSession.trimmingCharacters(in: .whitespacesAndNewlines))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(coreExecutable == nil || coreSession.trimmingCharacters(in: .whitespaces).isEmpty)
+                        } else {
                         Button(useBundled ? "Create Space and Start" : "Connect") {
                             Task {
                                 await runtime.finish(useBundled: useBundled, executable: executable,
@@ -85,6 +119,7 @@ struct HerdrSetupView: View {
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                         .disabled(useBundled ? folder == nil : executable == nil || existingSession.isEmpty)
+                        }
                     }
                 }
                 .disabled(runtime.isBusy)

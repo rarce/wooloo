@@ -239,6 +239,26 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(arranged.spaces.first?.tabs.count, 2, "and this one is applied on top")
     }
 
+    func testTheAppsSpacesAreShownAndOnlyAdoptedWhenChanged() throws {
+        let core = FakeCore()
+        core.terminals = [CoreTerminal(address: "t1", cwd: "/src/web"), CoreTerminal(address: "t2", cwd: "/src/api")]
+        let app: [String: Any] = ["spaces": [
+            ["id": "s1", "name": "web", "tabs": [["id": "a", "root": ["type": "block", "content": ["terminal": "t1"]]]]],
+            ["id": "s2", "name": "api", "tabs": [["id": "b", "root": ["type": "block", "content": ["terminal": "t2"]]]]],
+        ]]
+        core.documents[HerdrAppStructure.documentName] = (app, 4)
+        let backend = backend(core)
+        XCTAssertEqual(try backend.snapshot().workspaces.map(\.label), ["web", "api"])
+        let mine = try backend.create(.space(sourceSpaceID: nil, cwd: "/src/docs", label: "docs"))
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.id), [mine], "Untouched app Spaces are not copied")
+        try backend.perform(.renameSpace(spaceID: "app:s2", label: "API"))
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.name), ["docs", "API"], "A changed one is wooloo's from then on")
+        XCTAssertEqual(try backend.snapshot().workspaces.map(\.label), ["docs", "API", "web"])
+        XCTAssertTrue(core.callsTo("doc.set").allSatisfy { $0.params["name"] as? String == CoreStructure.documentName },
+                      "The app's document is never written")
+        XCTAssertEqual(core.documents[HerdrAppStructure.documentName]?.version, 4)
+    }
+
     func testSeenTurnsAreOnlyRaised() throws {
         let core = FakeCore()
         core.terminals = [CoreTerminal(address: "t1", labels: ["herdr.seen": "5"], turn: 4),

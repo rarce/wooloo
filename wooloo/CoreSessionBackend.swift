@@ -75,12 +75,14 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     func arrangement(on connection: CoreConnection) throws -> Arrangement {
         let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
         let (document, version) = try Self.document(on: connection)
-        let structure = (CoreStructure.decode(document) ?? CoreStructure()).reconciled(with: list.terminals)
+        // The official app's structure, read only; a core without it, or a broken one, adds nothing.
+        let app = try? Self.document(HerdrAppStructure.documentName, on: connection).0
+        let structure = (CoreStructure.decode(document) ?? CoreStructure()).reconciled(with: list.terminals, app: app)
         return Arrangement(terminals: list.terminals, structure: structure, document: document, version: version)
     }
 
-    static func document(on connection: CoreConnection) throws -> (Any?, Int) {
-        let reply = try connection.callRaw("doc.get", ["name": CoreStructure.documentName])
+    static func document(_ name: String = CoreStructure.documentName, on connection: CoreConnection) throws -> (Any?, Int) {
+        let reply = try connection.callRaw("doc.get", ["name": name])
         _ = try CoreConnection.result(DocVersion.self, from: reply)
         let object = try JSONSerialization.jsonObject(with: reply) as? [String: Any]
         let result = object?["result"] as? [String: Any]
@@ -100,6 +102,10 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
             let current = try arrangement(on: connection)
             var structure = current.structure
             let result = try change(&structure, current.terminals)
+            // The app's Spaces stay the app's until a change touches one; then wooloo keeps it.
+            structure.spaces.removeAll { space in
+                space.id.hasPrefix(HerdrAppStructure.idPrefix) && current.structure.spaces.contains(space)
+            }
             let value = structure.encoded(over: current.document)
             do {
                 _ = try connection.call("doc.set", ["name": CoreStructure.documentName, "value": value,

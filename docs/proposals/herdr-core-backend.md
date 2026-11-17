@@ -444,6 +444,38 @@ Still open:
   - It was checked on Linux in an isolated home: a first run installs `hc 0.1.21`, a second finds it and changes nothing, and a wrong checksum installs nothing.
 - **Still open:** the two-window and two-Mac consistency check, which needs a Mac.
 
+## Phase 6 progress (2026-11-17)
+
+- **`herdr-app` interop: read only.** [herdr-app #43](https://github.com/herdrdev/herdr-app/issues/43) is still open without an answer, so wooloo reads the app's document but never writes it (`HerdrAppStructure`).
+- **The app's document as read:**
+  - `spaces[]` with `id`, `name`, `folder` and `tabs[]`;
+  - each tab has `id`, `name` and a `root`;
+  - nodes are a `block` with `content.terminal`, or a `row` (side by side) or `column` (stacked) of `children` with `size.weight`;
+  - `floating[]` terminals join their node's tab.
+
+  This matches what hc-tui reads; the format was learned from its documentation, and the code is wooloo's own.
+- **Reading defensively:**
+  - unknown node kinds (mods, web views) and non-object entries are skipped one by one;
+  - each terminal is placed once;
+  - sizes and nesting are capped;
+  - only this core's live terminals count;
+  - app Spaces and tabs get `app:` ids, so they never meet wooloo's own.
+- **Order of reconciliation:**
+  1. wooloo's document;
+  2. the app's document, for terminals no wooloo tab holds;
+  3. the `wooloo.space` label, then the app's `herdr.space` label;
+  4. Unfiled.
+- **Adopting.** A write leaves out the app's Spaces that the change did not touch. A Space the user changes in wooloo (rename, split, move) is kept in the `wooloo` document from then on, and keeps getting the app's newer tabs by id.
+- **Setup and settings:**
+  - the first-run wizard offers **Use herdr-core (preview)**, with the detected `hc`, or a link to the official installer and **Check Again**;
+  - **Settings → Appearance** has the off-by-default **herdr-core (preview)** switch. It sits among the app-only settings so a Core-only Mac without `config.toml` can turn it on.
+- **Docs:**
+  - [herdr-core sessions](../herdr-core-preview.md) is the user guide and the published parity matrix;
+  - the README links it from Features and Design notes.
+- **Still open:**
+  - the release that ships the beta, with the setting off by default;
+  - the macOS checks of two windows and two Macs on one core.
+
 ## Phases
 
 Each phase ends with:
