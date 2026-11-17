@@ -399,6 +399,40 @@ Still open:
 
   These need a Mac to measure, or Phase 5.
 
+## Phase 5 progress (2026-11-16)
+
+- **Store (D2, option a):** `CoreStructure` is wooloo's `wooloo` document in the core:
+  - schema 1, with Spaces (id, name, absolute folder), tabs (id, optional name) and a pane tree of `terminal` leaves and `right`/`down` splits with a ratio;
+  - decoded defensively, since any client may write documents: bad entries are dropped, ratios clamped, nesting and sizes capped;
+  - written over the previous value, keeping top-level fields this build does not know.
+- **Writes** go through `CoreSessionBackend.mutate`: it reads the terminals and the document, applies the change to the reconciled arrangement, and calls `doc.set` with the version it read. A `conflict` reads again and re-applies, up to three tries, so another client's change is kept. Reading never writes.
+- **Reconciliation** (`CoreStructure.reconciled`), on every snapshot:
+  - entries whose terminal is not live are dropped, and a split left with one side becomes that side;
+  - live terminals in no tab go to the Space their `wooloo.space` label names, or to an Unfiled Space;
+  - terminals of Core machines (`machine/tN`) are not shown yet;
+  - with a lost or empty document, every terminal is Unfiled; it is rebuilt from what the user does next.
+- **Operations on Core:**
+  - new Spaces (folder, label) and tabs start a shell labelled with the Space;
+  - split, rename, close (kills the terminals), reorder Spaces and tabs, and move tabs between Spaces;
+  - move panes to a new tab or beside another pane;
+  - after a split, the window focuses the new pane.
+
+  Zoom is still unsupported, and reports an error.
+- **Agent states** follow labels.md: `done` while `turn > herdr.seen`, else idle. Showing a terminal whose turn is done raises `herdr.seen`, and only raises it.
+- **Compositor:**
+  - `CoreTerminalPresentation` attaches to every terminal of the shown tab, each at its place in `CoreLayout`, with one border cell between the sides of a split;
+  - it composes one `HerdrSurface` with Herdr's split records, so the window drags splits as it does on the TUI;
+  - a dragged ratio shows at once and is written to the document once the drag rests for 0.4 s;
+  - the tab's tree is read again on tab and pane focus changes and every 1.5 s while idle, which follows other windows and clients.
+- **Not yet in Phase 5:**
+  - zoom, kept local per window;
+  - `herdr.pinned`;
+  - Core notifications through `HerdrNotifier`;
+  - detection of Core machines and their Spaces;
+  - opt-in install;
+  - following document changes with events instead of the 1.5 s read, which costs two small requests per window over SSH;
+  - the two-window and two-Mac consistency check, which needs a Mac.
+
 ## Phases
 
 Each phase ends with:

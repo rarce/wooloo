@@ -24,6 +24,8 @@ MIGRATED = frozenset({
     "wooloo/CoreProtocol.swift",
     "wooloo/CoreConnection.swift",
     "wooloo/CoreSessionBackend.swift",
+    "wooloo/CoreStructure.swift",
+    "wooloo/CoreTerminalPresentation.swift",
 })
 DIAGNOSTIC = re.compile(r"^(.+?):(\d+)(?::(\d+))?: (warning|error): (.+)$")
 COMPILE = re.compile(r"^SwiftCompile\s+\S+\s+\S+\s+(.+?)(?: \(in target .+\))?$")

@@ -134,7 +134,11 @@ final class CoreConnectionTests: XCTestCase {
                            makeTransport: { _ in core.connect() })
     }
 
-    func testTerminalsBecomeTabsOfTheCoresSpace() throws {
+    private func structure(_ core: FakeCore) -> CoreStructure? {
+        core.lock.withLock { CoreStructure.decode(core.documents[CoreStructure.documentName]?.value ?? nil) }
+    }
+
+    func testLooseTerminalsShowInUnfiledWithTheirAgents() throws {
         let core = FakeCore()
         core.terminals = [
             CoreTerminal(address: "t1", argv: ["/bin/zsh"], cols: 120, rows: 40, cwd: "/src/app"),
@@ -144,20 +148,106 @@ final class CoreConnectionTests: XCTestCase {
             CoreTerminal(address: "vps/t1", argv: ["sh"]),
         ]
         let snapshot = try backend(core).snapshot()
-        XCTAssertEqual(snapshot.workspaces.map(\.workspaceID), [CoreSessionBackend.spaceID])
-        XCTAssertEqual(snapshot.workspaces.first?.label, "box")
-        XCTAssertEqual(snapshot.tabs.map(\.tabID), ["t1", "t2"])
+        XCTAssertEqual(snapshot.workspaces.map(\.workspaceID), [CoreStructure.unfiledID])
+        XCTAssertEqual(snapshot.tabs.map(\.tabID), ["tab-t1", "tab-t2"])
         XCTAssertEqual(snapshot.tabs.map(\.label), ["zsh", "review"])
-        XCTAssertEqual(snapshot.panes.map(\.cwd), ["/src/app", "/src/app"])
         XCTAssertEqual(snapshot.layouts.first?.area, HerdrRect(x: 0, y: 0, width: 120, height: 40))
         let agent = try XCTUnwrap(snapshot.agents.first)
         XCTAssertEqual(agent.paneID, "t2")
         XCTAssertEqual(agent.agentStatus, "blocked")
-        XCTAssertEqual(agent.displayName, "claude")
         XCTAssertEqual(agent.stateChangeSeq, 3)
-        let session = snapshot.session(backend: BackendID(kind: .core, context: "box"), capabilities: CoreSessionBackend.capabilities)
-        XCTAssertEqual(session.agents.first?.state, .blocked)
-        XCTAssertNotNil(session.tabSpaceMoveRefusal("t1", to: nil))
+        XCTAssertNil(core.documents[CoreStructure.documentName], "Reading never writes the document")
+    }
+
+    func testSpacesTabsAndSplitsAreWrittenToTheDocument() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let space = try backend.create(.space(sourceSpaceID: nil, cwd: "/src/api", label: nil))
+        XCTAssertEqual(core.callsTo("terminal.run").first?.params["labels"] as? [String: String],
+                       [CoreStructure.spaceLabel: space])
+        var arranged = try XCTUnwrap(structure(core))
+        XCTAssertEqual(arranged.spaces.map(\.name), ["api"])
+        XCTAssertEqual(arranged.spaces.first?.folder, "/src/api")
+        let tab = try backend.create(.tab(spaceID: space, cwd: nil))
+        XCTAssertEqual(core.callsTo("terminal.run").last?.params["cwd"] as? String, "/src/api", "New tabs start in the Space's folder")
+        try backend.perform(.splitPane(spaceID: space, paneID: "t2", direction: "down"))
+        arranged = try XCTUnwrap(structure(core))
+        XCTAssertEqual(arranged.spaces.first?.tabs.map(\.id).last, tab)
+        XCTAssertEqual(arranged.spaces.first?.tabs.last?.root,
+                       .split(.down, ratio: 0.5, first: .terminal("t2"), second: .terminal("t3")))
+        let afterSplit = try backend.snapshot()
+        XCTAssertEqual(afterSplit.focusedPaneID, "t3", "The window follows the new pane")
+        XCTAssertNil(try backend.snapshot().focusedPaneID, "only once")
+        try backend.perform(.renameTab(tabID: tab, label: "logs"))
+        try backend.perform(.renameSpace(spaceID: space, label: "API"))
+        try backend.setSplitRatio(tabID: tab, path: [], ratio: 0.25)
+        arranged = try XCTUnwrap(structure(core))
+        XCTAssertEqual(arranged.spaces.first?.name, "API")
+        XCTAssertEqual(arranged.spaces.first?.tabs.last?.name, "logs")
+        XCTAssertEqual(arranged.spaces.first?.tabs.last?.root,
+                       .split(.down, ratio: 0.25, first: .terminal("t2"), second: .terminal("t3")))
+        try backend.perform(.closeTab(tabID: tab))
+        XCTAssertEqual(Set(core.callsTo("terminal.kill").compactMap { $0.params["terminal"] as? String }), ["t2", "t3"])
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.first?.tabs.count, 1)
+    }
+
+    func testMovesRearrangeTheDocument() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let first = try backend.create(.space(sourceSpaceID: nil, cwd: "/a", label: "a"))
+        let second = try backend.create(.space(sourceSpaceID: nil, cwd: "/b", label: "b"))
+        try backend.moveSpace(second, beside: first, after: false, checkpoint: {})
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.name), ["b", "a"])
+        let extra = try backend.create(.tab(spaceID: first, cwd: nil))
+        let moved = try backend.moveTab(extra, toSpace: second, lastTabWasChecked: false, checkpoint: {})
+        XCTAssertEqual(moved.spaceID, second)
+        XCTAssertEqual(moved.id, "t3")
+        let only = try XCTUnwrap(structure(core).flatMap { arranged in arranged.tab(of: "t1").map { arranged.spaces[$0.space].tabs[$0.tab].id } })
+        XCTAssertThrowsError(try backend.moveTab(only, toSpace: second, lastTabWasChecked: false, checkpoint: {}),
+                             "Taking a Space's last tab without the documents check is refused")
+        try backend.movePane("t3", to: .beside(targetPaneID: "t2", tabID: "", split: "right", swapAfter: true,
+                                               detachFirst: true), checkpoint: {})
+        let arranged = try XCTUnwrap(structure(core))
+        XCTAssertEqual(arranged.spaces.map(\.name), ["b", "a"])
+        XCTAssertEqual(arranged.spaces.first?.tabs.count, 1, "The tab the pane left was empty and is gone")
+        XCTAssertEqual(arranged.spaces.first?.tabs.first?.root,
+                       .split(.right, ratio: 0.5, first: .terminal("t3"), second: .terminal("t2")))
+        try backend.movePane("t3", to: .newTab, checkpoint: {})
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.first?.tabs.map(\.root), [.terminal("t2"), .terminal("t3")])
+    }
+
+    func testAConflictingWriteIsRetriedOnTheNewerDocument() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let space = try backend.create(.space(sourceSpaceID: nil, cwd: "/a", label: "a"))
+        var raced = false
+        core.overrides["doc.get"] = { [unowned core] params in
+            // Another client renames the Space between this read and the write that follows.
+            let document = core.documents[CoreStructure.documentName]!
+            if !raced, var value = CoreStructure.decode(document.value) {
+                raced = true
+                value.spaces[0].name = "renamed elsewhere"
+                core.documents[CoreStructure.documentName] = (value.encoded(over: document.value), document.version + 1)
+                return ["value": document.value ?? NSNull(), "version": document.version]
+            }
+            return ["value": core.documents[CoreStructure.documentName]?.value ?? NSNull(),
+                    "version": core.documents[CoreStructure.documentName]?.version ?? 0]
+        }
+        _ = try backend.create(.tab(spaceID: space, cwd: nil))
+        let arranged = try XCTUnwrap(structure(core))
+        XCTAssertEqual(arranged.spaces.first?.name, "renamed elsewhere", "The other client's change is kept")
+        XCTAssertEqual(arranged.spaces.first?.tabs.count, 2, "and this one is applied on top")
+    }
+
+    func testSeenTurnsAreOnlyRaised() throws {
+        let core = FakeCore()
+        core.terminals = [CoreTerminal(address: "t1", labels: ["herdr.seen": "5"], turn: 4),
+                          CoreTerminal(address: "t2", turn: 7)]
+        let backend = backend(core)
+        try backend.markSeen("t1")
+        try backend.markSeen("t2")
+        XCTAssertEqual(core.callsTo("terminal.label").count, 1)
+        XCTAssertEqual(core.callsTo("terminal.label").first?.params["labels"] as? [String: String], ["herdr.seen": "7"])
     }
 
     func testCommandsAndCreationUseTerminalCalls() throws {
@@ -166,18 +256,13 @@ final class CoreConnectionTests: XCTestCase {
         core.screens["t1"] = "$ ls\nREADME.md\n"
         let backend = backend(core)
         XCTAssertEqual(try backend.paneText("t1"), "$ ls\nREADME.md\n")
-        XCTAssertEqual(try backend.create(.tab(spaceID: CoreSessionBackend.spaceID, cwd: "/src")), "t2")
-        XCTAssertEqual(try backend.create(.space(sourceSpaceID: nil, cwd: "/tmp", label: nil)), CoreSessionBackend.spaceID)
-        XCTAssertEqual(core.callsTo("terminal.run").first?.params["cwd"] as? String, "/src")
-        XCTAssertEqual(core.callsTo("terminal.run").first?.params["labels"] as? [String: String], ["wooloo.space": "core"])
-        try backend.perform(.renameTab(tabID: "t1", label: "build"))
+        try backend.perform(.renameAgent(paneID: "t1", name: "build"))
         XCTAssertEqual(core.callsTo("terminal.label").first?.params["labels"] as? [String: String], ["wooloo.name": "build"])
-        try backend.perform(.closePane(paneID: "t2"))
-        XCTAssertEqual(core.callsTo("terminal.kill").first?.params["terminal"] as? String, "t2")
-        XCTAssertThrowsError(try backend.perform(.splitPane(spaceID: "core", paneID: "t1", direction: "right"))) {
-            XCTAssertEqual($0 as? CoreProtocolError, .unsupported("split panes"))
+        try backend.perform(.closePane(paneID: "t1"))
+        XCTAssertEqual(core.callsTo("terminal.kill").first?.params["terminal"] as? String, "t1")
+        XCTAssertThrowsError(try backend.perform(.zoomPane(paneID: "t1"))) {
+            XCTAssertEqual($0 as? CoreProtocolError, .unsupported("zoom panes"))
         }
-        XCTAssertThrowsError(try backend.moveSpace("core", beside: "core", after: true, checkpoint: {}))
     }
 
     func testTypingAttachesAtTheTerminalsOwnSizeAndKeysUseTerminalKeys() throws {
@@ -223,7 +308,7 @@ final class CoreConnectionTests: XCTestCase {
         watching.emit(type: "created", terminal: "t2")
         wait(for: [second], timeout: 10)
         watcher.cancel()
-        XCTAssertEqual(seen.values, [["t1"], ["t1", "t2"]])
+        XCTAssertEqual(seen.values, [["tab-t1"], ["tab-t1", "tab-t2"]])
     }
 
     // MARK: Live
@@ -236,9 +321,11 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertNotEqual(session, "default")
         let backend = CoreSessionBackend(target: .local(hc: hc, session: session))
         defer { backend.disconnect() }
-        let id = try backend.create(.tab(spaceID: CoreSessionBackend.spaceID, cwd: NSTemporaryDirectory()))
-        defer { try? backend.perform(.closePane(paneID: id)) }
-        XCTAssertTrue(try backend.snapshot().tabs.contains { $0.tabID == id })
+        let space = try backend.create(.space(sourceSpaceID: nil, cwd: NSTemporaryDirectory(), label: "wooloo live check"))
+        defer { try? backend.perform(.closeSpace(spaceID: space)) }
+        let snapshot = try backend.snapshot()
+        let id = try XCTUnwrap(snapshot.panes.first { $0.workspaceID == space }?.paneID)
+        XCTAssertEqual(snapshot.workspaces.first { $0.workspaceID == space }?.label, "wooloo live check")
         try backend.sendInput(to: id, text: "echo wooloo-live-check\r", keys: [])
         let deadline = Date().addingTimeInterval(10)
         var text = ""
