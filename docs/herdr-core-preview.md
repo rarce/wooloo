@@ -38,8 +38,9 @@ herdr-core keeps terminals, not layout. wooloo keeps its own Spaces, tabs and sp
 | Spaces, tabs, splits, zoom, moves | Yes | Yes. Zoom is per window. Moving a tab or pane to another session or machine is not supported. |
 | Live terminals | Herdr's cell surfaces | Drawn by wooloo with [libghostty-vt](https://github.com/ghostty-org/ghostty): colours, text attributes, cursor, wide characters |
 | Typing, paste, key chords | Yes | Yes, encoded for each program's keyboard modes |
-| Mouse reporting to programs | Yes | Not yet |
-| Scrollback and find in terminal | Yes | Not yet |
+| Mouse reporting to programs | Yes | Yes: clicks, drags and the wheel, encoded for the program's mouse mode |
+| Scrollback | Yes | Yes. The wheel scrolls back through the terminal's last 2,000 lines when you connect, plus everything since. Typing returns to the live screen. In full-screen programs that ask for it (mode 1007), the wheel sends arrow keys. |
+| Find in terminal | Yes | Not yet |
 | Inline images | Herdr's images | Not yet |
 | Agent status | Herdr's detection and integrations | Only for programs that report it themselves (OSC 7501) |
 | Unread and pinned agents | Unread in wooloo | Shared with every Herdr client (`herdr.seen`, `herdr.pinned`) |

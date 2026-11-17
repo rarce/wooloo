@@ -33,6 +33,7 @@
 		C3000000000000000000E405 /* HerdrStoreCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E406 /* HerdrStoreCoreTests.swift */; };
 		C3000000000000000000E403 /* CoreConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E404 /* CoreConnectionTests.swift */; };
 		C3000000000000000000E703 /* CoreStructureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E704 /* CoreStructureTests.swift */; };
+		C3000000000000000000E709 /* CoreTerminalInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E710 /* CoreTerminalInputTests.swift */; };
 		C3000000000000000000E707 /* HerdrCoreInstallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E708 /* HerdrCoreInstallTests.swift */; };
 		C3000000000000000000E401 /* FakeCoreServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3000000000000000000E402 /* FakeCoreServer.swift */; };
 		A1000000000000000000AF01 /* WorkspaceSessionPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */; };
@@ -234,6 +235,7 @@
 		C3000000000000000000E406 /* HerdrStoreCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrStoreCoreTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000E404 /* CoreConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreConnectionTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000E704 /* CoreStructureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreStructureTests.swift; sourceTree = "<group>"; };
+		C3000000000000000000E710 /* CoreTerminalInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTerminalInputTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000E708 /* HerdrCoreInstallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrCoreInstallTests.swift; sourceTree = "<group>"; };
 		C3000000000000000000E402 /* FakeCoreServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeCoreServer.swift; sourceTree = "<group>"; };
 		A1000000000000000000AF02 /* WorkspaceSessionPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionPersistence.swift; sourceTree = "<group>"; };
@@ -595,6 +597,7 @@
 				C3000000000000000000E406 /* HerdrStoreCoreTests.swift */,
 				C3000000000000000000E404 /* CoreConnectionTests.swift */,
 				C3000000000000000000E704 /* CoreStructureTests.swift */,
+				C3000000000000000000E710 /* CoreTerminalInputTests.swift */,
 				C3000000000000000000E708 /* HerdrCoreInstallTests.swift */,
 				C3000000000000000000E402 /* FakeCoreServer.swift */,
 				C3000000000000000000AD02 /* NotebookTests.swift */,
@@ -917,6 +920,7 @@
 				C3000000000000000000E405 /* HerdrStoreCoreTests.swift in Sources */,
 				C3000000000000000000E403 /* CoreConnectionTests.swift in Sources */,
 				C3000000000000000000E703 /* CoreStructureTests.swift in Sources */,
+				C3000000000000000000E709 /* CoreTerminalInputTests.swift in Sources */,
 				C3000000000000000000E707 /* HerdrCoreInstallTests.swift in Sources */,
 				C3000000000000000000E401 /* FakeCoreServer.swift in Sources */,
 				C3000000000000000000AD01 /* NotebookTests.swift in Sources */,

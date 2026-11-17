@@ -22,6 +22,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// lost event, since events already report every change.
     static let refreshInterval: TimeInterval = 30
     static let ratioWriteDelay: TimeInterval = 0.4
+    /// Lines of a terminal's scrollback Core replays on attach (main screen only); older
+    /// output stays in the core.
+    static let attachHistory = 2000
+    /// At most this many wheel reports or arrow keys for one wheel event.
+    static let maxWheelRepeat = 10
 
     // Guarded by `lock`.
     private var connection: CoreConnection?
@@ -43,6 +48,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     private var theme: (foreground: TerminalRGB, background: TerminalRGB, cursor: TerminalRGB, ansi: [TerminalRGB])?
     private var windowFocused = true
     private var shownZoom: String?
+    private var shownMouseReporting: Set<String> = []
 
     private struct Attachment {
         let terminal: String
@@ -167,18 +173,25 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     }
 
     func sendInput(_ event: HerdrInputEvent, to paneID: String) -> Bool {
-        let (connection, channel, bytes) = lock.withLock { () -> (CoreConnection?, UInt32?, Data?) in
-            guard let attachment = attachments[paneID] else { return (nil, nil, nil) }
+        let (connection, channel, bytes, handled) = lock.withLock { () -> (CoreConnection?, UInt32?, Data?, Bool) in
+            guard let attachment = attachments[paneID] else { return (nil, nil, nil, false) }
+            let emulator = attachment.emulator
             let bytes: Data?
             switch event {
+            case .mouse(let mouse):
+                let input = Self.mouseInput(mouse, to: emulator)
+                if input.scrolled { dirty = true }
+                return (self.connection, attachment.channel, input.bytes, input.scrolled)
             case .text(let text): bytes = Data(text.utf8)
-            case .paste(let text): bytes = attachment.emulator.encodePaste(text)
-            case .key(let name): bytes = attachment.emulator.encodeKey(name)
-            case .mouse: bytes = nil // Mouse reporting arrives with the mouse encoder.
+            case .paste(let text): bytes = emulator.encodePaste(text)
+            case .key(let name): bytes = emulator.encodeKey(name)
             }
-            return (self.connection, attachment.channel, bytes)
+            // Typing returns to the live screen, as in other terminals.
+            if !emulator.isAtBottom { emulator.scrollToBottom(); dirty = true }
+            return (self.connection, attachment.channel, bytes, false)
         }
-        guard let connection, let channel, let bytes, !bytes.isEmpty else { return false }
+        if handled { wake.signal() }
+        guard let connection, let channel, let bytes, !bytes.isEmpty else { return handled }
         do {
             try connection.send(CoreFrame(channel: channel, kind: .data, payload: bytes))
             return true
@@ -274,7 +287,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     private func attach(_ terminal: String, rect: HerdrRect, cell: (Int, Int),
                         colors: (foreground: TerminalRGB, background: TerminalRGB, cursor: TerminalRGB, ansi: [TerminalRGB])?,
                         on connection: CoreConnection) throws {
-        var params: [String: Any] = ["terminal": terminal, "cols": rect.width, "rows": rect.height, "history": 0]
+        var params: [String: Any] = ["terminal": terminal, "cols": rect.width, "rows": rect.height,
+                                     "history": Self.attachHistory]
         if let colors {
             params["display"] = ["fg": colors.foreground.hex, "bg": colors.background.hex,
                                  "cursor": colors.cursor.hex, "cell": [cell.0, cell.1]]
@@ -335,11 +349,14 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     for (y, cells) in frame.rows where y < attachment.grid.count {
                         attachment.grid[y] = Self.row(cells, width: frame.cols)
                     }
-                    attachment.cursor = frame.cursor
+                    // Older lines on screen hide the live cursor.
+                    attachment.cursor = attachment.emulator.isAtBottom ? frame.cursor : nil
                     changed = true
                 }
                 attachments[terminal] = attachment
             }
+            let reporting = Set(attachments.filter { $0.value.emulator.reportsMouse }.keys)
+            if reporting != shownMouseReporting { shownMouseReporting = reporting; changed = true }
             guard changed, !attachments.isEmpty else { return nil }
             dirty = false
             revision += 1
@@ -348,7 +365,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             let panes = CoreLayout.panes(visible, in: area)
             if focusedPane.map({ id in !panes.contains { $0.terminal == id } }) ?? true { focusedPane = panes.first?.terminal }
             return Self.compose(panes: panes, all: tab.root.terminals, splits: CoreLayout.splits(visible, in: area),
-                                attachments: attachments,
+                                attachments: attachments, mouseReporting: reporting,
                                 focused: focusedPane, area: area, bootID: bootID, revision: revision,
                                 border: theme.map { Self.encode($0.ansi.count > 8 ? $0.ansi[8] : $0.foreground) } ?? 0)
         }
@@ -381,7 +398,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// One surface for a tab: each pane's grid at its place, a line on each split's border,
     /// and Herdr's split records so the window can drag them.
     private static func compose(panes: [(terminal: String, rect: HerdrRect)], all: [String], splits: [CoreLayout.Split],
-                                attachments: [String: Attachment], focused: String?, area: HerdrRect,
+                                attachments: [String: Attachment], mouseReporting: Set<String>, focused: String?, area: HerdrRect,
                                 bootID: String, revision: UInt64, border: UInt32) -> HerdrSurface {
         var grid = blankGrid(cols: area.width, rows: area.height)
         // Panes a zoom hides keep an empty place, so the surface still names every pane of the tab.
@@ -422,7 +439,50 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                             width: area.width, height: area.height,
                             cells: HerdrCellRows(rows: grid, width: area.width), cursor: cursor,
                             paneIDs: all, paneRects: rects, paneInnerRects: rects,
-                            mouseReportingPaneIDs: [], splits: records, graphics: [], focusedPaneID: focused)
+                            mouseReportingPaneIDs: mouseReporting, splits: records, graphics: [], focusedPaneID: focused)
+    }
+
+    /// What a mouse event in a pane does. A program that asked for mouse reports gets them,
+    /// clicks, drags and the wheel alike, encoded for its mode. Otherwise the window keeps
+    /// clicks for selecting text, and the wheel moves the scrollback; on the alternate screen,
+    /// which has none, it sends arrow keys when the program asked for that (mode 1007), as
+    /// pagers expect.
+    static func mouseInput(_ mouse: HerdrMouseEvent, to emulator: VTTerminal) -> (bytes: Data?, scrolled: Bool) {
+        let column = Int(mouse.column), row = Int(mouse.row), modifiers = UInt16(mouse.modifiers)
+        let repeats = min(max(Int(mouse.lines), 1), maxWheelRepeat)
+        // wooloo numbers buttons as Herdr does: 0 left, 1 right, 2 middle.
+        func button(_ code: UInt64) -> Int { code == 1 ? 2 : code == 2 ? 3 : 1 }
+        let wheel: Int?
+        switch mouse.kind {
+        case .scrollUp: wheel = 4
+        case .scrollDown: wheel = 5
+        case .scrollLeft: wheel = 6
+        case .scrollRight: wheel = 7
+        default: wheel = nil
+        }
+        if emulator.reportsMouse {
+            switch mouse.kind {
+            case .down(let code):
+                return (emulator.encodeMouse(.press, button: button(code), column: column, row: row, modifiers: modifiers), false)
+            case .up(let code):
+                return (emulator.encodeMouse(.release, button: button(code), column: column, row: row, modifiers: modifiers), false)
+            case .drag(let code):
+                return (emulator.encodeMouse(.motion, button: button(code), column: column, row: row, modifiers: modifiers,
+                                             anyButtonPressed: true), false)
+            default:
+                guard let wheel, let report = emulator.encodeMouse(.press, button: wheel, column: column, row: row,
+                                                                    modifiers: modifiers) else { return (nil, false) }
+                return (Data(Array(repeating: report, count: repeats).joined()), false)
+            }
+        }
+        guard wheel == 4 || wheel == 5 else { return (nil, false) }
+        let up = wheel == 4
+        if emulator.isAlternateScreen {
+            guard emulator.mode(1007), let key = emulator.encodeKey(up ? "up" : "down") else { return (nil, false) }
+            return (Data(Array(repeating: key, count: repeats).joined()), false)
+        }
+        emulator.scroll(by: up ? -Int(max(mouse.lines, 1)) : Int(max(mouse.lines, 1)))
+        return (nil, true)
     }
 
     static func encode(_ rgb: TerminalRGB) -> UInt32 {

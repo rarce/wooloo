@@ -96,6 +96,10 @@ public final class VTTerminal {
     private var rowCells: GhosttyRenderStateRowCells?
     private var keyEncoder: GhosttyKeyEncoder?
     private var keyEvent: GhosttyKeyEvent?
+    private var mouseEncoder: GhosttyMouseEncoder?
+    private var mouseEvent: GhosttyMouseEvent?
+    private var cellWidth = 8
+    private var cellHeight = 16
 
     /// Bytes the terminal answers the program with, such as replies to queries herdr-core
     /// forwards to the viewer. Send them as `AUTOMATIC_INPUT` when the attach allows it.
@@ -116,6 +120,8 @@ public final class VTTerminal {
         try check(ghostty_render_state_row_cells_new(nil, &rowCells), "row_cells_new")
         try check(ghostty_key_encoder_new(nil, &keyEncoder), "key_encoder_new")
         try check(ghostty_key_event_new(nil, &keyEvent), "key_event_new")
+        try check(ghostty_mouse_encoder_new(nil, &mouseEncoder), "mouse_encoder_new")
+        try check(ghostty_mouse_event_new(nil, &mouseEvent), "mouse_event_new")
         let userdata = Unmanaged.passUnretained(self).toOpaque()
         _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata)
         let writePty: GhosttyTerminalWritePtyFn = { _, userdata, data, length in
@@ -136,6 +142,8 @@ public final class VTTerminal {
     }
 
     deinit {
+        ghostty_mouse_event_free(mouseEvent)
+        ghostty_mouse_encoder_free(mouseEncoder)
         ghostty_key_event_free(keyEvent)
         ghostty_key_encoder_free(keyEncoder)
         ghostty_render_state_row_cells_free(rowCells)
@@ -162,6 +170,8 @@ public final class VTTerminal {
     public func resize(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) throws {
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
+        self.cellWidth = max(cellWidth, 1)
+        self.cellHeight = max(cellHeight, 1)
         try check(ghostty_terminal_resize(terminal, UInt16(clamping: self.cols), UInt16(clamping: self.rows),
                                           UInt32(clamping: max(cellWidth, 1)), UInt32(clamping: max(cellHeight, 1))),
                   "terminal_resize")
@@ -214,6 +224,51 @@ public final class VTTerminal {
         var config = GhosttyTerminalModeConfig(mode: ghostty_mode_new(value, ansi), value: false)
         guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &config) == GHOSTTY_SUCCESS else { return false }
         return config.value
+    }
+
+    /// Whether the program asked for mouse reports (any of modes 9, 1000, 1002 and 1003).
+    public var reportsMouse: Bool {
+        var value = false
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &value)
+        return value
+    }
+
+    /// Whether the program switched to the alternate screen, which keeps no scrollback.
+    public var isAlternateScreen: Bool {
+        var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+        return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+    }
+
+    // MARK: Scrollback
+
+    /// Where the viewport is in the scrollback, in rows: `offset` is its first row out of
+    /// `total`, and it shows `length` rows. At the bottom, `offset + length == total`.
+    public var scrollPosition: (total: Int, offset: Int, length: Int) {
+        var bar = GhosttyTerminalScrollbar()
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &bar)
+        return (Int(clamping: bar.total), Int(clamping: bar.offset), Int(clamping: bar.len))
+    }
+
+    /// Whether the viewport shows the live screen rather than older lines.
+    public var isAtBottom: Bool {
+        let position = scrollPosition
+        return position.offset + position.length >= position.total
+    }
+
+    /// Moves the viewport through the scrollback; negative `lines` go back in time.
+    public func scroll(by lines: Int) {
+        var behavior = GhosttyTerminalScrollViewport()
+        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA
+        behavior.value.delta = lines
+        _ = ghostty_terminal_scroll_viewport(terminal, behavior)
+    }
+
+    /// Returns the viewport to the live screen.
+    public func scrollToBottom() {
+        var behavior = GhosttyTerminalScrollViewport()
+        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM
+        _ = ghostty_terminal_scroll_viewport(terminal, behavior)
     }
 
     // MARK: Output to draw
@@ -350,6 +405,53 @@ public final class VTTerminal {
             }
         }
         guard result == GHOSTTY_SUCCESS else { return Data(text.utf8) }
+        return Data(output.prefix(written))
+    }
+
+    public enum MouseAction: Sendable { case press, release, motion }
+
+    /// A mouse report for the program's mouse mode and format, at a cell of the screen, or nil
+    /// when the program takes no such report. Buttons: 1 left, 2 right, 3 middle, 4 and 5 the
+    /// wheel up and down, 6 and 7 left and right; nil for motion with no button. Modifiers use
+    /// the same bits as keys: shift 1, control 2, option 4.
+    public func encodeMouse(_ action: MouseAction, button: Int?, column: Int, row: Int,
+                            modifiers: UInt16 = 0, anyButtonPressed: Bool = false) -> Data? {
+        _ = ghostty_mouse_encoder_set_from_terminal(mouseEncoder, terminal)
+        var size = GhosttyMouseEncoderSize()
+        size.size = MemoryLayout<GhosttyMouseEncoderSize>.size
+        size.screen_width = UInt32(clamping: cols * cellWidth)
+        size.screen_height = UInt32(clamping: rows * cellHeight)
+        size.cell_width = UInt32(clamping: cellWidth)
+        size.cell_height = UInt32(clamping: cellHeight)
+        _ = withUnsafePointer(to: &size) { ghostty_mouse_encoder_set(mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, $0) }
+        var pressed = anyButtonPressed
+        _ = withUnsafePointer(to: &pressed) {
+            ghostty_mouse_encoder_set(mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, $0)
+        }
+        switch action {
+        case .press: _ = ghostty_mouse_event_set_action(mouseEvent, GHOSTTY_MOUSE_ACTION_PRESS)
+        case .release: _ = ghostty_mouse_event_set_action(mouseEvent, GHOSTTY_MOUSE_ACTION_RELEASE)
+        case .motion: _ = ghostty_mouse_event_set_action(mouseEvent, GHOSTTY_MOUSE_ACTION_MOTION)
+        }
+        let buttons = [GHOSTTY_MOUSE_BUTTON_LEFT, GHOSTTY_MOUSE_BUTTON_RIGHT, GHOSTTY_MOUSE_BUTTON_MIDDLE,
+                       GHOSTTY_MOUSE_BUTTON_FOUR, GHOSTTY_MOUSE_BUTTON_FIVE, GHOSTTY_MOUSE_BUTTON_SIX,
+                       GHOSTTY_MOUSE_BUTTON_SEVEN]
+        if let button, (1...buttons.count).contains(button) {
+            _ = ghostty_mouse_event_set_button(mouseEvent, buttons[button - 1])
+        } else {
+            _ = ghostty_mouse_event_clear_button(mouseEvent)
+        }
+        _ = ghostty_mouse_event_set_mods(mouseEvent, modifiers)
+        // The middle of the cell, in the surface pixels the encoder converts back to cells.
+        let x = (Float(max(0, min(column, cols - 1))) + 0.5) * Float(cellWidth)
+        let y = (Float(max(0, min(row, rows - 1))) + 0.5) * Float(cellHeight)
+        _ = ghostty_mouse_event_set_position(mouseEvent, GhosttyMousePosition(x: x, y: y))
+        var written = 0
+        var output = [UInt8](repeating: 0, count: 128)
+        let result = output.withUnsafeMutableBufferPointer { out in
+            ghostty_mouse_encoder_encode(mouseEncoder, mouseEvent, out.baseAddress, out.count, &written)
+        }
+        guard result == GHOSTTY_SUCCESS, written > 0 else { return nil }
         return Data(output.prefix(written))
     }
 

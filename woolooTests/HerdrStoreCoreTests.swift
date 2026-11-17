@@ -83,6 +83,7 @@ final class HerdrStoreCoreTests: XCTestCase {
         let attach = try XCTUnwrap(core.callsTo("terminal.attach").last)
         XCTAssertEqual(attach.params["terminal"] as? String, "t1")
         XCTAssertNotNil(attach.params["display"], "The window's colours answer the program's colour queries")
+        XCTAssertEqual(attach.params["history"] as? Int, CoreTerminalPresentation.attachHistory, "Scrollback comes with the attach")
         let (server, channel) = try XCTUnwrap(attachedServer())
         server.send(Data("hello \u{1b}[1mworld\u{1b}[0m".utf8), on: channel)
         await waitUntil("surface") {
@@ -98,6 +99,15 @@ final class HerdrStoreCoreTests: XCTestCase {
         }
         XCTAssertTrue(server.recordedFrames().contains { $0.channel == channel && $0.kind == .facts })
         XCTAssertTrue(core.callsTo("terminal.keys").isEmpty, "Keys go to the attached stream, encoded in wooloo")
+        // A program that asks for the mouse gets clicks, encoded for its mode.
+        XCTAssertEqual(store.surface?.mouseReportingPaneIDs, [])
+        server.send(Data("\u{1b}[?1000h".utf8), on: channel)
+        await waitUntil("mouse reporting") { store.surface?.mouseReportingPaneIDs == ["t1"] }
+        store.sendMouse(HerdrMouseEvent(kind: .down(0), column: 2, row: 1, modifiers: 0, lines: 1), to: "t1")
+        await waitUntil("clicked") {
+            server.recordedFrames().contains { $0.channel == channel && $0.kind == .data
+                && $0.payload == Data([0x1b, 0x5b, 0x4d, 32, 35, 34]) }
+        }
     }
 
     func testASplitTabIsComposedFromItsTerminals() async throws {

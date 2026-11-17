@@ -399,6 +399,22 @@ Still open:
 
   These need a Mac to measure, or Phase 5.
 
+## Phase 4 follow-up: mouse and scrollback (2026-11-17)
+
+- **Mouse:**
+  - `VTTerminal` wraps libghostty-vt's mouse encoder. It reads the tracking mode and format from the terminal, and sends positions as the middle of a cell in pixels at the window's cell size.
+  - `CoreTerminalPresentation` reports a pane in `mouseReportingPaneIDs` while its program asks for mouse reports, so `TerminalPaneView` forwards clicks and drags there and keeps selection elsewhere, as on the TUI.
+  - Buttons map from wooloo's 0 left, 1 right and 2 middle. A drag is motion with the button held.
+- **Wheel:** the view sends the wheel for every pane.
+  - A program that takes the mouse gets wheel reports, at most 10 per event.
+  - Otherwise, on the main screen, the wheel moves the emulator's viewport through its scrollback.
+  - On the alternate screen it sends arrow keys only when the program asked for alternate scroll (mode 1007).
+- **Scrollback:**
+  - `terminal.attach` asks for `history: 2000`, so Core replays the main screen's last 2,000 lines into the emulator, which keeps all output after that.
+  - The cursor hides while older lines are shown.
+  - Typed text, keys and pastes return to the live screen.
+- **Still open:** find in terminal, selection across scrolled-out lines (the view selects what is on screen), kitty images and observe viewers.
+
 ## Phase 5 progress (2026-11-16)
 
 - **Store (D2, option a):** `CoreStructure` is wooloo's `wooloo` document in the core:
