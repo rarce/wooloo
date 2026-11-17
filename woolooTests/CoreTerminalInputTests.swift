@@ -65,11 +65,12 @@ final class CoreTerminalInputTests: XCTestCase {
         XCTAssertFalse(CoreTerminalPresentation.mouseInput(mouse(.scrollLeft), to: terminal).scrolled)
     }
 
-    func testTheWheelOnTheAlternateScreenSendsArrowsWhenAsked() throws {
-        let pager = try terminal("\u{1b}[?1049h")
+    func testTheWheelOnTheAlternateScreenSendsArrowsUnlessTurnedOff() throws {
+        // Alternate scroll (1007) is on unless a program turns it off, as in Ghostty and xterm.
+        let pager = try terminal("\u{1b}[?1049h\u{1b}[?1007l")
         XCTAssertTrue(pager.isAlternateScreen)
         XCTAssertNil(CoreTerminalPresentation.mouseInput(mouse(.scrollDown), to: pager).bytes,
-                     "The alternate screen has no scrollback, and the program did not ask for arrows")
+                     "The alternate screen has no scrollback, and the program turned arrows off")
         pager.write(Data("\u{1b}[?1007h".utf8))
         let input = CoreTerminalPresentation.mouseInput(mouse(.scrollDown, lines: 3), to: pager)
         XCTAssertEqual(text(input.bytes), String(repeating: "\u{1b}[B", count: 3))
