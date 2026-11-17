@@ -55,8 +55,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         let channel: UInt32
         let emulator: VTTerminal
         var rect: HerdrRect
+        /// Watching only: Core keeps the size another viewer set, and takes no input from here.
+        var observing = false
         var grid: [[HerdrCell]]
         var cursor: TerminalCursor?
+        var images: [TerminalImage] = []
         var inbox = Data()
     }
 
@@ -176,6 +179,13 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         let (connection, channel, bytes, handled) = lock.withLock { () -> (CoreConnection?, UInt32?, Data?, Bool) in
             guard let attachment = attachments[paneID] else { return (nil, nil, nil, false) }
             let emulator = attachment.emulator
+            // Core takes no input from an observer; the window attaches actively once it is active.
+            if attachment.observing, case .mouse(let mouse) = event {
+                let input = Self.mouseInput(mouse, to: emulator)
+                if input.scrolled { dirty = true }
+                return (nil, nil, nil, input.scrolled)
+            }
+            if attachment.observing { return (nil, nil, nil, false) }
             let bytes: Data?
             switch event {
             case .mouse(let mouse):
@@ -264,9 +274,21 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
             lock.withLock { attachments[terminal] = nil; dirty = true }
         }
+        // A window that becomes active types and sizes its terminals again: attach afresh.
+        let focused = lock.withLock { windowFocused }
+        for (terminal, attachment) in current where attachment.observing && focused && wanted.contains(terminal) {
+            try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
+            lock.withLock { attachments[terminal] = nil }
+        }
+        let refreshed = lock.withLock { attachments }
         for (terminal, rect) in placed {
-            if let attachment = current[terminal] {
+            if let attachment = refreshed[terminal] {
                 guard attachment.rect != rect else { continue }
+                if attachment.observing {
+                    // An observer keeps Core's size; only its place in the tab moves.
+                    lock.withLock { attachments[terminal]?.rect = rect; dirty = true }
+                    continue
+                }
                 lock.withLock {
                     try? attachments[terminal]?.emulator.resize(cols: rect.width, rows: rect.height,
                                                                 cellWidth: size.0, cellHeight: size.1)
@@ -280,15 +302,22 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 try? connection.send(CoreFrame(channel: attachment.channel, kind: .resize, payload: payload))
                 continue
             }
-            try attach(terminal, rect: rect, cell: size, colors: colors, on: connection)
+            try attach(terminal, rect: rect, cell: size, colors: colors, observe: !focused, on: connection)
         }
     }
 
+    /// Attaches to a terminal. A window that is not active when it attaches, such as one
+    /// restored behind others at launch, only watches (`observe`): it does not take the
+    /// terminal's size from the window someone is typing in, and follows the size Core reports.
     private func attach(_ terminal: String, rect: HerdrRect, cell: (Int, Int),
                         colors: (foreground: TerminalRGB, background: TerminalRGB, cursor: TerminalRGB, ansi: [TerminalRGB])?,
-                        on connection: CoreConnection) throws {
+                        observe: Bool, on connection: CoreConnection) throws {
         var params: [String: Any] = ["terminal": terminal, "cols": rect.width, "rows": rect.height,
                                      "history": Self.attachHistory]
+        if observe {
+            params["observe"] = true
+            params["resize_notifications"] = true
+        }
         if let colors {
             params["display"] = ["fg": colors.foreground.hex, "bg": colors.background.hex,
                                  "cursor": colors.cursor.hex, "cell": [cell.0, cell.1]]
@@ -301,8 +330,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             lock.withLock { needsTree = true }
             return
         }
-        let emulator = try VTTerminal(cols: rect.width, rows: rect.height)
-        try? emulator.resize(cols: rect.width, rows: rect.height, cellWidth: cell.0, cellHeight: cell.1)
+        // An observer starts at the terminal's own size, which Core reports in the attach.
+        let cols = observe ? max(result.terminal.cols, 1) : rect.width
+        let rows = observe ? max(result.terminal.rows, 1) : rect.height
+        let emulator = try VTTerminal(cols: cols, rows: rows)
+        try? emulator.resize(cols: cols, rows: rows, cellWidth: cell.0, cellHeight: cell.1)
         if let colors { Self.apply(colors, to: emulator) }
         // Both the core's `hello` and this attach must confirm it: old cores drop unknown kinds.
         let automatic = connection.hello?.features.contains("automatic_input") == true && result.automaticInput == true
@@ -314,18 +346,30 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         }
         lock.withLock {
             attachments[terminal] = Attachment(terminal: terminal, channel: channel, emulator: emulator, rect: rect,
-                                               grid: Self.blankGrid(cols: rect.width, rows: rect.height))
+                                               observing: observe, grid: Self.blankGrid(cols: cols, rows: rows))
             dirty = true
         }
         connection.route(channel: channel, onData: { [weak self] data in
             guard let self else { return }
-            self.lock.withLock { self.attachments[terminal]?.inbox.append(data) }
+            // A stream this presentation closed may still deliver; only the current one counts.
+            self.lock.withLock {
+                if self.attachments[terminal]?.channel == channel { self.attachments[terminal]?.inbox.append(data) }
+            }
             self.wake.signal()
         }, onClose: { [weak self] in
             guard let self else { return }
             self.lock.withLock {
                 if self.attachments[terminal]?.channel == channel { self.attachments[terminal] = nil }
                 self.needsTree = true
+            }
+            self.wake.signal()
+        }, onResize: { [weak self] cols, rows in
+            guard let self else { return }
+            self.lock.withLock {
+                guard let attachment = self.attachments[terminal], attachment.channel == channel, attachment.observing else { return }
+                try? attachment.emulator.resize(cols: cols, rows: rows, cellWidth: self.cellWidth, cellHeight: self.cellHeight)
+                self.attachments[terminal]?.grid = Self.blankGrid(cols: cols, rows: rows)
+                self.dirty = true
             }
             self.wake.signal()
         })
@@ -351,6 +395,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     }
                     // Older lines on screen hide the live cursor.
                     attachment.cursor = attachment.emulator.isAtBottom ? frame.cursor : nil
+                    changed = true
+                }
+                if let images = attachment.emulator.imagesIfChanged() {
+                    attachment.images = images
                     changed = true
                 }
                 attachments[terminal] = attachment
@@ -379,7 +427,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 facts["bg"] = theme.background.hex
                 facts["cursor"] = theme.cursor.hex
             }
-            let targets = attachments.values.map { ($0.channel, windowFocused && $0.terminal == focusedPane) }
+            let targets = attachments.values.filter { !$0.observing }
+                .map { ($0.channel, windowFocused && $0.terminal == focusedPane) }
             return (self.connection, targets, facts)
         }
         guard let connection, let payload = try? JSONSerialization.data(withJSONObject: facts) else { return }
@@ -431,6 +480,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             records.append(HerdrSplit(direction: split.direction == .right ? .horizontal : .vertical,
                                       pos: split.position, area: split.area, hitRect: hit, path: split.path))
         }
+        let graphics = panes.flatMap { terminal, rect in
+            (attachments[terminal]?.images ?? []).compactMap { graphic($0, of: terminal, in: rect) }
+        }
         let cursor = focused.flatMap { id -> HerdrCursor? in
             guard let rect = rects[id], let at = attachments[id]?.cursor else { return nil }
             return HerdrCursor(x: rect.x + at.x, y: rect.y + at.y, visible: at.visible, shape: 0)
@@ -439,7 +491,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                             width: area.width, height: area.height,
                             cells: HerdrCellRows(rows: grid, width: area.width), cursor: cursor,
                             paneIDs: all, paneRects: rects, paneInnerRects: rects,
-                            mouseReportingPaneIDs: mouseReporting, splits: records, graphics: [], focusedPaneID: focused)
+                            mouseReportingPaneIDs: mouseReporting, splits: records, graphics: graphics, focusedPaneID: focused)
     }
 
     /// What a mouse event in a pane does. A program that asked for mouse reports gets them,
@@ -483,6 +535,48 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         }
         emulator.scroll(by: up ? -Int(max(mouse.lines, 1)) : Int(max(mouse.lines, 1)))
         return (nil, true)
+    }
+
+    /// A kitty graphics image of a pane as the surface image `TerminalPaneView` draws: at the
+    /// pane's place, and cut to the pane where it runs past an edge, with the matching part
+    /// of the source.
+    static func graphic(_ image: TerminalImage, of terminal: String, in rect: HerdrRect) -> HerdrGraphic? {
+        guard image.cols > 0, image.rows > 0, image.sourceWidth > 0, image.sourceHeight > 0 else { return nil }
+        var column = image.column, row = image.row, cols = image.cols, rows = image.rows
+        var sourceX = image.sourceX, sourceY = image.sourceY
+        var sourceWidth = image.sourceWidth, sourceHeight = image.sourceHeight
+        var offsetX = image.offsetX, offsetY = image.offsetY
+        if column < 0 {
+            let cut = -column
+            guard cut < cols else { return nil }
+            sourceX += sourceWidth * cut / cols; sourceWidth -= sourceWidth * cut / cols
+            cols -= cut; column = 0; offsetX = 0
+        }
+        if row < 0 {
+            let cut = -row
+            guard cut < rows else { return nil }
+            sourceY += sourceHeight * cut / rows; sourceHeight -= sourceHeight * cut / rows
+            rows -= cut; row = 0; offsetY = 0
+        }
+        if column + cols > rect.width {
+            let keep = rect.width - column
+            guard keep > 0 else { return nil }
+            sourceWidth = sourceWidth * keep / cols; cols = keep
+        }
+        if row + rows > rect.height {
+            let keep = rect.height - row
+            guard keep > 0 else { return nil }
+            sourceHeight = sourceHeight * keep / rows; rows = keep
+        }
+        guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+        let key = HerdrGraphicKey(identity: Data("core|\(terminal)|\(image.identity)".utf8), width: image.width,
+                                  height: image.height, format: image.format == .rgba ? .rgba : .rgb,
+                                  isPopup: false, dataLength: image.pixels.count)
+        // The view draws negative z below the text.
+        let z = image.belowText ? min(image.z, -1) : max(image.z, 0)
+        return HerdrGraphic(key: key, data: image.pixels, x: rect.x + column, y: rect.y + row, cols: cols, rows: rows,
+                            sourceX: sourceX, sourceY: sourceY, sourceWidth: sourceWidth, sourceHeight: sourceHeight,
+                            xOffset: offsetX, yOffset: offsetY, z: z)
     }
 
     static func encode(_ rgb: TerminalRGB) -> UInt32 {

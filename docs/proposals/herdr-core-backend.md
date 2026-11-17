@@ -413,7 +413,19 @@ Still open:
   - `terminal.attach` asks for `history: 2000`, so Core replays the main screen's last 2,000 lines into the emulator, which keeps all output after that.
   - The cursor hides while older lines are shown.
   - Typed text, keys and pastes return to the live screen.
-- **Still open:** find in terminal, selection across scrolled-out lines (the view selects what is on screen), kitty images and observe viewers.
+- **Kitty images:**
+  - `VTTerminal.imagesIfChanged()` reads the render state's image list when its placement generation changes. Pixels come from the kitty image storage, and grey images are widened to RGBA.
+  - PNG payloads are decoded with ImageIO through libghostty-vt's process-wide `GHOSTTY_SYS_OPT_DECODE_PNG` hook, into straight RGBA.
+  - The file, temporary-file and shared-memory media stay off, as libghostty-vt defaults them, so a program cannot make the viewer read local files.
+  - `CoreTerminalPresentation.graphic` turns each placement into the `HerdrGraphic` the view already draws, at the pane's place and cut to the pane with the matching source rectangle. Images below the text get a negative z.
+- **Observe viewers:**
+  - A window that is not the key window when it attaches attaches with `observe` and `resize_notifications`. It starts at the terminal's own size and follows the RESIZE frames Core sends, which `CoreConnection` now routes.
+  - It sends no RESIZE, FOCUS or input; the wheel still scrolls its own scrollback.
+  - When the window becomes key, it closes the watching stream and attaches actively. It is never demoted, so switching windows does not repaint.
+  - Data from a stream the presentation closed is dropped.
+- **Still open:**
+  - find in terminal, which the TUI path does not have in wooloo either;
+  - selecting lines that scrolled off screen, since the view selects what is on screen.
 
 ## Phase 5 progress (2026-11-16)
 

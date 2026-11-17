@@ -41,7 +41,7 @@ herdr-core keeps terminals, not layout. wooloo keeps its own Spaces, tabs and sp
 | Mouse reporting to programs | Yes | Yes: clicks, drags and the wheel, encoded for the program's mouse mode |
 | Scrollback | Yes | Yes. The wheel scrolls back through the terminal's last 2,000 lines when you connect, plus everything since. Typing returns to the live screen. In full-screen programs that ask for it (mode 1007), the wheel sends arrow keys. |
 | Find in terminal | Yes | Not yet |
-| Inline images | Herdr's images | Not yet |
+| Inline images | Herdr's images | Kitty graphics protocol images, including PNG, drawn above or below the text as the program asks and cut to their pane |
 | Agent status | Herdr's detection and integrations | Only for programs that report it themselves (OSC 7501) |
 | Unread and pinned agents | Unread in wooloo | Shared with every Herdr client (`herdr.seen`, `herdr.pinned`) |
 | Notifications | Herdr's sounds, toasts and system notifications | The same, from agent states |
@@ -60,3 +60,4 @@ herdr-core keeps terminals, not layout. wooloo keeps its own Spaces, tabs and sp
 - A terminal shows the agent state only while the program reports it.
 - On SSH, each window holds three connections to the core: commands, the event stream and its live terminals. Each counts against the host's SSH session limit.
 - Reaching the same core from two windows, or from two Macs, keeps one arrangement. Each window keeps its own zoom and selection.
+- A window that is not active when it connects to a terminal, such as one restored behind others at launch, only watches it. It does not change the terminal's size or type into it, and it follows the size the active window set. It takes over once you bring it to the front.

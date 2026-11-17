@@ -77,4 +77,55 @@ final class CoreTerminalInputTests: XCTestCase {
         let capped = CoreTerminalPresentation.mouseInput(mouse(.scrollUp, lines: 50), to: pager)
         XCTAssertEqual(capped.bytes?.count, 3 * CoreTerminalPresentation.maxWheelRepeat)
     }
+
+    // MARK: Kitty images
+
+    func testAKittyImageReachesTheSurfaceAtItsPlace() throws {
+        let terminal = try terminal("\r\n")
+        _ = terminal.frame()
+        XCTAssertEqual(terminal.imagesIfChanged() ?? [], [])
+        // Two red RGB pixels, transmitted and shown over two cells at the cursor (column 0, row 1).
+        let pixels = Data([255, 0, 0, 255, 0, 0])
+        terminal.write(Data("\u{1b}_Ga=T,f=24,s=2,v=1,c=2,r=1,i=7;\(pixels.base64EncodedString())\u{1b}\\".utf8))
+        _ = terminal.frame()
+        let image = try XCTUnwrap(terminal.imagesIfChanged()?.first)
+        XCTAssertEqual(image.width, 2)
+        XCTAssertEqual(image.height, 1)
+        XCTAssertEqual(image.format, .rgb)
+        XCTAssertEqual(image.pixels, pixels)
+        XCTAssertEqual([image.column, image.row, image.cols, image.rows], [0, 1, 2, 1])
+        _ = terminal.frame()
+        XCTAssertNil(terminal.imagesIfChanged(), "Unchanged placements are not read again")
+
+        let graphic = try XCTUnwrap(CoreTerminalPresentation.graphic(image, of: "t1",
+                                                                    in: HerdrRect(x: 41, y: 3, width: 40, height: 20)))
+        XCTAssertEqual([graphic.x, graphic.y, graphic.cols, graphic.rows], [41, 4, 2, 1], "At the pane's place")
+        XCTAssertEqual(graphic.key.format, .rgb)
+        XCTAssertEqual(graphic.data, pixels)
+        XCTAssertGreaterThanOrEqual(graphic.z, 0, "Above the text by default")
+    }
+
+    func testImagesAreCutToTheirPane() throws {
+        let image = TerminalImage(identity: "1:1", width: 100, height: 100, format: .rgba,
+                                  pixels: Data(count: 40_000), column: 8, row: -5, cols: 10, rows: 10,
+                                  offsetY: 3, sourceWidth: 100, sourceHeight: 100, belowText: true, z: 0)
+        let graphic = try XCTUnwrap(CoreTerminalPresentation.graphic(image, of: "t1", in: HerdrRect(x: 0, y: 0, width: 12, height: 20)))
+        XCTAssertEqual([graphic.x, graphic.y, graphic.cols, graphic.rows], [8, 0, 4, 5])
+        XCTAssertEqual([graphic.sourceX, graphic.sourceY, graphic.sourceWidth, graphic.sourceHeight], [0, 50, 40, 50])
+        XCTAssertEqual(graphic.yOffset, 0, "The cut edge starts at the cell")
+        XCTAssertLessThan(graphic.z, 0, "Below the text when the program asked")
+        let gone = TerminalImage(identity: "1:1", width: 1, height: 1, format: .rgb, pixels: Data(count: 3),
+                                 column: 0, row: -3, cols: 1, rows: 2, sourceWidth: 1, sourceHeight: 1)
+        XCTAssertNil(CoreTerminalPresentation.graphic(gone, of: "t1", in: HerdrRect(x: 0, y: 0, width: 5, height: 5)))
+    }
+
+    func testRGBAImagesKeepTheirPixels() throws {
+        let terminal = try terminal()
+        let rgba = Data([1, 2, 3, 4])
+        terminal.write(Data("\u{1b}_Ga=T,f=32,s=1,v=1,c=1,r=1,i=9;\(rgba.base64EncodedString())\u{1b}\\".utf8))
+        _ = terminal.frame()
+        let image = try XCTUnwrap(terminal.imagesIfChanged()?.first)
+        XCTAssertEqual(image.format, .rgba)
+        XCTAssertEqual(image.pixels, rgba)
+    }
 }

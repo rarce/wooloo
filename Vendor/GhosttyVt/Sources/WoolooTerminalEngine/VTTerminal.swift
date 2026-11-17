@@ -98,6 +98,8 @@ public final class VTTerminal {
     private var keyEvent: GhosttyKeyEvent?
     private var mouseEncoder: GhosttyMouseEncoder?
     private var mouseEvent: GhosttyMouseEvent?
+    private var imageIterator: GhosttyRenderStateImageIterator?
+    private var shownImagesGeneration: UInt64 = 0
     private var cellWidth = 8
     private var cellHeight = 16
 
@@ -111,6 +113,7 @@ public final class VTTerminal {
     public private(set) var rows: Int
 
     public init(cols: Int, rows: Int) throws {
+        _ = VTSystem.installed
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
         try check(ghostty_terminal_new(nil, &terminal, UInt16(clamping: self.cols), UInt16(clamping: self.rows)),
@@ -122,6 +125,7 @@ public final class VTTerminal {
         try check(ghostty_key_event_new(nil, &keyEvent), "key_event_new")
         try check(ghostty_mouse_encoder_new(nil, &mouseEncoder), "mouse_encoder_new")
         try check(ghostty_mouse_event_new(nil, &mouseEvent), "mouse_event_new")
+        try check(ghostty_render_state_image_iterator_new(nil, &imageIterator), "image_iterator_new")
         let userdata = Unmanaged.passUnretained(self).toOpaque()
         _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata)
         let writePty: GhosttyTerminalWritePtyFn = { _, userdata, data, length in
@@ -142,6 +146,7 @@ public final class VTTerminal {
     }
 
     deinit {
+        ghostty_render_state_image_iterator_free(imageIterator)
         ghostty_mouse_event_free(mouseEvent)
         ghostty_mouse_encoder_free(mouseEncoder)
         ghostty_key_event_free(keyEvent)
@@ -269,6 +274,87 @@ public final class VTTerminal {
         var behavior = GhosttyTerminalScrollViewport()
         behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM
         _ = ghostty_terminal_scroll_viewport(terminal, behavior)
+    }
+
+    // MARK: Images
+
+    /// The kitty graphics images in the viewport after the last `frame()`, or nil when the
+    /// placements are the same as at the previous call.
+    public func imagesIfChanged() -> [TerminalImage]? {
+        var generation: UInt64 = 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION, &generation)
+        guard generation != shownImagesGeneration else { return nil }
+        shownImagesGeneration = generation
+        guard ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &imageIterator) == GHOSTTY_SUCCESS
+        else { return [] }
+        var graphics: GhosttyKittyGraphics?
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics)
+        var images: [TerminalImage] = []
+        while ghostty_render_state_image_iterator_next(imageIterator), images.count < 64 {
+            var proto = GHOSTTY_IMAGE_PROTOCOL_KITTY
+            _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL, &proto)
+            guard proto == GHOSTTY_IMAGE_PROTOCOL_KITTY, let graphics else { continue }
+            func u32(_ data: GhosttyRenderStateImageData) -> Int {
+                var value: UInt32 = 0
+                _ = ghostty_render_state_image_get(imageIterator, data, &value)
+                return Int(value)
+            }
+            func i32(_ data: GhosttyRenderStateImageData) -> Int {
+                var value: Int32 = 0
+                _ = ghostty_render_state_image_get(imageIterator, data, &value)
+                return Int(value)
+            }
+            var imageID: UInt32 = 0, imageGeneration: UInt64 = 0
+            var layer = GHOSTTY_IMAGE_LAYER_ABOVE_TEXT
+            _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID, &imageID)
+            _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION, &imageGeneration)
+            _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER, &layer)
+            guard let image = ghostty_kitty_graphics_image(graphics, imageID) else { continue }
+            var width: UInt32 = 0, height: UInt32 = 0
+            var format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA
+            var pixels = GhosttyString()
+            _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH, &width)
+            _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT, &height)
+            _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT, &format)
+            guard ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS, &pixels) == GHOSTTY_SUCCESS,
+                  let base = pixels.ptr, width > 0, height > 0,
+                  let converted = Self.pixels(Data(bytes: base, count: pixels.len), format: format,
+                                              count: Int(width) * Int(height)) else { continue }
+            let z = i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_Z)
+            images.append(TerminalImage(
+                identity: "\(imageID):\(imageGeneration)", width: Int(width), height: Int(height),
+                format: converted.format, pixels: converted.data,
+                column: i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL), row: i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW),
+                cols: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_COLS), rows: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_ROWS),
+                offsetX: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X), offsetY: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y),
+                sourceX: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X), sourceY: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y),
+                sourceWidth: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH),
+                sourceHeight: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT),
+                belowText: layer != GHOSTTY_IMAGE_LAYER_ABOVE_TEXT, z: z))
+        }
+        return images
+    }
+
+    /// Stored pixels as RGB or RGBA; grey images are widened to RGBA.
+    static func pixels(_ data: Data, format: GhosttyKittyImageFormat, count: Int) -> (data: Data, format: TerminalImage.Format)? {
+        switch format {
+        case GHOSTTY_KITTY_IMAGE_FORMAT_RGB: return data.count == count * 3 ? (data, .rgb) : nil
+        case GHOSTTY_KITTY_IMAGE_FORMAT_RGBA: return data.count == count * 4 ? (data, .rgba) : nil
+        case GHOSTTY_KITTY_IMAGE_FORMAT_GRAY, GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA:
+            let channels = format == GHOSTTY_KITTY_IMAGE_FORMAT_GRAY ? 1 : 2
+            guard data.count == count * channels else { return nil }
+            let source = [UInt8](data)
+            var rgba = [UInt8](repeating: 255, count: count * 4)
+            for index in 0..<count {
+                let grey = source[index * channels]
+                rgba[index * 4] = grey
+                rgba[index * 4 + 1] = grey
+                rgba[index * 4 + 2] = grey
+                if channels == 2 { rgba[index * 4 + 3] = source[index * channels + 1] }
+            }
+            return (Data(rgba), .rgba)
+        default: return nil
+        }
     }
 
     // MARK: Output to draw

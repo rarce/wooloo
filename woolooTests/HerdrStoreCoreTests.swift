@@ -75,6 +75,7 @@ final class HerdrStoreCoreTests: XCTestCase {
 
     func testTheLiveTerminalShowsItsOutputAndTakesTyping() async throws {
         store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
         store.connect(toCore: "wooloo-ui-test")
         store.setPresentationActive(true)
         await waitUntil("connected") { store.isConnected }
@@ -112,6 +113,7 @@ final class HerdrStoreCoreTests: XCTestCase {
 
     func testASplitTabIsComposedFromItsTerminals() async throws {
         store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
         store.connect(toCore: "wooloo-ui-test")
         store.setPresentationActive(true)
         await waitUntil("connected") { store.isConnected }
@@ -161,6 +163,34 @@ final class HerdrStoreCoreTests: XCTestCase {
                 CoreStructure.decode(self.core.documents[CoreStructure.documentName]?.value ?? nil)?
                     .spaces.first?.tabs.first?.root
             } == .split(.right, ratio: 0.25, first: .terminal("t1"), second: .terminal("t2"))
+        }
+    }
+
+    func testAnInactiveWindowWatchesUntilItIsActive() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("attached") { attachedServer() != nil }
+        let watching = try XCTUnwrap(core.callsTo("terminal.attach").last)
+        XCTAssertEqual(watching.params["observe"] as? Bool, true, "A window behind others only watches")
+        XCTAssertEqual(watching.params["resize_notifications"] as? Bool, true)
+        let (server, channel) = try XCTUnwrap(attachedServer())
+        server.send(Data("watched".utf8), on: channel)
+        await waitUntil("output") { store.surface.map { $0.cells.row(0).prefix(7).map(\.symbol).joined() } == "watched" }
+        server.sendResize(cols: 30, rows: 8, on: channel)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertFalse(server.recordedFrames().contains { $0.channel == channel && $0.kind == .resize },
+                       "An observer never sizes the terminal")
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("active again") {
+            core.callsTo("terminal.attach").count == 2 && core.callsTo("terminal.attach").last?.params["observe"] == nil
+        }
+        await waitUntil("old stream closed") {
+            server.recordedFrames().contains { $0.channel == channel && $0.kind == .close }
         }
     }
 

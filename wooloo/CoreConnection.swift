@@ -53,6 +53,7 @@ final class CoreConnection: @unchecked Sendable {
     private var waiting: [Int: DispatchSemaphore] = [:]
     private var streams: [UInt32: (Data) -> Void] = [:]
     private var closers: [UInt32: () -> Void] = [:]
+    private var resizers: [UInt32: (Int, Int) -> Void] = [:]
     private var ended = false
     private var lastFrame = Date()
     private var leftover = Data()
@@ -137,9 +138,16 @@ final class CoreConnection: @unchecked Sendable {
             let handler = lock.withLock { streams[frame.channel] }
             handler?(frame.payload)
             try send(.credit(frame.payload.count, channel: frame.channel))
+        case (_, .resize):
+            guard frame.payload.count >= 4 else { return }
+            let bytes = [UInt8](frame.payload.prefix(4))
+            let cols = Int(bytes[0]) | Int(bytes[1]) << 8, rows = Int(bytes[2]) | Int(bytes[3]) << 8
+            let resizer = lock.withLock { resizers[frame.channel] }
+            if cols > 0, rows > 0 { resizer?(cols, rows) }
         case (_, .close):
             let closer = lock.withLock { () -> (() -> Void)? in
                 streams[frame.channel] = nil
+                resizers[frame.channel] = nil
                 return closers.removeValue(forKey: frame.channel)
             }
             closer?()
@@ -156,6 +164,7 @@ final class CoreConnection: @unchecked Sendable {
             let closing = Array(closers.values)
             closers = [:]
             streams = [:]
+            resizers = [:]
             return (semaphores, closing)
         }
         semaphores.forEach { $0.signal() }
@@ -203,11 +212,15 @@ final class CoreConnection: @unchecked Sendable {
     /// Routes a stream channel's bytes to `onData` (credited after it returns) and its end to
     /// `onClose`. Register it before the reply that names the channel can be followed by data:
     /// cores send the reply first, and this runs on the caller's thread right after it.
-    func route(channel: UInt32, onData: @escaping (Data) -> Void, onClose: @escaping () -> Void) {
+    /// Delivers a channel's data and its end; `onResize` gets the terminal's size when Core
+    /// sends one, as it does to observers that asked for `resize_notifications`.
+    func route(channel: UInt32, onData: @escaping (Data) -> Void, onClose: @escaping () -> Void,
+               onResize: ((Int, Int) -> Void)? = nil) {
         let alreadyEnded = lock.withLock { () -> Bool in
             guard !ended else { return true }
             streams[channel] = onData
             closers[channel] = onClose
+            resizers[channel] = onResize
             return false
         }
         if alreadyEnded { onClose() }
