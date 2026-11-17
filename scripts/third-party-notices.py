@@ -28,6 +28,8 @@ VENDORED = [
     ("CodeEditTextView", "https://github.com/CodeEditApp/CodeEditTextView", "Vendor/CodeEditTextView/LICENSE.md"),
     ("MarkdownView", "https://github.com/LiYanan2004/MarkdownView", "Vendor/MarkdownView/LICENSE"),
     ("BeautifulMermaid", "https://github.com/lukilabs/beautiful-mermaid-swift", "Vendor/BeautifulMermaid/LICENSE"),
+    ("libghostty-vt 1.0.1 and its linked libraries", "https://github.com/ghostty-org/ghostty/tree/vt-1.0.1",
+     "Vendor/GhosttyVt/LICENSES.txt"),
     ("Popup title layout (unicode-width, unicode-segmentation, ratatui)",
      "https://github.com/unicode-rs/unicode-width, https://github.com/unicode-rs/unicode-segmentation,\n"
      "https://github.com/ratatui/ratatui", "Vendor/HerdrTitle/LICENSES.txt"),

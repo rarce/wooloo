@@ -90,6 +90,17 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
         }
     }
 
+    /// Sends a terminal's output on an attach channel.
+    func send(_ data: Data, on channel: UInt32) {
+        lock.withLock { enqueue(CoreFrame(channel: channel, kind: .data, payload: data).encoded()) }
+    }
+
+    /// Stream frames the client sent, read under the core's lock.
+    func recordedFrames() -> [CoreFrame] { lock.withLock { streamFrames } }
+
+    /// The channels `terminal.attach` handed out, in order.
+    private(set) var attachChannels: [UInt32] = []
+
     /// Ends a stream from the core's side.
     func closeChannel(_ channel: UInt32) {
         lock.withLock { enqueue(CoreFrame(channel: channel, kind: .close, payload: Data()).encoded()) }
@@ -157,6 +168,7 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
             case "terminal.attach":
                 let channel = nextChannel
                 nextChannel += 1
+                attachChannels.append(channel)
                 let terminal = core.terminals.first { $0.address == params["terminal"] as? String }
                 result = ["channel": channel, "terminal": try terminal.map(encoded) ?? [:],
                           "resize_notifications": false, "automatic_input": true]

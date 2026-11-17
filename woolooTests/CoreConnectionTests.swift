@@ -193,7 +193,7 @@ final class CoreConnectionTests: XCTestCase {
         let deadline = Date().addingTimeInterval(5)
         var frames: [CoreFrame] = []
         while Date() < deadline {
-            frames = core.connections.flatMap(\.streamFrames)
+            frames = core.connections.flatMap { $0.recordedFrames() }
             if frames.count >= 2 { break }
             usleep(10_000)
         }

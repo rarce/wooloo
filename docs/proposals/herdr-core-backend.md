@@ -375,6 +375,30 @@ Still open:
 - a live SSH run against a real host;
 - new windows opened after a herdr-core-only first run start on the TUI's default session until a herdr-core connection is added.
 
+## Phase 4 progress (2026-11-16)
+
+- **D1 in practice:** libghostty-vt 1.0.1 is published with an Apple xcframework (`release.files.ghostty.org`, C ABI stable since 1.0). `Vendor/GhosttyVt` is a local package whose `binaryTarget` pins that zip by its SHA-256, so the Xcode build needs no Zig. The license notices of libghostty-vt and its linked libraries are in `Vendor/GhosttyVt/LICENSES.txt` and `THIRD_PARTY_NOTICES.txt`.
+- **`VTTerminal`** (`WoolooTerminalEngine`) wraps libghostty-vt:
+  - output bytes go in;
+  - dirty rows come out, from the render state, with graphemes, resolved colours, style flags and wide-character spacers;
+  - also the cursor, colours and palette from the window theme, and query replies from the write-pty callback;
+  - key encoding follows the program's keyboard modes (key encoder set from the terminal); pastes are bracketed when mode 2004 is on; focus reports are encoded when mode 1004 is on.
+
+  It was type-checked on Linux against the 1.0.1 headers with no warnings under complete concurrency checking.
+- **`CoreTerminalPresentation`** is the `TerminalPresentationProvider` of herdr-core connections:
+  - It attaches to the terminal of the selected tab, with `display` colours and cell size, and sends `FACTS`, `FOCUS` and `RESIZE`.
+  - It feeds the emulator and hands `HerdrStore` the same `HerdrSurface` values as the TUI, so `TerminalPaneView` draws them unchanged (the surface contract: a new `bootID` per attach and an increasing `revision`).
+  - Typed text, keys and pastes are encoded in wooloo and sent as DATA. Emulator replies go as `AUTOMATIC_INPUT` when both `hello` and the attach confirm it.
+- **Not yet in Phase 4:**
+  - mouse reporting, through libghostty-vt's mouse encoder;
+  - client scrollback and the `TerminalPaneView` changes for it;
+  - kitty images;
+  - observe-mode viewers for other windows;
+  - the compositor for several panes per tab, which needs Phase 5's structure;
+  - the Core terminal benchmark.
+
+  These need a Mac to measure, or Phase 5.
+
 ## Phases
 
 Each phase ends with:

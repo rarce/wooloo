@@ -1,3 +1,4 @@
+import WoolooTerminalEngine
 import XCTest
 @testable import wooloo
 
@@ -38,7 +39,7 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual(store.session?.backend.kind, .core)
         XCTAssertEqual(store.session?.spaces.map(\.id), [CoreSessionBackend.spaceID])
         XCTAssertEqual(store.session?.tabs.map(\.id), ["t1"])
-        XCTAssertNil(store.presentationProvider)
+        XCTAssertNotNil(store.presentationProvider, "herdr-core terminals are emulated in wooloo")
         XCTAssertEqual(HerdrWindowConnection(store).id, "core:wooloo-ui-test")
         XCTAssertEqual(HerdrWindowConnection(store).backendKind, .core)
     }
@@ -65,17 +66,50 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual(store.actionError, CoreProtocolError.unsupported("split panes").localizedDescription)
     }
 
-    func testPanesShowTheirTextAndTakeFallbackInput() async throws {
+    private func attachedServer() -> (FakeCoreServer, UInt32)? {
+        for server in core.connections { if let channel = core.lock.withLock({ server.attachChannels.last }) { return (server, channel) } }
+        return nil
+    }
+
+    func testTheLiveTerminalShowsItsOutputAndTakesTyping() async throws {
         store.requiresSurfaceForInput = true
         store.connect(toCore: "wooloo-ui-test")
         store.setPresentationActive(true)
         await waitUntil("connected") { store.isConnected }
         store.select(workspaceID: CoreSessionBackend.spaceID, tabID: "t1", paneID: "t1")
-        await waitUntil("pane text") { store.paneText["t1"] == "$ make\nok\n" }
-        XCTAssertTrue(store.inputReady, "Without a live surface, input goes through the fallback")
+        await waitUntil("attached") { attachedServer() != nil }
+        let attach = try XCTUnwrap(core.callsTo("terminal.attach").last)
+        XCTAssertEqual(attach.params["terminal"] as? String, "t1")
+        XCTAssertNotNil(attach.params["display"], "The window's colours answer the program's colour queries")
+        let (server, channel) = try XCTUnwrap(attachedServer())
+        server.send(Data("hello \u{1b}[1mworld\u{1b}[0m".utf8), on: channel)
+        await waitUntil("surface") {
+            store.surface?.paneIDs == ["t1"] && store.surface.map { $0.cells.row(0).prefix(11).map(\.symbol).joined() } == "hello world"
+        }
+        let bold = try XCTUnwrap(store.surface?.cells[6, 0])
+        XCTAssertEqual(bold.modifier & 1, 1)
+        await waitUntil("input ready") { store.inputReady }
         store.sendKey("ctrl+c", to: "t1")
-        await waitUntil("keys") { !core.callsTo("terminal.keys").isEmpty }
-        XCTAssertEqual(core.callsTo("terminal.keys").first?.params["keys"] as? [String], ["ctrl+c"])
+        store.sendText("ls", to: "t1")
+        await waitUntil("typed") {
+            server.recordedFrames().filter { $0.channel == channel && $0.kind == .data }.map(\.payload) == [Data([3]), Data("ls".utf8)]
+        }
+        XCTAssertTrue(server.recordedFrames().contains { $0.channel == channel && $0.kind == .facts })
+        XCTAssertTrue(core.callsTo("terminal.keys").isEmpty, "Keys go to the attached stream, encoded in wooloo")
+    }
+
+    func testCellsUseHerdrsSurfaceEncoding() {
+        let cell = CoreTerminalPresentation.cell(TerminalCell(text: "界", foreground: TerminalRGB(255, 128, 0),
+                                                               background: nil, style: [.bold, .underline, .inverse],
+                                                               width: .wide))
+        XCTAssertEqual(cell.symbol, "界")
+        XCTAssertEqual(cell.foreground, 0x02FF_8000)
+        XCTAssertEqual(cell.background, 0)
+        XCTAssertEqual(cell.modifier, 1 | 8 | 64)
+        XCTAssertFalse(cell.skip)
+        XCTAssertTrue(CoreTerminalPresentation.cell(TerminalCell(width: .spacer)).skip)
+        XCTAssertEqual(CoreTerminalPresentation.cell(TerminalCell()).symbol, " ")
+        XCTAssertEqual(CoreTerminalPresentation.row([TerminalCell(text: "a")], width: 3).map(\.symbol), ["a", " ", " "])
     }
 
     func testAMissingCoreIsReportedWithoutStartingAnything() async throws {

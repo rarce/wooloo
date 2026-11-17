@@ -1511,9 +1511,10 @@ final class HerdrStore: ObservableObject {
 
     /// The backend that carries out this connection's session commands.
     var backend: any SessionBackend { coreBackend ?? tuiBackend }
-    /// Makes the live terminal presentation for this connection; nil until herdr-core
-    /// connections get their terminal path (Phase 4), when panes show their text instead.
-    var presentationProvider: (any TerminalPresentationProvider)? { backendKind == .tui ? tuiBackend : nil }
+    /// Makes the live terminal presentation for this connection: the TUI's binary endpoint, or
+    /// a herdr-core terminal emulated in wooloo. Nil only for a Core connection that could not
+    /// be set up; panes then show their text.
+    var presentationProvider: (any TerminalPresentationProvider)? { backendKind == .tui ? tuiBackend : coreBackend }
     private var tuiBackend: TUISessionBackend {
         TUISessionBackend(socketPath: socketPath, surfacePath: clientSocketPath)
     }
