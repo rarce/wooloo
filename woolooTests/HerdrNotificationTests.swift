@@ -193,6 +193,25 @@ final class HerdrNotifierTests: XCTestCase {
         XCTAssertEqual(counts.requests, 0)
     }
 
+    /// On herdr-core, a turn that finishes while the previous one is still unseen keeps the
+    /// agent done; its rising turn alerts again.
+    func testACoreTurnFinishedWhileUnseenAlertsAgain() {
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        func session(turn: UInt64) -> WoolooSession {
+            let terminals = [CoreTerminal(address: "t1", labels: ["herdr.seen": "1"],
+                                          status: CoreStatus(state: "idle", app: "claude", msg: nil, title: nil), turn: turn)]
+            let structure = CoreStructure().reconciled(with: terminals)
+            return CoreSessionBackend.snapshot(of: structure, terminals: terminals, core: nil)
+                .session(backend: BackendID(kind: .core, context: "c"), capabilities: CoreSessionBackend.capabilities)
+        }
+        notifier.process(session: session(turn: 2), selectedPaneID: nil)
+        notifier.process(session: session(turn: 2), selectedPaneID: nil)
+        XCTAssertTrue(notifier.attention.isEmpty)
+        notifier.process(session: session(turn: 3), selectedPaneID: nil)
+        XCTAssertEqual(notifier.attention, ["t1": .done])
+    }
+
     /// The neutral-session entry points behave as the snapshot ones they replace.
     func testSessionEntryPointsMatchTheSnapshotOnes() throws {
         let notifier = HerdrNotifier()

@@ -115,6 +115,12 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     /// Where the window should go after the last split or new tab, shown once.
     private var pendingFocus: (space: String, tab: String, pane: String)?
 
+    /// The pane each tab shows alone. Zoom is this window's own view (one backend per store),
+    /// so it is not written to the shared document.
+    private var zoomed: [String: String] = [:]
+
+    func zoomedPane(in tabID: String) -> String? { lock.withLock { zoomed[tabID] } }
+
     /// The state after a command: it carries the focus a split asks for, once.
     func snapshot() throws -> HerdrSnapshot {
         let connection = try connection()
@@ -129,12 +135,21 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     func snapshot(on connection: CoreConnection,
                   focus: (space: String, tab: String, pane: String)? = nil) throws -> HerdrSnapshot {
         let current = try arrangement(on: connection)
-        return Self.snapshot(of: current.structure, terminals: current.terminals, core: connection.hello?.core, focus: focus)
+        let zoom = lock.withLock { () -> [String: String] in
+            // A zoomed pane that left its tab ends the zoom.
+            zoomed = zoomed.filter { tab, pane in
+                current.structure.tab(tab).map { current.structure.spaces[$0.space].tabs[$0.tab].root.terminals.contains(pane) } == true
+            }
+            return zoomed
+        }
+        return Self.snapshot(of: current.structure, terminals: current.terminals, core: connection.hello?.core,
+                             focus: focus, zoomed: zoom)
     }
 
     /// The state `HerdrStore` keeps, from wooloo's arrangement of the core's live terminals.
     static func snapshot(of structure: CoreStructure, terminals: [CoreTerminal], core: CoreInfo?,
-                         focus: (space: String, tab: String, pane: String)? = nil) -> HerdrSnapshot {
+                         focus: (space: String, tab: String, pane: String)? = nil,
+                         zoomed: [String: String] = [:]) -> HerdrSnapshot {
         let byAddress = Dictionary(terminals.map { ($0.address, $0) }, uniquingKeysWith: { first, _ in first })
         var workspaces: [HerdrWorkspace] = [], tabs: [HerdrTab] = [], panes: [HerdrPane] = []
         var agents: [HerdrAgent] = [], layouts: [HerdrLayout] = []
@@ -147,10 +162,13 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
                 tabs.append(HerdrTab(tabID: tab.id, workspaceID: space.id,
                                      label: tab.name ?? first.map(label(of:)) ?? "Terminal", agentStatus: nil))
                 let area = HerdrRect(x: 0, y: 0, width: max(first?.cols ?? 80, 1), height: max(first?.rows ?? 24, 1))
-                let placed = CoreLayout.panes(tab.root, in: area)
+                let zoom = zoomed[tab.id]
+                let placed = Dictionary(CoreLayout.panes(CoreLayout.visible(tab.root, zoomed: zoom), in: area)
+                    .map { ($0.terminal, $0.rect) }, uniquingKeysWith: { first, _ in first })
+                let hidden = HerdrRect(x: 0, y: 0, width: 0, height: 0)
                 layouts.append(HerdrLayout(tabID: tab.id, area: area,
-                                           panes: placed.map { HerdrLayoutPane(paneID: $0.terminal, rect: $0.rect) },
-                                           zoomed: false))
+                                           panes: addresses.map { HerdrLayoutPane(paneID: $0, rect: placed[$0] ?? hidden) },
+                                           zoomed: zoom != nil))
                 for address in addresses {
                     let terminal = byAddress[address]
                     let state = terminal.flatMap(agentState)
@@ -159,9 +177,11 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
                     if let terminal, let status = terminal.status {
                         agents.append(HerdrAgent(paneID: address, workspaceID: space.id, tabID: tab.id,
                                                  agent: status.app, name: terminal.name, title: status.msg ?? terminal.title,
-                                                 terminalTitleStripped: nil, displayAgent: status.app,
+                                                 terminalTitleStripped: nil,
+                                                 displayAgent: terminal.labels["wooloo.name"].flatMap { $0.isEmpty ? nil : $0 } ?? status.app,
                                                  agentStatus: state, stateLabels: nil, tokens: nil,
-                                                 stateChangeSeq: terminal.turn ?? 0))
+                                                 stateChangeSeq: terminal.turn ?? 0,
+                                                 pinned: terminal.labels["herdr.pinned"] == "1"))
                     }
                 }
             }
@@ -192,6 +212,20 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         guard let record = list.terminals.first(where: { $0.address == terminal }), let turn = record.turn else { return }
         if let seen = record.labels["herdr.seen"].flatMap(UInt64.init), seen >= turn { return }
         _ = try connection.callRaw("terminal.label", ["terminal": terminal, "labels": ["herdr.seen": String(turn)]])
+    }
+
+    /// Shows a terminal's last finished turn as unread again, for every client: labels.md's
+    /// "a lower write means mark unread" (`herdr.seen` = turn − 1).
+    func markUnread(_ terminal: String) throws {
+        let connection = try connection()
+        let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
+        guard let turn = list.terminals.first(where: { $0.address == terminal })?.turn, turn > 0 else { return }
+        _ = try connection.callRaw("terminal.label", ["terminal": terminal, "labels": ["herdr.seen": String(turn - 1)]])
+    }
+
+    /// Pins or unpins an agent with labels.md's `herdr.pinned=1`; an empty value removes a label.
+    func setPinned(_ terminal: String, _ pinned: Bool) throws {
+        _ = try connection().callRaw("terminal.label", ["terminal": terminal, "labels": ["herdr.pinned": pinned ? "1" : ""]])
     }
 
     /// A tab's name: one wooloo gave it, the terminal's name, or its program.
@@ -305,7 +339,12 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
                 structure.spaces[s].tabs.insert(tab, at: insertIndex > from ? insertIndex - 1 : insertIndex)
             }
         case .focusPane: return
-        case .zoomPane: throw CoreProtocolError.unsupported("zoom panes")
+        case .zoomPane(let paneID):
+            let structure = try arrangement(on: try connection()).structure
+            guard let (s, t) = structure.tab(of: paneID) else { return }
+            let tab = structure.spaces[s].tabs[t]
+            guard tab.root.terminals.count > 1 else { return }
+            lock.withLock { zoomed[tab.id] = zoomed[tab.id] == paneID ? nil : paneID }
         case .reloadConfig: throw CoreProtocolError.unsupported("reload the configuration")
         }
     }

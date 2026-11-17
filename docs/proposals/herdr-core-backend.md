@@ -417,21 +417,32 @@ Still open:
   - move panes to a new tab or beside another pane;
   - after a split, the window focuses the new pane.
 
-  Zoom is still unsupported, and reports an error.
+  Zoom is local per window (below).
 - **Agent states** follow labels.md: `done` while `turn > herdr.seen`, else idle. Showing a terminal whose turn is done raises `herdr.seen`, and only raises it.
 - **Compositor:**
   - `CoreTerminalPresentation` attaches to every terminal of the shown tab, each at its place in `CoreLayout`, with one border cell between the sides of a split;
   - it composes one `HerdrSurface` with Herdr's split records, so the window drags splits as it does on the TUI;
   - a dragged ratio shows at once and is written to the document once the drag rests for 0.4 s;
-  - the tab's tree is read again on tab and pane focus changes and every 1.5 s while idle, which follows other windows and clients.
-- **Not yet in Phase 5:**
-  - zoom, kept local per window;
-  - `herdr.pinned`;
-  - Core notifications through `HerdrNotifier`;
-  - detection of Core machines and their Spaces;
-  - opt-in install;
-  - following document changes with events instead of the 1.5 s read, which costs two small requests per window over SSH;
-  - the two-window and two-Mac consistency check, which needs a Mac.
+  - the tab's tree is read again on tab and pane focus changes and on Core events (see Following changes below).
+- **Zoom** is this window's own: the backend keeps the zoomed pane per tab (one backend per store), so zoom is never written to the shared document. The surface shows the pane alone and still names every pane of the tab, with empty places for the hidden ones. The other terminals are detached until the zoom ends. A zoomed pane that leaves its tab ends the zoom.
+- **Following changes:**
+  - The presentation reads the tab's tree when a terminal or document event arrives on its own `events.subscribe`, instead of every 1.5 s.
+  - A read every 30 s remains as a safety net.
+- **Seen, unread and pins**, as labels.md describes them:
+  - `herdr.seen` is raised only when the agent is in front of someone: the window's terminal focused and the pane drawn with a non-empty place.
+  - **Mark as Unread** writes `turn − 1`. The pane stays unread until the window selects another pane and comes back.
+  - **Pin Agent** writes `herdr.pinned=1`. Unpinning removes the label, since an empty value removes one on a real core. Pinned agents list first, with a pin.
+  - These actions show only on herdr-core connections, since the TUI has no such labels.
+  - A renamed agent (`wooloo.name`) now shows its name.
+- **Notifications:** on Core, a turn that finishes while the previous one is still unseen keeps the agent done. The notifier also alerts when an agent's `progress` (Core's `turn`) rises while it stays done. TUI progress only rises with a state change, so TUI alerts are unchanged.
+- **Core machines (D5):** terminals of a core's machines (`machine/tN`) stay hidden. wooloo reaches every host through its own SSH and that host's core, so showing them would show those terminals twice. Showing machines wooloo does not reach directly is left for Phase 6.
+- **Opt-in install (D3, §8):**
+  - On this Mac, wooloo detects `hc` and links to the official installer.
+  - On a herdr-core SSH host, **Install herdr-core 0.1.21 on This Host…** in Manage Connections runs `HerdrCoreInstall` after confirmation.
+  - It downloads the build for the host's platform, checks its SHA-256 against the value pinned in wooloo from the release manifest, and installs `~/.local/bin/herdr-core`. It adds `hc` beside it unless an `hc` already exists.
+  - It never replaces an existing core.
+  - It was checked on Linux in an isolated home: a first run installs `hc 0.1.21`, a second finds it and changes nothing, and a wrong checksum installs nothing.
+- **Still open:** the two-window and two-Mac consistency check, which needs a Mac.
 
 ## Phases
 

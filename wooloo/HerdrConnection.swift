@@ -495,10 +495,14 @@ final class HerdrStore: ObservableObject {
     }
 
     /// herdr-core keeps whether a finished turn was seen in the terminal's `herdr.seen` label,
-    /// which every client reads: showing a terminal whose last turn is done records it.
+    /// which every client reads. As labels.md asks, a turn counts as seen only when the agent
+    /// is in front of someone: the window's terminal focused and the pane drawn, not hidden.
     private var seenRequests: Set<String> = []
+    private var unreadHold: String?
     private func markShownTurnSeen() {
-        guard backendKind == .core, let coreBackend, let paneID = selectedPaneID,
+        if let unreadHold, unreadHold != selectedPaneID { self.unreadHold = nil }
+        guard backendKind == .core, terminalFocused, let coreBackend, let paneID = selectedPaneID, paneID != unreadHold,
+              let rect = surface?.paneRects[paneID], rect.width > 0, rect.height > 0,
               snapshotValue?.agents.contains(where: { $0.paneID == paneID && $0.agentStatus == "done" }) == true,
               seenRequests.insert(paneID).inserted else { return }
         let reaching = BlockingWorkMachine(machine)
@@ -551,6 +555,7 @@ final class HerdrStore: ObservableObject {
         terminalTheme = theme
         terminalFocused = focused
         surfaceStream?.updateHost(theme: theme, focused: focused)
+        markShownTurnSeen()
     }
 
     private var surfaceSwitchTimeout: Task<Void, Never>?
@@ -1071,6 +1076,7 @@ final class HerdrStore: ObservableObject {
         }
         let layout = surface.map { HerdrSurfaceLayout(bootID: $0.bootID, paneIDs: $0.paneIDs, popupTerminalID: $0.popup?.terminalID) }
         guard layout != surfaceLayout else { return }
+        defer { markShownTurnSeen() }
         // The first surface of a tab switched to changes nothing the window shows: it already
         // shows the live surface. Publishing would delay its draw by a SwiftUI update.
         if completesSwitch, layout?.popupTerminalID == surfaceLayout?.popupTerminalID {
@@ -1086,7 +1092,9 @@ final class HerdrStore: ObservableObject {
                                 spaceOnly: spaceOnly, followView: followHerdrView, prioritySort: agentPrioritySort)
                 .map(\.woolooAgent)
         }
-        return (session?.agents ?? []).filter { !spaceOnly || $0.spaceID == selectedWorkspaceID }
+        let agents = (session?.agents ?? []).filter { !spaceOnly || $0.spaceID == selectedWorkspaceID }
+        // Pinned agents first, each group in the backend's order.
+        return agents.filter(\.pinned) + agents.filter { !$0.pinned }
     }
 
     func reloadAgentViewSettings() {
@@ -1277,6 +1285,38 @@ final class HerdrStore: ObservableObject {
     }
 
     /// Renames the agent in a pane; a nil name restores the detected agent name.
+    /// Pins or unpins an agent for every herdr-core client; the TUI has no pins.
+    func setAgentPinned(_ paneID: String, _ pinned: Bool) {
+        changeCoreLabels { try $0.setPinned(paneID, pinned) }
+    }
+
+    /// Shows an agent's finished turn as unread again, for every herdr-core client.
+    func markAgentUnread(_ paneID: String) {
+        // Showing the pane would mark it seen again at once: it stays unread until the window
+        // selects another pane and comes back.
+        unreadHold = paneID
+        changeCoreLabels { try $0.markUnread(paneID) }
+    }
+
+    private func changeCoreLabels(_ change: @escaping @Sendable (CoreSessionBackend) throws -> Void) {
+        guard isConnected, let coreBackend else { return }
+        let reaching = BlockingWorkMachine(machine)
+        let currentGeneration = generation
+        Task {
+            let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
+                Result { () throws -> HerdrSnapshot in
+                    try change(coreBackend)
+                    return try coreBackend.snapshot()
+                }
+            }
+            guard generation == currentGeneration else { return }
+            switch result {
+            case .success(let fresh): receive(fresh); actionError = nil
+            case .failure(let error): actionError = error.localizedDescription
+            }
+        }
+    }
+
     func renameAgent(_ paneID: String, to name: String?) {
         performAction(.renameAgent(paneID: paneID, name: name))
     }

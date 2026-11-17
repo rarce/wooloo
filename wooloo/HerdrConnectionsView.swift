@@ -24,6 +24,9 @@ struct HerdrConnectionsView: View {
     @State private var rename: HerdrMachineProfile?
     @State private var newLabel = ""
     @State private var confirmation: ProfileAction?
+    /// The herdr-core host waiting for the user to confirm an install, and the last result.
+    @State private var installHost: HerdrMachineProfile?
+    @State private var installNotice: String?
 
     private struct ProfileAction: Identifiable {
         let profile: HerdrMachineProfile
@@ -200,6 +203,20 @@ struct HerdrConnectionsView: View {
                     destinations.openCore(session: connection.session, machine: connection.machine)
                     dismiss()
                 }.buttonStyle(.borderedProminent)
+                if let host = connection.machine {
+                    Button("Install herdr-core \(HerdrCoreInstall.version) on This Host…") { installHost = host }
+                        .disabled(operation)
+                        .alert("Install herdr-core on \(host.label)?", isPresented: Binding(
+                            get: { installHost == host }, set: { if !$0 { installHost = nil } })) {
+                            Button("Install") { install(on: host) }
+                            Button("Cancel", role: .cancel) { installHost = nil }
+                        } message: {
+                            Text("wooloo downloads herdr-core \(HerdrCoreInstall.version) from releases.herdr.dev, checks it against the checksum built into wooloo, and installs it in ~/.local/bin on the host. A herdr-core that is already there is kept.")
+                        }
+                    if let installNotice {
+                        Text(installNotice).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             } else if let profile = connection.machine {
                 if catalog.machines.contains(profile) {
                     Button("Open in This Window") { openRemote(profile) }
@@ -311,6 +328,24 @@ struct HerdrConnectionsView: View {
             destinations.localSession(connection.session)
             selection = connection.id
             catalog.refresh()
+        }
+    }
+
+    private func install(on host: HerdrMachineProfile) {
+        installHost = nil
+        operation = true
+        installNotice = "Installing herdr-core on \(host.label)…"
+        Task {
+            defer { operation = false }
+            do {
+                switch try await WorkspaceFiles.blocking(on: host, { try HerdrCoreInstall.install(on: host) }) {
+                case .present(let path): installNotice = "herdr-core is already installed on this host (\(path)); nothing was changed."
+                case .installed(let path): installNotice = "Installed herdr-core \(HerdrCoreInstall.version) at \(path)."
+                }
+            } catch {
+                installNotice = nil
+                self.error = error.localizedDescription
+            }
         }
     }
 

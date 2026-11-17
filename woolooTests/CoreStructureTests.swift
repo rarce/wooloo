@@ -93,6 +93,8 @@ final class CoreStructureTests: XCTestCase {
         XCTAssertEqual(splits.map(\.path), [[], [true]])
         XCTAssertEqual(CoreLayout.panes(tree, in: HerdrRect(x: 0, y: 0, width: 2, height: 2)).map(\.terminal), ["t1"],
                        "A pane too small to split shows its first side")
+        XCTAssertEqual(CoreLayout.visible(tree, zoomed: "t3"), .terminal("t3"))
+        XCTAssertEqual(CoreLayout.visible(tree, zoomed: "gone"), tree, "A zoom on a pane that left the tab shows the tab")
     }
 
     func testSnapshotsShowTheArrangement() {

@@ -10,14 +10,17 @@ import WoolooTerminalEngine
 ///
 /// One thread runs `run`: it reads the tab's tree, attaches, feeds the emulators and builds
 /// surfaces. Input and split drags arrive from the main thread under the same lock. A dragged
-/// ratio shows at once and is written to the `wooloo` document once the drag rests.
+/// ratio shows at once and is written to the `wooloo` document once the drag rests. The tree
+/// is read again when Core reports a terminal or document event on this connection's own
+/// subscription, so other windows' and clients' changes show without polling. A zoomed pane
+/// (this window's own, kept by the backend) is shown alone, and the others are detached.
 final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable {
     private let backend: CoreSessionBackend
     private let lock = NSLock()
     private let wake = DispatchSemaphore(value: 0)
-    /// How often the tab's tree is read again while nothing asks for it, to follow changes
-    /// other windows and clients make.
-    static let refreshInterval: TimeInterval = 1.5
+    /// How often the tab's tree is read again while no event asks for it: a safety net for a
+    /// lost event, since events already report every change.
+    static let refreshInterval: TimeInterval = 30
     static let ratioWriteDelay: TimeInterval = 0.4
 
     // Guarded by `lock`.
@@ -39,6 +42,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     private var cellHeight = 16
     private var theme: (foreground: TerminalRGB, background: TerminalRGB, cursor: TerminalRGB, ansi: [TerminalRGB])?
     private var windowFocused = true
+    private var shownZoom: String?
 
     private struct Attachment {
         let terminal: String
@@ -72,6 +76,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             connection.close()
             lock.withLock { self.connection = nil; attachments = [:]; tab = nil }
         }
+        try subscribe(on: connection)
         onReady()
         while true {
             _ = wake.wait(timeout: .now() + 0.25)
@@ -185,6 +190,18 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
 
     // MARK: Tree, attaching and drawing
 
+    /// Terminal and document events mean the tab's tree or its terminals may have changed.
+    private func subscribe(on connection: CoreConnection) throws {
+        let subscribed = try connection.call("events.subscribe", [:], as: CoreSubscribeResult.self)
+        guard let channel = subscribed.channel else { return }
+        var lines = CoreEventLines()
+        connection.route(channel: channel, onData: { [weak self] data in
+            guard let self, lines.append(data).contains(where: { $0.type != nil }) else { return }
+            self.lock.withLock { self.needsTree = true }
+            self.wake.signal()
+        }, onClose: { [weak self] in self?.wake.signal() })
+    }
+
     private func readTreeIfNeeded(on connection: CoreConnection) throws {
         let (wanted, due) = lock.withLock { () -> (String?, Bool) in
             let due = needsTree || Date().timeIntervalSince(lastTreeRead) >= Self.refreshInterval
@@ -222,9 +239,12 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// Attaches to the tab's terminals that have no stream, closes the streams of terminals it
     /// no longer shows and resizes the rest to their places in the layout.
     private func arrange(on connection: CoreConnection) throws {
+        let zoom = lock.withLock { tab?.id }.flatMap(backend.zoomedPane(in:))
         let (placed, current, size, colors) = lock.withLock { () -> ([(terminal: String, rect: HerdrRect)], [String: Attachment], (Int, Int), _) in
             let area = HerdrRect(x: 0, y: 0, width: cols, height: rows)
-            return (tab.map { CoreLayout.panes($0.root, in: area) } ?? [], attachments, (cellWidth, cellHeight), theme)
+            if zoom != shownZoom { shownZoom = zoom; dirty = true }
+            let visible = tab.map { CoreLayout.visible($0.root, zoomed: zoom) }
+            return (visible.map { CoreLayout.panes($0, in: area) } ?? [], attachments, (cellWidth, cellHeight), theme)
         }
         let wanted = Set(placed.map(\.terminal))
         for (terminal, attachment) in current where !wanted.contains(terminal) {
@@ -324,9 +344,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             dirty = false
             revision += 1
             let area = HerdrRect(x: 0, y: 0, width: cols, height: rows)
-            let panes = CoreLayout.panes(tab.root, in: area)
+            let visible = CoreLayout.visible(tab.root, zoomed: shownZoom)
+            let panes = CoreLayout.panes(visible, in: area)
             if focusedPane.map({ id in !panes.contains { $0.terminal == id } }) ?? true { focusedPane = panes.first?.terminal }
-            return Self.compose(panes: panes, splits: CoreLayout.splits(tab.root, in: area), attachments: attachments,
+            return Self.compose(panes: panes, all: tab.root.terminals, splits: CoreLayout.splits(visible, in: area),
+                                attachments: attachments,
                                 focused: focusedPane, area: area, bootID: bootID, revision: revision,
                                 border: theme.map { Self.encode($0.ansi.count > 8 ? $0.ansi[8] : $0.foreground) } ?? 0)
         }
@@ -358,11 +380,12 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
 
     /// One surface for a tab: each pane's grid at its place, a line on each split's border,
     /// and Herdr's split records so the window can drag them.
-    private static func compose(panes: [(terminal: String, rect: HerdrRect)], splits: [CoreLayout.Split],
+    private static func compose(panes: [(terminal: String, rect: HerdrRect)], all: [String], splits: [CoreLayout.Split],
                                 attachments: [String: Attachment], focused: String?, area: HerdrRect,
                                 bootID: String, revision: UInt64, border: UInt32) -> HerdrSurface {
         var grid = blankGrid(cols: area.width, rows: area.height)
-        var rects: [String: HerdrRect] = [:]
+        // Panes a zoom hides keep an empty place, so the surface still names every pane of the tab.
+        var rects = Dictionary(all.map { ($0, HerdrRect(x: 0, y: 0, width: 0, height: 0)) }, uniquingKeysWith: { a, _ in a })
         for (terminal, rect) in panes {
             rects[terminal] = rect
             guard let pane = attachments[terminal]?.grid else { continue }
@@ -398,7 +421,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         return HerdrSurface(bootID: bootID, projectionRevision: 0, revision: revision,
                             width: area.width, height: area.height,
                             cells: HerdrCellRows(rows: grid, width: area.width), cursor: cursor,
-                            paneIDs: panes.map(\.terminal), paneRects: rects, paneInnerRects: rects,
+                            paneIDs: all, paneRects: rects, paneInnerRects: rects,
                             mouseReportingPaneIDs: [], splits: records, graphics: [], focusedPaneID: focused)
     }
 

@@ -146,6 +146,8 @@ struct HerdrAgent: Decodable, Equatable, Identifiable, Sendable {
     let stateLabels: [String: String]?
     let tokens: [String: String]?
     var stateChangeSeq: UInt64 = 0
+    /// Pinned through herdr-core's `herdr.pinned` label; the TUI has no pins.
+    var pinned = false
 
     var id: String { paneID }
     var displayName: String { displayAgent ?? name ?? agent ?? title ?? paneID }
