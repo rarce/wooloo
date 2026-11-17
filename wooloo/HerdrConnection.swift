@@ -490,6 +490,21 @@ final class HerdrStore: ObservableObject {
                   snapshot?.panes.contains(where: { $0.paneID == selectedPaneID && $0.tabID == selectedTabID }) == true
             else { return }
             lastPaneByTab[selectedTabID] = selectedPaneID
+            markShownTurnSeen()
+        }
+    }
+
+    /// herdr-core keeps whether a finished turn was seen in the terminal's `herdr.seen` label,
+    /// which every client reads: showing a terminal whose last turn is done records it.
+    private var seenRequests: Set<String> = []
+    private func markShownTurnSeen() {
+        guard backendKind == .core, let coreBackend, let paneID = selectedPaneID,
+              snapshotValue?.agents.contains(where: { $0.paneID == paneID && $0.agentStatus == "done" }) == true,
+              seenRequests.insert(paneID).inserted else { return }
+        let reaching = BlockingWorkMachine(machine)
+        Task { [weak self] in
+            _ = try? await BlockingWork.run(priority: .utility, reaching: reaching) { try coreBackend.markSeen(paneID) }
+            self?.seenRequests.remove(paneID)
         }
     }
     private var selectedPaneValue: String?
@@ -1756,6 +1771,7 @@ final class HerdrStore: ObservableObject {
         } else {
             snapshot = newSnapshot
         }
+        markShownTurnSeen()
     }
 
     /// Assigns a published value only when it differs: any assignment, even of the same value,

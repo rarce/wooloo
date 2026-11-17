@@ -2,8 +2,8 @@ import WoolooTerminalEngine
 import XCTest
 @testable import wooloo
 
-/// `HerdrStore` connected to herdr-core (Phase 3): state, commands, text panes and fallback
-/// input go through `CoreSessionBackend`, against an in-memory `FakeCore`.
+/// `HerdrStore` connected to herdr-core (Phases 3 to 5): state, commands, live terminals and
+/// their arrangement go through `CoreSessionBackend`, against an in-memory `FakeCore`.
 @MainActor
 final class HerdrStoreCoreTests: XCTestCase {
     private var core: FakeCore!
@@ -37,8 +37,8 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual(store.backendKind, .core)
         XCTAssertEqual(store.contextID, "core:wooloo-ui-test")
         XCTAssertEqual(store.session?.backend.kind, .core)
-        XCTAssertEqual(store.session?.spaces.map(\.id), [CoreSessionBackend.spaceID])
-        XCTAssertEqual(store.session?.tabs.map(\.id), ["t1"])
+        XCTAssertEqual(store.session?.spaces.map(\.id), [CoreStructure.unfiledID], "A terminal no tab holds is Unfiled")
+        XCTAssertEqual(store.session?.tabs.map(\.id), ["tab-t1"])
         XCTAssertNotNil(store.presentationProvider, "herdr-core terminals are emulated in wooloo")
         XCTAssertEqual(HerdrWindowConnection(store).id, "core:wooloo-ui-test")
         XCTAssertEqual(HerdrWindowConnection(store).backendKind, .core)
@@ -47,23 +47,24 @@ final class HerdrStoreCoreTests: XCTestCase {
     func testNewTabsAreNewTerminalsAndChangesArrive() async throws {
         store.connect(toCore: "wooloo-ui-test")
         await waitUntil("connected") { store.isConnected }
-        store.select(workspaceID: CoreSessionBackend.spaceID)
+        store.select(workspaceID: CoreStructure.unfiledID)
         store.createTab(cwd: "/src")
-        await waitUntil("new tab") { store.session?.tabs.map(\.id) == ["t1", "t2"] }
+        await waitUntil("new tab") { store.session?.tabs.count == 2 }
         XCTAssertEqual(core.callsTo("terminal.run").first?.params["cwd"] as? String, "/src")
-        XCTAssertEqual(store.selectedTabID, "t2")
+        let created = try XCTUnwrap(store.session?.tabs.last?.id)
+        XCTAssertEqual(store.selectedTabID, created)
         core.update { $0.terminals.removeAll { $0.address == "t1" } }
         core.connections.first { $0.eventsChannel != nil }?.emit(type: "removed", terminal: "t1")
-        await waitUntil("removed tab") { store.session?.tabs.map(\.id) == ["t2"] }
+        await waitUntil("removed tab") { store.session?.tabs.map(\.id) == [created] }
     }
 
     func testUnsupportedActionsReportAnError() async throws {
         store.connect(toCore: "wooloo-ui-test")
         await waitUntil("connected") { store.isConnected }
-        store.select(workspaceID: CoreSessionBackend.spaceID, tabID: "t1", paneID: "t1")
-        store.splitPane("right")
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        store.zoomPane()
         await waitUntil("error") { store.actionError != nil }
-        XCTAssertEqual(store.actionError, CoreProtocolError.unsupported("split panes").localizedDescription)
+        XCTAssertEqual(store.actionError, CoreProtocolError.unsupported("zoom panes").localizedDescription)
     }
 
     private func attachedServer() -> (FakeCoreServer, UInt32)? {
@@ -76,7 +77,7 @@ final class HerdrStoreCoreTests: XCTestCase {
         store.connect(toCore: "wooloo-ui-test")
         store.setPresentationActive(true)
         await waitUntil("connected") { store.isConnected }
-        store.select(workspaceID: CoreSessionBackend.spaceID, tabID: "t1", paneID: "t1")
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
         await waitUntil("attached") { attachedServer() != nil }
         let attach = try XCTUnwrap(core.callsTo("terminal.attach").last)
         XCTAssertEqual(attach.params["terminal"] as? String, "t1")
@@ -96,6 +97,57 @@ final class HerdrStoreCoreTests: XCTestCase {
         }
         XCTAssertTrue(server.recordedFrames().contains { $0.channel == channel && $0.kind == .facts })
         XCTAssertTrue(core.callsTo("terminal.keys").isEmpty, "Keys go to the attached stream, encoded in wooloo")
+    }
+
+    func testASplitTabIsComposedFromItsTerminals() async throws {
+        store.requiresSurfaceForInput = true
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("first pane") { store.surface?.paneIDs == ["t1"] }
+        store.splitPane("right")
+        await waitUntil("both panes") { store.surface?.paneIDs == ["t1", "t2"] }
+        XCTAssertEqual(store.selectedPaneID, "t2", "The window follows the new pane")
+        let surface = try XCTUnwrap(store.surface)
+        let left = try XCTUnwrap(surface.paneRects["t1"]), right = try XCTUnwrap(surface.paneRects["t2"])
+        XCTAssertEqual(left.x + left.width + 1, right.x, "One column of border between them")
+        let split = try XCTUnwrap(surface.splits.first)
+        XCTAssertEqual(split.direction, .horizontal)
+        XCTAssertEqual(split.pos, left.width)
+        XCTAssertEqual(surface.cells[split.pos, 0].symbol, "│")
+        XCTAssertEqual(core.lock.withLock { () -> Int in
+            core.connections.reduce(0) { $0 + $1.attachChannels.count }
+        }, 2)
+        // Output of the second terminal lands in its half.
+        let attaches = core.callsTo("terminal.attach").map { $0.params["terminal"] as? String }
+        let index = try XCTUnwrap(attaches.lastIndex(of: "t2"))
+        let (server, _) = try XCTUnwrap(attachedServer())
+        let channel = core.lock.withLock { server.attachChannels[index] }
+        server.send(Data("right side".utf8), on: channel)
+        await waitUntil("right output") {
+            store.surface.map { s in (0..<10).map { s.cells[right.x + $0, 0].symbol }.joined() } == "right side"
+        }
+        // A dragged split moves at once and is written to the document once it rests.
+        store.setSplitRatio(path: [], ratio: 0.25)
+        await waitUntil("moved split") { (store.surface?.paneRects["t1"]?.width ?? 0) < left.width }
+        await waitUntil("written ratio") {
+            self.core.lock.withLock {
+                CoreStructure.decode(self.core.documents[CoreStructure.documentName]?.value ?? nil)?
+                    .spaces.first?.tabs.first?.root
+            } == .split(.right, ratio: 0.25, first: .terminal("t1"), second: .terminal("t2"))
+        }
+    }
+
+    func testShowingADoneTurnMarksItSeen() async throws {
+        core.terminals = [CoreTerminal(address: "t1", argv: ["claude"], cols: 100, rows: 30, cwd: "/src/app",
+                                       status: CoreStatus(state: "done", app: "claude", msg: nil, title: nil), turn: 4)]
+        store.connect(toCore: "wooloo-ui-test")
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("seen") {
+            core.callsTo("terminal.label").contains { ($0.params["labels"] as? [String: String]) == ["herdr.seen": "4"] }
+        }
     }
 
     func testCellsUseHerdrsSurfaceEncoding() {

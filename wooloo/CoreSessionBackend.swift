@@ -14,14 +14,15 @@ struct CoreTarget: Hashable, Sendable {
     }
 }
 
-/// A herdr-core session (Phase 3 of docs/proposals/herdr-core-backend.md). Core keeps terminals,
-/// not layout: until wooloo's structure document arrives (Phase 5), every terminal of the core
-/// is a tab of one Space named after the core, with one pane. Live terminal surfaces arrive in
-/// Phase 4; until then panes show `terminal.read` text, and typing goes through a short attach.
+/// A herdr-core session (docs/proposals/herdr-core-backend.md, Phases 3 and 5). Core keeps
+/// terminals, not layout: wooloo arranges them in Spaces, tabs and splits in its own `wooloo`
+/// document in the core (`CoreStructure`), and every change to that arrangement is a
+/// compare-and-set write. Terminals no tab holds appear in the Space their label names, or in
+/// Unfiled. Live terminals are drawn by `CoreTerminalPresentation`; `paneText` and
+/// `sendInput` are the fallback while no live surface is up.
 final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
-    static let spaceID = "core"
     static let capabilities = BackendCapabilities(
-        zoomedTabsRefuseMoves: false, onlySinglePaneTabsMove: true, movesTabsBetweenSpaces: false,
+        zoomedTabsRefuseMoves: false, onlySinglePaneTabsMove: false, movesTabsBetweenSpaces: true,
         opensWorktrees: false, serverAgentViews: false, reloadsConfig: false, serverScrollback: false)
 
     let target: CoreTarget
@@ -63,37 +64,134 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
 
     // MARK: - State
 
-    func snapshot() throws -> HerdrSnapshot {
-        let connection = try connection()
-        let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
-        return Self.snapshot(of: list.terminals, core: connection.hello?.core)
+    /// The core's terminals with wooloo's arrangement of them, read on `connection`.
+    struct Arrangement {
+        let terminals: [CoreTerminal]
+        let structure: CoreStructure
+        let document: Any?
+        let version: Int
     }
 
-    /// The state `HerdrStore` keeps, built from the core's live terminals.
-    static func snapshot(of terminals: [CoreTerminal], core: CoreInfo?) -> HerdrSnapshot {
-        let live = terminals.filter { $0.state == "live" && !$0.address.contains("/") }
-        let space = spaceID
-        let tabs = live.map { HerdrTab(tabID: $0.address, workspaceID: space, label: label(of: $0),
-                                       agentStatus: $0.status?.state) }
-        let panes = live.map { HerdrPane(paneID: $0.address, workspaceID: space, tabID: $0.address, cwd: $0.cwd,
-                                         agentStatus: $0.status?.state) }
-        let agents = live.compactMap { terminal -> HerdrAgent? in
-            guard let status = terminal.status else { return nil }
-            return HerdrAgent(paneID: terminal.address, workspaceID: space, tabID: terminal.address,
-                              agent: status.app, name: terminal.name, title: status.msg ?? terminal.title,
-                              terminalTitleStripped: nil, displayAgent: status.app, agentStatus: status.state,
-                              stateLabels: nil, tokens: nil, stateChangeSeq: terminal.turn ?? 0)
+    func arrangement(on connection: CoreConnection) throws -> Arrangement {
+        let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
+        let (document, version) = try Self.document(on: connection)
+        let structure = (CoreStructure.decode(document) ?? CoreStructure()).reconciled(with: list.terminals)
+        return Arrangement(terminals: list.terminals, structure: structure, document: document, version: version)
+    }
+
+    static func document(on connection: CoreConnection) throws -> (Any?, Int) {
+        let reply = try connection.callRaw("doc.get", ["name": CoreStructure.documentName])
+        _ = try CoreConnection.result(DocVersion.self, from: reply)
+        let object = try JSONSerialization.jsonObject(with: reply) as? [String: Any]
+        let result = object?["result"] as? [String: Any]
+        let value = result?["value"]
+        return (value is NSNull ? nil : value, result?["version"] as? Int ?? 0)
+    }
+
+    private struct DocVersion: Decodable { let version: Int }
+
+    /// Changes the arrangement with compare-and-set on the document's version: a write that
+    /// lost to another client reads the document again and applies `change` to it, at most
+    /// three times. `change` sees the reconciled arrangement and the live terminals.
+    @discardableResult
+    func mutate<Result>(_ change: (inout CoreStructure, [CoreTerminal]) throws -> Result) throws -> Result {
+        let connection = try connection()
+        for attempt in 0..<3 {
+            let current = try arrangement(on: connection)
+            var structure = current.structure
+            let result = try change(&structure, current.terminals)
+            let value = structure.encoded(over: current.document)
+            do {
+                _ = try connection.call("doc.set", ["name": CoreStructure.documentName, "value": value,
+                                                    "version": current.version], as: DocVersion.self)
+                return result
+            } catch CoreProtocolError.remote(kind: "conflict", _) where attempt < 2 {
+                continue
+            }
         }
-        let layouts = live.map { terminal -> HerdrLayout in
-            let area = HerdrRect(x: 0, y: 0, width: max(terminal.cols, 1), height: max(terminal.rows, 1))
-            return HerdrLayout(tabID: terminal.address, area: area,
-                               panes: [HerdrLayoutPane(paneID: terminal.address, rect: area)], zoomed: false)
+        throw CoreProtocolError.remote(kind: "conflict", message: "Another client kept changing the layout. Try again.")
+    }
+
+    /// Where the window should go after the last split or new tab, shown once.
+    private var pendingFocus: (space: String, tab: String, pane: String)?
+
+    /// The state after a command: it carries the focus a split asks for, once.
+    func snapshot() throws -> HerdrSnapshot {
+        let connection = try connection()
+        let focus = lock.withLock { () -> (space: String, tab: String, pane: String)? in
+            defer { pendingFocus = nil }
+            return pendingFocus
         }
-        let workspace = HerdrWorkspace(workspaceID: space, label: core?.name ?? "herdr-core", agentStatus: nil,
-                                       activeTabID: live.first?.address, worktree: nil)
-        return HerdrSnapshot(workspaces: [workspace], tabs: tabs, panes: panes, agents: agents, layouts: layouts,
-                             focusedWorkspaceID: space, focusedTabID: live.first?.address,
-                             focusedPaneID: live.first?.address)
+        return try snapshot(on: connection, focus: focus)
+    }
+
+    /// The state the watcher reports, which never moves the window's focus.
+    func snapshot(on connection: CoreConnection,
+                  focus: (space: String, tab: String, pane: String)? = nil) throws -> HerdrSnapshot {
+        let current = try arrangement(on: connection)
+        return Self.snapshot(of: current.structure, terminals: current.terminals, core: connection.hello?.core, focus: focus)
+    }
+
+    /// The state `HerdrStore` keeps, from wooloo's arrangement of the core's live terminals.
+    static func snapshot(of structure: CoreStructure, terminals: [CoreTerminal], core: CoreInfo?,
+                         focus: (space: String, tab: String, pane: String)? = nil) -> HerdrSnapshot {
+        let byAddress = Dictionary(terminals.map { ($0.address, $0) }, uniquingKeysWith: { first, _ in first })
+        var workspaces: [HerdrWorkspace] = [], tabs: [HerdrTab] = [], panes: [HerdrPane] = []
+        var agents: [HerdrAgent] = [], layouts: [HerdrLayout] = []
+        for space in structure.spaces {
+            workspaces.append(HerdrWorkspace(workspaceID: space.id, label: space.name, agentStatus: nil,
+                                             activeTabID: space.tabs.first?.id, worktree: nil))
+            for tab in space.tabs {
+                let addresses = tab.root.terminals
+                let first = addresses.first.flatMap { byAddress[$0] }
+                tabs.append(HerdrTab(tabID: tab.id, workspaceID: space.id,
+                                     label: tab.name ?? first.map(label(of:)) ?? "Terminal", agentStatus: nil))
+                let area = HerdrRect(x: 0, y: 0, width: max(first?.cols ?? 80, 1), height: max(first?.rows ?? 24, 1))
+                let placed = CoreLayout.panes(tab.root, in: area)
+                layouts.append(HerdrLayout(tabID: tab.id, area: area,
+                                           panes: placed.map { HerdrLayoutPane(paneID: $0.terminal, rect: $0.rect) },
+                                           zoomed: false))
+                for address in addresses {
+                    let terminal = byAddress[address]
+                    let state = terminal.flatMap(agentState)
+                    panes.append(HerdrPane(paneID: address, workspaceID: space.id, tabID: tab.id,
+                                           cwd: terminal?.cwd, agentStatus: state))
+                    if let terminal, let status = terminal.status {
+                        agents.append(HerdrAgent(paneID: address, workspaceID: space.id, tabID: tab.id,
+                                                 agent: status.app, name: terminal.name, title: status.msg ?? terminal.title,
+                                                 terminalTitleStripped: nil, displayAgent: status.app,
+                                                 agentStatus: state, stateLabels: nil, tokens: nil,
+                                                 stateChangeSeq: terminal.turn ?? 0))
+                    }
+                }
+            }
+        }
+        _ = core
+        return HerdrSnapshot(workspaces: workspaces, tabs: tabs, panes: panes, agents: agents, layouts: layouts,
+                             focusedWorkspaceID: focus?.space, focusedTabID: focus?.tab, focusedPaneID: focus?.pane)
+    }
+
+    /// An agent's state as wooloo shows it: blocked and working as reported; otherwise done
+    /// while a finished turn has not been seen (`herdr.seen`, as herdr-app's labels document
+    /// says), else idle. Without the label, the report stands.
+    static func agentState(_ terminal: CoreTerminal) -> String? {
+        guard let state = terminal.status?.state else { return nil }
+        switch state {
+        case "blocked", "working", "error": return state
+        default:
+            guard let seen = terminal.labels["herdr.seen"].flatMap(UInt64.init) else { return state }
+            return (terminal.turn ?? 0) > seen ? "done" : "idle"
+        }
+    }
+
+    /// Records that a person looked at a terminal's last finished turn, for every client that
+    /// reads `herdr.seen`. Only raises it, as the labels document asks.
+    func markSeen(_ terminal: String) throws {
+        let connection = try connection()
+        let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
+        guard let record = list.terminals.first(where: { $0.address == terminal }), let turn = record.turn else { return }
+        if let seen = record.labels["herdr.seen"].flatMap(UInt64.init), seen >= turn { return }
+        _ = try connection.callRaw("terminal.label", ["terminal": terminal, "labels": ["herdr.seen": String(turn)]])
     }
 
     /// A tab's name: one wooloo gave it, the terminal's name, or its program.
@@ -103,6 +201,7 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         if let title = terminal.title, !title.isEmpty { return title }
         return terminal.argv.first.map { ($0 as NSString).lastPathComponent } ?? terminal.address
     }
+
 
     func makeWatcher() -> any SessionWatcher { CoreSessionWatcher(backend: self) }
 
@@ -138,55 +237,186 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
 
     // MARK: - Commands
 
-    func perform(_ command: SessionCommand) throws {
+    /// Starts a shell terminal filed under `space`.
+    private func run(in space: String, cwd: String?) throws -> String {
+        var params: [String: Any] = ["no_parent": true, "labels": [CoreStructure.spaceLabel: space]]
+        if let cwd { params["cwd"] = cwd }
+        return try connection().call("terminal.run", params, as: CoreTerminal.self).address
+    }
+
+    private func kill(_ terminals: [String]) throws {
         let connection = try connection()
+        for terminal in terminals { _ = try connection.callRaw("terminal.kill", ["terminal": terminal]) }
+    }
+
+    private func folder(of space: String) throws -> String? {
+        let current = try arrangement(on: try connection())
+        guard let found = current.structure.spaces.first(where: { $0.id == space }) else { return nil }
+        if let folder = found.folder { return folder }
+        let first = found.tabs.first?.root.terminals.first
+        return current.terminals.first { $0.address == first }?.cwd
+    }
+
+    func perform(_ command: SessionCommand) throws {
         switch command {
-        case .closePane(let id), .closeTab(let id):
-            _ = try connection.callRaw("terminal.kill", ["terminal": id])
+        case .closePane(let id):
+            try kill([id])
+        case .closeTab(let id):
+            let terminals = try mutate { structure, _ -> [String] in
+                guard let (s, t) = structure.tab(id) else { return [] }
+                return structure.spaces[s].tabs.remove(at: t).root.terminals
+            }
+            try kill(terminals)
+        case .closeSpace(let id):
+            let terminals = try mutate { structure, _ -> [String] in
+                guard let index = structure.spaces.firstIndex(where: { $0.id == id }) else { return [] }
+                return structure.spaces.remove(at: index).tabs.flatMap(\.root.terminals)
+            }
+            try kill(terminals)
         case let .renameTab(id, label):
-            _ = try connection.callRaw("terminal.label", ["terminal": id, "labels": ["wooloo.name": label]])
+            try mutate { structure, _ in
+                if let (s, t) = structure.tab(id) { structure.spaces[s].tabs[t].name = label }
+            }
+        case let .renameSpace(id, label):
+            try mutate { structure, _ in
+                if let index = structure.spaces.firstIndex(where: { $0.id == id }) { structure.spaces[index].name = label }
+            }
         case let .renameAgent(paneID, name):
-            _ = try connection.callRaw("terminal.label", ["terminal": paneID, "labels": ["wooloo.name": name ?? ""]])
+            _ = try connection().callRaw("terminal.label", ["terminal": paneID, "labels": ["wooloo.name": name ?? ""]])
+        case let .splitPane(spaceID, paneID, direction):
+            let cwd = try arrangement(on: try connection()).terminals.first { $0.address == paneID }?.cwd
+            let new = try run(in: spaceID, cwd: cwd)
+            let tab = try mutate { structure, _ -> String? in
+                // Reconciliation files the new terminal as a loose tab until this write places it.
+                for index in structure.spaces.indices {
+                    structure.spaces[index].tabs.removeAll { $0.root.terminals == [new] }
+                }
+                guard let (s, t) = structure.tab(of: paneID) else { return nil }
+                structure.spaces[s].tabs[t].root = structure.spaces[s].tabs[t].root
+                    .splitting(paneID, with: new, direction: direction == "down" ? .down : .right)
+                return structure.spaces[s].tabs[t].id
+            }
+            if let tab { lock.withLock { pendingFocus = (spaceID, tab, new) } }
+        case let .moveTab(tabID, insertIndex):
+            try mutate { structure, _ in
+                guard let (s, from) = structure.tab(tabID), (0...structure.spaces[s].tabs.count).contains(insertIndex),
+                      insertIndex != from, insertIndex != from + 1 else { return }
+                let tab = structure.spaces[s].tabs.remove(at: from)
+                structure.spaces[s].tabs.insert(tab, at: insertIndex > from ? insertIndex - 1 : insertIndex)
+            }
         case .focusPane: return
-        case .splitPane: throw CoreProtocolError.unsupported("split panes")
         case .zoomPane: throw CoreProtocolError.unsupported("zoom panes")
-        case .renameSpace: throw CoreProtocolError.unsupported("rename Spaces")
-        case .closeSpace: throw CoreProtocolError.unsupported("close Spaces")
-        case .moveTab: throw CoreProtocolError.unsupported("reorder tabs")
         case .reloadConfig: throw CoreProtocolError.unsupported("reload the configuration")
         }
     }
 
-    /// Every new Space, worktree Space or tab is a new shell terminal; it shows as a tab of the
-    /// core's Space, which answers for Spaces.
+    /// New Spaces and tabs start a shell terminal and record it in the arrangement.
     func create(_ item: SessionCreation) throws -> String {
-        let cwd: String?
         switch item {
-        case let .space(_, folder, _): cwd = folder
-        case let .worktreeSpace(checkout, _): cwd = checkout
-        case let .tab(_, folder): cwd = folder
+        case let .space(source, cwd, label):
+            let start = try cwd ?? source.flatMap { try self.folder(of: $0) }
+            return try newSpace(folder: start, name: label)
+        case let .worktreeSpace(checkout, _):
+            return try newSpace(folder: checkout, name: (checkout as NSString).lastPathComponent)
+        case let .tab(spaceID, cwd):
+            let address = try run(in: spaceID, cwd: try cwd ?? self.folder(of: spaceID))
+            let tabID = CoreStructure.newID()
+            try mutate { structure, _ in
+                if let index = structure.spaces.firstIndex(where: { $0.id == spaceID }) {
+                    structure.spaces[index].tabs.removeAll { $0.root.terminals == [address] }
+                    structure.spaces[index].tabs.append(.init(id: tabID, name: nil, root: .terminal(address)))
+                }
+            }
+            return tabID
         }
-        var params: [String: Any] = ["no_parent": true, "labels": ["wooloo.space": Self.spaceID]]
-        if let cwd { params["cwd"] = cwd }
-        let terminal = try connection().call("terminal.run", params, as: CoreTerminal.self)
-        if case .tab = item { return terminal.address }
-        return Self.spaceID
+    }
+
+    private func newSpace(folder: String?, name: String?) throws -> String {
+        let spaceID = CoreStructure.newID()
+        let address = try run(in: spaceID, cwd: folder)
+        let fallback = folder.map { ($0 as NSString).lastPathComponent } ?? "Space"
+        try mutate { structure, _ in
+            for index in structure.spaces.indices { structure.spaces[index].tabs.removeAll { $0.root.terminals == [address] } }
+            structure.spaces.removeAll { $0.tabs.isEmpty }
+            structure.spaces.append(.init(id: spaceID, name: name ?? fallback, folder: folder,
+                                          tabs: [.init(id: CoreStructure.newID(), name: nil, root: .terminal(address))]))
+        }
+        return spaceID
     }
 
     func moveSpace(_ spaceID: String, beside anchorID: String, after: Bool,
                    checkpoint: @Sendable () throws -> Void) throws {
-        throw CoreProtocolError.unsupported("reorder Spaces")
+        try checkpoint()
+        try mutate { structure, _ in
+            guard let from = structure.spaces.firstIndex(where: { $0.id == spaceID }),
+                  let anchor = structure.spaces.firstIndex(where: { $0.id == anchorID }) else { return }
+            let gap = anchor + (after ? 1 : 0)
+            guard gap != from, gap != from + 1 else { return }
+            let space = structure.spaces.remove(at: from)
+            structure.spaces.insert(space, at: gap > from ? gap - 1 : gap)
+        }
     }
 
     func moveTab(_ tabID: String, toSpace spaceID: String?, lastTabWasChecked: Bool,
                  checkpoint: @Sendable () throws -> Void) throws -> WoolooPane {
-        throw CoreProtocolError.unsupported("move tabs between Spaces")
+        try checkpoint()
+        return try mutate { structure, terminals -> WoolooPane in
+            guard let (s, t) = structure.tab(tabID) else { throw SessionMoveError(message: "The source tab disappeared.") }
+            if structure.spaces[s].tabs.count == 1, !lastTabWasChecked {
+                throw SessionMoveError(message: "The source Space changed. Try the drag again.")
+            }
+            let source = structure.spaces[s]
+            let tab = structure.spaces[s].tabs.remove(at: t)
+            let destination: String
+            if let spaceID {
+                guard let index = structure.spaces.firstIndex(where: { $0.id == spaceID }) else {
+                    throw SessionMoveError(message: "The destination Space disappeared.")
+                }
+                structure.spaces[index].tabs.append(tab)
+                destination = spaceID
+            } else {
+                destination = CoreStructure.newID()
+                let name = tab.name ?? tab.root.terminals.first.flatMap { address in
+                    terminals.first { $0.address == address }.map(Self.label(of:))
+                } ?? source.name
+                structure.spaces.append(.init(id: destination, name: name, folder: source.folder, tabs: [tab]))
+            }
+            structure.spaces.removeAll { $0.tabs.isEmpty }
+            let pane = tab.root.terminals.first ?? ""
+            return WoolooPane(id: pane, spaceID: destination, tabID: tab.id,
+                              cwd: terminals.first { $0.address == pane }?.cwd, state: nil)
+        }
     }
 
     func movePane(_ paneID: String, to destination: PaneDestination,
                   checkpoint: @Sendable () throws -> Void) throws {
-        throw CoreProtocolError.unsupported("move panes")
+        try checkpoint()
+        try mutate { structure, _ in
+            guard let (s, t) = structure.tab(of: paneID) else { return }
+            let remaining = structure.spaces[s].tabs[t].root.filtered { $0 != paneID }
+            switch destination {
+            case .newTab:
+                guard let remaining else { return }
+                structure.spaces[s].tabs[t].root = remaining
+                structure.spaces[s].tabs.insert(.init(id: CoreStructure.newID(), name: nil, root: .terminal(paneID)), at: t + 1)
+            case let .beside(target, _, split, swapAfter, _):
+                if let remaining { structure.spaces[s].tabs[t].root = remaining } else { structure.spaces[s].tabs.remove(at: t) }
+                guard let (ts, tt) = structure.tab(of: target) else { return }
+                structure.spaces[ts].tabs[tt].root = structure.spaces[ts].tabs[tt].root
+                    .splitting(target, with: paneID, direction: split == "down" ? .down : .right, newFirst: swapAfter)
+                structure.spaces.removeAll { $0.tabs.isEmpty }
+            }
+        }
     }
+
+    /// Records a split's new ratio, once a drag ends.
+    func setSplitRatio(tabID: String, path: [Bool], ratio: Double) throws {
+        try mutate { structure, _ in
+            guard let (s, t) = structure.tab(tabID) else { return }
+            structure.spaces[s].tabs[t].root = structure.spaces[s].tabs[t].root.settingRatio(ratio, at: path[...])
+        }
+    }
+
 }
 
 /// Follows a core on a connection of its own: an unfiltered `events.subscribe`, then a fresh
@@ -216,14 +446,15 @@ final class CoreSessionWatcher: SessionWatcher, @unchecked Sendable {
         if let channel = subscribed.channel {
             var lines = CoreEventLines()
             connection.route(channel: channel, onData: { data in
-                // Heartbeats and document events need no new terminal list.
-                if lines.append(data).contains(where: { $0.type != nil && $0.type != "doc" }) {
+                // Heartbeats need nothing; terminal and document events need a fresh arrangement.
+                if lines.append(data).contains(where: { $0.type != nil }) {
                     pending.set()
                 }
                 changes.signal()
             }, onClose: { changes.signal() })
         }
-        onChange(CoreSessionBackend.snapshot(of: subscribed.terminals, core: connection.hello?.core))
+        _ = subscribed
+        onChange(try backend.snapshot(on: connection))
         while true {
             _ = changes.wait(timeout: .now() + 5)
             if lock.withLock({ cancelled }) { return }
@@ -231,10 +462,7 @@ final class CoreSessionWatcher: SessionWatcher, @unchecked Sendable {
             if Date().timeIntervalSince(connection.lastActivity) > Self.silenceLimit {
                 throw CoreProtocolError.timedOut("events.subscribe")
             }
-            if pending.take() {
-                let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
-                onChange(CoreSessionBackend.snapshot(of: list.terminals, core: connection.hello?.core))
-            }
+            if pending.take() { onChange(try backend.snapshot(on: connection)) }
         }
     }
 

@@ -16,6 +16,8 @@ final class FakeCore: @unchecked Sendable {
     /// Answers to calls by method; a nil answer is a JSON-RPC error.
     var overrides: [String: ([String: Any]) -> Any?] = [:]
     var calls: [Call] = []
+    /// Documents by name: the value (nil when deleted or never written) and its version.
+    var documents: [String: (value: Any?, version: Int)] = [:]
     private(set) var connections: [FakeCoreServer] = []
 
     func connect() -> FakeCoreServer {
@@ -79,7 +81,12 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
 
     /// Pushes one event notification on the subscription channel.
     func emit(type: String?, terminal: String? = nil) {
-        lock.withLock {
+        lock.withLock { pushEvent(type: type, terminal: terminal) }
+    }
+
+    /// `emit` for a caller that already holds the core's lock.
+    fileprivate func pushEvent(type: String?, terminal: String?) {
+        do {
             guard let channel = eventsChannel else { return }
             seq += 1
             var params: [String: Any] = ["seq": seq]
@@ -173,6 +180,34 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
                 result = ["channel": channel, "terminal": try terminal.map(encoded) ?? [:],
                           "resize_notifications": false, "automatic_input": true]
             case "terminal.keys": result = ["turn": 0, "status": NSNull()]
+            case "doc.get":
+                let document = core.documents[params["name"] as? String ?? ""]
+                result = ["value": document?.value ?? NSNull(), "version": document?.version ?? 0]
+            case "doc.set":
+                let name = params["name"] as? String ?? ""
+                let current = core.documents[name]?.version ?? 0
+                guard params["version"] as? Int == current else {
+                    let reply: [String: Any] = ["jsonrpc": "2.0", "id": request["id"] ?? 0,
+                        "error": ["code": -32000, "message": "document \"\(name)\" is at version \(current)",
+                                  "data": ["kind": "conflict"]]]
+                    enqueue(CoreFrame(channel: 0, kind: .data, payload: try JSONSerialization.data(withJSONObject: reply)).encoded())
+                    return
+                }
+                let value = params["value"].flatMap { $0 is NSNull ? nil : $0 }
+                core.documents[name] = (value, current + 1)
+                result = ["version": current + 1]
+                for server in core.connections { server.pushEvent(type: "doc", terminal: nil) }
+            case "terminal.label":
+                if let address = params["terminal"] as? String, let labels = params["labels"] as? [String: String],
+                   let index = core.terminals.firstIndex(where: { $0.address == address }) {
+                    let old = core.terminals[index]
+                    var merged = old.labels
+                    for (key, value) in labels { merged[key] = value.isEmpty ? nil : value }
+                    core.terminals[index] = CoreTerminal(address: old.address, argv: old.argv, cols: old.cols, rows: old.rows,
+                                                         cwd: old.cwd, labels: merged, name: old.name, state: old.state,
+                                                         status: old.status, title: old.title, turn: old.turn)
+                }
+                result = [:]
             default: result = [:]
             }
         }
