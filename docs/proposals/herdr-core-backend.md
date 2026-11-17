@@ -428,7 +428,7 @@ Still open:
   - The presentation highlights the match by inverting its cells in the composed surface, so `TerminalPaneView` needed no drawing change. The highlight ends when the pane scrolls, is typed in, or the search ends.
   - The protocol's `find`/`endFind` default to nothing, so the TUI presentation is unchanged.
   - `TerminalFindBar` sits over the terminal; searches run off the main thread.
-  - **Find in Terminal** (Pane menu and palette, ⌘F) is available only when a herdr-core terminal has the keyboard and no document is focused, so ⌘F stays with the editor and with TUI terminals.
+  - **Find in Terminal** (Pane menu and palette, ⌘F) is available only when the selected pane is a herdr-core terminal and no document is focused, so ⌘F stays with the editor and with TUI terminals. No other view uses ⌘F, so it does not need to track which view has the keyboard.
 - **Still open:** selecting lines that scrolled off screen. The view keeps a selection in screen cells on both backends, so it does not follow the scrollback; this needs selections in absolute rows in `TerminalPaneView`.
 
 ## Phase 5 progress (2026-11-16)

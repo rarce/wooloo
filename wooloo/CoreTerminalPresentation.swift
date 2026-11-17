@@ -49,6 +49,12 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     private var windowFocused = true
     private var shownZoom: String?
     private var shownMouseReporting: Set<String> = []
+    /// Bumped by each find and by ending one, so an older find that is still searching stops
+    /// before it moves the viewport or the highlight.
+    private var findGeneration: UInt64 = 0
+    /// Keys typed into an observed terminal after the window became active, sent once the
+    /// active attach replaces the observer.
+    private var heldInput: [String: [Data]] = [:]
 
     private struct Attachment {
         let terminal: String
@@ -128,6 +134,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         lock.withLock {
             self.theme = colors
             windowFocused = focused
+            if !focused { heldInput = [:] }
             for attachment in attachments.values { Self.apply(colors, to: attachment.emulator) }
             dirty = true
         }
@@ -178,48 +185,65 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     }
 
     func sendInput(_ event: HerdrInputEvent, to paneID: String) -> Bool {
-        let (connection, channel, bytes, handled) = lock.withLock { () -> (CoreConnection?, UInt32?, Data?, Bool) in
-            guard let attachment = attachments[paneID] else { return (nil, nil, nil, false) }
+        // `accepted`: the pane is attached and took the event, even when it has nothing to send,
+        // such as a drag the program's mouse mode does not report.
+        let (connection, channel, bytes, accepted, redraw) = lock.withLock { () -> (CoreConnection?, UInt32?, Data?, Bool, Bool) in
+            guard let attachment = attachments[paneID] else { return (nil, nil, nil, false, false) }
             let emulator = attachment.emulator
-            // Core takes no input from an observer; the window attaches actively once it is active.
-            if attachment.observing, case .mouse(let mouse) = event {
-                let input = Self.mouseInput(mouse, to: emulator)
-                if input.scrolled { dirty = true }
-                return (nil, nil, nil, input.scrolled)
-            }
-            if attachment.observing { return (nil, nil, nil, false) }
             let bytes: Data?
             switch event {
             case .mouse(let mouse):
                 let input = Self.mouseInput(mouse, to: emulator)
-                // A match highlight is in viewport cells, so it does not follow a scroll.
-                if input.scrolled { dirty = true; attachments[paneID]?.highlight = nil }
-                return (self.connection, attachment.channel, input.bytes, input.scrolled)
+                if input.scrolled { dirty = true }
+                // Core takes no input from an observer.
+                return (attachment.observing ? nil : self.connection, attachment.channel, input.bytes, true, input.scrolled)
             case .text(let text): bytes = Data(text.utf8)
             case .paste(let text): bytes = emulator.encodePaste(text)
             case .key(let name): bytes = emulator.encodeKey(name)
             }
+            if attachment.observing {
+                // The window attaches actively once it is active; keys typed meanwhile wait for that.
+                guard windowFocused else { return (nil, nil, nil, false, false) }
+                if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
+                return (nil, nil, nil, true, true)
+            }
             // Typing returns to the live screen, as in other terminals.
             if !emulator.isAtBottom { emulator.scrollToBottom(); dirty = true }
             if attachment.highlight != nil { attachments[paneID]?.highlight = nil; dirty = true }
-            return (self.connection, attachment.channel, bytes, false)
+            return (self.connection, attachment.channel, bytes, false, false)
         }
-        if handled { wake.signal() }
-        guard let connection, let channel, let bytes, !bytes.isEmpty else { return handled }
+        if redraw { wake.signal() }
+        guard let connection, let channel, let bytes, !bytes.isEmpty else { return accepted }
         do {
             try connection.send(CoreFrame(channel: channel, kind: .data, payload: bytes))
             return true
         } catch { return false }
     }
 
+    /// Searches in bounded steps, letting go of the lock between them so output, drawing and
+    /// input go on during a long scrollback search. A newer find or `endFind` stops it.
     func find(_ query: String, in paneID: String, older: Bool) -> TerminalFindResult? {
-        let result = lock.withLock { () -> TerminalFindResult? in
+        let (generation, started) = lock.withLock { () -> (UInt64, Bool) in
+            findGeneration &+= 1
             for terminal in attachments.keys where terminal != paneID && attachments[terminal]?.highlight != nil {
                 attachments[terminal]?.highlight = nil
+                dirty = true
             }
-            guard let attachment = attachments[paneID] else { return nil }
+            return (findGeneration, attachments[paneID]?.emulator.beginFind(query) == true)
+        }
+        guard started else { return clearHighlight(of: paneID, generation: generation) }
+        while true {
+            let step = lock.withLock { () -> Bool? in
+                guard findGeneration == generation, let emulator = attachments[paneID]?.emulator else { return nil }
+                return emulator.continueFind()
+            }
+            guard let step else { return nil }
+            if step { break }
+        }
+        let result = lock.withLock { () -> TerminalFindResult? in
+            guard findGeneration == generation, let attachment = attachments[paneID] else { return nil }
             dirty = true
-            guard let match = attachment.emulator.find(query, older: older) else {
+            guard let match = attachment.emulator.selectMatch(older: older) else {
                 attachments[paneID]?.highlight = nil
                 return nil
             }
@@ -234,8 +258,20 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         return result
     }
 
+    private func clearHighlight(of paneID: String, generation: UInt64) -> TerminalFindResult? {
+        lock.withLock {
+            if findGeneration == generation, attachments[paneID]?.highlight != nil {
+                attachments[paneID]?.highlight = nil
+                dirty = true
+            }
+        }
+        wake.signal()
+        return nil
+    }
+
     func endFind() {
         lock.withLock {
+            findGeneration &+= 1
             for terminal in attachments.keys {
                 attachments[terminal]?.emulator.endSearch()
                 attachments[terminal]?.highlight = nil
@@ -309,13 +345,18 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         let wanted = Set(placed.map(\.terminal))
         for (terminal, attachment) in current where !wanted.contains(terminal) {
             try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
-            lock.withLock { attachments[terminal] = nil; dirty = true }
+            lock.withLock { attachments[terminal] = nil; heldInput[terminal] = nil; dirty = true }
         }
         // A window that becomes active types and sizes its terminals again: attach afresh.
         let focused = lock.withLock { windowFocused }
-        for (terminal, attachment) in current where attachment.observing && focused && wanted.contains(terminal) {
-            try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
-            lock.withLock { attachments[terminal] = nil }
+        // The new attachment replaces the observer in one step, so keys typed meanwhile are held
+        // by the observer and sent on the new stream, never dropped for want of an attachment.
+        for (terminal, attachment) in current where attachment.observing && focused {
+            guard let rect = placed.first(where: { $0.terminal == terminal })?.rect else { continue }
+            try attach(terminal, rect: rect, cell: size, colors: colors, observe: false, on: connection)
+            if lock.withLock({ attachments[terminal]?.channel != attachment.channel }) {
+                try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
+            }
         }
         let refreshed = lock.withLock { attachments }
         for (terminal, rect) in placed {
@@ -378,14 +419,20 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         let channel = result.channel
         // Answers to queries Core forwards (kitty graphics, XTGETTCAP) go back as automatic
         // input, which does not count as typing or take the terminal's size.
-        emulator.onReply = { [weak connection] reply in
-            try? connection?.send(CoreFrame(channel: channel, kind: automatic ? .automaticInput : .data, payload: reply))
+        // An observer sends nothing: the active viewer answers.
+        if !observe {
+            emulator.onReply = { [weak connection] reply in
+                try? connection?.send(CoreFrame(channel: channel, kind: automatic ? .automaticInput : .data, payload: reply))
+            }
         }
-        lock.withLock {
+        let held = lock.withLock { () -> [Data] in
             attachments[terminal] = Attachment(terminal: terminal, channel: channel, emulator: emulator, rect: rect,
                                                observing: observe, grid: Self.blankGrid(cols: cols, rows: rows))
             dirty = true
+            guard !observe else { return [] }
+            return heldInput.removeValue(forKey: terminal) ?? []
         }
+        for bytes in held { try? connection.send(CoreFrame(channel: channel, kind: .data, payload: bytes)) }
         connection.route(channel: channel, onData: { [weak self] data in
             guard let self else { return }
             // A stream this presentation closed may still deliver; only the current one counts.
@@ -432,6 +479,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     }
                     // Older lines on screen hide the live cursor.
                     attachment.cursor = attachment.emulator.isAtBottom ? frame.cursor : nil
+                    // A match highlight is in viewport cells: it follows the text that output,
+                    // a scroll or a resize moved, and goes once the match is out of view.
+                    if attachment.highlight != nil { attachment.highlight = attachment.emulator.followMatch() }
                     changed = true
                 }
                 if let images = attachment.emulator.imagesIfChanged() {

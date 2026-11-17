@@ -102,6 +102,8 @@ public final class VTTerminal {
     private var search: GhosttySearch?
     private var searchNeedle: String?
     private var shownImagesGeneration: UInt64 = 0
+    /// Converted pixels of the images last shown, by `imageID:generation`.
+    private var imagePixels: [String: (data: Data, format: TerminalImage.Format)] = [:]
     private var cellWidth = 8
     private var cellHeight = 16
 
@@ -285,31 +287,72 @@ public final class VTTerminal {
     /// (upward, as a search from the prompt usually goes) or newer, wrapping around. The
     /// viewport scrolls to show it. Nil when nothing matches.
     public func find(_ needle: String, older: Bool = true) -> TerminalSearchMatch? {
-        guard !needle.isEmpty else { endSearch(); return nil }
-        if search == nil, ghostty_search_new(nil, &search, terminal) != GHOSTTY_SUCCESS { return nil }
+        guard beginFind(needle) else { return nil }
+        while !continueFind() {}
+        return selectMatch(older: older)
+    }
+
+    /// Starts searching for `needle`, keeping the results found so far when it is unchanged.
+    /// An interactive caller then calls `continueFind()` until it returns true, giving other
+    /// users of the terminal a turn between calls, and selects a match with `selectMatch`.
+    public func beginFind(_ needle: String) -> Bool {
+        guard !needle.isEmpty else { endSearch(); return false }
+        if search == nil, ghostty_search_new(nil, &search, terminal) != GHOSTTY_SUCCESS { return false }
         if searchNeedle != needle {
             let bytes = Array(needle.utf8)
             let set = bytes.withUnsafeBufferPointer { buffer -> GhosttyResult in
                 var value = GhosttyString(ptr: buffer.baseAddress, len: buffer.count)
                 return ghostty_search_set(search, GHOSTTY_SEARCH_OPT_NEEDLE, &value)
             }
-            guard set == GHOSTTY_SUCCESS else { return nil }
+            guard set == GHOSTTY_SUCCESS else { return false }
             searchNeedle = needle
         }
-        _ = ghostty_search_run(search)
-        guard (older ? ghostty_search_select_next(search) : ghostty_search_select_prev(search)) == GHOSTTY_SUCCESS
+        return true
+    }
+
+    /// One bounded step of the search: feeds it the terminal's next chunk and searches that
+    /// chunk. True once it has caught up with the terminal.
+    public func continueFind() -> Bool {
+        guard let search else { return true }
+        guard ghostty_search_feed(search) == GHOSTTY_SUCCESS else { return true }
+        var status = GHOSTTY_SEARCH_STATUS_RUNNING
+        repeat {
+            guard ghostty_search_tick(search, &status) == GHOSTTY_SUCCESS else { return true }
+        } while status == GHOSTTY_SEARCH_STATUS_RUNNING
+        return status == GHOSTTY_SEARCH_STATUS_COMPLETE
+    }
+
+    /// Selects the next older or newer match, wrapping around, and scrolls to show it.
+    public func selectMatch(older: Bool) -> TerminalSearchMatch? {
+        guard let search,
+              (older ? ghostty_search_select_next(search) : ghostty_search_select_prev(search)) == GHOSTTY_SUCCESS
         else { return nil }
         var total = 0, index = 0
         _ = ghostty_search_get(search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &total)
         _ = ghostty_search_get(search, GHOSTTY_SEARCH_DATA_SELECTED_INDEX, &index)
+        let shown = selectedMatchInViewport()
+        return TerminalSearchMatch(index: index + 1, total: total, start: shown?.start, end: shown?.end)
+    }
+
+    /// Where the selected match is in the viewport now, after output or a scroll moved it;
+    /// nil when nothing is selected or it is out of view.
+    public func selectedMatchInViewport() -> (start: (column: Int, row: Int), end: (column: Int, row: Int))? {
+        guard let search else { return nil }
         var selection = GhosttySelection()
         guard ghostty_search_get(search, GHOSTTY_SEARCH_DATA_SELECTED_MATCH, &selection) == GHOSTTY_SUCCESS else { return nil }
         var start = GhosttyPointCoordinate(), end = GhosttyPointCoordinate()
-        let shown = ghostty_terminal_point_from_grid_ref(terminal, &selection.start, GHOSTTY_POINT_TAG_VIEWPORT, &start) == GHOSTTY_SUCCESS
-            && ghostty_terminal_point_from_grid_ref(terminal, &selection.end, GHOSTTY_POINT_TAG_VIEWPORT, &end) == GHOSTTY_SUCCESS
-        return TerminalSearchMatch(index: index + 1, total: total,
-                                   start: shown ? (Int(start.x), Int(start.y)) : nil,
-                                   end: shown ? (Int(end.x), Int(end.y)) : nil)
+        guard ghostty_terminal_point_from_grid_ref(terminal, &selection.start, GHOSTTY_POINT_TAG_VIEWPORT, &start) == GHOSTTY_SUCCESS,
+              ghostty_terminal_point_from_grid_ref(terminal, &selection.end, GHOSTTY_POINT_TAG_VIEWPORT, &end) == GHOSTTY_SUCCESS
+        else { return nil }
+        return ((Int(start.x), Int(start.y)), (Int(end.x), Int(end.y)))
+    }
+
+    /// The selected match's place after the terminal changed: the search first catches up
+    /// (one bounded step), which also drops a match that left the scrollback.
+    public func followMatch() -> (start: (column: Int, row: Int), end: (column: Int, row: Int))? {
+        guard let search else { return nil }
+        _ = ghostty_search_feed(search)
+        return selectedMatchInViewport()
     }
 
     /// Ends a search and frees what it tracks in the terminal.
@@ -329,10 +372,12 @@ public final class VTTerminal {
         guard generation != shownImagesGeneration else { return nil }
         shownImagesGeneration = generation
         guard ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &imageIterator) == GHOSTTY_SUCCESS
-        else { return [] }
+        else { imagePixels = [:]; return [] }
         var graphics: GhosttyKittyGraphics?
         _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics)
         var images: [TerminalImage] = []
+        var shownPixels: [String: (data: Data, format: TerminalImage.Format)] = [:]
+        defer { imagePixels = shownPixels }
         while ghostty_render_state_image_iterator_next(imageIterator), images.count < 64 {
             var proto = GHOSTTY_IMAGE_PROTOCOL_KITTY
             _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL, &proto)
@@ -359,13 +404,23 @@ public final class VTTerminal {
             _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH, &width)
             _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT, &height)
             _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT, &format)
-            guard ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS, &pixels) == GHOSTTY_SUCCESS,
-                  let base = pixels.ptr, width > 0, height > 0,
-                  let converted = Self.pixels(Data(bytes: base, count: pixels.len), format: format,
+            let identity = "\(imageID):\(imageGeneration)"
+            // Placements move with every scrolled line; an image's pixels change only with its
+            // generation, so they are copied once.
+            let converted: (data: Data, format: TerminalImage.Format)
+            if let cached = imagePixels[identity] {
+                converted = cached
+            } else {
+                guard ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS, &pixels) == GHOSTTY_SUCCESS,
+                      let base = pixels.ptr, width > 0, height > 0,
+                      let fresh = Self.pixels(Data(bytes: base, count: pixels.len), format: format,
                                               count: Int(width) * Int(height)) else { continue }
+                converted = fresh
+            }
+            shownPixels[identity] = converted
             let z = i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_Z)
             images.append(TerminalImage(
-                identity: "\(imageID):\(imageGeneration)", width: Int(width), height: Int(height),
+                identity: identity, width: Int(width), height: Int(height),
                 format: converted.format, pixels: converted.data,
                 column: i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL), row: i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW),
                 cols: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_COLS), rows: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_ROWS),

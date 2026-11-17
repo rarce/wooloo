@@ -109,6 +109,13 @@ final class HerdrStoreCoreTests: XCTestCase {
             server.recordedFrames().contains { $0.channel == channel && $0.kind == .data
                 && $0.payload == Data([0x1b, 0x5b, 0x4d, 32, 35, 34]) }
         }
+        // Mode 1000 reports no motion: a drag sends nothing, and that is not a failure.
+        store.sendMouse(HerdrMouseEvent(kind: .drag(0), column: 3, row: 1, modifiers: 0, lines: 1), to: "t1")
+        store.sendText("z", to: "t1")
+        await waitUntil("typed after the drag") {
+            server.recordedFrames().contains { $0.channel == channel && $0.kind == .data && $0.payload == Data("z".utf8) }
+        }
+        XCTAssertNil(store.inputError, "A drag the program does not report is not an input failure")
     }
 
     func testASplitTabIsComposedFromItsTerminals() async throws {
@@ -211,6 +218,14 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertFalse(server.recordedFrames().contains { $0.channel == channel && $0.kind == .resize },
                        "An observer never sizes the terminal")
         store.updateTerminalHost(theme: theme, focused: true)
+        // Typed at once, before the active attach replaces the observer: held, then sent on it.
+        store.sendText("now", to: "t1")
+        await waitUntil("typed into the active stream") {
+            self.core.connections.contains { server in
+                server.recordedFrames().contains { $0.channel != channel && $0.kind == .data && $0.payload == Data("now".utf8) }
+            }
+        }
+        XCTAssertNil(store.inputError)
         await waitUntil("active again") {
             core.callsTo("terminal.attach").count == 2 && core.callsTo("terminal.attach").last?.params["observe"] == nil
         }

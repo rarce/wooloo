@@ -154,6 +154,20 @@ final class CoreTerminalInputTests: XCTestCase {
         terminal.endSearch()
     }
 
+    func testTheSelectedMatchFollowsNewOutput() throws {
+        let terminal = try terminal((1...30).map { "line \($0)" }.joined(separator: "\r\n"))
+        XCTAssertTrue(terminal.beginFind("line 29"))
+        while !terminal.continueFind() {}
+        let match = try XCTUnwrap(terminal.selectMatch(older: true))
+        let row = try XCTUnwrap(match.start?.row)
+        terminal.write(Data("\r\nnew 1\r\nnew 2\r\nnew 3".utf8))
+        XCTAssertEqual(terminal.followMatch()?.start.row, row - 3, "Output scrolled the match up three rows")
+        terminal.write(Data(String(repeating: "\r\nmore", count: 30).utf8))
+        XCTAssertNil(terminal.followMatch(), "Out of view, nothing is highlighted")
+        terminal.endSearch()
+        XCTAssertNil(terminal.followMatch())
+    }
+
     func testAMatchIsDrawnInverted() {
         let match = (start: (column: 3, row: 1), end: (column: 2, row: 2))
         XCTAssertFalse(CoreTerminalPresentation.contains(match, column: 2, row: 1))

@@ -1711,7 +1711,9 @@ final class HerdrStore: ObservableObject {
 
     /// Whether the selected pane's terminal can be searched: herdr-core terminals, which
     /// wooloo emulates with their scrollback. The TUI keeps its scrollback on the server.
-    var findsInTerminal: Bool { backendKind == .core && surfaceStream != nil && selectedPaneID != nil }
+    /// `presentationEstablished` is published and follows the live stream, so views and menus
+    /// that ask this update when the stream ends or comes back.
+    var findsInTerminal: Bool { backendKind == .core && presentationEstablished && selectedPaneID != nil }
 
     /// Searches the selected pane's terminal and shows the next match, older or newer. It runs
     /// off the main thread, since a long scrollback takes a while.

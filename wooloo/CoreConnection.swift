@@ -209,11 +209,11 @@ final class CoreConnection: @unchecked Sendable {
         return reply
     }
 
-    /// Routes a stream channel's bytes to `onData` (credited after it returns) and its end to
-    /// `onClose`. Register it before the reply that names the channel can be followed by data:
-    /// cores send the reply first, and this runs on the caller's thread right after it.
-    /// Delivers a channel's data and its end; `onResize` gets the terminal's size when Core
-    /// sends one, as it does to observers that asked for `resize_notifications`.
+    /// Routes a stream channel's bytes to `onData` (credited after it returns), its end to
+    /// `onClose`, and the terminal's size to `onResize` when Core sends one, as it does to
+    /// observers that asked for `resize_notifications`. Register it before the reply that names
+    /// the channel can be followed by data: cores send the reply first, and this runs on the
+    /// caller's thread right after it.
     func route(channel: UInt32, onData: @escaping (Data) -> Void, onClose: @escaping () -> Void,
                onResize: ((Int, Int) -> Void)? = nil) {
         let alreadyEnded = lock.withLock { () -> Bool in

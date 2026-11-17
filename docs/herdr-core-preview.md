@@ -40,7 +40,7 @@ herdr-core keeps terminals, not layout. wooloo keeps its own Spaces, tabs and sp
 | Typing, paste, key chords | Yes | Yes, encoded for each program's keyboard modes |
 | Mouse reporting to programs | Yes | Yes: clicks, drags and the wheel, encoded for the program's mouse mode |
 | Scrollback | Yes | Yes. The wheel scrolls back through the terminal's last 2,000 lines when you connect, plus everything since. Typing returns to the live screen. In full-screen programs that ask for it (mode 1007), the wheel sends arrow keys. |
-| Find in terminal | Not in wooloo (the TUI has its own) | **Pane → Find in Terminal** (⌘F while a terminal has the keyboard) searches the screen and scrollback, scrolls to each match and highlights it. Return goes to older matches, Shift-Return to newer ones. |
+| Find in terminal | Not in wooloo (the TUI has its own) | **Pane → Find in Terminal** (⌘F while no document has the keyboard) searches the screen and scrollback, scrolls to each match and highlights it. Return goes to older matches, Shift-Return to newer ones. |
 | Inline images | Herdr's images | Kitty graphics protocol images, including PNG, drawn above or below the text as the program asks and cut to their pane |
 | Agent status | Herdr's detection and integrations | Only for programs that report it themselves (OSC 7501) |
 | Unread and pinned agents | Unread in wooloo | Shared with every Herdr client (`herdr.seen`, `herdr.pinned`) |
