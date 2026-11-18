@@ -73,6 +73,87 @@ final class HerdrStoreCoreTests: XCTestCase {
         return nil
     }
 
+    /// The first tab is chosen by the store when the state arrives, not by the user: the
+    /// presentation still has to be told, or the pane stays on text with input withheld.
+    func testTheTabChosenOnConnectGoesLive() async throws {
+        store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("a tab chosen") { store.selectedTabID == "tab-t1" }
+        await waitUntil("attached") { attachedServer() != nil }
+        await waitUntil("surface") { store.surface?.paneIDs == ["t1"] }
+        await waitUntil("input ready") { store.inputReady }
+        XCTAssertTrue(store.findsInTerminal)
+    }
+
+    /// Keys can reach a watching pane before the window's activation does: they are kept and
+    /// sent once the pane attaches actively, which the typing itself starts.
+    func testKeysBeforeTheActivationAreNotLost() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("watching") { core.callsTo("terminal.attach").last?.params["observe"] as? Bool == true }
+        let (_, watching) = try XCTUnwrap(attachedServer())
+        await waitUntil("surface") { store.surface?.paneIDs == ["t1"] }
+        store.sendText("echo hi", to: "t1")
+        await waitUntil("typed into the active stream") {
+            self.core.connections.contains { server in
+                server.recordedFrames().contains {
+                    $0.channel != watching && $0.kind == .data && $0.payload == Data("echo hi".utf8)
+                }
+            }
+        }
+        XCTAssertNil(core.callsTo("terminal.attach").last?.params["observe"])
+    }
+
+    /// Only the window in use sizes the terminal: one resized in the background watches at
+    /// Core's size, and a window coming back to the front sends its size again.
+    func testABackgroundWindowDoesNotSizeTheTerminal() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: theme, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("attached") { attachedServer() != nil }
+        let (server, active) = try XCTUnwrap(attachedServer())
+        await waitUntil("surface") { store.surface?.paneIDs == ["t1"] }
+        let resizes = { server.recordedFrames().filter { $0.channel == active && $0.kind == .resize }.count }
+        let before = resizes()
+
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.resizeSurface(cols: 50, rows: 12, cellWidth: 8, cellHeight: 16)
+        await waitUntil("watching") { core.callsTo("terminal.attach").last?.params["observe"] as? Bool == true }
+        await waitUntil("active stream closed") {
+            server.recordedFrames().contains { $0.channel == active && $0.kind == .close }
+        }
+        XCTAssertEqual(resizes(), before, "A window in the background never sends its size")
+
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("active again") {
+            core.callsTo("terminal.attach").last?.params["observe"] == nil && core.callsTo("terminal.attach").count == 3
+        }
+        let last = try XCTUnwrap(core.callsTo("terminal.attach").last)
+        XCTAssertEqual(last.params["cols"] as? Int, 50)
+        XCTAssertEqual(last.params["rows"] as? Int, 12)
+
+        // Back in front without a resize: the stream stays, and sends its size again in case
+        // another window took the terminal meanwhile.
+        let current = try XCTUnwrap(core.lock.withLock { server.attachChannels.last })
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("size sent again") {
+            server.recordedFrames().contains { $0.channel == current && $0.kind == .resize }
+        }
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 3, "Switching windows does not attach again")
+    }
+
     func testTheLiveTerminalShowsItsOutputAndTakesTyping() async throws {
         store.requiresSurfaceForInput = true
         store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)

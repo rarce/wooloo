@@ -115,6 +115,54 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertGreaterThan(server.credits[channel] ?? 0, 0)
     }
 
+    /// Core sends an attach's replay right after the reply, and the reader may handle it before
+    /// the caller routes the channel: those bytes, a size and an end wait for `route`.
+    func testStreamFramesBeforeTheRouteAreKeptInOrder() throws {
+        let core = FakeCore()
+        core.terminals = [CoreTerminal(address: "t1")]
+        let server = core.connect()
+        let connection = CoreConnection(transport: server)
+        try connection.open()
+        defer { connection.close() }
+        let attached = try connection.call("terminal.attach", ["terminal": "t1", "cols": 80, "rows": 24],
+                                           as: CoreAttachResult.self)
+        server.send(Data("replay ".utf8), on: attached.channel)
+        server.sendResize(cols: 100, rows: 30, on: attached.channel)
+        server.send(Data("screen".utf8), on: attached.channel)
+        let deadline = Date().addingTimeInterval(5)
+        while (server.credits[attached.channel] ?? 0) < 13, Date() < deadline { usleep(10_000) }
+        XCTAssertEqual(server.credits[attached.channel], 13, "Unrouted bytes are still credited")
+
+        var received = Data()
+        var size: (Int, Int)?
+        let more = expectation(description: "later bytes")
+        connection.route(channel: attached.channel, onData: { data in
+            received.append(data)
+            if received.count == 17 { more.fulfill() }
+        }, onClose: {}, onResize: { size = ($0, $1) })
+        XCTAssertEqual(String(decoding: received, as: UTF8.self), "replay screen")
+        XCTAssertEqual(size?.0, 100)
+        XCTAssertEqual(size?.1, 30)
+        server.send(Data(" new".utf8), on: attached.channel)
+        wait(for: [more], timeout: 5)
+        XCTAssertEqual(String(decoding: received, as: UTF8.self), "replay screen new")
+
+        let early = try connection.call("terminal.attach", ["terminal": "t1", "cols": 80, "rows": 24],
+                                        as: CoreAttachResult.self)
+        server.send(Data("x".utf8), on: early.channel)
+        server.closeChannel(early.channel)
+        // Frames arrive in order: once "y" is in, the early channel's frames were read.
+        let after = expectation(description: "a frame after the close")
+        connection.route(channel: attached.channel, onData: { if $0 == Data("y".utf8) { after.fulfill() } }, onClose: {})
+        server.send(Data("y".utf8), on: attached.channel)
+        wait(for: [after], timeout: 5)
+        var earlyBytes = Data()
+        var closed = false
+        connection.route(channel: early.channel, onData: { earlyBytes.append($0) }, onClose: { closed = true })
+        XCTAssertEqual(String(decoding: earlyBytes, as: UTF8.self), "x")
+        XCTAssertTrue(closed, "A stream that ended before its route reports the end")
+    }
+
     func testAnEndedConnectionFailsCalls() throws {
         let core = FakeCore()
         let server = core.connect()

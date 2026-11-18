@@ -24,7 +24,7 @@ struct TerminalFindBar: View {
                 .textFieldStyle(.plain)
                 .frame(width: 180)
                 .focused($focused)
-                .onSubmit { find(older: !NSEvent.modifierFlags.contains(.shift)) }
+                .onSubmit { find(older: !Self.shiftHeld(NSApp.currentEvent)) }
                 .onChange(of: query) { _, _ in find(older: true) }
                 .accessibilityIdentifier("terminal-find-field")
             Text(status)
@@ -52,6 +52,12 @@ struct TerminalFindBar: View {
             searching?.cancel()
             store.endTerminalFind()
         }
+    }
+
+    /// Shift on the Return that submitted the field: read from that key event, since the
+    /// keyboard's state by the time SwiftUI calls `onSubmit` may already be another.
+    static func shiftHeld(_ event: NSEvent?) -> Bool {
+        (event?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
     }
 
     private var status: String {

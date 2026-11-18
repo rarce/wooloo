@@ -47,6 +47,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     private var cellHeight = 16
     private var theme: (foreground: TerminalRGB, background: TerminalRGB, cursor: TerminalRGB, ansi: [TerminalRGB])?
     private var windowFocused = true
+    /// Set when the window becomes active: its streams send their sizes again, since a window
+    /// that was in the background may have left the terminal at another window's size.
+    private var reassertSize = false
     private var shownZoom: String?
     private var shownMouseReporting: Set<String> = []
     /// Bumped by each find and by ending one, so an older find that is still searching stops
@@ -133,8 +136,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                       cursor: TerminalRGB(theme.cursor), ansi: theme.ansi.map(TerminalRGB.init))
         lock.withLock {
             self.theme = colors
+            if focused && !windowFocused { reassertSize = true }
             windowFocused = focused
-            if !focused { heldInput = [:] }
             for attachment in attachments.values { Self.apply(colors, to: attachment.emulator) }
             dirty = true
         }
@@ -202,8 +205,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             case .key(let name): bytes = emulator.encodeKey(name)
             }
             if attachment.observing {
-                // The window attaches actively once it is active; keys typed meanwhile wait for that.
-                guard windowFocused else { return (nil, nil, nil, false, false) }
+                // The window attaches actively once it is active; keys typed meanwhile wait for
+                // that. Keys can come before the window's activation reaches here, and typing
+                // into a pane makes it active anyway, so held keys also start the active attach.
                 if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
                 return (nil, nil, nil, true, true)
             }
@@ -348,20 +352,37 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             lock.withLock { attachments[terminal] = nil; heldInput[terminal] = nil; dirty = true }
         }
         // A window that becomes active types and sizes its terminals again: attach afresh.
-        let focused = lock.withLock { windowFocused }
+        let (focused, typedInto) = lock.withLock { (windowFocused, Set(heldInput.keys)) }
         // The new attachment replaces the observer in one step, so keys typed meanwhile are held
         // by the observer and sent on the new stream, never dropped for want of an attachment.
-        for (terminal, attachment) in current where attachment.observing && focused {
+        for (terminal, attachment) in current where attachment.observing && (focused || typedInto.contains(terminal)) {
             guard let rect = placed.first(where: { $0.terminal == terminal })?.rect else { continue }
             try attach(terminal, rect: rect, cell: size, colors: colors, observe: false, on: connection)
             if lock.withLock({ attachments[terminal]?.channel != attachment.channel }) {
                 try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
             }
         }
-        let refreshed = lock.withLock { attachments }
+        // A pane that changes size while its window is in the background watches instead, at
+        // the size Core keeps: only the window someone is using sizes the terminal.
+        for (terminal, attachment) in current where !attachment.observing && !focused && !typedInto.contains(terminal) {
+            guard let rect = placed.first(where: { $0.terminal == terminal })?.rect, rect != attachment.rect else { continue }
+            try attach(terminal, rect: rect, cell: size, colors: colors, observe: true, on: connection)
+            if lock.withLock({ attachments[terminal]?.channel != attachment.channel }) {
+                try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
+            }
+        }
+        let (refreshed, reassert) = lock.withLock { () -> ([String: Attachment], Bool) in
+            defer { if windowFocused { reassertSize = false } }
+            return (attachments, reassertSize && windowFocused)
+        }
         for (terminal, rect) in placed {
             if let attachment = refreshed[terminal] {
-                guard attachment.rect != rect else { continue }
+                if attachment.rect == rect {
+                    if reassert && !attachment.observing {
+                        try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
+                    }
+                    continue
+                }
                 if attachment.observing {
                     // An observer keeps Core's size; only its place in the tab moves.
                     lock.withLock { attachments[terminal]?.rect = rect; dirty = true }
@@ -374,14 +395,18 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     attachments[terminal]?.grid = Self.blankGrid(cols: rect.width, rows: rect.height)
                     dirty = true
                 }
-                var payload = Data()
-                withUnsafeBytes(of: UInt16(clamping: rect.width).littleEndian) { payload.append(contentsOf: $0) }
-                withUnsafeBytes(of: UInt16(clamping: rect.height).littleEndian) { payload.append(contentsOf: $0) }
-                try? connection.send(CoreFrame(channel: attachment.channel, kind: .resize, payload: payload))
+                try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
                 continue
             }
             try attach(terminal, rect: rect, cell: size, colors: colors, observe: !focused, on: connection)
         }
+    }
+
+    private static func resizeFrame(_ rect: HerdrRect, channel: UInt32) -> CoreFrame {
+        var payload = Data()
+        withUnsafeBytes(of: UInt16(clamping: rect.width).littleEndian) { payload.append(contentsOf: $0) }
+        withUnsafeBytes(of: UInt16(clamping: rect.height).littleEndian) { payload.append(contentsOf: $0) }
+        return CoreFrame(channel: channel, kind: .resize, payload: payload)
     }
 
     /// Attaches to a terminal. A window that is not active when it attaches, such as one

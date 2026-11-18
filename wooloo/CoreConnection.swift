@@ -54,6 +54,12 @@ final class CoreConnection: @unchecked Sendable {
     private var streams: [UInt32: (Data) -> Void] = [:]
     private var closers: [UInt32: () -> Void] = [:]
     private var resizers: [UInt32: (Int, Int) -> Void] = [:]
+    /// What a stream channel sent before anyone routed it: the reader thread goes on with the
+    /// frames that follow a reply while the caller is still reading that reply, so an attach's
+    /// replay can arrive first. `route` hands it over.
+    private var early: [UInt32: EarlyStream] = [:]
+    /// Bytes kept for one unrouted channel; a channel nobody routes stops growing there.
+    static let earlyLimit = 16 * 1024 * 1024
     private var ended = false
     private var lastFrame = Date()
     private var leftover = Data()
@@ -135,17 +141,28 @@ final class CoreConnection: @unchecked Sendable {
             }
             semaphore?.signal()
         case (_, .data):
-            let handler = lock.withLock { streams[frame.channel] }
+            let handler = lock.withLock { () -> ((Data) -> Void)? in
+                if let handler = streams[frame.channel] { return handler }
+                if early[frame.channel, default: EarlyStream()].data.count + frame.payload.count <= Self.earlyLimit {
+                    early[frame.channel, default: EarlyStream()].data.append(frame.payload)
+                }
+                return nil
+            }
             handler?(frame.payload)
             try send(.credit(frame.payload.count, channel: frame.channel))
         case (_, .resize):
             guard frame.payload.count >= 4 else { return }
             let bytes = [UInt8](frame.payload.prefix(4))
             let cols = Int(bytes[0]) | Int(bytes[1]) << 8, rows = Int(bytes[2]) | Int(bytes[3]) << 8
-            let resizer = lock.withLock { resizers[frame.channel] }
-            if cols > 0, rows > 0 { resizer?(cols, rows) }
+            guard cols > 0, rows > 0 else { return }
+            let resizer = lock.withLock { () -> ((Int, Int) -> Void)? in
+                if streams[frame.channel] == nil { early[frame.channel, default: EarlyStream()].size = (cols, rows) }
+                return resizers[frame.channel]
+            }
+            resizer?(cols, rows)
         case (_, .close):
             let closer = lock.withLock { () -> (() -> Void)? in
+                if streams[frame.channel] == nil { early[frame.channel, default: EarlyStream()].closed = true }
                 streams[frame.channel] = nil
                 resizers[frame.channel] = nil
                 return closers.removeValue(forKey: frame.channel)
@@ -165,6 +182,7 @@ final class CoreConnection: @unchecked Sendable {
             closers = [:]
             streams = [:]
             resizers = [:]
+            early = [:]
             return (semaphores, closing)
         }
         semaphores.forEach { $0.signal() }
@@ -211,19 +229,28 @@ final class CoreConnection: @unchecked Sendable {
 
     /// Routes a stream channel's bytes to `onData` (credited after it returns), its end to
     /// `onClose`, and the terminal's size to `onResize` when Core sends one, as it does to
-    /// observers that asked for `resize_notifications`. Register it before the reply that names
-    /// the channel can be followed by data: cores send the reply first, and this runs on the
-    /// caller's thread right after it.
+    /// observers that asked for `resize_notifications`. Cores send the reply that names the
+    /// channel first and its data right after, often before the caller gets here: what came
+    /// meanwhile is delivered now, in order, before anything newer.
     func route(channel: UInt32, onData: @escaping (Data) -> Void, onClose: @escaping () -> Void,
                onResize: ((Int, Int) -> Void)? = nil) {
-        let alreadyEnded = lock.withLock { () -> Bool in
-            guard !ended else { return true }
-            streams[channel] = onData
-            closers[channel] = onClose
-            resizers[channel] = onResize
-            return false
+        // The handler goes in only once nothing is waiting, so the reader never hands
+        // `onData` newer bytes before older ones.
+        while true {
+            let step = lock.withLock { () -> (ended: Bool, held: EarlyStream?) in
+                guard !ended else { return (true, nil) }
+                if let held = early.removeValue(forKey: channel) { return (false, held) }
+                streams[channel] = onData
+                closers[channel] = onClose
+                resizers[channel] = onResize
+                return (false, nil)
+            }
+            if step.ended { onClose(); return }
+            guard let held = step.held else { return }
+            if !held.data.isEmpty { onData(held.data) }
+            if let size = held.size { onResize?(size.cols, size.rows) }
+            if held.closed { onClose(); return }
         }
-        if alreadyEnded { onClose() }
     }
 
     static func result<Result: Decodable>(_ type: Result.Type, from reply: Data) throws -> Result {
@@ -235,6 +262,13 @@ final class CoreConnection: @unchecked Sendable {
         }
         return try JSONDecoder().decode(CoreReply<Result>.self, from: reply).result
     }
+}
+
+/// A stream channel's frames that arrived before `route` registered it.
+private struct EarlyStream {
+    var data = Data()
+    var size: (cols: Int, rows: Int)?
+    var closed = false
 }
 
 private struct CoreReply<Result: Decodable>: Decodable {

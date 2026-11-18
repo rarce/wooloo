@@ -1849,6 +1849,9 @@ final class HerdrStore: ObservableObject {
         if !snapshot.tabs.contains(where: { $0.tabID == selectedTabID && $0.workspaceID == selectedWorkspaceID }) {
             selectedTabID = snapshot.workspaces.first { $0.workspaceID == selectedWorkspaceID }?.activeTabID
                 ?? snapshot.tabs.first { $0.workspaceID == selectedWorkspaceID }?.tabID
+            // Herdr's server shows its own active tab, but a herdr-core presentation shows only
+            // the tab it is told: without this, the first tab chosen here never went live.
+            if backendKind == .core, let selectedTabID { surfaceStream?.focus(tabID: selectedTabID) }
         }
         if !snapshot.panes.contains(where: { $0.paneID == selectedPaneID && $0.tabID == selectedTabID }) {
             selectedPaneID = preferredPane(in: selectedTabID)
