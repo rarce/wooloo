@@ -9,6 +9,8 @@ final class FakeCore: @unchecked Sendable {
 
     let lock = NSLock()
     var version = "0.1.21"
+    /// What `hello` advertises; without `resize_notifications`, observers get no RESIZE frames.
+    var features = ["framed", "automatic_input", "resize_notifications"]
     var methods: [String] = Array(CoreProtocol.requiredMethods) + ["hello", "rpc.discover"]
     var terminals: [CoreTerminal] = []
     var screens: [String: String] = [:]
@@ -135,7 +137,7 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
             let request = try JSONSerialization.jsonObject(with: line) as? [String: Any] ?? [:]
             core.calls.append(FakeCore.Call(method: request["method"] as? String ?? "", params: request["params"] as? [String: Any] ?? [:]))
             let hello: [String: Any] = [
-                "core": ["id": "0123456789abcdef", "name": "box"], "features": ["framed", "automatic_input"],
+                "core": ["id": "0123456789abcdef", "name": "box"], "features": core.features,
                 "framed": true, "generation": 1, "methods": core.methods, "version": core.version,
             ]
             enqueue(try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": request["id"] ?? 0,
@@ -187,7 +189,9 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
                 attachChannels.append(channel)
                 let terminal = core.terminals.first { $0.address == params["terminal"] as? String }
                 result = ["channel": channel, "terminal": try terminal.map(encoded) ?? [:],
-                          "resize_notifications": false, "automatic_input": true]
+                          "resize_notifications": params["resize_notifications"] as? Bool == true
+                              && core.features.contains("resize_notifications"),
+                          "automatic_input": true]
             case "terminal.keys": result = ["turn": 0, "status": NSNull()]
             case "doc.get":
                 let document = core.documents[params["name"] as? String ?? ""]

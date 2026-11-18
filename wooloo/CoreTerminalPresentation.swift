@@ -71,6 +71,20 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         var rect: HerdrRect
         /// Watching only: Core keeps the size another viewer set, and takes no input from here.
         var observing = false
+        /// A watching stream whose core sends no RESIZE frames: it takes the size from `size`
+        /// events instead.
+        var followsSizeEvents = false
+        /// The sizes this stream last asked for: a `size` event that reports one of them, late, is
+        /// this window's own, not another viewer's.
+        var sizesSent: [(cols: Int, rows: Int)] = []
+
+        func sent(_ size: (cols: Int, rows: Int)) -> Bool {
+            sizesSent.contains { $0.cols == size.cols && $0.rows == size.rows }
+        }
+
+        mutating func recordSent(_ rect: HerdrRect) {
+            sizesSent = Array((sizesSent + [(rect.width, rect.height)]).suffix(4))
+        }
         var grid: [[HerdrCell]]
         var cursor: TerminalCursor?
         var images: [TerminalImage] = []
@@ -387,25 +401,33 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             defer { reportedSizes = [:] }
             return (windowFocused == true, Set(heldInput.keys), reportedSizes)
         }
-        // The new attachment replaces the observer in one step, so keys typed meanwhile are held
-        // by the observer and sent on the new stream, never dropped for want of an attachment.
-        for (terminal, attachment) in current where attachment.observing && (focused || typedInto.contains(terminal)) {
-            guard let rect = placed.first(where: { $0.terminal == terminal })?.rect else { continue }
-            try attach(terminal, rect: rect, cell: size, colors: colors, observe: false, on: connection)
+        /// Attaches `terminal` afresh and closes the stream it replaces. The new attachment
+        /// replaces the old one in one step, so keys typed meanwhile are held by an observer and
+        /// sent on the new stream, never dropped for want of an attachment.
+        func replace(_ terminal: String, _ attachment: Attachment, observe: Bool) throws {
+            guard let rect = placed.first(where: { $0.terminal == terminal })?.rect else { return }
+            try attach(terminal, rect: rect, cell: size, colors: colors, observe: observe, on: connection)
             if lock.withLock({ attachments[terminal]?.channel != attachment.channel }) {
                 try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
             }
         }
-        // A pane in a background window watches instead, at the size Core keeps, once its size
-        // changes here or another viewer resizes the terminal: only the window someone is using
-        // sizes it, and a stream that is not watching hears of no other size.
+        for (terminal, attachment) in current where attachment.observing && (focused || typedInto.contains(terminal)) {
+            try replace(terminal, attachment, observe: false)
+        }
+        // A background window's stream watches instead once Core reports that another viewer
+        // resized the terminal: a stream that is not watching hears of no other size, and only
+        // the window someone is using sizes the terminal. Without such a report this window may
+        // be the only viewer, so it keeps sizing the terminal to its layout.
         for (terminal, attachment) in current where !attachment.observing && !focused && !typedInto.contains(terminal) {
-            guard let rect = placed.first(where: { $0.terminal == terminal })?.rect else { continue }
-            let resizedElsewhere = reported[terminal].map { $0.cols != attachment.rect.width || $0.rows != attachment.rect.height } ?? false
-            guard rect != attachment.rect || resizedElsewhere else { continue }
-            try attach(terminal, rect: rect, cell: size, colors: colors, observe: true, on: connection)
-            if lock.withLock({ attachments[terminal]?.channel != attachment.channel }) {
-                try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
+            guard let other = reported[terminal], !attachment.sent(other) else { continue }
+            try replace(terminal, attachment, observe: true)
+        }
+        // Observers whose core sends no RESIZE frames follow the size events instead.
+        for (terminal, size) in reported {
+            lock.withLock {
+                guard let attachment = attachments[terminal], attachment.followsSizeEvents else { return }
+                Self.resize(attachment, in: &attachments, to: size, cell: (cellWidth, cellHeight))
+                dirty = true
             }
         }
         let (refreshed, reassert) = lock.withLock { () -> ([String: Attachment], Bool) in
@@ -429,6 +451,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     try? attachments[terminal]?.emulator.resize(cols: rect.width, rows: rect.height,
                                                                 cellWidth: size.0, cellHeight: size.1)
                     attachments[terminal]?.rect = rect
+                    attachments[terminal]?.recordSent(rect)
                     attachments[terminal]?.grid = Self.blankGrid(cols: rect.width, rows: rect.height)
                     dirty = true
                 }
@@ -437,6 +460,20 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             }
             try attach(terminal, rect: rect, cell: size, colors: colors, observe: !focused, on: connection)
         }
+    }
+
+    /// Resizes an observer's emulator to the size Core reports. Output that came before the
+    /// resize was laid out at the old size, so it goes in first. Called under `lock`.
+    private static func resize(_ attachment: Attachment, in attachments: inout [String: Attachment],
+                               to size: (cols: Int, rows: Int), cell: (Int, Int)) {
+        let terminal = attachment.terminal
+        guard size.cols > 0, size.rows > 0 else { return }
+        if !attachment.inbox.isEmpty {
+            attachment.emulator.write(attachment.inbox)
+            attachments[terminal]?.inbox = Data()
+        }
+        try? attachment.emulator.resize(cols: size.cols, rows: size.rows, cellWidth: cell.0, cellHeight: cell.1)
+        attachments[terminal]?.grid = blankGrid(cols: size.cols, rows: size.rows)
     }
 
     private static func resizeFrame(_ rect: HerdrRect, channel: UInt32) -> CoreFrame {
@@ -454,9 +491,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                         observe: Bool, on connection: CoreConnection) throws {
         var params: [String: Any] = ["terminal": terminal, "cols": rect.width, "rows": rect.height,
                                      "history": Self.attachHistory]
+        let offersResizes = connection.hello?.features.contains("resize_notifications") == true
         if observe {
             params["observe"] = true
-            params["resize_notifications"] = true
+            if offersResizes { params["resize_notifications"] = true }
         }
         if let colors {
             params["display"] = ["fg": colors.foreground.hex, "bg": colors.background.hex,
@@ -487,14 +525,21 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 try? connection?.send(CoreFrame(channel: channel, kind: automatic ? .automaticInput : .data, payload: reply))
             }
         }
-        let held = lock.withLock { () -> [Data] in
+        // Without RESIZE frames confirmed by both sides, an observer follows `size` events.
+        let followsSizeEvents = observe && !(offersResizes && result.resizeNotifications == true)
+        lock.withLock {
             attachments[terminal] = Attachment(terminal: terminal, channel: channel, emulator: emulator, rect: rect,
-                                               observing: observe, grid: Self.blankGrid(cols: cols, rows: rows))
+                                               observing: observe, followsSizeEvents: followsSizeEvents,
+                                               grid: Self.blankGrid(cols: cols, rows: rows))
+            if !observe { attachments[terminal]?.recordSent(rect) }
             dirty = true
-            guard !observe else { return [] }
-            return heldInput.removeValue(forKey: terminal) ?? []
+            guard !observe else { return }
+            // Sent before the lock goes, so keys typed now, which go straight to this stream,
+            // come after them.
+            for bytes in heldInput.removeValue(forKey: terminal) ?? [] {
+                try? connection.send(CoreFrame(channel: channel, kind: .data, payload: bytes))
+            }
         }
-        for bytes in held { try? connection.send(CoreFrame(channel: channel, kind: .data, payload: bytes)) }
         connection.route(channel: channel, onData: { [weak self] data in
             guard let self else { return }
             // A stream this presentation closed may still deliver; only the current one counts.
@@ -513,13 +558,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             guard let self else { return }
             self.lock.withLock {
                 guard let attachment = self.attachments[terminal], attachment.channel == channel, attachment.observing else { return }
-                // Output that came before the resize was laid out at the old size.
-                if !attachment.inbox.isEmpty {
-                    attachment.emulator.write(attachment.inbox)
-                    self.attachments[terminal]?.inbox = Data()
-                }
-                try? attachment.emulator.resize(cols: cols, rows: rows, cellWidth: self.cellWidth, cellHeight: self.cellHeight)
-                self.attachments[terminal]?.grid = Self.blankGrid(cols: cols, rows: rows)
+                Self.resize(attachment, in: &self.attachments, to: (cols, rows), cell: (self.cellWidth, self.cellHeight))
                 self.dirty = true
             }
             self.wake.signal()
@@ -637,7 +676,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                                       pos: split.position, area: split.area, hitRect: hit, path: split.path))
         }
         let graphics = panes.flatMap { terminal, rect in
-            (attachments[terminal]?.images ?? []).compactMap { graphic($0, of: terminal, in: rect) }
+            guard let attachment = attachments[terminal] else { return [HerdrGraphic]() }
+            return attachment.images.compactMap { graphic($0, of: terminal, stream: attachment.channel, in: rect) }
         }
         let cursor = focused.flatMap { id -> HerdrCursor? in
             guard let rect = rects[id], let at = attachments[id]?.cursor else { return nil }
@@ -696,7 +736,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// A kitty graphics image of a pane as the surface image `TerminalPaneView` draws: at the
     /// pane's place, and cut to the pane where it runs past an edge, with the matching part
     /// of the source.
-    static func graphic(_ image: TerminalImage, of terminal: String, in rect: HerdrRect) -> HerdrGraphic? {
+    /// `stream` is part of the image's identity: a new attachment has a new emulator, whose image
+    /// ids and generations start over, so the view must not take its images for cached ones.
+    static func graphic(_ image: TerminalImage, of terminal: String, stream: UInt32 = 0, in rect: HerdrRect) -> HerdrGraphic? {
         guard image.cols > 0, image.rows > 0, image.sourceWidth > 0, image.sourceHeight > 0 else { return nil }
         var column = image.column, row = image.row, cols = image.cols, rows = image.rows
         var sourceX = image.sourceX, sourceY = image.sourceY
@@ -725,7 +767,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             sourceHeight = sourceHeight * keep / rows; rows = keep
         }
         guard sourceWidth > 0, sourceHeight > 0 else { return nil }
-        let key = HerdrGraphicKey(identity: Data("core|\(terminal)|\(image.identity)".utf8), width: image.width,
+        let key = HerdrGraphicKey(identity: Data("core|\(terminal)|\(stream)|\(image.identity)".utf8), width: image.width,
                                   height: image.height, format: image.format == .rgba ? .rgba : .rgb,
                                   isPopup: false, dataLength: image.pixels.count)
         // The view draws negative z below the text.

@@ -419,13 +419,14 @@ Still open:
   - The file, temporary-file and shared-memory media stay off, as libghostty-vt defaults them, so a program cannot make the viewer read local files.
   - `CoreTerminalPresentation.graphic` turns each placement into the `HerdrGraphic` the view already draws, at the pane's place and cut to the pane with the matching source rectangle. Images below the text get a negative z.
 - **Observe viewers:**
-  - A window that is not the key window when it attaches attaches with `observe` and `resize_notifications`. It starts at the terminal's own size and follows the RESIZE frames Core sends, which `CoreConnection` now routes.
-  - It sends no RESIZE, FOCUS or input; the wheel still scrolls its own scrollback.
-  - When the window becomes key, it closes the watching stream and attaches actively. It is never demoted, so switching windows does not repaint.
-  - Data from a stream the presentation closed is dropped.
+  - A window that is not the key window when it attaches attaches with `observe`, adding `resize_notifications` when `hello` advertises it. It starts at the terminal's own size and follows the RESIZE frames Core sends, which `CoreConnection` now routes; when the attach result does not confirm them, it follows the `size` events on its subscription instead. Nothing attaches until the window has said whether it is key.
+  - It sends no RESIZE, FOCUS or input; the wheel still scrolls its own scrollback. Keys and clicks that reach it are held and sent once it attaches actively, which they also start.
+  - When the window becomes key, it closes the watching stream and attaches actively, and an active stream sends its size again when its window comes back to the front.
+  - An active stream in a background window is demoted to watching only when a `size` event reports a size it did not ask for, that is, another viewer took the terminal. Without such a report the window may be the only viewer, so it keeps sizing the terminal to its layout. Demoting and promoting each attach again and replay the history.
+  - Data from a stream the presentation closed is dropped. Image identities include the stream, since each attachment's emulator numbers its images afresh.
 - **Find in terminal:**
   - `VTTerminal.find` drives libghostty-vt's search over the screen and scrollback. `select_next` moves toward older matches and wraps, and it scrolls the viewport to the match.
-  - The presentation highlights the match by inverting its cells in the composed surface, so `TerminalPaneView` needed no drawing change. The highlight ends when the pane scrolls, is typed in, or the search ends.
+  - The presentation highlights the match by inverting its cells in the composed surface, so `TerminalPaneView` needed no drawing change. The highlight follows the text when output, a scroll or a resize moves it, and ends once the match is out of view, the pane is typed in, or the search ends.
   - The protocol's `find`/`endFind` default to nothing, so the TUI presentation is unchanged.
   - `TerminalFindBar` sits over the terminal; searches run off the main thread.
   - **Find in Terminal** (Pane menu and palette, ⌘F) is available only when the selected pane is a herdr-core terminal and no document is focused, so ⌘F stays with the editor and with TUI terminals. No other view uses ⌘F, so it does not need to track which view has the keyboard.

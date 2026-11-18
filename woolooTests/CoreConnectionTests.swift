@@ -51,6 +51,20 @@ final class CoreConnectionTests: XCTestCase {
         ])
     }
 
+    /// An event's details of an unexpected shape are dropped, never the event, which may ask
+    /// for a fresh read of the tree.
+    func testAnEventWithOddDetailsStillArrives() {
+        var lines = CoreEventLines()
+        let text = #"{"jsonrpc":"2.0","method":"event","params":{"seq":6,"type":"doc","data":"changed"}}"# + "\n"
+            + #"{"jsonrpc":"2.0","method":"event","params":{"seq":7,"type":"size","terminal":"t1","data":{"cols":"x","rows":24}}}"# + "\n"
+            + #"{"jsonrpc":"2.0","method":"event","params":{"seq":8,"type":"size","terminal":"t1","data":{"cols":90,"rows":30}}}"# + "\n"
+        XCTAssertEqual(lines.append(Data(text.utf8)), [
+            CoreEvent(seq: 6, type: "doc", terminal: nil),
+            CoreEvent(seq: 7, type: "size", terminal: "t1", data: .init(cols: nil, rows: 24)),
+            CoreEvent(seq: 8, type: "size", terminal: "t1", data: .init(cols: 90, rows: 30)),
+        ])
+    }
+
     // MARK: Connection
 
     func testHandshakeSkipsALoginGreetingUntilTheBanner() throws {

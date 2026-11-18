@@ -104,6 +104,10 @@ final class CoreTerminalInputTests: XCTestCase {
         XCTAssertEqual(graphic.key.format, .rgb)
         XCTAssertEqual(graphic.data, pixels)
         XCTAssertGreaterThanOrEqual(graphic.z, 0, "Above the text by default")
+        // A new attachment's emulator numbers its images afresh: its images are not the old ones.
+        let again = try XCTUnwrap(CoreTerminalPresentation.graphic(image, of: "t1", stream: 9,
+                                                                  in: HerdrRect(x: 41, y: 3, width: 40, height: 20)))
+        XCTAssertNotEqual(again.key, graphic.key)
     }
 
     func testImagesAreCutToTheirPane() throws {

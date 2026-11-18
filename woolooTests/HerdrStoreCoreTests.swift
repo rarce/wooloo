@@ -111,8 +111,9 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertNil(core.callsTo("terminal.attach").last?.params["observe"])
     }
 
-    /// Only the window in use sizes the terminal: one resized in the background watches at
-    /// Core's size, and a window coming back to the front sends its size again.
+    /// Only the window in use sizes the terminal. A window resized in the background may be the
+    /// only viewer, so it keeps sizing it until Core reports another viewer's size; then it
+    /// watches. A window coming back to the front sends its size again.
     func testABackgroundWindowDoesNotSizeTheTerminal() async throws {
         let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
         store.requiresSurfaceForInput = true
@@ -129,11 +130,23 @@ final class HerdrStoreCoreTests: XCTestCase {
 
         store.updateTerminalHost(theme: theme, focused: false)
         store.resizeSurface(cols: 50, rows: 12, cellWidth: 8, cellHeight: 16)
+        await waitUntil("sized while it may be the only viewer") { resizes() > before }
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 1)
+        // A late report of a size this window sent is its own.
+        server.emit(type: "size", terminal: "t1", data: ["cols": 50, "rows": 12])
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 1)
+
+        server.emit(type: "size", terminal: "t1", data: ["cols": 90, "rows": 20])
         await waitUntil("watching") { core.callsTo("terminal.attach").last?.params["observe"] as? Bool == true }
         await waitUntil("active stream closed") {
             server.recordedFrames().contains { $0.channel == active && $0.kind == .close }
         }
-        XCTAssertEqual(resizes(), before, "A window in the background never sends its size")
+        let sized = resizes()
+        store.resizeSurface(cols: 48, rows: 12, cellWidth: 8, cellHeight: 16)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(resizes(), sized, "Watching, a window in the background never sends its size")
+        store.resizeSurface(cols: 50, rows: 12, cellWidth: 8, cellHeight: 16)
 
         store.updateTerminalHost(theme: theme, focused: true)
         await waitUntil("active again") {
@@ -210,6 +223,27 @@ final class HerdrStoreCoreTests: XCTestCase {
             }
         }
         XCTAssertNil(core.callsTo("terminal.attach").last?.params["observe"])
+    }
+
+    /// A core that sends observers no RESIZE frames: the observer follows `size` events.
+    func testAnObserverFollowsSizeEventsWithoutResizeFrames() async throws {
+        core.features.removeAll { $0 == "resize_notifications" }
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("watching") { core.callsTo("terminal.attach").last?.params["observe"] as? Bool == true }
+        XCTAssertNil(core.callsTo("terminal.attach").last?.params["resize_notifications"], "Not offered, not asked for")
+        let (server, channel) = try XCTUnwrap(attachedServer())
+        await waitUntil("surface") { store.surface?.paneIDs == ["t1"] }
+        server.emit(type: "size", terminal: "t1", data: ["cols": 30, "rows": 8])
+        try await Task.sleep(nanoseconds: 300_000_000)
+        server.send(Data((String(repeating: "x", count: 40) + "|").utf8), on: channel)
+        let wrapped = { self.store.surface.map { $0.cells.row(1).prefix(11).map(\.symbol).joined() } }
+        await waitUntil("wrapped at Core's 30 columns") { wrapped() == "xxxxxxxxxx|" }
     }
 
     func testTheLiveTerminalShowsItsOutputAndTakesTyping() async throws {
