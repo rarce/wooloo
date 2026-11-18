@@ -184,6 +184,36 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertTrue(closed, "A stream that ended before its route reports the end")
     }
 
+    /// An attach that timed out may still open a stream once Core answers: nothing would read
+    /// it, so it is closed, and what it sends is not kept.
+    func testAStreamFromATimedOutAttachIsClosed() throws {
+        let core = FakeCore()
+        core.terminals = [CoreTerminal(address: "t1")]
+        core.heldReplies = ["terminal.attach"]
+        let server = core.connect()
+        let connection = CoreConnection(transport: server)
+        try connection.open()
+        defer { connection.close() }
+        XCTAssertThrowsError(try connection.call("terminal.attach", ["terminal": "t1", "cols": 80, "rows": 24],
+                                                 as: CoreAttachResult.self, timeout: 0.1)) {
+            XCTAssertEqual($0 as? CoreProtocolError, .timedOut("terminal.attach"))
+        }
+        let channel = try XCTUnwrap(server.attachChannels.first)
+        server.releaseReplies()
+        server.send(Data("late".utf8), on: channel)
+        let deadline = Date().addingTimeInterval(5)
+        while !server.recordedFrames().contains(where: { $0.channel == channel && $0.kind == .close }), Date() < deadline {
+            usleep(10_000)
+        }
+        XCTAssertTrue(server.recordedFrames().contains { $0.channel == channel && $0.kind == .close })
+        // Frames arrive in order: once a later call is answered, "late" was read and dropped.
+        core.update { $0.heldReplies = [] }
+        _ = try connection.call("terminal.list", as: CoreListResult.self)
+        var received = Data()
+        connection.route(channel: channel, onData: { received.append($0) }, onClose: {})
+        XCTAssertTrue(received.isEmpty, "A closed stream's bytes are not kept for a route")
+    }
+
     func testAnEndedConnectionFailsCalls() throws {
         let core = FakeCore()
         let server = core.connect()

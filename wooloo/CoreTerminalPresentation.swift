@@ -77,6 +77,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         /// The sizes this stream last asked for: a `size` event that reports one of them, late, is
         /// this window's own, not another viewer's.
         var sizesSent: [(cols: Int, rows: Int)] = []
+        /// Keys held for this stream are still being sent: newer ones wait behind them.
+        var draining = false
 
         func sent(_ size: (cols: Int, rows: Int)) -> Bool {
             sizesSent.contains { $0.cols == size.cols && $0.rows == size.rows }
@@ -229,6 +231,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     }
                     return (nil, nil, nil, true, true)
                 }
+                if attachment.draining {
+                    if let bytes = input.bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
+                    return (nil, nil, nil, true, input.scrolled)
+                }
                 return (self.connection, attachment.channel, input.bytes, true, input.scrolled)
             case .text(let text): bytes = Data(text.utf8)
             case .paste(let text): bytes = emulator.encodePaste(text)
@@ -247,6 +253,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             if !emulator.isAtBottom { emulator.scrollToBottom(); moved = true }
             if attachment.highlight != nil { attachments[paneID]?.highlight = nil; moved = true }
             if moved { dirty = true }
+            if attachment.draining {
+                if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
+                return (nil, nil, nil, true, moved)
+            }
             return (self.connection, attachment.channel, bytes, false, moved)
         }
         if redraw { wake.signal() }
@@ -259,6 +269,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
 
     /// Searches in bounded steps, letting go of the lock between them so output, drawing and
     /// input go on during a long scrollback search. A newer find or `endFind` stops it.
+    @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     func find(_ query: String, in paneID: String, older: Bool) -> TerminalFindResult? {
         let (generation, started) = lock.withLock { () -> (UInt64, Bool) in
             findGeneration &+= 1
@@ -442,8 +453,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     }
                     continue
                 }
-                if attachment.observing {
-                    // An observer keeps Core's size; only its place in the tab moves.
+                if attachment.observing || (attachment.rect.width == rect.width && attachment.rect.height == rect.height) {
+                    // An observer keeps Core's size, and a pane that only moved keeps its own:
+                    // only its place in the tab changes.
                     lock.withLock { attachments[terminal]?.rect = rect; dirty = true }
                     continue
                 }
@@ -468,6 +480,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                                to size: (cols: Int, rows: Int), cell: (Int, Int)) {
         let terminal = attachment.terminal
         guard size.cols > 0, size.rows > 0 else { return }
+        // Same size: nothing to lay out again, and a blank grid would stay blank until the
+        // program draws.
+        if attachment.grid.count == size.rows && attachment.grid.first?.count == size.cols { return }
         if !attachment.inbox.isEmpty {
             attachment.emulator.write(attachment.inbox)
             attachments[terminal]?.inbox = Data()
@@ -511,7 +526,14 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         // An observer starts at the terminal's own size, which Core reports in the attach.
         let cols = observe ? max(result.terminal.cols, 1) : rect.width
         let rows = observe ? max(result.terminal.rows, 1) : rect.height
-        let emulator = try VTTerminal(cols: cols, rows: rows)
+        let emulator: VTTerminal
+        do {
+            emulator = try VTTerminal(cols: cols, rows: rows)
+        } catch {
+            // Core opened the stream already; nothing would ever read it.
+            connection.discard(channel: result.channel)
+            throw error
+        }
         try? emulator.resize(cols: cols, rows: rows, cellWidth: cell.0, cellHeight: cell.1)
         if let colors { Self.apply(colors, to: emulator) }
         // Both the core's `hello` and this attach must confirm it: old cores drop unknown kinds.
@@ -531,15 +553,14 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             attachments[terminal] = Attachment(terminal: terminal, channel: channel, emulator: emulator, rect: rect,
                                                observing: observe, followsSizeEvents: followsSizeEvents,
                                                grid: Self.blankGrid(cols: cols, rows: rows))
-            if !observe { attachments[terminal]?.recordSent(rect) }
-            dirty = true
-            guard !observe else { return }
-            // Sent before the lock goes, so keys typed now, which go straight to this stream,
-            // come after them.
-            for bytes in heldInput.removeValue(forKey: terminal) ?? [] {
-                try? connection.send(CoreFrame(channel: channel, kind: .data, payload: bytes))
+            if !observe {
+                attachments[terminal]?.recordSent(rect)
+                // Keys typed from now on wait behind the held ones.
+                attachments[terminal]?.draining = heldInput[terminal]?.isEmpty == false
             }
+            dirty = true
         }
+        if !observe { sendHeldInput(terminal, channel: channel, on: connection) }
         connection.route(channel: channel, onData: { [weak self] data in
             guard let self else { return }
             // A stream this presentation closed may still deliver; only the current one counts.
@@ -564,6 +585,25 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             self.wake.signal()
         })
         sendFocusAndFacts()
+    }
+
+    /// Sends the keys held for a new active stream, outside the lock, since a write can block,
+    /// and then lets newer keys go straight to it. Keys typed meanwhile join the queue.
+    private func sendHeldInput(_ terminal: String, channel: UInt32, on connection: CoreConnection) {
+        while true {
+            let batch = lock.withLock { () -> [Data]? in
+                guard attachments[terminal]?.channel == channel, attachments[terminal]?.draining == true else { return nil }
+                guard let held = heldInput.removeValue(forKey: terminal), !held.isEmpty else {
+                    attachments[terminal]?.draining = false
+                    return nil
+                }
+                return held
+            }
+            guard let batch else { return }
+            for bytes in batch {
+                try? connection.send(CoreFrame(channel: channel, kind: .data, payload: bytes))
+            }
+        }
     }
 
     /// Feeds what arrived to each emulator and composes the next surface, when anything changed.

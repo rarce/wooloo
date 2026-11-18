@@ -18,6 +18,8 @@ final class FakeCore: @unchecked Sendable {
     /// Answers to calls by method; a nil answer is a JSON-RPC error.
     var overrides: [String: ([String: Any]) -> Any?] = [:]
     var calls: [Call] = []
+    /// Methods whose replies wait for `FakeCoreServer.releaseReplies()`, as from a slow core.
+    var heldReplies: Set<String> = []
     /// Documents by name: the value (nil when deleted or never written) and its version.
     var documents: [String: (value: Any?, version: Int)] = [:]
     private(set) var connections: [FakeCoreServer] = []
@@ -118,6 +120,13 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
 
     /// The channels `terminal.attach` handed out, in order.
     private(set) var attachChannels: [UInt32] = []
+
+    private var withheld: [Data] = []
+
+    /// Sends the replies `FakeCore.heldReplies` kept back.
+    func releaseReplies() {
+        lock.withLock { for reply in withheld { enqueue(reply) }; withheld = [] }
+    }
 
     /// Ends a stream from the core's side.
     func closeChannel(_ channel: UInt32) {
@@ -227,7 +236,8 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
         let reply: [String: Any] = result.map { ["jsonrpc": "2.0", "id": request["id"] ?? 0, "result": $0] }
             ?? ["jsonrpc": "2.0", "id": request["id"] ?? 0,
                 "error": ["code": -32000, "message": "refused \(method)", "data": ["kind": "refused"]]]
-        enqueue(CoreFrame(channel: 0, kind: .data, payload: try JSONSerialization.data(withJSONObject: reply)).encoded())
+        let frame = CoreFrame(channel: 0, kind: .data, payload: try JSONSerialization.data(withJSONObject: reply)).encoded()
+        if core.heldReplies.contains(method) { withheld.append(frame) } else { enqueue(frame) }
     }
 
     private func encoded<Value: Encodable>(_ value: Value) throws -> Any {

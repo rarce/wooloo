@@ -244,6 +244,10 @@ final class HerdrStoreCoreTests: XCTestCase {
         server.send(Data((String(repeating: "x", count: 40) + "|").utf8), on: channel)
         let wrapped = { self.store.surface.map { $0.cells.row(1).prefix(11).map(\.symbol).joined() } }
         await waitUntil("wrapped at Core's 30 columns") { wrapped() == "xxxxxxxxxx|" }
+        // The same size again changes nothing: the screen stays, though the program draws nothing.
+        server.emit(type: "size", terminal: "t1", data: ["cols": 30, "rows": 8])
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(wrapped(), "xxxxxxxxxx|")
     }
 
     func testTheLiveTerminalShowsItsOutputAndTakesTyping() async throws {
@@ -365,6 +369,15 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertNil(missing)
         await waitUntil("no highlight") { (store.surface?.cells[0, 1].modifier ?? 64) & 64 == 0 }
         store.endTerminalFind()
+        // Closing the bar while a find is still queued: that find, if it begins afterwards,
+        // leaves no highlight.
+        let queued = Task { await store.findInTerminal("beta", older: true) }
+        await Task.yield()
+        store.endTerminalFind()
+        let late = await queued.value
+        XCTAssertNil(late)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual((store.surface?.cells[0, 1].modifier ?? 64) & 64, 0)
     }
 
     func testAnInactiveWindowWatchesUntilItIsActive() async throws {

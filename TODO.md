@@ -31,6 +31,9 @@ Left from the review of PR #159.
 - [ ] Decoding a large kitty PNG un-premultiplies alpha in a per-pixel Swift loop (`Vendor/GhosttyVt/Sources/WoolooTerminalEngine/VTImages.swift`) inside `emulator.write`, under the presentation's lock, which holds up every pane. Use `vImageUnpremultiplyData_RGBA8888`, or decode outside the lock.
 - [ ] The terminal find bar keeps the previous pane's "N of M" (and that pane's search and highlight) after the selected pane or tab changes; reset or search again when `selectedPaneID` changes.
 - [ ] `TerminalFindBar` repeats `DocumentFindBar`'s chrome (field, counter, previous/next, Escape) and lacks its ⌘G / ⇧⌘G. Share one view, with the search model behind a protocol.
+- [ ] Two windows of the same size on one tab: a background window is demoted to watching only when Core reports a size it did not send, so with equal sizes it keeps an active stream, and resizing it then takes the terminal from the window in front. Demote it on its own resize too, once the core can say whether another viewer is attached (it exposes no viewer count yet).
+- [ ] With a core that lacks `resize_notifications`, an observer applies the size from the events channel, whose `size` event can arrive after output Core already laid out at that size on the stream, so a few lines may wrap at the old width until the program redraws. Today's core sends RESIZE frames, which arrive in order.
+- [ ] Each change of window focus attaches afresh (active ↔ observing), replaying `attachHistory` lines per pane and losing that pane's scrollback position and find highlight. Needs a core call that switches an attachment's mode in place.
 
 ## Testing
 

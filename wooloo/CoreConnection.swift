@@ -60,6 +60,8 @@ final class CoreConnection: @unchecked Sendable {
     /// over, so Core holds the rest (or repaints): nothing is dropped, and memory stays within
     /// the stream's initial credit.
     private var early: [UInt32: EarlyStream] = [:]
+    /// Streams closed before anyone routed them: what they still send is dropped.
+    private var discarded: Set<UInt32> = []
     private var ended = false
     private var lastFrame = Date()
     private var leftover = Data()
@@ -136,14 +138,24 @@ final class CoreConnection: @unchecked Sendable {
             guard let object = try? JSONSerialization.jsonObject(with: frame.payload) as? [String: Any],
                   let id = object["id"] as? Int else { return }
             let semaphore = lock.withLock { () -> DispatchSemaphore? in
+                guard let semaphore = waiting.removeValue(forKey: id) else { return nil }
                 replies[id] = frame.payload
-                return waiting.removeValue(forKey: id)
+                return semaphore
             }
-            semaphore?.signal()
+            guard let semaphore else {
+                // Nobody waits for this reply any more: its call timed out. A stream it opened
+                // would never be read, so it is closed.
+                if let result = object["result"] as? [String: Any],
+                   let channel = (result["channel"] as? NSNumber)?.uint32Value, channel != 0 {
+                    discard(channel: channel)
+                }
+                return
+            }
+            semaphore.signal()
         case (_, .data):
             let handler = lock.withLock { () -> ((Data) -> Void)? in
                 if let handler = streams[frame.channel] { return handler }
-                early[frame.channel, default: EarlyStream()].append(data: frame.payload)
+                if !discarded.contains(frame.channel) { early[frame.channel, default: EarlyStream()].append(data: frame.payload) }
                 return nil
             }
             guard let handler else { return }
@@ -155,13 +167,17 @@ final class CoreConnection: @unchecked Sendable {
             let cols = Int(bytes[0]) | Int(bytes[1]) << 8, rows = Int(bytes[2]) | Int(bytes[3]) << 8
             guard cols > 0, rows > 0 else { return }
             let resizer = lock.withLock { () -> ((Int, Int) -> Void)? in
-                if streams[frame.channel] == nil { early[frame.channel, default: EarlyStream()].events.append(.resize(cols, rows)) }
+                if streams[frame.channel] == nil, !discarded.contains(frame.channel) {
+                    early[frame.channel, default: EarlyStream()].events.append(.resize(cols, rows))
+                }
                 return resizers[frame.channel]
             }
             resizer?(cols, rows)
         case (_, .close):
             let closer = lock.withLock { () -> (() -> Void)? in
-                if streams[frame.channel] == nil { early[frame.channel, default: EarlyStream()].closed = true }
+                if discarded.remove(frame.channel) == nil, streams[frame.channel] == nil {
+                    early[frame.channel, default: EarlyStream()].closed = true
+                }
                 streams[frame.channel] = nil
                 resizers[frame.channel] = nil
                 return closers.removeValue(forKey: frame.channel)
@@ -182,6 +198,7 @@ final class CoreConnection: @unchecked Sendable {
             streams = [:]
             resizers = [:]
             early = [:]
+            discarded = []
             return (semaphores, closing)
         }
         semaphores.forEach { $0.signal() }
@@ -190,6 +207,16 @@ final class CoreConnection: @unchecked Sendable {
     }
 
     func close() { transport.close() }
+
+    /// Closes a stream that will never be routed, such as one whose attach failed after Core
+    /// opened it, and drops what it sent or still sends.
+    func discard(channel: UInt32) {
+        lock.withLock {
+            early[channel] = nil
+            if streams[channel] == nil { discarded.insert(channel) }
+        }
+        try? send(CoreFrame(channel: channel, kind: .close, payload: Data()))
+    }
 
     func send(_ frame: CoreFrame) throws {
         try writeLock.withLock { try transport.write(frame.encoded()) }
@@ -282,8 +309,11 @@ private struct EarlyStream {
     var closed = false
 
     mutating func append(data: Data) {
-        if case .data(let held)? = events.last {
-            events[events.count - 1] = .data(held + data)
+        if case .data(var held)? = events.last {
+            // Taken out first, so the buffer is not shared and grows in place.
+            events.removeLast()
+            held.append(data)
+            events.append(.data(held))
         } else {
             events.append(.data(data))
         }
