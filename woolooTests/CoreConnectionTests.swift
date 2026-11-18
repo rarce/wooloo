@@ -129,20 +129,27 @@ final class CoreConnectionTests: XCTestCase {
         server.send(Data("replay ".utf8), on: attached.channel)
         server.sendResize(cols: 100, rows: 30, on: attached.channel)
         server.send(Data("screen".utf8), on: attached.channel)
-        let deadline = Date().addingTimeInterval(5)
-        while (server.credits[attached.channel] ?? 0) < 13, Date() < deadline { usleep(10_000) }
-        XCTAssertEqual(server.credits[attached.channel], 13, "Unrouted bytes are still credited")
+        // A probe stream's frame comes after them: once it is in, theirs were read.
+        let probe = try connection.call("terminal.attach", ["terminal": "t1", "cols": 80, "rows": 24],
+                                        as: CoreAttachResult.self)
+        let probed = expectation(description: "probe")
+        connection.route(channel: probe.channel, onData: { _ in probed.fulfill() }, onClose: {})
+        server.send(Data("p".utf8), on: probe.channel)
+        wait(for: [probed], timeout: 5)
+        XCTAssertNil(server.credits[attached.channel], "Bytes nobody took yet are not credited, so Core holds the rest")
 
         var received = Data()
-        var size: (Int, Int)?
+        var order: [String] = []
         let more = expectation(description: "later bytes")
         connection.route(channel: attached.channel, onData: { data in
             received.append(data)
+            order.append(String(decoding: data, as: UTF8.self))
             if received.count == 17 { more.fulfill() }
-        }, onClose: {}, onResize: { size = ($0, $1) })
-        XCTAssertEqual(String(decoding: received, as: UTF8.self), "replay screen")
-        XCTAssertEqual(size?.0, 100)
-        XCTAssertEqual(size?.1, 30)
+        }, onClose: {}, onResize: { order.append("\($0)x\($1)") })
+        XCTAssertEqual(order, ["replay ", "100x30", "screen"], "A resize applies between the bytes around it")
+        let deadline = Date().addingTimeInterval(5)
+        while (server.credits[attached.channel] ?? 0) < 13, Date() < deadline { usleep(10_000) }
+        XCTAssertEqual(server.credits[attached.channel], 13, "Handed-over bytes are credited")
         server.send(Data(" new".utf8), on: attached.channel)
         wait(for: [more], timeout: 5)
         XCTAssertEqual(String(decoding: received, as: UTF8.self), "replay screen new")

@@ -232,4 +232,11 @@ struct CoreEvent: Codable, Equatable, Sendable {
     let seq: UInt64?
     let type: String?
     let terminal: String?
+    /// The event's details; only what wooloo reads is decoded, such as a `size` event's size.
+    var data: Details? = nil
+
+    struct Details: Codable, Equatable, Sendable {
+        let cols: Int?
+        let rows: Int?
+    }
 }

@@ -154,6 +154,64 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual(core.callsTo("terminal.attach").count, 3, "Switching windows does not attach again")
     }
 
+    /// A background window's active stream hears of no other size: when Core reports that
+    /// another viewer resized the terminal, it watches instead, following Core's size.
+    func testABackgroundWindowWatchesOnceAnotherViewerResizes() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: theme, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("attached") { attachedServer() != nil }
+        let (server, active) = try XCTUnwrap(attachedServer())
+        await waitUntil("surface") { store.surface?.paneIDs == ["t1"] }
+        let attach = try XCTUnwrap(core.callsTo("terminal.attach").last)
+        let cols = try XCTUnwrap(attach.params["cols"] as? Int), rows = try XCTUnwrap(attach.params["rows"] as? Int)
+        let resizes = { server.recordedFrames().filter { $0.kind == .resize }.count }
+        let before = resizes()
+
+        store.updateTerminalHost(theme: theme, focused: false)
+        // Its own size coming back changes nothing.
+        server.emit(type: "size", terminal: "t1", data: ["cols": cols, "rows": rows])
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 1)
+
+        server.emit(type: "size", terminal: "t1", data: ["cols": cols + 7, "rows": rows - 3])
+        await waitUntil("watching") { core.callsTo("terminal.attach").last?.params["observe"] as? Bool == true }
+        await waitUntil("active stream closed") {
+            server.recordedFrames().contains { $0.channel == active && $0.kind == .close }
+        }
+        XCTAssertEqual(resizes(), before, "A window in the background never sends its size")
+    }
+
+    /// A click into a watching pane can come before the window's activation, like keys: it is
+    /// kept and sent once the pane attaches actively.
+    func testAClickBeforeTheActivationIsNotLost() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("watching") { core.callsTo("terminal.attach").last?.params["observe"] as? Bool == true }
+        let (server, watching) = try XCTUnwrap(attachedServer())
+        await waitUntil("surface") { store.surface?.paneIDs == ["t1"] }
+        // The program reports clicks (SGR), as vim with `mouse=a` does.
+        server.send(Data("\u{1b}[?1000h\u{1b}[?1006hvim".utf8), on: watching)
+        await waitUntil("reporting") { store.surface.map { $0.cells.row(0).prefix(3).map(\.symbol).joined() } == "vim" }
+        let press = Data("\u{1b}[<0;3;2M".utf8)
+        store.sendMouse(HerdrMouseEvent(kind: .down(0), column: 2, row: 1, modifiers: 0, lines: 0), to: "t1")
+        await waitUntil("the click reaches the active stream") {
+            self.core.connections.contains { server in
+                server.recordedFrames().contains { $0.channel != watching && $0.kind == .data && $0.payload == press }
+            }
+        }
+        XCTAssertNil(core.callsTo("terminal.attach").last?.params["observe"])
+    }
+
     func testTheLiveTerminalShowsItsOutputAndTakesTyping() async throws {
         store.requiresSurfaceForInput = true
         store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)

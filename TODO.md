@@ -23,6 +23,15 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 - [ ] Over SSH, a linked folder the walk did not describe (past its first 55,000 links, once its files fill `folderWalkMaximumRecords`, or once the time is up) shows as a file until it is opened, from the explorer or Go to File: its tab then closes and the explorer shows it as a folder (`WorkspaceFiles.folderOpenedAsFile`). Describing every listed link would cost about 1.5 s more on one CPU for 200,000 links, and 200,000 linked folders with 90-character names would print about 38 MB, past the 32 MB output limit.
 - [ ] The SSH walk stops waiting for a look at links stalled in a hung network mount after `folderWalkLinkBudget`, but the stalled `readlink` or `[ -d ]` stays on the remote machine until the mount answers.
 
+## herdr-core terminals
+
+Left from the review of PR #159.
+
+- [ ] Find in a long scrollback can starve output and typing: `CoreTerminalPresentation.find` takes the presentation's lock again right after each bounded step, and macOS locks are not fair, so `drain` and `sendInput` may wait for the whole search. Yield between steps, or run the steps on the presentation's own thread.
+- [ ] Decoding a large kitty PNG un-premultiplies alpha in a per-pixel Swift loop (`Vendor/GhosttyVt/Sources/WoolooTerminalEngine/VTImages.swift`) inside `emulator.write`, under the presentation's lock, which holds up every pane. Use `vImageUnpremultiplyData_RGBA8888`, or decode outside the lock.
+- [ ] The terminal find bar keeps the previous pane's "N of M" (and that pane's search and highlight) after the selected pane or tab changes; reset or search again when `selectedPaneID` changes.
+- [ ] `TerminalFindBar` repeats `DocumentFindBar`'s chrome (field, counter, previous/next, Escape) and lacks its ⌘G / ⇧⌘G. Share one view, with the search model behind a protocol.
+
 ## Testing
 
 - [ ] Check by hand in the app, against an isolated Herdr session, what PRs #27–#33 and #36 changed but could not drive here (no Accessibility permission): ⌃⌘G and ⌥⌘↑/↓ over CJK, emoji and tabs; the find bar's ⌘G with ⌘U; View > Wrap Lines and its checkmark; the scroll position after a tab switch or relaunch, wrapped and not; resizing, a sidebar and Markdown's split view with wrapping on; a 2 MB minified file with wrapping on; a font or line height change, also with a wrapped document scrolled into a long line (#36); the explorer's "Showing the first N files found" hint on a large remote folder outside Git.

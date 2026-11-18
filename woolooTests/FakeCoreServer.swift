@@ -80,18 +80,19 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
     // MARK: Server side
 
     /// Pushes one event notification on the subscription channel.
-    func emit(type: String?, terminal: String? = nil) {
-        lock.withLock { pushEvent(type: type, terminal: terminal) }
+    func emit(type: String?, terminal: String? = nil, data: [String: Any]? = nil) {
+        lock.withLock { pushEvent(type: type, terminal: terminal, data: data) }
     }
 
     /// `emit` for a caller that already holds the core's lock.
-    fileprivate func pushEvent(type: String?, terminal: String?) {
+    fileprivate func pushEvent(type: String?, terminal: String?, data: [String: Any]? = nil) {
         do {
             guard let channel = eventsChannel else { return }
             seq += 1
             var params: [String: Any] = ["seq": seq]
             if let type { params["type"] = type }
             if let terminal { params["terminal"] = terminal }
+            if let data { params["data"] = data }
             let line = try! JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "method": "event", "params": params])
             enqueue(CoreFrame(channel: channel, kind: .data, payload: line + Data([0x0a])).encoded())
         }

@@ -42,7 +42,7 @@ final class ProcessCoreTransport: CoreTransport, @unchecked Sendable {
 }
 
 /// One framed connection to a core. Calls on channel 0 run side by side; every stream byte
-/// read is credited back, so a slow reader never stalls channel 0 or other streams.
+/// handed to a route is credited back, so a slow reader never stalls channel 0 or other streams.
 /// A reader thread owns the transport's input; writes are serialized under a lock.
 final class CoreConnection: @unchecked Sendable {
     private let transport: CoreTransport
@@ -56,10 +56,10 @@ final class CoreConnection: @unchecked Sendable {
     private var resizers: [UInt32: (Int, Int) -> Void] = [:]
     /// What a stream channel sent before anyone routed it: the reader thread goes on with the
     /// frames that follow a reply while the caller is still reading that reply, so an attach's
-    /// replay can arrive first. `route` hands it over.
+    /// replay can arrive first. `route` hands it over. Those bytes are credited only once handed
+    /// over, so Core holds the rest (or repaints): nothing is dropped, and memory stays within
+    /// the stream's initial credit.
     private var early: [UInt32: EarlyStream] = [:]
-    /// Bytes kept for one unrouted channel; a channel nobody routes stops growing there.
-    static let earlyLimit = 16 * 1024 * 1024
     private var ended = false
     private var lastFrame = Date()
     private var leftover = Data()
@@ -143,12 +143,11 @@ final class CoreConnection: @unchecked Sendable {
         case (_, .data):
             let handler = lock.withLock { () -> ((Data) -> Void)? in
                 if let handler = streams[frame.channel] { return handler }
-                if early[frame.channel, default: EarlyStream()].data.count + frame.payload.count <= Self.earlyLimit {
-                    early[frame.channel, default: EarlyStream()].data.append(frame.payload)
-                }
+                early[frame.channel, default: EarlyStream()].append(data: frame.payload)
                 return nil
             }
-            handler?(frame.payload)
+            guard let handler else { return }
+            handler(frame.payload)
             try send(.credit(frame.payload.count, channel: frame.channel))
         case (_, .resize):
             guard frame.payload.count >= 4 else { return }
@@ -156,7 +155,7 @@ final class CoreConnection: @unchecked Sendable {
             let cols = Int(bytes[0]) | Int(bytes[1]) << 8, rows = Int(bytes[2]) | Int(bytes[3]) << 8
             guard cols > 0, rows > 0 else { return }
             let resizer = lock.withLock { () -> ((Int, Int) -> Void)? in
-                if streams[frame.channel] == nil { early[frame.channel, default: EarlyStream()].size = (cols, rows) }
+                if streams[frame.channel] == nil { early[frame.channel, default: EarlyStream()].events.append(.resize(cols, rows)) }
                 return resizers[frame.channel]
             }
             resizer?(cols, rows)
@@ -247,8 +246,16 @@ final class CoreConnection: @unchecked Sendable {
             }
             if step.ended { onClose(); return }
             guard let held = step.held else { return }
-            if !held.data.isEmpty { onData(held.data) }
-            if let size = held.size { onResize?(size.cols, size.rows) }
+            // In the order they came: a resize applies to the bytes after it, not before.
+            for event in held.events {
+                switch event {
+                case .data(let data):
+                    onData(data)
+                    try? send(.credit(data.count, channel: channel))
+                case .resize(let cols, let rows):
+                    onResize?(cols, rows)
+                }
+            }
             if held.closed { onClose(); return }
         }
     }
@@ -264,11 +271,23 @@ final class CoreConnection: @unchecked Sendable {
     }
 }
 
-/// A stream channel's frames that arrived before `route` registered it.
+/// A stream channel's frames that arrived before `route` registered it, in order.
 private struct EarlyStream {
-    var data = Data()
-    var size: (cols: Int, rows: Int)?
+    enum Event {
+        case data(Data)
+        case resize(Int, Int)
+    }
+
+    var events: [Event] = []
     var closed = false
+
+    mutating func append(data: Data) {
+        if case .data(let held)? = events.last {
+            events[events.count - 1] = .data(held + data)
+        } else {
+            events.append(.data(data))
+        }
+    }
 }
 
 private struct CoreReply<Result: Decodable>: Decodable {

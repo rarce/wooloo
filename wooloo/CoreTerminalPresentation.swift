@@ -46,7 +46,12 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     private var cellWidth = 8
     private var cellHeight = 16
     private var theme: (foreground: TerminalRGB, background: TerminalRGB, cursor: TerminalRGB, ansi: [TerminalRGB])?
-    private var windowFocused = true
+    /// Nil until the window says whether it is active: nothing attaches before then, so a window
+    /// restored behind others never takes the terminal's size, even for a moment.
+    private var windowFocused: Bool?
+    /// Sizes Core reported in `size` events since the last arrangement: one that differs from an
+    /// active stream's means another viewer took the terminal.
+    private var reportedSizes: [String: (cols: Int, rows: Int)] = [:]
     /// Set when the window becomes active: its streams send their sizes again, since a window
     /// that was in the background may have left the terminal at another window's size.
     private var reassertSize = false
@@ -136,7 +141,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                       cursor: TerminalRGB(theme.cursor), ansi: theme.ansi.map(TerminalRGB.init))
         lock.withLock {
             self.theme = colors
-            if focused && !windowFocused { reassertSize = true }
+            if focused && windowFocused == false { reassertSize = true }
             windowFocused = focused
             for attachment in attachments.values { Self.apply(colors, to: attachment.emulator) }
             dirty = true
@@ -198,8 +203,19 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             case .mouse(let mouse):
                 let input = Self.mouseInput(mouse, to: emulator)
                 if input.scrolled { dirty = true }
-                // Core takes no input from an observer.
-                return (attachment.observing ? nil : self.connection, attachment.channel, input.bytes, true, input.scrolled)
+                if attachment.observing {
+                    // Core takes no input from an observer. A click can come before the window's
+                    // activation: it waits for the active attach, which it starts, as keys do.
+                    // Wheel reports reach windows in the background too, so they never do.
+                    switch mouse.kind {
+                    case .down, .up, .drag:
+                        if let bytes = input.bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
+                    case .scrollUp, .scrollDown, .scrollLeft, .scrollRight:
+                        break
+                    }
+                    return (nil, nil, nil, true, true)
+                }
+                return (self.connection, attachment.channel, input.bytes, true, input.scrolled)
             case .text(let text): bytes = Data(text.utf8)
             case .paste(let text): bytes = emulator.encodePaste(text)
             case .key(let name): bytes = emulator.encodeKey(name)
@@ -211,10 +227,13 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
                 return (nil, nil, nil, true, true)
             }
-            // Typing returns to the live screen, as in other terminals.
-            if !emulator.isAtBottom { emulator.scrollToBottom(); dirty = true }
-            if attachment.highlight != nil { attachments[paneID]?.highlight = nil; dirty = true }
-            return (self.connection, attachment.channel, bytes, false, false)
+            // Typing returns to the live screen, as in other terminals, at once even when the
+            // program echoes nothing.
+            var moved = false
+            if !emulator.isAtBottom { emulator.scrollToBottom(); moved = true }
+            if attachment.highlight != nil { attachments[paneID]?.highlight = nil; moved = true }
+            if moved { dirty = true }
+            return (self.connection, attachment.channel, bytes, false, moved)
         }
         if redraw { wake.signal() }
         guard let connection, let channel, let bytes, !bytes.isEmpty else { return accepted }
@@ -296,8 +315,18 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         guard let channel = subscribed.channel else { return }
         var lines = CoreEventLines()
         connection.route(channel: channel, onData: { [weak self] data in
-            guard let self, lines.append(data).contains(where: { $0.type != nil }) else { return }
-            self.lock.withLock { self.needsTree = true }
+            guard let self else { return }
+            let events = lines.append(data).filter { $0.type != nil }
+            guard !events.isEmpty else { return }
+            self.lock.withLock {
+                for event in events where event.type == "size" {
+                    if let terminal = event.terminal, let cols = event.data?.cols, let rows = event.data?.rows {
+                        self.reportedSizes[terminal] = (cols, rows)
+                    }
+                }
+                // A size alone changes no tree.
+                if events.contains(where: { $0.type != "size" }) { self.needsTree = true }
+            }
             self.wake.signal()
         }, onClose: { [weak self] in self?.wake.signal() })
     }
@@ -339,6 +368,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// Attaches to the tab's terminals that have no stream, closes the streams of terminals it
     /// no longer shows and resizes the rest to their places in the layout.
     private func arrange(on connection: CoreConnection) throws {
+        // Until the window says whether it is active, nothing attaches.
+        guard lock.withLock({ windowFocused != nil }) else { return }
         let zoom = lock.withLock { tab?.id }.flatMap(backend.zoomedPane(in:))
         let (placed, current, size, colors) = lock.withLock { () -> ([(terminal: String, rect: HerdrRect)], [String: Attachment], (Int, Int), _) in
             let area = HerdrRect(x: 0, y: 0, width: cols, height: rows)
@@ -352,7 +383,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             lock.withLock { attachments[terminal] = nil; heldInput[terminal] = nil; dirty = true }
         }
         // A window that becomes active types and sizes its terminals again: attach afresh.
-        let (focused, typedInto) = lock.withLock { (windowFocused, Set(heldInput.keys)) }
+        let (focused, typedInto, reported) = lock.withLock { () -> (Bool, Set<String>, [String: (cols: Int, rows: Int)]) in
+            defer { reportedSizes = [:] }
+            return (windowFocused == true, Set(heldInput.keys), reportedSizes)
+        }
         // The new attachment replaces the observer in one step, so keys typed meanwhile are held
         // by the observer and sent on the new stream, never dropped for want of an attachment.
         for (terminal, attachment) in current where attachment.observing && (focused || typedInto.contains(terminal)) {
@@ -362,18 +396,21 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
             }
         }
-        // A pane that changes size while its window is in the background watches instead, at
-        // the size Core keeps: only the window someone is using sizes the terminal.
+        // A pane in a background window watches instead, at the size Core keeps, once its size
+        // changes here or another viewer resizes the terminal: only the window someone is using
+        // sizes it, and a stream that is not watching hears of no other size.
         for (terminal, attachment) in current where !attachment.observing && !focused && !typedInto.contains(terminal) {
-            guard let rect = placed.first(where: { $0.terminal == terminal })?.rect, rect != attachment.rect else { continue }
+            guard let rect = placed.first(where: { $0.terminal == terminal })?.rect else { continue }
+            let resizedElsewhere = reported[terminal].map { $0.cols != attachment.rect.width || $0.rows != attachment.rect.height } ?? false
+            guard rect != attachment.rect || resizedElsewhere else { continue }
             try attach(terminal, rect: rect, cell: size, colors: colors, observe: true, on: connection)
             if lock.withLock({ attachments[terminal]?.channel != attachment.channel }) {
                 try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
             }
         }
         let (refreshed, reassert) = lock.withLock { () -> ([String: Attachment], Bool) in
-            defer { if windowFocused { reassertSize = false } }
-            return (attachments, reassertSize && windowFocused)
+            defer { if windowFocused == true { reassertSize = false } }
+            return (attachments, reassertSize && windowFocused == true)
         }
         for (terminal, rect) in placed {
             if let attachment = refreshed[terminal] {
@@ -476,6 +513,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             guard let self else { return }
             self.lock.withLock {
                 guard let attachment = self.attachments[terminal], attachment.channel == channel, attachment.observing else { return }
+                // Output that came before the resize was laid out at the old size.
+                if !attachment.inbox.isEmpty {
+                    attachment.emulator.write(attachment.inbox)
+                    self.attachments[terminal]?.inbox = Data()
+                }
                 try? attachment.emulator.resize(cols: cols, rows: rows, cellWidth: self.cellWidth, cellHeight: self.cellHeight)
                 self.attachments[terminal]?.grid = Self.blankGrid(cols: cols, rows: rows)
                 self.dirty = true
@@ -540,7 +582,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 facts["cursor"] = theme.cursor.hex
             }
             let targets = attachments.values.filter { !$0.observing }
-                .map { ($0.channel, windowFocused && $0.terminal == focusedPane) }
+                .map { ($0.channel, windowFocused == true && $0.terminal == focusedPane) }
             return (self.connection, targets, facts)
         }
         guard let connection, let payload = try? JSONSerialization.data(withJSONObject: facts) else { return }
