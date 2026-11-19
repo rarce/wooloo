@@ -5,7 +5,8 @@ import SwiftUI
 /// next older match and Shift-Return to the next newer one, as in other terminals; Escape
 /// closes the bar and removes the highlight.
 struct TerminalFindBar: View {
-    @ObservedObject var store: HerdrStore
+    /// Not observed: the bar reads none of the store's published state, and would redraw on each change.
+    let store: HerdrStore
     /// Bumped each time Find in Terminal runs, to put the keyboard back in the field.
     let request: Int
     let onClose: () -> Void

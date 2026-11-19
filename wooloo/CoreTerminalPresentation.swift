@@ -27,6 +27,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     static let attachHistory = 2000
     /// At most this many wheel reports or arrow keys for one wheel event.
     static let maxWheelRepeat = 10
+    /// The largest terminal size taken from Core for an observer, as `HerdrStore.resizeSurface`
+    /// caps the window's: another viewer can set any size a RESIZE frame holds.
+    static let maxTerminalSide = 1000
 
     // Guarded by `lock`.
     private var connection: CoreConnection?
@@ -483,6 +486,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                                to size: (cols: Int, rows: Int), cell: (Int, Int)) {
         let terminal = attachment.terminal
         guard size.cols > 0, size.rows > 0 else { return }
+        let size = (cols: min(size.cols, maxTerminalSide), rows: min(size.rows, maxTerminalSide))
         // Same size: nothing to lay out again, and a blank grid would stay blank until the
         // program draws.
         if attachment.grid.count == size.rows && attachment.grid.first?.count == size.cols { return }
@@ -533,8 +537,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             throw error
         }
         // An observer starts at the terminal's own size, which Core reports in the attach.
-        let cols = observe ? max(result.terminal.cols, 1) : rect.width
-        let rows = observe ? max(result.terminal.rows, 1) : rect.height
+        let cols = observe ? min(max(result.terminal.cols, 1), Self.maxTerminalSide) : rect.width
+        let rows = observe ? min(max(result.terminal.rows, 1), Self.maxTerminalSide) : rect.height
         let emulator: VTTerminal
         do {
             emulator = try VTTerminal(cols: cols, rows: rows)
@@ -701,7 +705,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             for (dy, row) in pane.prefix(rect.height).enumerated() where rect.y + dy < grid.count {
                 for (dx, cell) in row.prefix(rect.width).enumerated() where rect.x + dx < area.width {
                     grid[rect.y + dy][rect.x + dx] = highlight.map { Self.contains($0, column: dx, row: dy) } == true
-                        ? Self.inverted(cell) : cell
+                        ? Self.highlighted(cell) : cell
                 }
             }
         }
@@ -729,7 +733,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             return attachment.images.compactMap { graphic($0, of: terminal, stream: attachment.channel, in: rect) }
         }
         let cursor = focused.flatMap { id -> HerdrCursor? in
-            guard let rect = rects[id], let at = attachments[id]?.cursor else { return nil }
+            // An observer's terminal can be larger than its pane, which cuts it: a cursor past
+            // the pane's edge is not drawn on a neighbour.
+            guard let rect = rects[id], let at = attachments[id]?.cursor,
+                  at.x < rect.width, at.y < rect.height else { return nil }
             return HerdrCursor(x: rect.x + at.x, y: rect.y + at.y, visible: at.visible, shape: 0)
         }
         return HerdrSurface(bootID: bootID, projectionRevision: 0, revision: revision,
@@ -841,10 +848,13 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         return true
     }
 
-    /// A cell drawn with foreground and background swapped, as a search match shows.
-    static func inverted(_ cell: HerdrCell) -> HerdrCell {
-        HerdrCell(symbol: cell.symbol, foreground: cell.foreground, background: cell.background,
-                  modifier: cell.modifier ^ 64, skip: cell.skip, hyperlink: cell.hyperlink)
+    /// A cell of a search match: reverse video, and, where the text already is reversed (such
+    /// as a pager's own match highlight), bold and underlined too, so it never looks plain.
+    static func highlighted(_ cell: HerdrCell) -> HerdrCell {
+        let reverse: UInt16 = 64
+        let modifier = cell.modifier & reverse == 0 ? cell.modifier | reverse : cell.modifier | 1 | 8
+        return HerdrCell(symbol: cell.symbol, foreground: cell.foreground, background: cell.background,
+                         modifier: modifier, skip: cell.skip, hyperlink: cell.hyperlink)
     }
 
     static func encode(_ rgb: TerminalRGB) -> UInt32 {

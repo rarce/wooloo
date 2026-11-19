@@ -201,7 +201,9 @@ final class CoreTerminalInputTests: XCTestCase {
         XCTAssertTrue(CoreTerminalPresentation.contains(match, column: 0, row: 2))
         XCTAssertFalse(CoreTerminalPresentation.contains(match, column: 3, row: 2))
         let cell = HerdrCell(symbol: "a", foreground: 1, background: 2, modifier: 1, skip: false)
-        XCTAssertEqual(CoreTerminalPresentation.inverted(cell).modifier, 1 | 64)
-        XCTAssertEqual(CoreTerminalPresentation.inverted(CoreTerminalPresentation.inverted(cell)), cell)
+        XCTAssertEqual(CoreTerminalPresentation.highlighted(cell).modifier, 1 | 64)
+        let reversed = HerdrCell(symbol: "a", foreground: 1, background: 2, modifier: 64, skip: false)
+        XCTAssertEqual(CoreTerminalPresentation.highlighted(reversed).modifier, 64 | 1 | 8,
+                       "Text that is already reversed stays reversed, bold and underlined")
     }
 }

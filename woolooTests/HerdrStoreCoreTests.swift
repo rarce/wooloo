@@ -249,6 +249,12 @@ final class HerdrStoreCoreTests: XCTestCase {
         server.emit(type: "size", terminal: "t1", data: ["cols": 30, "rows": 8])
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(wrapped(), "xxxxxxxxxx|")
+        // Any size a peer sets is capped, and a cursor past the pane is not drawn on a neighbour.
+        server.emit(type: "size", terminal: "t1", data: ["cols": 65535, "rows": 65535])
+        try await Task.sleep(nanoseconds: 300_000_000)
+        server.send(Data("\u{1b}[2;900Hz".utf8), on: channel)
+        XCTAssertNotNil(store.surface?.cursor, "Shown while inside the pane")
+        await waitUntil("cursor past the pane hidden") { self.store.surface != nil && self.store.surface?.cursor == nil }
     }
 
     func testTheLiveTerminalShowsItsOutputAndTakesTyping() async throws {
@@ -369,7 +375,12 @@ final class HerdrStoreCoreTests: XCTestCase {
         await waitUntil("new tab shown") { store.surface?.paneIDs == [shell] }
         core.update { $0.terminals.removeAll { $0.address == shell } }
         for server in core.connections where server.eventsChannel != nil { server.emit(type: "removed", terminal: shell) }
-        await waitUntil("back on the split tab") { store.selectedTabID == "tab-t1" && store.surface?.paneIDs == ["t1", "t2"] }
+        await waitUntil("back on the split tab") { store.selectedTabID == "tab-t1" }
+        if store.selectedTabID != "tab-t1" {
+            XCTFail("selected \(String(describing: store.selectedTabID)), tabs \(String(describing: store.snapshot?.tabs.map(\.tabID))), "
+                + "panes \(String(describing: store.snapshot?.panes.map(\.paneID))), removed \(shell)")
+        }
+        await waitUntil("split tab shown, now \(String(describing: store.surface?.paneIDs))") { store.surface?.paneIDs == ["t1", "t2"] }
         XCTAssertEqual(store.selectedPaneID, "t2")
         await waitUntil("cursor in the remembered pane") { store.surface?.focusedPaneID == "t2" }
     }
