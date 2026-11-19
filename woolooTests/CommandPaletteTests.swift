@@ -46,6 +46,16 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertNil(WoolooCommandItem.named("close_pane")?.shortcutLabel)
     }
 
+    func testFindInTerminalNeedsASearchableTerminal() {
+        let command = WoolooCommandItem.named("find_in_terminal")
+        XCTAssertEqual(command?.shortcutLabel, "⌘F")
+        XCTAssertFalse(command!.isAvailable(everything), "A TUI terminal, or a document, keeps ⌘F")
+        var core = everything
+        core.findsInTerminal = true
+        XCTAssertTrue(command!.isAvailable(core))
+        XCTAssertEqual(HerdrCommand(action: "find_in_terminal"), .findInTerminal)
+    }
+
     func testAvailabilityFollowsTheWindowState() {
         let offline = WoolooCommandAvailability()
         let available = Set(WoolooCommandItem.all.filter { $0.isAvailable(offline) }.map(\.action))

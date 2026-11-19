@@ -9,6 +9,8 @@ final class FakeCore: @unchecked Sendable {
 
     let lock = NSLock()
     var version = "0.1.21"
+    /// What `hello` advertises; without `resize_notifications`, observers get no RESIZE frames.
+    var features = ["framed", "automatic_input", "resize_notifications"]
     var methods: [String] = Array(CoreProtocol.requiredMethods) + ["hello", "rpc.discover"]
     var terminals: [CoreTerminal] = []
     var screens: [String: String] = [:]
@@ -16,6 +18,8 @@ final class FakeCore: @unchecked Sendable {
     /// Answers to calls by method; a nil answer is a JSON-RPC error.
     var overrides: [String: ([String: Any]) -> Any?] = [:]
     var calls: [Call] = []
+    /// Methods whose replies wait for `FakeCoreServer.releaseReplies()`, as from a slow core.
+    var heldReplies: Set<String> = []
     /// Documents by name: the value (nil when deleted or never written) and its version.
     var documents: [String: (value: Any?, version: Int)] = [:]
     private(set) var connections: [FakeCoreServer] = []
@@ -80,21 +84,30 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
     // MARK: Server side
 
     /// Pushes one event notification on the subscription channel.
-    func emit(type: String?, terminal: String? = nil) {
-        lock.withLock { pushEvent(type: type, terminal: terminal) }
+    func emit(type: String?, terminal: String? = nil, data: [String: Any]? = nil) {
+        lock.withLock { pushEvent(type: type, terminal: terminal, data: data) }
     }
 
     /// `emit` for a caller that already holds the core's lock.
-    fileprivate func pushEvent(type: String?, terminal: String?) {
+    fileprivate func pushEvent(type: String?, terminal: String?, data: [String: Any]? = nil) {
         do {
             guard let channel = eventsChannel else { return }
             seq += 1
             var params: [String: Any] = ["seq": seq]
             if let type { params["type"] = type }
             if let terminal { params["terminal"] = terminal }
+            if let data { params["data"] = data }
             let line = try! JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "method": "event", "params": params])
             enqueue(CoreFrame(channel: channel, kind: .data, payload: line + Data([0x0a])).encoded())
         }
+    }
+
+    /// Tells an observer the terminal's size, as Core does with `resize_notifications`.
+    func sendResize(cols: Int, rows: Int, on channel: UInt32) {
+        var payload = Data()
+        withUnsafeBytes(of: UInt16(cols).littleEndian) { payload.append(contentsOf: $0) }
+        withUnsafeBytes(of: UInt16(rows).littleEndian) { payload.append(contentsOf: $0) }
+        lock.withLock { enqueue(CoreFrame(channel: channel, kind: .resize, payload: payload).encoded()) }
     }
 
     /// Sends a terminal's output on an attach channel.
@@ -107,6 +120,13 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
 
     /// The channels `terminal.attach` handed out, in order.
     private(set) var attachChannels: [UInt32] = []
+
+    private var withheld: [Data] = []
+
+    /// Sends the replies `FakeCore.heldReplies` kept back.
+    func releaseReplies() {
+        lock.withLock { for reply in withheld { enqueue(reply) }; withheld = [] }
+    }
 
     /// Ends a stream from the core's side.
     func closeChannel(_ channel: UInt32) {
@@ -126,7 +146,7 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
             let request = try JSONSerialization.jsonObject(with: line) as? [String: Any] ?? [:]
             core.calls.append(FakeCore.Call(method: request["method"] as? String ?? "", params: request["params"] as? [String: Any] ?? [:]))
             let hello: [String: Any] = [
-                "core": ["id": "0123456789abcdef", "name": "box"], "features": ["framed", "automatic_input"],
+                "core": ["id": "0123456789abcdef", "name": "box"], "features": core.features,
                 "framed": true, "generation": 1, "methods": core.methods, "version": core.version,
             ]
             enqueue(try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": request["id"] ?? 0,
@@ -178,7 +198,9 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
                 attachChannels.append(channel)
                 let terminal = core.terminals.first { $0.address == params["terminal"] as? String }
                 result = ["channel": channel, "terminal": try terminal.map(encoded) ?? [:],
-                          "resize_notifications": false, "automatic_input": true]
+                          "resize_notifications": params["resize_notifications"] as? Bool == true
+                              && core.features.contains("resize_notifications"),
+                          "automatic_input": true]
             case "terminal.keys": result = ["turn": 0, "status": NSNull()]
             case "doc.get":
                 let document = core.documents[params["name"] as? String ?? ""]
@@ -214,7 +236,8 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
         let reply: [String: Any] = result.map { ["jsonrpc": "2.0", "id": request["id"] ?? 0, "result": $0] }
             ?? ["jsonrpc": "2.0", "id": request["id"] ?? 0,
                 "error": ["code": -32000, "message": "refused \(method)", "data": ["kind": "refused"]]]
-        enqueue(CoreFrame(channel: 0, kind: .data, payload: try JSONSerialization.data(withJSONObject: reply)).encoded())
+        let frame = CoreFrame(channel: 0, kind: .data, payload: try JSONSerialization.data(withJSONObject: reply)).encoded()
+        if core.heldReplies.contains(method) { withheld.append(frame) } else { enqueue(frame) }
     }
 
     private func encoded<Value: Encodable>(_ value: Value) throws -> Any {

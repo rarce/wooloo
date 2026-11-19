@@ -475,8 +475,12 @@ final class HerdrStore: ObservableObject {
         get { selectedTabValue }
         set {
             selectionWillChange()
-            if !repairingSelection, selectedTabValue != newValue { selectionRevision &+= 1 }
+            let changed = selectedTabValue != newValue
+            if !repairingSelection, changed { selectionRevision &+= 1 }
             selectedTabValue = newValue
+            // Herdr's server shows its own active tab, but a herdr-core presentation shows only
+            // the tab it is told, whoever chooses it: the user, a repaired selection or a move.
+            if changed, backendKind == .core, let newValue { surfaceStream?.focus(tabID: newValue) }
         }
     }
     private var selectedTabValue: String?
@@ -1166,7 +1170,8 @@ final class HerdrStore: ObservableObject {
         // `tab.focus` also switches the workspace; sending `workspace.focus` first can race
         // and leave the surface on the workspace's previously active tab.
         if let selectedTabID {
-            surfaceStream?.focus(tabID: selectedTabID)
+            // On herdr-core, setting `selectedTabID` focused the tab already.
+            if backendKind != .core { surfaceStream?.focus(tabID: selectedTabID) }
         } else {
             surfaceStream?.focus(workspaceID: workspaceID)
         }
@@ -1623,7 +1628,8 @@ final class HerdrStore: ObservableObject {
         } else {
             objectWillChange.send()
         }
-        surfaceStream?.focus(tabID: tabID)
+        // On herdr-core, setting `selectedTabID` focused the tab already.
+        if backendKind != .core { surfaceStream?.focus(tabID: tabID) }
         if let selectedPaneID { sendPaneFocus(selectedPaneID) }
     }
 
@@ -1707,6 +1713,39 @@ final class HerdrStore: ObservableObject {
         if surfaceStream?.closePopup() != true {
             setIfChanged(\.inputError, "Herdr popup close is unavailable")
         }
+    }
+
+    /// Whether the selected pane's terminal can be searched: herdr-core terminals, which
+    /// wooloo emulates with their scrollback. The TUI keeps its scrollback on the server.
+    /// `presentationEstablished` is published and follows the live stream, so views and menus
+    /// that ask this update when the stream ends or comes back.
+    var findsInTerminal: Bool { backendKind == .core && presentationEstablished && selectedPaneID != nil }
+
+    /// Searches the selected pane's terminal and shows the next match, older or newer. It runs
+    /// off the main thread, since a long scrollback takes a while.
+    func findInTerminal(_ query: String, older: Bool) async -> TerminalFindResult? {
+        guard findsInTerminal, let stream = surfaceStream, let paneID = selectedPaneID else { return nil }
+        terminalFinds &+= 1
+        let (request, ended) = (terminalFinds, terminalFindsEnded)
+        let result = try? await BlockingWork.run(priority: .userInitiated) { stream.find(query, in: paneID, older: older, request: UInt64(request)) }
+        guard terminalFinds == request else { return nil }
+        // The search ended while this find was queued: it may have begun after `endFind`, so
+        // its highlight and scroll go again.
+        guard terminalFindsEnded == ended else {
+            stream.endFind()
+            return nil
+        }
+        return result
+    }
+
+    /// Finds asked for, so only the newest one reports or undoes anything.
+    private var terminalFinds = 0
+    /// Bumped by each `endTerminalFind`, so a find that was still queued ends too.
+    private var terminalFindsEnded = 0
+
+    func endTerminalFind() {
+        terminalFindsEnded &+= 1
+        surfaceStream?.endFind()
     }
 
     func setSplitRatio(path: [Bool], ratio: Double) {
@@ -1826,6 +1865,7 @@ final class HerdrStore: ObservableObject {
         guard !spaceMoveInFlight, let snapshot else { return }
         repairingSelection = true
         defer { repairingSelection = false }
+        let (tabBefore, paneBefore) = (selectedTabID, selectedPaneID)
         if !snapshot.workspaces.contains(where: { $0.workspaceID == selectedWorkspaceID }) {
             selectedWorkspaceID = snapshot.focusedWorkspaceID ?? snapshot.workspaces.first?.workspaceID
         }
@@ -1835,6 +1875,11 @@ final class HerdrStore: ObservableObject {
         }
         if !snapshot.panes.contains(where: { $0.paneID == selectedPaneID && $0.tabID == selectedTabID }) {
             selectedPaneID = preferredPane(in: selectedTabID)
+        }
+        // herdr-core's presentation forgets its focused pane with the tab, and would focus the
+        // tab's first one: the pane typing goes to must also show the cursor.
+        if backendKind == .core, selectedTabID != tabBefore || selectedPaneID != paneBefore, let selectedPaneID {
+            sendPaneFocus(selectedPaneID)
         }
         if !presentationEstablished, let surface,
            Set(surface.paneIDs) == Set(selectedPanes.map(\.id)) {

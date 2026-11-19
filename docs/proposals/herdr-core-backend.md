@@ -399,6 +399,39 @@ Still open:
 
   These need a Mac to measure, or Phase 5.
 
+## Phase 4 follow-up: mouse and scrollback (2026-11-17)
+
+- **Mouse:**
+  - `VTTerminal` wraps libghostty-vt's mouse encoder. It reads the tracking mode and format from the terminal, and sends positions as the middle of a cell in pixels at the window's cell size.
+  - `CoreTerminalPresentation` reports a pane in `mouseReportingPaneIDs` while its program asks for mouse reports, so `TerminalPaneView` forwards clicks and drags there and keeps selection elsewhere, as on the TUI.
+  - Buttons map from wooloo's 0 left, 1 right and 2 middle. A drag is motion with the button held.
+- **Wheel:** the view sends the wheel for every pane.
+  - A program that takes the mouse gets wheel reports, at most 10 per event.
+  - Otherwise, on the main screen, the wheel moves the emulator's viewport through its scrollback.
+  - On the alternate screen it sends arrow keys only when the program asked for alternate scroll (mode 1007).
+- **Scrollback:**
+  - `terminal.attach` asks for `history: 2000`, so Core replays the main screen's last 2,000 lines into the emulator, which keeps all output after that.
+  - The cursor hides while older lines are shown.
+  - Typed text, keys and pastes return to the live screen.
+- **Kitty images:**
+  - `VTTerminal.imagesIfChanged()` reads the render state's image list when its placement generation changes. Pixels come from the kitty image storage, and grey images are widened to RGBA.
+  - PNG payloads are decoded with ImageIO through libghostty-vt's process-wide `GHOSTTY_SYS_OPT_DECODE_PNG` hook, into straight RGBA.
+  - The file, temporary-file and shared-memory media stay off, as libghostty-vt defaults them, so a program cannot make the viewer read local files.
+  - `CoreTerminalPresentation.graphic` turns each placement into the `HerdrGraphic` the view already draws, at the pane's place and cut to the pane with the matching source rectangle. Images below the text get a negative z.
+- **Observe viewers:**
+  - A window that is not the key window when it attaches attaches with `observe`, adding `resize_notifications` when `hello` advertises it. It starts at the terminal's own size and follows the RESIZE frames Core sends, which `CoreConnection` now routes; when the attach result does not confirm them, it follows the `size` events on its subscription instead. Nothing attaches until the window has said whether it is key.
+  - It sends no RESIZE, FOCUS or input; the wheel still scrolls its own scrollback. Keys and clicks that reach it are held and sent once it attaches actively, which they also start.
+  - When the window becomes key, it closes the watching stream and attaches actively, and an active stream sends its size again when its window comes back to the front.
+  - An active stream in a background window is demoted to watching only when a `size` event reports a size it did not ask for, that is, another viewer took the terminal. Without such a report the window may be the only viewer, so it keeps sizing the terminal to its layout. Demoting and promoting each attach again and replay the history.
+  - Data from a stream the presentation closed is dropped. Image identities include the stream, since each attachment's emulator numbers its images afresh.
+- **Find in terminal:**
+  - `VTTerminal.find` drives libghostty-vt's search over the screen and scrollback. `select_next` moves toward older matches and wraps, and it scrolls the viewport to the match.
+  - The presentation highlights the match by inverting its cells in the composed surface, so `TerminalPaneView` needed no drawing change. The highlight follows the text when output, a scroll or a resize moves it, and ends once the match is out of view, the pane is typed in, or the search ends.
+  - The protocol's `find`/`endFind` default to nothing, so the TUI presentation is unchanged.
+  - `TerminalFindBar` sits over the terminal; searches run off the main thread.
+  - **Find in Terminal** (Pane menu and palette, ⌘F) is available only when the selected pane is a herdr-core terminal and no document is focused, so ⌘F stays with the editor and with TUI terminals. No other view uses ⌘F, so it does not need to track which view has the keyboard.
+- **Still open:** selecting lines that scrolled off screen. The view keeps a selection in screen cells on both backends, so it does not follow the scrollback; this needs selections in absolute rows in `TerminalPaneView`.
+
 ## Phase 5 progress (2026-11-16)
 
 - **Store (D2, option a):** `CoreStructure` is wooloo's `wooloo` document in the core:

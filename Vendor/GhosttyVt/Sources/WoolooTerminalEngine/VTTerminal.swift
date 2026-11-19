@@ -96,6 +96,16 @@ public final class VTTerminal {
     private var rowCells: GhosttyRenderStateRowCells?
     private var keyEncoder: GhosttyKeyEncoder?
     private var keyEvent: GhosttyKeyEvent?
+    private var mouseEncoder: GhosttyMouseEncoder?
+    private var mouseEvent: GhosttyMouseEvent?
+    private var imageIterator: GhosttyRenderStateImageIterator?
+    private var search: GhosttySearch?
+    private var searchNeedle: String?
+    private var shownImagesGeneration: UInt64 = 0
+    /// Converted pixels of the images last shown, by `imageID:generation`.
+    private var imagePixels: [String: (data: Data, format: TerminalImage.Format)] = [:]
+    private var cellWidth = 8
+    private var cellHeight = 16
 
     /// Bytes the terminal answers the program with, such as replies to queries herdr-core
     /// forwards to the viewer. Send them as `AUTOMATIC_INPUT` when the attach allows it.
@@ -107,6 +117,7 @@ public final class VTTerminal {
     public private(set) var rows: Int
 
     public init(cols: Int, rows: Int) throws {
+        _ = VTSystem.installed
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
         try check(ghostty_terminal_new(nil, &terminal, UInt16(clamping: self.cols), UInt16(clamping: self.rows)),
@@ -116,6 +127,9 @@ public final class VTTerminal {
         try check(ghostty_render_state_row_cells_new(nil, &rowCells), "row_cells_new")
         try check(ghostty_key_encoder_new(nil, &keyEncoder), "key_encoder_new")
         try check(ghostty_key_event_new(nil, &keyEvent), "key_event_new")
+        try check(ghostty_mouse_encoder_new(nil, &mouseEncoder), "mouse_encoder_new")
+        try check(ghostty_mouse_event_new(nil, &mouseEvent), "mouse_event_new")
+        try check(ghostty_render_state_image_iterator_new(nil, &imageIterator), "image_iterator_new")
         let userdata = Unmanaged.passUnretained(self).toOpaque()
         _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata)
         let writePty: GhosttyTerminalWritePtyFn = { _, userdata, data, length in
@@ -136,6 +150,10 @@ public final class VTTerminal {
     }
 
     deinit {
+        ghostty_search_free(search)
+        ghostty_render_state_image_iterator_free(imageIterator)
+        ghostty_mouse_event_free(mouseEvent)
+        ghostty_mouse_encoder_free(mouseEncoder)
         ghostty_key_event_free(keyEvent)
         ghostty_key_encoder_free(keyEncoder)
         ghostty_render_state_row_cells_free(rowCells)
@@ -162,6 +180,8 @@ public final class VTTerminal {
     public func resize(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) throws {
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
+        self.cellWidth = max(cellWidth, 1)
+        self.cellHeight = max(cellHeight, 1)
         try check(ghostty_terminal_resize(terminal, UInt16(clamping: self.cols), UInt16(clamping: self.rows),
                                           UInt32(clamping: max(cellWidth, 1)), UInt32(clamping: max(cellHeight, 1))),
                   "terminal_resize")
@@ -214,6 +234,225 @@ public final class VTTerminal {
         var config = GhosttyTerminalModeConfig(mode: ghostty_mode_new(value, ansi), value: false)
         guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &config) == GHOSTTY_SUCCESS else { return false }
         return config.value
+    }
+
+    /// Whether the program asked for mouse reports (any of modes 9, 1000, 1002 and 1003).
+    public var reportsMouse: Bool {
+        var value = false
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &value)
+        return value
+    }
+
+    /// Whether the program switched to the alternate screen, which keeps no scrollback.
+    public var isAlternateScreen: Bool {
+        var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+        return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+    }
+
+    // MARK: Scrollback
+
+    /// Where the viewport is in the scrollback, in rows: `offset` is its first row out of
+    /// `total`, and it shows `length` rows. At the bottom, `offset + length == total`.
+    public var scrollPosition: (total: Int, offset: Int, length: Int) {
+        var bar = GhosttyTerminalScrollbar()
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &bar)
+        return (Int(clamping: bar.total), Int(clamping: bar.offset), Int(clamping: bar.len))
+    }
+
+    /// Whether the viewport shows the live screen rather than older lines.
+    public var isAtBottom: Bool {
+        let position = scrollPosition
+        return position.offset + position.length >= position.total
+    }
+
+    /// Moves the viewport through the scrollback; negative `lines` go back in time.
+    public func scroll(by lines: Int) {
+        var behavior = GhosttyTerminalScrollViewport()
+        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA
+        behavior.value.delta = lines
+        _ = ghostty_terminal_scroll_viewport(terminal, behavior)
+    }
+
+    /// Returns the viewport to the live screen.
+    public func scrollToBottom() {
+        var behavior = GhosttyTerminalScrollViewport()
+        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM
+        _ = ghostty_terminal_scroll_viewport(terminal, behavior)
+    }
+
+    // MARK: Search
+
+    /// Finds `needle` in the screen and the scrollback and selects the next match: older
+    /// (upward, as a search from the prompt usually goes) or newer, wrapping around. The
+    /// viewport scrolls to show it. Nil when nothing matches.
+    public func find(_ needle: String, older: Bool = true) -> TerminalSearchMatch? {
+        guard beginFind(needle) else { return nil }
+        while !continueFind() {}
+        return selectMatch(older: older)
+    }
+
+    /// Starts searching for `needle`, keeping the results found so far when it is unchanged.
+    /// An interactive caller then calls `continueFind()` until it returns true, giving other
+    /// users of the terminal a turn between calls, and selects a match with `selectMatch`.
+    public func beginFind(_ needle: String) -> Bool {
+        guard !needle.isEmpty else { endSearch(); return false }
+        if search == nil, ghostty_search_new(nil, &search, terminal) != GHOSTTY_SUCCESS { return false }
+        if searchNeedle != needle {
+            let bytes = Array(needle.utf8)
+            let set = bytes.withUnsafeBufferPointer { buffer -> GhosttyResult in
+                var value = GhosttyString(ptr: buffer.baseAddress, len: buffer.count)
+                return ghostty_search_set(search, GHOSTTY_SEARCH_OPT_NEEDLE, &value)
+            }
+            guard set == GHOSTTY_SUCCESS else { return false }
+            searchNeedle = needle
+        }
+        return true
+    }
+
+    /// One bounded step of the search: feeds it the terminal's next chunk and searches that
+    /// chunk. True once it has caught up with the terminal.
+    public func continueFind() -> Bool {
+        guard let search else { return true }
+        guard ghostty_search_feed(search) == GHOSTTY_SUCCESS else { return true }
+        var status = GHOSTTY_SEARCH_STATUS_RUNNING
+        repeat {
+            guard ghostty_search_tick(search, &status) == GHOSTTY_SUCCESS else { return true }
+        } while status == GHOSTTY_SEARCH_STATUS_RUNNING
+        return status == GHOSTTY_SEARCH_STATUS_COMPLETE
+    }
+
+    /// Selects the next older or newer match, wrapping around, and scrolls to show it.
+    public func selectMatch(older: Bool) -> TerminalSearchMatch? {
+        guard let search,
+              (older ? ghostty_search_select_next(search) : ghostty_search_select_prev(search)) == GHOSTTY_SUCCESS
+        else { return nil }
+        var total = 0, index = 0
+        _ = ghostty_search_get(search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &total)
+        _ = ghostty_search_get(search, GHOSTTY_SEARCH_DATA_SELECTED_INDEX, &index)
+        let shown = selectedMatchInViewport()
+        return TerminalSearchMatch(index: index + 1, total: total, start: shown?.start, end: shown?.end)
+    }
+
+    /// Where the selected match is in the viewport now, after output or a scroll moved it;
+    /// nil when nothing is selected or it is out of view.
+    public func selectedMatchInViewport() -> (start: (column: Int, row: Int), end: (column: Int, row: Int))? {
+        guard let search else { return nil }
+        var selection = GhosttySelection()
+        guard ghostty_search_get(search, GHOSTTY_SEARCH_DATA_SELECTED_MATCH, &selection) == GHOSTTY_SUCCESS else { return nil }
+        var start = GhosttyPointCoordinate(), end = GhosttyPointCoordinate()
+        guard ghostty_terminal_point_from_grid_ref(terminal, &selection.start, GHOSTTY_POINT_TAG_VIEWPORT, &start) == GHOSTTY_SUCCESS,
+              ghostty_terminal_point_from_grid_ref(terminal, &selection.end, GHOSTTY_POINT_TAG_VIEWPORT, &end) == GHOSTTY_SUCCESS
+        else { return nil }
+        return ((Int(start.x), Int(start.y)), (Int(end.x), Int(end.y)))
+    }
+
+    /// The selected match's place after the terminal changed: the search first catches up
+    /// (one bounded step), which also drops a match that left the scrollback.
+    public func followMatch() -> (start: (column: Int, row: Int), end: (column: Int, row: Int))? {
+        guard let search else { return nil }
+        _ = ghostty_search_feed(search)
+        return selectedMatchInViewport()
+    }
+
+    /// Ends a search and frees what it tracks in the terminal.
+    public func endSearch() {
+        ghostty_search_free(search)
+        search = nil
+        searchNeedle = nil
+    }
+
+    // MARK: Images
+
+    /// The kitty graphics images in the viewport after the last `frame()`, or nil when the
+    /// placements are the same as at the previous call.
+    public func imagesIfChanged() -> [TerminalImage]? {
+        var generation: UInt64 = 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION, &generation)
+        guard generation != shownImagesGeneration else { return nil }
+        shownImagesGeneration = generation
+        guard ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &imageIterator) == GHOSTTY_SUCCESS
+        else { imagePixels = [:]; return [] }
+        var graphics: GhosttyKittyGraphics?
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics)
+        var images: [TerminalImage] = []
+        var shownPixels: [String: (data: Data, format: TerminalImage.Format)] = [:]
+        defer { imagePixels = shownPixels }
+        while ghostty_render_state_image_iterator_next(imageIterator), images.count < 64 {
+            var proto = GHOSTTY_IMAGE_PROTOCOL_KITTY
+            _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL, &proto)
+            guard proto == GHOSTTY_IMAGE_PROTOCOL_KITTY, let graphics else { continue }
+            func u32(_ data: GhosttyRenderStateImageData) -> Int {
+                var value: UInt32 = 0
+                _ = ghostty_render_state_image_get(imageIterator, data, &value)
+                return Int(value)
+            }
+            func i32(_ data: GhosttyRenderStateImageData) -> Int {
+                var value: Int32 = 0
+                _ = ghostty_render_state_image_get(imageIterator, data, &value)
+                return Int(value)
+            }
+            var imageID: UInt32 = 0, imageGeneration: UInt64 = 0
+            var layer = GHOSTTY_IMAGE_LAYER_ABOVE_TEXT
+            _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID, &imageID)
+            _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION, &imageGeneration)
+            _ = ghostty_render_state_image_get(imageIterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER, &layer)
+            guard let image = ghostty_kitty_graphics_image(graphics, imageID) else { continue }
+            var width: UInt32 = 0, height: UInt32 = 0
+            var format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA
+            var pixels = GhosttyString()
+            _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH, &width)
+            _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT, &height)
+            _ = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT, &format)
+            let identity = "\(imageID):\(imageGeneration)"
+            // Placements move with every scrolled line; an image's pixels change only with its
+            // generation, so they are copied once.
+            let converted: (data: Data, format: TerminalImage.Format)
+            if let cached = imagePixels[identity] {
+                converted = cached
+            } else {
+                guard ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS, &pixels) == GHOSTTY_SUCCESS,
+                      let base = pixels.ptr, width > 0, height > 0,
+                      let fresh = Self.pixels(Data(bytes: base, count: pixels.len), format: format,
+                                              count: Int(width) * Int(height)) else { continue }
+                converted = fresh
+            }
+            shownPixels[identity] = converted
+            let z = i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_Z)
+            images.append(TerminalImage(
+                identity: identity, width: Int(width), height: Int(height),
+                format: converted.format, pixels: converted.data,
+                column: i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL), row: i32(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW),
+                cols: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_COLS), rows: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_ROWS),
+                offsetX: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X), offsetY: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y),
+                sourceX: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X), sourceY: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y),
+                sourceWidth: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH),
+                sourceHeight: u32(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT),
+                belowText: layer != GHOSTTY_IMAGE_LAYER_ABOVE_TEXT, z: z))
+        }
+        return images
+    }
+
+    /// Stored pixels as RGB or RGBA; grey images are widened to RGBA.
+    static func pixels(_ data: Data, format: GhosttyKittyImageFormat, count: Int) -> (data: Data, format: TerminalImage.Format)? {
+        switch format {
+        case GHOSTTY_KITTY_IMAGE_FORMAT_RGB: return data.count == count * 3 ? (data, .rgb) : nil
+        case GHOSTTY_KITTY_IMAGE_FORMAT_RGBA: return data.count == count * 4 ? (data, .rgba) : nil
+        case GHOSTTY_KITTY_IMAGE_FORMAT_GRAY, GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA:
+            let channels = format == GHOSTTY_KITTY_IMAGE_FORMAT_GRAY ? 1 : 2
+            guard data.count == count * channels else { return nil }
+            let source = [UInt8](data)
+            var rgba = [UInt8](repeating: 255, count: count * 4)
+            for index in 0..<count {
+                let grey = source[index * channels]
+                rgba[index * 4] = grey
+                rgba[index * 4 + 1] = grey
+                rgba[index * 4 + 2] = grey
+                if channels == 2 { rgba[index * 4 + 3] = source[index * channels + 1] }
+            }
+            return (Data(rgba), .rgba)
+        default: return nil
+        }
     }
 
     // MARK: Output to draw
@@ -350,6 +589,53 @@ public final class VTTerminal {
             }
         }
         guard result == GHOSTTY_SUCCESS else { return Data(text.utf8) }
+        return Data(output.prefix(written))
+    }
+
+    public enum MouseAction: Sendable { case press, release, motion }
+
+    /// A mouse report for the program's mouse mode and format, at a cell of the screen, or nil
+    /// when the program takes no such report. Buttons: 1 left, 2 right, 3 middle, 4 and 5 the
+    /// wheel up and down, 6 and 7 left and right; nil for motion with no button. Modifiers use
+    /// the same bits as keys: shift 1, control 2, option 4.
+    public func encodeMouse(_ action: MouseAction, button: Int?, column: Int, row: Int,
+                            modifiers: UInt16 = 0, anyButtonPressed: Bool = false) -> Data? {
+        _ = ghostty_mouse_encoder_set_from_terminal(mouseEncoder, terminal)
+        var size = GhosttyMouseEncoderSize()
+        size.size = MemoryLayout<GhosttyMouseEncoderSize>.size
+        size.screen_width = UInt32(clamping: cols * cellWidth)
+        size.screen_height = UInt32(clamping: rows * cellHeight)
+        size.cell_width = UInt32(clamping: cellWidth)
+        size.cell_height = UInt32(clamping: cellHeight)
+        _ = withUnsafePointer(to: &size) { ghostty_mouse_encoder_set(mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, $0) }
+        var pressed = anyButtonPressed
+        _ = withUnsafePointer(to: &pressed) {
+            ghostty_mouse_encoder_set(mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, $0)
+        }
+        switch action {
+        case .press: _ = ghostty_mouse_event_set_action(mouseEvent, GHOSTTY_MOUSE_ACTION_PRESS)
+        case .release: _ = ghostty_mouse_event_set_action(mouseEvent, GHOSTTY_MOUSE_ACTION_RELEASE)
+        case .motion: _ = ghostty_mouse_event_set_action(mouseEvent, GHOSTTY_MOUSE_ACTION_MOTION)
+        }
+        let buttons = [GHOSTTY_MOUSE_BUTTON_LEFT, GHOSTTY_MOUSE_BUTTON_RIGHT, GHOSTTY_MOUSE_BUTTON_MIDDLE,
+                       GHOSTTY_MOUSE_BUTTON_FOUR, GHOSTTY_MOUSE_BUTTON_FIVE, GHOSTTY_MOUSE_BUTTON_SIX,
+                       GHOSTTY_MOUSE_BUTTON_SEVEN]
+        if let button, (1...buttons.count).contains(button) {
+            _ = ghostty_mouse_event_set_button(mouseEvent, buttons[button - 1])
+        } else {
+            _ = ghostty_mouse_event_clear_button(mouseEvent)
+        }
+        _ = ghostty_mouse_event_set_mods(mouseEvent, modifiers)
+        // The middle of the cell, in the surface pixels the encoder converts back to cells.
+        let x = (Float(max(0, min(column, cols - 1))) + 0.5) * Float(cellWidth)
+        let y = (Float(max(0, min(row, rows - 1))) + 0.5) * Float(cellHeight)
+        _ = ghostty_mouse_event_set_position(mouseEvent, GhosttyMousePosition(x: x, y: y))
+        var written = 0
+        var output = [UInt8](repeating: 0, count: 128)
+        let result = output.withUnsafeMutableBufferPointer { out in
+            ghostty_mouse_encoder_encode(mouseEncoder, mouseEvent, out.baseAddress, out.count, &written)
+        }
+        guard result == GHOSTTY_SUCCESS, written > 0 else { return nil }
         return Data(output.prefix(written))
     }
 

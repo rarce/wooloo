@@ -219,10 +219,13 @@ struct CoreAttachResult: Codable, Sendable {
     let terminal: CoreTerminal
     /// Whether the whole path accepts AUTOMATIC_INPUT frames; absent means send DATA.
     let automaticInput: Bool?
+    /// Whether an observer gets RESIZE frames; absent or false means it follows `size` events.
+    var resizeNotifications: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case channel, terminal
         case automaticInput = "automatic_input"
+        case resizeNotifications = "resize_notifications"
     }
 }
 
@@ -232,4 +235,34 @@ struct CoreEvent: Codable, Equatable, Sendable {
     let seq: UInt64?
     let type: String?
     let terminal: String?
+    /// The event's details; only what wooloo reads is decoded, such as a `size` event's size.
+    var data: Details? = nil
+
+    struct Details: Codable, Equatable, Sendable {
+        let cols: Int?
+        let rows: Int?
+
+        init(cols: Int?, rows: Int?) {
+            self.cols = cols
+            self.rows = rows
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            cols = try? container.decodeIfPresent(Int.self, forKey: .cols)
+            rows = try? container.decodeIfPresent(Int.self, forKey: .rows)
+        }
+    }
+}
+
+extension CoreEvent {
+    /// Details of an unexpected shape are left out, never the event: an event that fails to
+    /// decode would be dropped, and with it the tree read it asks for.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        seq = try? container.decodeIfPresent(UInt64.self, forKey: .seq)
+        type = try container.decodeIfPresent(String.self, forKey: .type)
+        terminal = try? container.decodeIfPresent(String.self, forKey: .terminal)
+        data = try? container.decodeIfPresent(Details.self, forKey: .data)
+    }
 }

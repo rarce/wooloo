@@ -267,9 +267,17 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         guard let terminal = list.terminals.first(where: { $0.address == paneID }) else {
             throw CoreProtocolError.remote(kind: "not_found", message: "The terminal \(paneID) is gone.")
         }
-        let attached = try connection.call("terminal.attach", [
+        let reply = try connection.callRaw("terminal.attach", [
             "terminal": paneID, "cols": max(terminal.cols, 1), "rows": max(terminal.rows, 1), "history": 0,
-        ], as: CoreAttachResult.self)
+        ])
+        let attached: CoreAttachResult
+        do {
+            attached = try CoreConnection.result(CoreAttachResult.self, from: reply)
+        } catch {
+            // A reply this build cannot read may still have opened a stream: nothing would read it.
+            if let channel = CoreConnection.channel(in: reply) { connection.discard(channel: channel) }
+            throw error
+        }
         connection.route(channel: attached.channel, onData: { _ in }, onClose: {})
         try connection.send(CoreFrame(channel: attached.channel, kind: .data, payload: Data(text.utf8)))
         try connection.send(CoreFrame(channel: attached.channel, kind: .close, payload: Data()))
@@ -492,7 +500,8 @@ final class CoreSessionWatcher: SessionWatcher, @unchecked Sendable {
             var lines = CoreEventLines()
             connection.route(channel: channel, onData: { data in
                 // Heartbeats need nothing; terminal and document events need a fresh arrangement.
-                if lines.append(data).contains(where: { $0.type != nil }) {
+                // A `size` alone changes nothing the snapshot shows.
+                if lines.append(data).contains(where: { $0.type != nil && $0.type != "size" }) {
                     pending.set()
                 }
                 changes.signal()
