@@ -43,6 +43,9 @@ Left from the review of PR #159.
 - [ ] While the window is front, `arrange` tries to replace every observer with an active attach on each pass (4 a second), with no backoff when Core keeps refusing it.
 - [ ] A selected match that scrolls out of view loses its highlight for good: `drain` follows the match only while a highlight is set, so scrolling it back shows it plain while the bar still counts it. Keep following while a search is active.
 - [ ] Each change of window focus attaches afresh (active ↔ observing), replaying `attachHistory` lines per pane and losing that pane's scrollback position and find highlight. Needs a core call that switches an attachment's mode in place.
+- [ ] `Attachment.swallowsClick` is lost when the pane reattaches between the swallowed press and its release, so the release reaches the program.
+- [ ] `CoreTerminalPresentation.sendInput` repeats the hold-while-draining logic in two branches; share it.
+- [ ] The RESIZE frame's wire format is built in two files; keep it in `CoreProtocol` beside `CoreFrame.credit`.
 
 ## Testing
 

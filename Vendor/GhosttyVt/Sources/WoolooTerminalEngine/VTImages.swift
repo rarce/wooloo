@@ -61,9 +61,14 @@ enum VTSystem {
         #if canImport(ImageIO)
         // PNG payloads of the kitty graphics protocol are decoded with ImageIO into the
         // straight RGBA libghostty-vt stores.
+        // Only PNG: the payload comes from a remote program, and ImageIO would otherwise hand
+        // it to whichever of its parsers (TIFF, JPEG 2000, RAW…) claims it.
         let decode: GhosttySysDecodePngFn = { _, allocator, data, length, out in
+            // The bytes are valid for the call, so they are read in place rather than copied.
             guard let data, length > 0, let out,
-                  let source = CGImageSourceCreateWithData(Data(bytes: data, count: length) as CFData, nil),
+                  let bytes = CFDataCreateWithBytesNoCopy(nil, data, length, kCFAllocatorNull),
+                  let source = CGImageSourceCreateWithData(bytes, [kCGImageSourceTypeIdentifierHint: "public.png"] as CFDictionary),
+                  CGImageSourceGetType(source) as String? == "public.png",
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return false }
             // Image IO decodes when drawn below: refuse a huge image (a small PNG can claim
             // 10,000 by 10,000 pixels) before memory for it is taken.

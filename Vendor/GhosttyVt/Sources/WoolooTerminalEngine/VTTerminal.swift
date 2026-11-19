@@ -355,6 +355,9 @@ public final class VTTerminal {
         return selectedMatchInViewport()
     }
 
+    /// Whether a search is open: it is kept up to date as output arrives, until `endSearch()`.
+    public var isSearching: Bool { search != nil }
+
     /// Ends a search and frees what it tracks in the terminal.
     public func endSearch() {
         ghostty_search_free(search)

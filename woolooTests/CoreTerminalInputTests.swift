@@ -1,3 +1,4 @@
+import AppKit
 import WoolooTerminalEngine
 import XCTest
 @testable import wooloo
@@ -153,6 +154,29 @@ final class CoreTerminalInputTests: XCTestCase {
         let image = try XCTUnwrap(terminal.imagesIfChanged()?.first)
         XCTAssertEqual(image.format, .rgba)
         XCTAssertEqual(image.pixels, rgba)
+    }
+
+    func testKittyImagesDecodeOnlyPNG() throws {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 1, bitsPerSample: 8,
+                                                    samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let pixels = try XCTUnwrap(bitmap.bitmapData)
+        for (index, byte) in [255, 0, 0, 255, 0, 0, 255, 255].enumerated() { pixels[index] = UInt8(byte) }
+        func shown(_ data: Data?) throws -> TerminalImage? {
+            let terminal = try terminal()
+            let payload = try XCTUnwrap(data).base64EncodedString()
+            terminal.write(Data("\u{1b}_Ga=T,f=100,c=2,r=1,i=5;\(payload)\u{1b}\\".utf8))
+            _ = terminal.frame()
+            return terminal.imagesIfChanged()?.first
+        }
+        let png = try XCTUnwrap(try shown(bitmap.representation(using: .png, properties: [:])))
+        XCTAssertEqual([png.width, png.height], [2, 1])
+        XCTAssertEqual(png.format, .rgba)
+        XCTAssertEqual(Array(png.pixels), [255, 0, 0, 255, 0, 0, 255, 255])
+        // The same pixels in formats ImageIO also reads are refused: the protocol's f=100 is PNG.
+        XCTAssertNil(try shown(bitmap.representation(using: .tiff, properties: [:])), "TIFF")
+        XCTAssertNil(try shown(bitmap.representation(using: .gif, properties: [:])), "GIF")
+        XCTAssertNil(try shown(bitmap.representation(using: .bmp, properties: [:])), "BMP")
     }
 
     // MARK: Find

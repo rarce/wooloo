@@ -58,10 +58,12 @@ final class CoreConnectionTests: XCTestCase {
         let text = #"{"jsonrpc":"2.0","method":"event","params":{"seq":6,"type":"doc","data":"changed"}}"# + "\n"
             + #"{"jsonrpc":"2.0","method":"event","params":{"seq":7,"type":"size","terminal":"t1","data":{"cols":"x","rows":24}}}"# + "\n"
             + #"{"jsonrpc":"2.0","method":"event","params":{"seq":8,"type":"size","terminal":"t1","data":{"cols":90,"rows":30}}}"# + "\n"
+            + #"{"jsonrpc":"2.0","method":"event","params":{"seq":9,"type":{"kind":"exit"},"terminal":"t1"}}"# + "\n"
         XCTAssertEqual(lines.append(Data(text.utf8)), [
             CoreEvent(seq: 6, type: "doc", terminal: nil),
             CoreEvent(seq: 7, type: "size", terminal: "t1", data: .init(cols: nil, rows: 24)),
             CoreEvent(seq: 8, type: "size", terminal: "t1", data: .init(cols: 90, rows: 30)),
+            CoreEvent(seq: 9, type: "unknown", terminal: "t1"),
         ])
     }
 
@@ -212,6 +214,34 @@ final class CoreConnectionTests: XCTestCase {
         var received = Data()
         connection.route(channel: channel, onData: { received.append($0) }, onClose: {})
         XCTAssertTrue(received.isEmpty, "A closed stream's bytes are not kept for a route")
+    }
+
+    /// A reply that opens a stream but does not decode (here, a subscription without its seq
+    /// and terminals) closes that stream: nothing would ever read it.
+    func testAStreamFromAReplyThatDoesNotDecodeIsClosed() throws {
+        let core = FakeCore()
+        core.overrides["events.subscribe"] = { _ in ["channel": 7] }
+        let server = core.connect()
+        let connection = CoreConnection(transport: server)
+        try connection.open()
+        defer { connection.close() }
+        XCTAssertThrowsError(try connection.call("events.subscribe", as: CoreSubscribeResult.self))
+        XCTAssertTrue(server.recordedFrames().contains { $0.channel == 7 && $0.kind == .close })
+    }
+
+    /// Discarding a stream Core already closed sends nothing more.
+    func testDiscardingAClosedStreamSendsNoClose() throws {
+        let core = FakeCore()
+        let server = core.connect()
+        let connection = CoreConnection(transport: server)
+        try connection.open()
+        defer { connection.close() }
+        server.closeChannel(9)
+        // Frames arrive in order: once a later call is answered, the close was read.
+        _ = try connection.call("terminal.list", as: CoreListResult.self)
+        connection.discard(channel: 9)
+        _ = try connection.call("terminal.list", as: CoreListResult.self)
+        XCTAssertFalse(server.recordedFrames().contains { $0.channel == 9 && $0.kind == .close })
     }
 
     func testAnEndedConnectionFailsCalls() throws {

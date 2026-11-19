@@ -296,9 +296,13 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             guard request >= newestFindRequest else { return nil }
             newestFindRequest = request
             findGeneration &+= 1
-            for terminal in attachments.keys where terminal != paneID && attachments[terminal]?.highlight != nil {
-                attachments[terminal]?.highlight = nil
-                dirty = true
+            // One search at a time: another pane's would go on following every write.
+            for terminal in attachments.keys where terminal != paneID {
+                attachments[terminal]?.emulator.endSearch()
+                if attachments[terminal]?.highlight != nil {
+                    attachments[terminal]?.highlight = nil
+                    dirty = true
+                }
             }
             return (findGeneration, attachments[paneID]?.emulator.beginFind(query) == true)
         }
@@ -339,6 +343,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         }
         wake.signal()
         return nil
+    }
+
+    /// Whether `paneID`'s emulator has a search open.
+    func isSearching(in paneID: String) -> Bool {
+        lock.withLock { attachments[paneID]?.emulator.isSearching == true }
     }
 
     func endFind() {
@@ -549,18 +558,13 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             params["display"] = ["fg": colors.foreground.hex, "bg": colors.background.hex,
                                  "cursor": colors.cursor.hex, "cell": [cell.0, cell.1]]
         }
-        let reply = try connection.callRaw("terminal.attach", params)
         let result: CoreAttachResult
         do {
-            result = try CoreConnection.result(CoreAttachResult.self, from: reply)
+            result = try connection.call("terminal.attach", params, as: CoreAttachResult.self)
         } catch CoreProtocolError.remote {
             // The terminal is gone; the next read of the tree drops it.
             lock.withLock { needsTree = true }
             return
-        } catch {
-            // A reply this build cannot read may still have opened a stream: nothing would read it.
-            if let channel = CoreConnection.channel(in: reply) { connection.discard(channel: channel) }
-            throw error
         }
         // An observer starts at the terminal's own size, which Core reports in the attach.
         let cols = observe ? min(max(result.terminal.cols, 1), Self.maxTerminalSide) : rect.width
