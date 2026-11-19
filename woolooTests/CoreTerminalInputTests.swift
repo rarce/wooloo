@@ -65,6 +65,27 @@ final class CoreTerminalInputTests: XCTestCase {
         XCTAssertFalse(CoreTerminalPresentation.mouseInput(mouse(.scrollLeft), to: terminal).scrolled)
     }
 
+    /// A program on the main screen that takes the mouse, such as `fzf --height`, while older
+    /// lines show: its reports would name the wrong rows, so the wheel moves the scrollback and
+    /// a click returns to the live screen first.
+    func testTheMouseWhileScrolledBackReturnsToTheLiveScreen() throws {
+        let terminal = try terminal((1...100).map { "line \($0)" }.joined(separator: "\r\n") + "\u{1b}[?1000h\u{1b}[?1006h")
+        XCTAssertTrue(terminal.reportsMouse)
+        terminal.scroll(by: -10)
+        XCTAssertFalse(terminal.isAtBottom)
+        let wheel = CoreTerminalPresentation.mouseInput(mouse(.scrollDown, lines: 4), to: terminal)
+        XCTAssertNil(wheel.bytes)
+        XCTAssertTrue(wheel.scrolled, "The wheel moves the scrollback")
+        XCTAssertFalse(terminal.isAtBottom)
+        let click = CoreTerminalPresentation.mouseInput(mouse(.down(0)), to: terminal)
+        XCTAssertNil(click.bytes, "The click that returns is not reported")
+        XCTAssertTrue(click.scrolled)
+        XCTAssertTrue(terminal.isAtBottom)
+        XCTAssertEqual(text(CoreTerminalPresentation.mouseInput(mouse(.down(0)), to: terminal).bytes), "\u{1b}[<0;5;3M")
+        XCTAssertNotNil(CoreTerminalPresentation.mouseInput(mouse(.scrollUp), to: terminal).bytes,
+                        "On the live screen the program gets the wheel")
+    }
+
     func testTheWheelOnTheAlternateScreenSendsArrowsUnlessTurnedOff() throws {
         // Alternate scroll (1007) is on unless a program turns it off, as in Ghostty and xterm.
         let pager = try terminal("\u{1b}[?1049h\u{1b}[?1007l")

@@ -237,6 +237,7 @@ final class HerdrStoreCoreTests: XCTestCase {
         store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
         await waitUntil("watching") { core.callsTo("terminal.attach").last?.params["observe"] as? Bool == true }
         XCTAssertNil(core.callsTo("terminal.attach").last?.params["resize_notifications"], "Not offered, not asked for")
+        XCTAssertNil(core.callsTo("terminal.attach").last?.params["display"], "Only the active viewer sets colours and cell size")
         let (server, channel) = try XCTUnwrap(attachedServer())
         await waitUntil("surface") { store.surface?.paneIDs == ["t1"] }
         server.emit(type: "size", terminal: "t1", data: ["cols": 30, "rows": 8])
@@ -348,6 +349,29 @@ final class HerdrStoreCoreTests: XCTestCase {
                     .spaces.first?.tabs.first?.root
             } == .split(.right, ratio: 0.25, first: .terminal("t1"), second: .terminal("t2"))
         }
+    }
+
+    /// When the shown tab goes away, the window moves to another tab and its remembered pane:
+    /// that pane, which takes the typing, also shows the cursor.
+    func testTheTabShownAfterAClosedOneFocusesTheRememberedPane() async throws {
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("first pane") { store.surface?.paneIDs == ["t1"] }
+        store.splitPane("right")
+        await waitUntil("both panes") { store.surface?.paneIDs == ["t1", "t2"] && store.surface?.focusedPaneID == "t2" }
+        store.createTab(cwd: "/src")
+        await waitUntil("new tab") { store.session?.tabs.count == 2 && store.selectedTabID != "tab-t1" }
+        let created = try XCTUnwrap(store.selectedTabID)
+        let shell = try XCTUnwrap(store.snapshot?.panes.first { $0.tabID == created }?.paneID)
+        await waitUntil("new tab shown") { store.surface?.paneIDs == [shell] }
+        core.update { $0.terminals.removeAll { $0.address == shell } }
+        for server in core.connections where server.eventsChannel != nil { server.emit(type: "removed", terminal: shell) }
+        await waitUntil("back on the split tab") { store.selectedTabID == "tab-t1" && store.surface?.paneIDs == ["t1", "t2"] }
+        XCTAssertEqual(store.selectedPaneID, "t2")
+        await waitUntil("cursor in the remembered pane") { store.surface?.focusedPaneID == "t2" }
     }
 
     func testFindInTerminalHighlightsTheMatch() async throws {

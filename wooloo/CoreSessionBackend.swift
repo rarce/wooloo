@@ -492,7 +492,8 @@ final class CoreSessionWatcher: SessionWatcher, @unchecked Sendable {
             var lines = CoreEventLines()
             connection.route(channel: channel, onData: { data in
                 // Heartbeats need nothing; terminal and document events need a fresh arrangement.
-                if lines.append(data).contains(where: { $0.type != nil }) {
+                // A `size` alone changes nothing the snapshot shows.
+                if lines.append(data).contains(where: { $0.type != nil && $0.type != "size" }) {
                     pending.set()
                 }
                 changes.signal()

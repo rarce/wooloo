@@ -55,6 +55,8 @@ public struct TerminalImage: Equatable, Sendable {
 
 /// Process-wide hooks libghostty-vt needs from the platform, set once before the first terminal.
 enum VTSystem {
+    /// The largest PNG decoded, in pixels: 4096 × 4096, 64 MB as RGBA.
+    static let maxImagePixels = 4096 * 4096
     static let installed: Void = {
         #if canImport(ImageIO)
         // PNG payloads of the kitty graphics protocol are decoded with ImageIO into the
@@ -63,8 +65,11 @@ enum VTSystem {
             guard let data, length > 0, let out,
                   let source = CGImageSourceCreateWithData(Data(bytes: data, count: length) as CFData, nil),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return false }
+            // Image IO decodes when drawn below: refuse a huge image (a small PNG can claim
+            // 10,000 by 10,000 pixels) before memory for it is taken.
             let width = image.width, height = image.height
-            guard width > 0, height > 0, width <= 10_000, height <= 10_000 else { return false }
+            guard width > 0, height > 0, width <= 10_000, height <= 10_000,
+                  width * height <= VTSystem.maxImagePixels else { return false }
             let count = width * height * 4
             guard let buffer = ghostty_alloc(allocator, count) else { return false }
             guard let context = CGContext(data: buffer, width: width, height: height, bitsPerComponent: 8,

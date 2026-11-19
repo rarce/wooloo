@@ -1865,6 +1865,7 @@ final class HerdrStore: ObservableObject {
         guard !spaceMoveInFlight, let snapshot else { return }
         repairingSelection = true
         defer { repairingSelection = false }
+        let (tabBefore, paneBefore) = (selectedTabID, selectedPaneID)
         if !snapshot.workspaces.contains(where: { $0.workspaceID == selectedWorkspaceID }) {
             selectedWorkspaceID = snapshot.focusedWorkspaceID ?? snapshot.workspaces.first?.workspaceID
         }
@@ -1874,6 +1875,11 @@ final class HerdrStore: ObservableObject {
         }
         if !snapshot.panes.contains(where: { $0.paneID == selectedPaneID && $0.tabID == selectedTabID }) {
             selectedPaneID = preferredPane(in: selectedTabID)
+        }
+        // herdr-core's presentation forgets its focused pane with the tab, and would focus the
+        // tab's first one: the pane typing goes to must also show the cursor.
+        if backendKind == .core, selectedTabID != tabBefore || selectedPaneID != paneBefore, let selectedPaneID {
+            sendPaneFocus(selectedPaneID)
         }
         if !presentationEstablished, let surface,
            Set(surface.paneIDs) == Set(selectedPanes.map(\.id)) {

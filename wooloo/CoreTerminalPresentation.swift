@@ -457,6 +457,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     // An observer keeps Core's size, and a pane that only moved keeps its own:
                     // only its place in the tab changes.
                     lock.withLock { attachments[terminal]?.rect = rect; dirty = true }
+                    if reassert && !attachment.observing {
+                        try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
+                    }
                     continue
                 }
                 lock.withLock {
@@ -511,17 +514,23 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             params["observe"] = true
             if offersResizes { params["resize_notifications"] = true }
         }
-        if let colors {
+        // Only the active viewer sets the colours and cell size programs read.
+        if let colors, !observe {
             params["display"] = ["fg": colors.foreground.hex, "bg": colors.background.hex,
                                  "cursor": colors.cursor.hex, "cell": [cell.0, cell.1]]
         }
+        let reply = try connection.callRaw("terminal.attach", params)
         let result: CoreAttachResult
         do {
-            result = try connection.call("terminal.attach", params, as: CoreAttachResult.self)
+            result = try CoreConnection.result(CoreAttachResult.self, from: reply)
         } catch CoreProtocolError.remote {
             // The terminal is gone; the next read of the tree drops it.
             lock.withLock { needsTree = true }
             return
+        } catch {
+            // A reply this build cannot read may still have opened a stream: nothing would read it.
+            if let channel = CoreConnection.channel(in: reply) { connection.discard(channel: channel) }
+            throw error
         }
         // An observer starts at the terminal's own size, which Core reports in the attach.
         let cols = observe ? max(result.terminal.cols, 1) : rect.width
@@ -748,7 +757,14 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         case .scrollRight: wheel = 7
         default: wheel = nil
         }
-        if emulator.reportsMouse {
+        // Older lines on screen: the wheel moves through them, and a click first returns to the
+        // live screen, whose rows the program's reports name, without reaching the program.
+        let scrolledBack = !emulator.isAtBottom
+        if emulator.reportsMouse && scrolledBack && wheel == nil {
+            emulator.scrollToBottom()
+            return (nil, true)
+        }
+        if emulator.reportsMouse && !scrolledBack {
             switch mouse.kind {
             case .down(let code):
                 return (emulator.encodeMouse(.press, button: button(code), column: column, row: row, modifiers: modifiers), false)

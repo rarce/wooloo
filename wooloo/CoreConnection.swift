@@ -145,10 +145,7 @@ final class CoreConnection: @unchecked Sendable {
             guard let semaphore else {
                 // Nobody waits for this reply any more: its call timed out. A stream it opened
                 // would never be read, so it is closed.
-                if let result = object["result"] as? [String: Any],
-                   let channel = (result["channel"] as? NSNumber)?.uint32Value, channel != 0 {
-                    discard(channel: channel)
-                }
+                if let channel = Self.channel(in: frame.payload) { discard(channel: channel) }
                 return
             }
             semaphore.signal()
@@ -285,6 +282,14 @@ final class CoreConnection: @unchecked Sendable {
             }
             if held.closed { onClose(); return }
         }
+    }
+
+    /// The stream channel a reply opened, if it names one.
+    static func channel(in reply: Data) -> UInt32? {
+        guard let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any],
+              let result = object["result"] as? [String: Any],
+              let channel = (result["channel"] as? NSNumber)?.uint32Value, channel != 0 else { return nil }
+        return channel
     }
 
     static func result<Result: Decodable>(_ type: Result.Type, from reply: Data) throws -> Result {
