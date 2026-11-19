@@ -63,6 +63,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// Bumped by each find and by ending one, so an older find that is still searching stops
     /// before it moves the viewport or the highlight.
     private var findGeneration: UInt64 = 0
+    /// The newest find request begun: an older one that begins later does nothing.
+    private var newestFindRequest: UInt64 = 0
     /// Keys typed into an observed terminal after the window became active, sent once the
     /// active attach replaces the observer.
     private var heldInput: [String: [Data]] = [:]
@@ -82,6 +84,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         var sizesSent: [(cols: Int, rows: Int)] = []
         /// Keys held for this stream are still being sent: newer ones wait behind them.
         var draining = false
+        /// A press only returned to the live screen: its drags and release stay here too.
+        var swallowsClick = false
 
         func sent(_ size: (cols: Int, rows: Int)) -> Bool {
             sizesSent.contains { $0.cols == size.cols && $0.rows == size.rows }
@@ -220,7 +224,20 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             let bytes: Data?
             switch event {
             case .mouse(let mouse):
+                switch mouse.kind {
+                case .drag, .up:
+                    if attachment.swallowsClick {
+                        if case .up = mouse.kind { attachments[paneID]?.swallowsClick = false }
+                        return (nil, nil, nil, true, false)
+                    }
+                case .down:
+                    attachments[paneID]?.swallowsClick = false
+                default:
+                    break
+                }
                 let input = Self.mouseInput(mouse, to: emulator)
+                // A press that returned to the live screen is not reported, nor is the rest of it.
+                if case .down = mouse.kind, input.scrolled { attachments[paneID]?.swallowsClick = true }
                 if input.scrolled { dirty = true }
                 if attachment.observing {
                     // Core takes no input from an observer. A click can come before the window's
@@ -273,8 +290,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// Searches in bounded steps, letting go of the lock between them so output, drawing and
     /// input go on during a long scrollback search. A newer find or `endFind` stops it.
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
-    func find(_ query: String, in paneID: String, older: Bool) -> TerminalFindResult? {
-        let (generation, started) = lock.withLock { () -> (UInt64, Bool) in
+    func find(_ query: String, in paneID: String, older: Bool, request: UInt64) -> TerminalFindResult? {
+        let begun = lock.withLock { () -> (UInt64, Bool)? in
+            // Finds run on worker threads, which may begin them out of order.
+            guard request >= newestFindRequest else { return nil }
+            newestFindRequest = request
             findGeneration &+= 1
             for terminal in attachments.keys where terminal != paneID && attachments[terminal]?.highlight != nil {
                 attachments[terminal]?.highlight = nil
@@ -282,6 +302,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             }
             return (findGeneration, attachments[paneID]?.emulator.beginFind(query) == true)
         }
+        guard let (generation, started) = begun else { return nil }
         guard started else { return clearHighlight(of: paneID, generation: generation) }
         while true {
             let step = lock.withLock { () -> Bool? in
@@ -466,6 +487,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     continue
                 }
                 lock.withLock {
+                    // Output that came before the resize was laid out at the old size: it goes in first.
+                    if let inbox = attachments[terminal]?.inbox, !inbox.isEmpty {
+                        attachments[terminal]?.emulator.write(inbox)
+                        attachments[terminal]?.inbox = Data()
+                    }
                     try? attachments[terminal]?.emulator.resize(cols: rect.width, rows: rect.height,
                                                                 cellWidth: size.0, cellHeight: size.1)
                     attachments[terminal]?.rect = rect

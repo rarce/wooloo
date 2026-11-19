@@ -302,6 +302,34 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertNil(store.inputError, "A drag the program does not report is not an input failure")
     }
 
+    /// A click while older lines show only returns to the live screen: neither its press nor
+    /// its drags and release reach a program that takes the mouse.
+    func testAClickThatReturnsToTheLiveScreenIsNotReported() async throws {
+        store.requiresSurfaceForInput = true
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("attached") { attachedServer() != nil }
+        let (server, channel) = try XCTUnwrap(attachedServer())
+        server.send(Data(((1...200).map { "line \($0)" }.joined(separator: "\r\n")).utf8), on: channel)
+        await waitUntil("output") { store.surface.map { $0.cells.row(0).prefix(4).map(\.symbol).joined() } == "line" }
+        await waitUntil("input ready") { store.inputReady }
+        store.sendMouse(HerdrMouseEvent(kind: .scrollUp, column: 2, row: 1, modifiers: 0, lines: 5), to: "t1")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        server.send(Data("\u{1b}[?1002h\u{1b}[?1006h".utf8), on: channel)
+        await waitUntil("mouse reporting") { store.surface?.mouseReportingPaneIDs == ["t1"] }
+        let reports = { server.recordedFrames().filter { $0.channel == channel && $0.kind == .data }.map(\.payload) }
+        for kind: HerdrMouseEvent.Kind in [.down(0), .drag(0), .up(0)] {
+            store.sendMouse(HerdrMouseEvent(kind: kind, column: 2, row: 1, modifiers: 0, lines: 1), to: "t1")
+        }
+        store.sendMouse(HerdrMouseEvent(kind: .down(0), column: 3, row: 1, modifiers: 0, lines: 1), to: "t1")
+        await waitUntil("the next click is reported") { reports().contains(Data("\u{1b}[<0;4;2M".utf8)) }
+        XCTAssertEqual(reports().map { String(decoding: $0, as: UTF8.self) }, ["\u{1b}[<0;4;2M"],
+                       "Only the click on the live screen")
+    }
+
     func testASplitTabIsComposedFromItsTerminals() async throws {
         store.requiresSurfaceForInput = true
         store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)

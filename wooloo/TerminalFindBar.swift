@@ -17,6 +17,12 @@ struct TerminalFindBar: View {
     @State private var searched = false
     @State private var searching: Task<Void, Never>?
     @FocusState private var focused: Bool
+    /// The terminal that had the keyboard when the bar opened, which gets it back on close.
+    @State private var returnFocus = WeakView()
+
+    final class WeakView {
+        weak var view: NSView?
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -47,7 +53,10 @@ struct TerminalFindBar: View {
         .background(theme.sidebarBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
         .onExitCommand { close() }
-        .onAppear { focused = true }
+        .onAppear {
+            if let terminal = NSApp.keyWindow?.firstResponder as? HerdrTerminalTextView { returnFocus.view = terminal }
+            focused = true
+        }
         .onChange(of: request) { _, _ in focused = true }
         .onDisappear {
             searching?.cancel()
@@ -88,5 +97,9 @@ struct TerminalFindBar: View {
         searching?.cancel()
         store.endTerminalFind()
         onClose()
+        // The field goes away with the bar: without this, keys reach no pane until a click.
+        if let view = returnFocus.view, let window = view.window {
+            DispatchQueue.main.async { window.makeFirstResponder(view) }
+        }
     }
 }

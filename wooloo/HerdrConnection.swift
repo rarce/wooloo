@@ -1727,7 +1727,7 @@ final class HerdrStore: ObservableObject {
         guard findsInTerminal, let stream = surfaceStream, let paneID = selectedPaneID else { return nil }
         terminalFinds &+= 1
         let (request, ended) = (terminalFinds, terminalFindsEnded)
-        let result = try? await BlockingWork.run(priority: .userInitiated) { stream.find(query, in: paneID, older: older) }
+        let result = try? await BlockingWork.run(priority: .userInitiated) { stream.find(query, in: paneID, older: older, request: UInt64(request)) }
         guard terminalFinds == request else { return nil }
         // The search ended while this find was queued: it may have begun after `endFind`, so
         // its highlight and scroll go again.

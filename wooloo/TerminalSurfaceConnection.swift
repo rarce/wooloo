@@ -22,9 +22,10 @@ protocol TerminalSurfaceConnection: AnyObject, Sendable {
     func closePopup() -> Bool
     /// Finds text in a pane's terminal, scrollback included, and shows the next match, older or
     /// newer; nil when nothing matches or the presentation cannot search (the TUI's). It can
-    /// search a long scrollback, so it blocks its thread.
+    /// search a long scrollback, so it blocks its thread. `request` numbers finds in the order
+    /// they were asked for: one that begins after a newer one does nothing.
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
-    func find(_ query: String, in paneID: String, older: Bool) -> TerminalFindResult?
+    func find(_ query: String, in paneID: String, older: Bool, request: UInt64) -> TerminalFindResult?
     /// Ends a search and removes its highlight.
     func endFind()
 }
@@ -37,7 +38,7 @@ struct TerminalFindResult: Equatable, Sendable {
 
 extension TerminalSurfaceConnection {
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
-    func find(_ query: String, in paneID: String, older: Bool) -> TerminalFindResult? { nil }
+    func find(_ query: String, in paneID: String, older: Bool, request: UInt64) -> TerminalFindResult? { nil }
     func endFind() {}
 }
 
