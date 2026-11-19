@@ -443,6 +443,24 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual((store.surface?.cells[0, 1].modifier ?? 64) & 64, 0)
     }
 
+    /// A find in one pane ends the search in the others, which would go on following output.
+    func testAFindInAnotherPaneEndsTheFirstPanesSearch() async throws {
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("connected") { store.isConnected }
+        store.select(workspaceID: CoreStructure.unfiledID, tabID: "tab-t1", paneID: "t1")
+        await waitUntil("first pane") { store.surface?.paneIDs == ["t1"] }
+        _ = await store.findInTerminal("prompt", older: true)
+        let presentation = try XCTUnwrap(store.surfaceStream as? CoreTerminalPresentation)
+        XCTAssertTrue(presentation.isSearching(in: "t1"))
+        store.splitPane("right")
+        await waitUntil("second pane focused") { store.surface?.paneIDs == ["t1", "t2"] && store.selectedPaneID == "t2" }
+        _ = await store.findInTerminal("prompt", older: true)
+        XCTAssertTrue(presentation.isSearching(in: "t2"))
+        XCTAssertFalse(presentation.isSearching(in: "t1"))
+    }
+
     func testAnInactiveWindowWatchesUntilItIsActive() async throws {
         let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
         store.requiresSurfaceForInput = true

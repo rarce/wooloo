@@ -267,17 +267,9 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         guard let terminal = list.terminals.first(where: { $0.address == paneID }) else {
             throw CoreProtocolError.remote(kind: "not_found", message: "The terminal \(paneID) is gone.")
         }
-        let reply = try connection.callRaw("terminal.attach", [
+        let attached = try connection.call("terminal.attach", [
             "terminal": paneID, "cols": max(terminal.cols, 1), "rows": max(terminal.rows, 1), "history": 0,
-        ])
-        let attached: CoreAttachResult
-        do {
-            attached = try CoreConnection.result(CoreAttachResult.self, from: reply)
-        } catch {
-            // A reply this build cannot read may still have opened a stream: nothing would read it.
-            if let channel = CoreConnection.channel(in: reply) { connection.discard(channel: channel) }
-            throw error
-        }
+        ], as: CoreAttachResult.self)
         connection.route(channel: attached.channel, onData: { _ in }, onClose: {})
         try connection.send(CoreFrame(channel: attached.channel, kind: .data, payload: Data(text.utf8)))
         try connection.send(CoreFrame(channel: attached.channel, kind: .close, payload: Data()))

@@ -257,11 +257,16 @@ struct CoreEvent: Codable, Equatable, Sendable {
 
 extension CoreEvent {
     /// Details of an unexpected shape are left out, never the event: an event that fails to
-    /// decode would be dropped, and with it the tree read it asks for.
+    /// decode would be dropped, and with it the tree read it asks for. A `type` that is not a
+    /// string is still a change, not a heartbeat, so it reads as `unknown`.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         seq = try? container.decodeIfPresent(UInt64.self, forKey: .seq)
-        type = try container.decodeIfPresent(String.self, forKey: .type)
+        do {
+            type = try container.decodeIfPresent(String.self, forKey: .type)
+        } catch {
+            type = "unknown"
+        }
         terminal = try? container.decodeIfPresent(String.self, forKey: .terminal)
         data = try? container.decodeIfPresent(Details.self, forKey: .data)
     }

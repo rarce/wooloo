@@ -507,7 +507,8 @@ Still open:
   - the README links it from Features and Design notes.
 - **Still open:**
   - the release that ships the beta, with the setting off by default;
-  - the macOS checks of two windows and two Macs on one core.
+  - the manual checks left in phases 3 to 5 (programs, two windows and two Macs on one core, SSH), listed in [herdr-core manual tests](../herdr-core-manual-tests.md).
+- **Deferred:** the Core terminal benchmark (Phase 4 exit criteria). libghostty-vt is adopted as the engine for now, so there is no alternative to compare it with yet.
 
 ## Phases
 

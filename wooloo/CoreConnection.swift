@@ -208,21 +208,30 @@ final class CoreConnection: @unchecked Sendable {
     /// Closes a stream that will never be routed, such as one whose attach failed after Core
     /// opened it, and drops what it sent or still sends.
     func discard(channel: UInt32) {
-        lock.withLock {
-            early[channel] = nil
+        let open = lock.withLock { () -> Bool in
+            // Core may have closed it already: then there is nothing left to drop or close.
+            if early.removeValue(forKey: channel)?.closed == true { return false }
             if streams[channel] == nil { discarded.insert(channel) }
+            return true
         }
-        try? send(CoreFrame(channel: channel, kind: .close, payload: Data()))
+        if open { try? send(CoreFrame(channel: channel, kind: .close, payload: Data())) }
     }
 
     func send(_ frame: CoreFrame) throws {
         try writeLock.withLock { try transport.write(frame.encoded()) }
     }
 
-    /// Calls `method` and decodes its result.
+    /// Calls `method` and decodes its result. A reply this build cannot read may still have
+    /// opened a stream (`terminal.attach`, `events.subscribe`); nothing would read it, so it is closed.
     func call<Result: Decodable>(_ method: String, _ params: [String: Any] = [:], as type: Result.Type = Result.self,
                                  timeout: TimeInterval = 10) throws -> Result {
-        try Self.result(type, from: callRaw(method, params, timeout: timeout))
+        let reply = try callRaw(method, params, timeout: timeout)
+        do {
+            return try Self.result(type, from: reply)
+        } catch {
+            if let channel = Self.channel(in: reply) { discard(channel: channel) }
+            throw error
+        }
     }
 
     /// Calls `method` and returns the whole reply.
