@@ -5,6 +5,8 @@ What the unit tests cannot check about herdr-core sessions: real programs, real 
 It is written for an agent or a person driving the development build. Record each result in [Results](#results) with a screenshot, and report failures with the steps, what happened, and the app's log.
 
 > Never use the `default` Herdr or herdr-core session, nor your main one, and never the installed wooloo (`dev.wooloo.app`). Everything here uses the `wooloo-ui-test` session and a test build with its own bundle identifier, `dev.wooloo.core-review`.
+>
+> Before typing into any window, read its connection in the status bar at the bottom (`Local · wooloo-ui-test …`). If a window shows another session, send it no input: close it, record what opened it, and go on with the remaining cases.
 
 ## 0. Requirements
 
@@ -77,8 +79,8 @@ Run each in a pane of the herdr-core session.
 | 2.1 | `vim -u NONE -c 'set mouse=a' /etc/services`. Move with keys, click lines, drag, use the wheel, `:q` | Correct colours and cursor. A click puts vim's cursor on that cell, a drag selects, the wheel scrolls vim. No error banner |
 | 2.2 | `LESS=-R less /etc/services`. Wheel, `/tcp`, `n`, `q` | The wheel moves `less` (alternate screen), not wooloo's scrollback. The screen comes back intact after `q` |
 | 2.3 | `htop` (or `top -o cpu` if htop is missing). Resize the window while it runs; in htop, click a column header | It redraws at the new size without stray lines; the click sorts by that column |
-| 2.4 | An agent CLI (`claude`, `codex` or another you have): start it, type a short prompt, scroll, resize, quit | Its interface draws and resizes correctly; typing, paste (⌘V) and keys such as ⌥←, ⌃C and Escape reach it |
-| 2.5 | Wide and combined text: `printf 'añb 漢字 👍🏽 é\n'` | Each character takes its width; nothing overlaps or shifts the rest of the line |
+| 2.4 | An agent CLI (`claude`, `codex` or another you have): start it, type a short prompt, scroll, resize. Then press ⌃C once and look at the screen, and press it again within a second | Its interface draws and resizes correctly; typing, paste (⌘V) and keys such as ⌥←, ⌃C and Escape reach it. The first ⌃C shows the program's reaction (for Codex, a "press again to quit" hint); the second quits it |
+| 2.5 | Wide and combined text: `printf 'añb 漢字 👍🏽 é\n'` | Each character takes its width; nothing overlaps or shifts the rest of the line. 👍🏽 takes 4 cells (the thumb and its skin-tone modifier, 2 each), as zsh counts it, so a wider gap before é is expected |
 | 2.6 | `printf '\e[c'` | One reply only (`^[[?62;22c` or similar), no repeated garbage at the prompt |
 
 ## 3. Scrollback and find
@@ -90,7 +92,7 @@ Fill the scrollback first (section 1).
 | 3.1 | Scroll up with the wheel; run `hc send $T 'echo nueva'` | The view stays where it is |
 | 3.2 | While scrolled back, type a letter | The view returns to the bottom and the letter reaches the prompt |
 | 3.3 | Open vim with `set mouse=a`, fill it with output, scroll back in wooloo first if possible, then **click** in vim | The first click only returns to the live screen: vim's cursor does not move. The next click moves it |
-| 3.4 | **⌘F**, type `marker` | The newest match is highlighted, "1 of N". Return goes older, Shift-Return newer |
+| 3.4 | With the terminal focused, press **⌘F** and type `marker` at once, without clicking the field | The field holds `marker` and nothing reached the shell's prompt. The newest match is highlighted, "1 of N". Return goes older, Shift-Return newer |
 | 3.5 | With a highlighted match, run `hc send $T 'echo a; echo b'` | The highlight follows its text |
 | 3.6 | Search `marker`, then type quickly `marker 2`, `marker 29`, `marker 299` | The count always belongs to the last query shown; no stale highlight is left |
 | 3.7 | With the find bar open, press **Escape** | The bar closes, the highlight goes, and typing goes straight to the terminal (it has the keyboard back) |
@@ -112,7 +114,7 @@ Fill the scrollback first (section 1).
 
 | # | Steps | Expected |
 |---|-------|----------|
-| 5.1 | Open a second window on the same session and tab. Make A front, then `hc send $T 'echo desde-fuera'` | B (behind) updates too |
+| 5.1 | With window A on `wooloo-ui-test` and in front, choose **File → New Window** (window B). Check B's status bar before anything else. Then select the same tab in B, make A front, and run `hc send $T 'echo desde-fuera'` | B opens on `Local · wooloo-ui-test`, the connection of the window it was opened from. B (behind) shows the new output too |
 | 5.2 | Make A and B different sizes; switch which is front | The terminal takes the front window's size each time; the other draws it without wrapping garbage |
 | 5.3 | Click B and type at once: `echo ahora` + Return | Every key arrives, none lost or doubled |
 | 5.4 | With B behind, resize it to be very large (full screen) and come back to A | A keeps its size; nothing in A redraws wrongly |
@@ -160,10 +162,14 @@ Both Macs connect to the same core (one locally, the other through section 8 poi
 
 ## Results
 
+Write the results here, replacing this table's empty cells, and add a short summary above it: the commit tested, the date, herdr-core's version, the counts, and each failure with the steps to reproduce it. Keep screenshots outside the repository (for example in `/private/tmp/wooloo-core-review-shots`, which Cleanup keeps) and name them in the notes.
+
+Previous run: `50090e9`, 2026-11-19 — 15 OK, 2 failed (3.4 typing right after ⌘F reached the shell; 5.1 a new window opened `default`), 7 partial, 18 not run. Both failures are addressed in the commit after it.
+
 Commit tested: `……`  ·  Date: `……`  ·  herdr-core: `……`
 
-| Case | OK / Fail / Not run | Notes / screenshot |
-|------|---------------------|--------------------|
+| Case | OK / Fail / Partial / Not run | Notes / screenshot |
+|------|-------------------------------|--------------------|
 | 2.1 | | |
 | 2.2 | | |
 | 2.3 | | |

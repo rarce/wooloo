@@ -830,6 +830,7 @@ private struct DestinationContentView: View {
             .overlay(alignment: .topTrailing) {
                 if window.showsTerminalFind, herdr.findsInTerminal {
                     TerminalFindBar(store: herdr, request: window.terminalFindRequest,
+                                    returnFocus: window.terminalFindReturnFocus,
                                     onClose: { window.showsTerminalFind = false })
                         .padding(10)
                 }

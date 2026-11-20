@@ -101,6 +101,8 @@ final class ContentWindowModel: ObservableObject {
     /// The find bar over a herdr-core terminal, and a count bumped each time it is asked for.
     @Published var showsTerminalFind = false
     @Published var terminalFindRequest = 0
+    /// The terminal that had the keyboard when the find bar opened, which gets it back on close.
+    let terminalFindReturnFocus = TerminalFindBar.WeakView()
     weak var commandStore: HerdrStore?
     var renameConnection: HerdrActionConnection?
     var closeConnection: HerdrActionConnection?
@@ -154,6 +156,8 @@ struct ContentCommandEffects {
     var copy: (String) -> Void = { AppActions.copy($0) }
     var reveal: (String) -> Void = { AppActions.reveal($0) }
     var beep: () -> Void = { NSSound.beep() }
+    /// Takes the keyboard from the key window's terminal, returning that terminal.
+    var releaseTerminalKeyboard: @MainActor () -> NSView? = { TerminalFindBar.releaseKeyboard(in: NSApp.keyWindow) }
     var canCheckForUpdates: @MainActor () -> Bool = { AppUpdater.shared.canCheckForUpdates }
     var checkForUpdates: @MainActor () -> Void = { AppUpdater.shared.checkForUpdates() }
 }
@@ -339,6 +343,10 @@ struct ContentCommands {
             }
         case .findInTerminal:
             guard herdr.findsInTerminal else { return }
+            // The field takes the keyboard only once SwiftUI shows it; keys typed before then
+            // must not reach the shell.
+            let terminal = effects.releaseTerminalKeyboard()
+            if terminal != nil || !window.showsTerminalFind { window.terminalFindReturnFocus.view = terminal }
             window.showsTerminalFind = true
             window.terminalFindRequest &+= 1
         case .copyPaneDirectory, .revealPaneDirectory:
