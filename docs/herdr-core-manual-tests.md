@@ -7,6 +7,8 @@ It is written for an agent or a person driving the development build. Record eac
 > Never use the `default` Herdr or herdr-core session, nor your main one, and never the installed wooloo (`dev.wooloo.app`). Everything here uses the `wooloo-ui-test` session and a test build with its own bundle identifier, `dev.wooloo.core-review`.
 >
 > Before typing into any window, read its connection in the status bar at the bottom (`Local · wooloo-ui-test …`). If a window shows another session, send it no input: close it, record what opened it, and go on with the remaining cases.
+>
+> Open the test app only as section 1 does, after its `defaults write`, and never after Cleanup. Launched without those preferences, it saves its window on the `default` session, and a later launch may reopen that window there.
 
 ## 0. Requirements
 
@@ -166,6 +168,8 @@ Write the results here, replacing this table's empty cells, and add a short summ
 
 Previous run: `50090e9`, 2026-11-19 — 15 OK, 2 failed (3.4 typing right after ⌘F reached the shell; 5.1 a new window opened `default`), 7 partial, 18 not run. Both failures are addressed in the commit after it.
 
+Attempt: `d03fa6d`, 2026-11-20 — no results. Run through `codex exec` with stdin closed, Computer Use was denied access to the app, so no case that needs the window could be checked. Run it from an interactive Codex session and approve access to wooloo when asked.
+
 Commit tested: `……`  ·  Date: `……`  ·  herdr-core: `……`
 
 | Case | OK / Fail / Partial / Not run | Notes / screenshot |
@@ -221,3 +225,5 @@ HC_SESSION=wooloo-ui-test hc server stop
 defaults delete dev.wooloo.core-review 2>/dev/null
 rm -rf /private/tmp/wooloo-core-review
 ```
+
+Do not open the test app again after this (see the note at the top).
