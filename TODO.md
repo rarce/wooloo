@@ -29,7 +29,6 @@ Left from the review of PR #159.
 
 - [ ] Find in a long scrollback can starve output and typing: `CoreTerminalPresentation.find` takes the presentation's lock again right after each bounded step, and macOS locks are not fair, so `drain` and `sendInput` may wait for the whole search. Yield between steps, or run the steps on the presentation's own thread.
 - [ ] Decoding a large kitty PNG un-premultiplies alpha in a per-pixel Swift loop (`Vendor/GhosttyVt/Sources/WoolooTerminalEngine/VTImages.swift`) inside `emulator.write`, under the presentation's lock, which holds up every pane. Use `vImageUnpremultiplyData_RGBA8888`, or decode outside the lock.
-- [ ] The terminal find bar keeps the previous pane's "N of M" (and that pane's search and highlight) after the selected pane or tab changes; reset or search again when `selectedPaneID` changes.
 - [ ] `TerminalFindBar` repeats `DocumentFindBar`'s chrome (field, counter, previous/next, Escape) and lacks its ⌘G / ⇧⌘G. Share one view, with the search model behind a protocol.
 - [ ] Two windows of the same size on one tab: a background window is demoted to watching only when Core reports a size it did not send, so with equal sizes it keeps an active stream, and resizing it then takes the terminal from the window in front. Demote it on its own resize too, once the core can say whether another viewer is attached (it exposes no viewer count yet).
 - [ ] With a core that lacks `resize_notifications`, an observer applies the size from the events channel, whose `size` event can arrive after output Core already laid out at that size on the stream, so a few lines may wrap at the old width until the program redraws. Today's core sends RESIZE frames, which arrive in order.
@@ -46,6 +45,8 @@ Left from the review of PR #159.
 - [ ] `Attachment.swallowsClick` is lost when the pane reattaches between the swallowed press and its release, so the release reaches the program.
 - [ ] `CoreTerminalPresentation.sendInput` repeats the hold-while-draining logic in two branches; share it.
 - [ ] The RESIZE frame's wire format is built in two files; keep it in `CoreProtocol` beside `CoreFrame.credit`.
+- [ ] With the core stopped (`hc server stop`), the sidebar still said Connected while the pane said "Connecting terminal…" (manual test 7.2 at `d2187b0`). Show the connection as disconnected while the core is gone.
+- [ ] Quitting with ⌘Q hung for over 3 s in `-[NSApplication terminate:]`, with AppKit resolving a drag's promised data (`CFPasteboardResolveAllPromisedData` → `NSFilePromiseProvider`), after a tab drag to another Space that moved nothing (manual tests 6.1 and 7.4 at `d2187b0`; the drag was synthetic, from Computer Use). Check whether a real drag that ends without a drop does the same; the second window was not restored after that quit (5.6).
 
 ## Testing
 

@@ -829,7 +829,7 @@ private struct DestinationContentView: View {
             }
             .overlay(alignment: .topTrailing) {
                 if window.showsTerminalFind, herdr.findsInTerminal {
-                    TerminalFindBar(store: herdr, request: window.terminalFindRequest,
+                    TerminalFindBar(store: herdr, request: window.terminalFindRequest, paneID: herdr.selectedPaneID,
                                     returnFocus: window.terminalFindReturnFocus,
                                     onClose: { window.showsTerminalFind = false })
                         .padding(10)
@@ -1434,6 +1434,8 @@ private struct DestinationContentView: View {
                         createWorkspace: { destinations.createSpace(on: herdr) },
                         isCurrentDestination: { [contextID = herdr.contextID] in
                             destinations.canAccessActiveDestination && destinations.active === herdr && herdr.contextID == contextID
+                        }, releaseTerminalKeyboard: {
+                            TerminalFindBar.releaseKeyboard(in: destinations.nativeWindow ?? NSApp.keyWindow)
                         }),
                         bindingLabel: { [shortcutMap] in shortcutMap.displayLabel(for: $0) })
     }

@@ -81,7 +81,7 @@ Run each in a pane of the herdr-core session.
 | 2.1 | `vim -u NONE -c 'set mouse=a' /etc/services`. Move with keys, click lines, drag, use the wheel, `:q` | Correct colours and cursor. A click puts vim's cursor on that cell, a drag selects, the wheel scrolls vim. No error banner |
 | 2.2 | `LESS=-R less /etc/services`. Wheel, `/tcp`, `n`, `q` | The wheel moves `less` (alternate screen), not wooloo's scrollback. The screen comes back intact after `q` |
 | 2.3 | `htop` (or `top -o cpu` if htop is missing). Resize the window while it runs; in htop, click a column header | It redraws at the new size without stray lines; the click sorts by that column |
-| 2.4 | An agent CLI (`claude`, `codex` or another you have): start it, type a short prompt, scroll, resize. Then press ⌃C once and look at the screen, and press it again within a second | Its interface draws and resizes correctly; typing, paste (⌘V) and keys such as ⌥←, ⌃C and Escape reach it. The first ⌃C shows the program's reaction (for Codex, a "press again to quit" hint); the second quits it |
+| 2.4 | An agent CLI (`claude`, `codex` or another you have): start it, type a short prompt, scroll, resize. Then press ⌃C once and look at the screen, and press it again within a second. Press ⌃C on the physical keyboard: an automation tool's synthetic ⌃C may arrive as a plain `c` | Its interface draws and resizes correctly; typing, paste (⌘V) and keys such as ⌥←, ⌃C and Escape reach it. The first ⌃C shows the program's reaction (for Codex, a "press again to quit" hint); the second quits it |
 | 2.5 | Wide and combined text: `printf 'añb 漢字 👍🏽 é\n'` | Each character takes its width; nothing overlaps or shifts the rest of the line. 👍🏽 takes 4 cells (the thumb and its skin-tone modifier, 2 each), as zsh counts it, so a wider gap before é is expected |
 | 2.6 | `printf '\e[c'` | One reply only (`^[[?62;22c` or similar), no repeated garbage at the prompt |
 
@@ -139,7 +139,7 @@ Fill the scrollback first (section 1).
 |---|-------|----------|
 | 7.1 | `hc server restart` with the app open | The app reconnects without hanging; panes keep working and vim (if open) is intact |
 | 7.2 | `hc server stop`, wait 10 s, then start a core again (`hc ls` starts one) | The app shows it is disconnected, then reconnects |
-| 7.3 | Turn **Settings → Appearance → herdr-core (preview)** off and on | Off hides the herdr-core connections; on brings them back |
+| 7.3 | Turn **Settings → Appearance → herdr-core (preview)** off and on | Off hides the herdr-core option for new connections (Manage Connections and setup); connections already made stay. On brings the option back |
 | 7.4 | Check `~/Library/Logs/wooloo/Hangs` and `~/Library/Logs/DiagnosticReports/wooloo-*` | No new hang or crash reports from this session |
 
 ## 8. SSH host (optional, phases 3 and 6)
@@ -164,58 +164,60 @@ Both Macs connect to the same core (one locally, the other through section 8 poi
 
 ## Results
 
-Write the results here, replacing this table's empty cells, and add a short summary above it: the commit tested, the date, herdr-core's version, the counts, and each failure with the steps to reproduce it. Keep screenshots outside the repository (for example in `/private/tmp/wooloo-core-review-shots`, which Cleanup keeps) and name them in the notes.
-
 Previous run: `50090e9`, 2026-11-19 — 15 OK, 2 failed (3.4 typing right after ⌘F reached the shell; 5.1 a new window opened `default`), 7 partial, 18 not run. Both failures are addressed in the commit after it.
 
 Attempt: `d03fa6d`, 2026-11-20 — no results. Run through `codex exec` with stdin closed, Computer Use was denied access to the app, so no case that needs the window could be checked. Run it from an interactive Codex session and approve access to wooloo when asked.
 
-Commit tested: `……`  ·  Date: `……`  ·  herdr-core: `……`
+Commit tested: `d2187b0` (application source identical to `d03fa6d`; only this test plan changed) · Date: 2026-11-20 · herdr-core: 0.1.21
+
+macOS 26.6.2 (25G83), Xcode 26.6 (17F113). 23 OK, 6 Fail, 7 Partial, 6 Not run. Build succeeded. Failure steps and observations are in the corresponding rows. Screenshots, the filtered app logs (app.log and app-errors.log), and the hang report are in `/private/tmp/wooloo-core-review-shots`.
+
+Review of this run: 3.4 (the terminal took the keyboard back before the field showed, or the keyboard was released from the key window instead of the window the command ran in) and 3.8 (the bar did not search again when the selected pane changed) are addressed in the commit after it. 7.3 is not a failure: the setting affects new connections only, and its expected result is corrected above. 2.4 is not an app failure: Computer Use sent `c` instead of ⌃C. The hang in 7.4 happened while quitting after the tab drag of 6.1, and 5.6 lost its second window in that same quit; both, and the Connected label in 7.2, are in `TODO.md`.
 
 | Case | OK / Fail / Partial / Not run | Notes / screenshot |
 |------|-------------------------------|--------------------|
-| 2.1 | | |
-| 2.2 | | |
-| 2.3 | | |
-| 2.4 | | |
-| 2.5 | | |
-| 2.6 | | |
-| 3.1 | | |
-| 3.2 | | |
-| 3.3 | | |
-| 3.4 | | |
-| 3.5 | | |
-| 3.6 | | |
-| 3.7 | | |
-| 3.8 | | |
-| 3.9 | | |
-| 3.10 | | |
-| 4.1 | | |
-| 4.2 | | |
-| 4.3 | | |
-| 4.4 | | |
-| 4.5 | | |
-| 5.1 | | |
-| 5.2 | | |
-| 5.3 | | |
-| 5.4 | | |
-| 5.5 | | |
-| 5.6 | | |
-| 6.1 | | |
-| 6.2 | | |
-| 6.3 | | |
-| 6.4 | | |
-| 6.5 | | |
-| 7.1 | | |
-| 7.2 | | |
-| 7.3 | | |
-| 7.4 | | |
-| 8.1 | | |
-| 8.2 | | |
-| 8.3 | | |
-| 8.4 | | |
-| 9.1 | | |
-| 9.2 | | |
+| 2.1 | OK | Vim opened /etc/services, accepted movement and clicks, selected text on drag, scrolled and quit. vim-click.png, vim-drag.png, vim-wheel.png |
+| 2.2 | OK | Wheel moved less, /tcp and n highlighted matches, and q restored the shell. less-wheel.png, less-search.png, less-exit.png |
+| 2.3 | Partial | htop redrew after window zoom. Clicked CPU%, but did not establish the resulting sort order independently. htop-resized.png, sort-cpu.png |
+| 2.4 | Fail | With Codex at its prompt, type a draft, paste a second word, move left and send Control-C twice. Computer Use inserted literal c characters, with no quit hint or exit. Repeated with Control_L+c. Physical-keyboard behavior remains unverified. ctrl-first.png, ctrl-double.png |
+| 2.5 | OK | The accented Latin characters, CJK pair and modified emoji displayed without overlap. The gap after the emoji was visible. width.png |
+| 2.6 | OK | One device-attributes response appeared at the prompt. device.png |
+| 3.1 | OK | The same numbered lines stayed in view after external echo nueva. scroll-before.png, scroll-after.png |
+| 3.2 | OK | Typing x returned to the live prompt with x after the new output. scroll-live.png |
+| 3.3 | Partial | In mouse-enabled Vim the wheel was routed to Vim. Could not establish wooloo scrollback above the live alternate screen to distinguish the first click. vim-first-before.png, vim-first-click.png |
+| 3.4 | Fail | Focus zsh, print 300 marker lines, press ⌘F and immediately type marker without clicking. The search field stayed empty and the shell draft contained marker, wrapped across two lines. find-focus.png |
+| 3.5 | OK | After external echo a and echo b, the highlight stayed on 199999 as it moved up. highlight-before.png, highlight-after.png |
+| 3.6 | OK | Typed marker 2 then appended 9 twice. Final query marker 299 showed 1 of 1 on the correct row. incremental.png |
+| 3.7 | OK | Escape removed the bar and highlight. The following x reached the terminal application. find-escape.png |
+| 3.8 | Fail | Split a tab, print marker text in both panes, find marker on the left, click the right pane and search again in the open field. The left match and count (1 of 301) remained. Closing and reopening Find on the right moved the highlight there (1 of 3). left-selected.png, right-selected.png, right-reopened.png |
+| 3.9 | OK | The newest of two reversed matches was the reverse-video output and had a visible underline. reverse-shell.png |
+| 3.10 | OK | Sent seq 1 200000 externally to t15. Find remained interactive and visibly marked 199999, 1 of 1. large-final.png |
+| 4.1 | OK | Calculator icon appeared with a working prompt underneath. kitty-png.png |
+| 4.2 | OK | After seq 1 40 the icon had left the pane. Repeated with 14–18 lines to capture progressively tighter clipping at the top. clip14.png, clip16.png, clip18.png |
+| 4.3 | OK | Scrolling back past the first numbered line revealed the icon above the command. kitty-up4.png, kitty-up5.png |
+| 4.4 | OK | TIFF and GIF drew no icon. A subsequent echo printed alive. kitty-reject.png |
+| 4.5 | OK | Cleared the screen while the PNG was visible. The live screen contained only the new prompt. before-clear.png, after-clear.png |
+| 5.1 | OK | ⌘N opened B on Local · wooloo-ui-test. With A in front and both showing t15, B displayed desde-fuera from hc send without activation. new-window.png, observer-cleared.png |
+| 5.2 | OK | Core reported 57 × 29 for A and 57 × 20 for B after switching focus. The visible shell output stayed legible. observer-cleared.png, switch-input.png |
+| 5.3 | OK | Activated B from the Window menu and typed echo ahora. Core history contained one complete command and one output line. switch-input.png |
+| 5.4 | Partial | Enlarged B and switched back to A. A retained its geometry. Resizing B while it remained behind A was not verified. front-original.png |
+| 5.5 | Partial | Both windows switched to the remaining split tab after confirming Close. Sent distinct focus markers from each window. The prior cursor position for each window was not established for comparison. closed-A.png, closed-B.png |
+| 5.6 | Fail | Leave two windows open, quit with ⌘Q, then reopen the same test bundle. After startup the Window menu listed only one wooloo window and Merge All Windows was disabled. The sole window was on the isolated session. restored-front.png |
+| 6.1 | Partial | Created Spaces and tabs, split right and down, zoomed, and renamed review-layout. Spaces, tabs, name and split layout survived relaunch. After dragging the tab, the original Space still listed it. Could not verify that the drag reached the intended destination. drag-source.png, restored-layout.png |
+| 6.2 | OK | Ran hc run -- /bin/zsh externally. A selected zsh tab appeared under Unfiled on the isolated connection. new-window.png |
+| 6.3 | Partial | A foreground child emitted working then done with app=review. The sidebar showed working then idle in the focused pane. hc get confirmed done. Notification delivery was not verified. agent-working.png, agent-done.png |
+| 6.4 | OK | Chose Mark as Unread then Pin Agent. hc get t1b returned herdr.seen=0 and herdr.pinned=1. agent-pinned.png |
+| 6.5 | OK | Created splits in B, selected that tab in A and observed the same arrangement in both windows. layout-A.png, layout-B.png |
+| 7.1 | OK | Restarted the isolated server with Vim open. Core still reported live Vim. The app accepted input, quit Vim and printed restart-ok. vim-restarted.png, restart-ok.png |
+| 7.2 | Partial | Stopped the server, waited at least 10 s, ran hc ls and opened a fresh shell. The new shell accepted input. The intermediate screen said Connecting terminal… while the sidebar still said Connected. A disconnected state was not observed. server-stopped.png, reconnected-input.png |
+| 7.3 | Fail | Turn preview off in Appearance, then open Connections. The existing wooloo-ui-test herdr-core row is still listed as connected. The new-connection form correctly hid its core checkbox and restored it when switched on. The setting itself says it applies to new connections. preview-off.png, connections-off.png, preview-on.png |
+| 7.4 | Fail | After the multiwindow split, drag and quit sequence, inspect the hang directory. A new report was written at 14:30:05 UTC by PID 59525, the initial test build. No new wooloo crash report was found. The triggering action was not isolated. hang-2026-11-20-143005.txt |
+| 8.1 | Not run | No SSH host available. |
+| 8.2 | Not run | No SSH host available. |
+| 8.3 | Not run | No SSH host available. |
+| 8.4 | Not run | No SSH host available. |
+| 9.1 | Not run | No second Mac available. |
+| 9.2 | Not run | No second Mac available. |
 
 ## Cleanup
 

@@ -246,7 +246,13 @@ final class TerminalFindBarFocusTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(terminal))
         XCTAssertTrue(TerminalFindBar.releaseKeyboard(in: window) === terminal, "Kept to give it back on close")
         XCTAssertFalse(window.firstResponder === terminal)
+        terminal.claimKeyboardFocusIfIdle()
+        XCTAssertFalse(window.firstResponder === terminal, "Keys typed before the field shows must not reach the shell")
         XCTAssertNil(TerminalFindBar.releaseKeyboard(in: window), "Nothing to take when the terminal lacks it")
+        XCTAssertTrue(window.makeFirstResponder(terminal), "The bar gives it back on close")
+        window.makeFirstResponder(nil)
+        terminal.claimKeyboardFocusIfIdle()
+        XCTAssertTrue(window.firstResponder === terminal, "Once given back, it claims the keyboard as before")
         XCTAssertNil(TerminalFindBar.releaseKeyboard(in: nil))
     }
 }

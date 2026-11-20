@@ -156,7 +156,8 @@ struct ContentCommandEffects {
     var copy: (String) -> Void = { AppActions.copy($0) }
     var reveal: (String) -> Void = { AppActions.reveal($0) }
     var beep: () -> Void = { NSSound.beep() }
-    /// Takes the keyboard from the key window's terminal, returning that terminal.
+    /// Takes the keyboard from the window's terminal, returning that terminal. `ContentView`
+    /// passes its own window: the command may run while another window is key.
     var releaseTerminalKeyboard: @MainActor () -> NSView? = { TerminalFindBar.releaseKeyboard(in: NSApp.keyWindow) }
     var canCheckForUpdates: @MainActor () -> Bool = { AppUpdater.shared.canCheckForUpdates }
     var checkForUpdates: @MainActor () -> Void = { AppUpdater.shared.checkForUpdates() }

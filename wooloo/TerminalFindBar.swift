@@ -9,6 +9,8 @@ struct TerminalFindBar: View {
     let store: HerdrStore
     /// Bumped each time Find in Terminal runs, to put the keyboard back in the field.
     let request: Int
+    /// The selected pane, which the bar searches: when it changes, the query runs again there.
+    let paneID: String?
     /// The terminal that had the keyboard when the bar opened, which gets it back on close.
     let returnFocus: WeakView
     let onClose: () -> Void
@@ -24,9 +26,11 @@ struct TerminalFindBar: View {
         weak var view: NSView?
     }
 
-    /// Takes the keyboard from `window`'s terminal, if it has it, and returns that terminal.
+    /// Takes the keyboard from `window`'s terminal, if it has it, and returns that terminal,
+    /// which does not take it back on its own until it is made first responder again.
     static func releaseKeyboard(in window: NSWindow?) -> NSView? {
         guard let window, let terminal = window.firstResponder as? HerdrTerminalTextView else { return nil }
+        terminal.yieldsKeyboard = true
         window.makeFirstResponder(nil)
         return terminal
     }
@@ -64,6 +68,7 @@ struct TerminalFindBar: View {
             focused = true
         }
         .onChange(of: request) { _, _ in focused = true }
+        .onChange(of: paneID) { _, _ in find(older: true) }
         .onDisappear {
             searching?.cancel()
             store.endTerminalFind()
