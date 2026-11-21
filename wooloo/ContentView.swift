@@ -721,7 +721,7 @@ private struct DestinationContentView: View {
             Spacer()
             if !herdr.isConnected {
                 Text("Disconnected").foregroundStyle(theme.warning)
-            } else if !herdr.inputReady {
+            } else if !herdr.inputReady && (herdr.backendKind != .core || herdr.selectedPaneID != nil) {
                 Text("Connecting terminal…").foregroundStyle(theme.warning)
             }
             Button { window.showsFilesSidebar.toggle() } label: {
@@ -828,8 +828,8 @@ private struct DestinationContentView: View {
                 .onChange(of: geometry.size) { _, size in resizeSurface(to: size) }
             }
             .overlay(alignment: .topTrailing) {
-                if window.showsTerminalFind, herdr.findsInTerminal {
-                    TerminalFindBar(store: herdr, request: window.terminalFindRequest, paneID: herdr.selectedPaneID,
+                if herdr.findsInTerminal {
+                    TerminalFindBar(store: herdr, isPresented: window.showsTerminalFind, paneID: herdr.selectedPaneID,
                                     returnFocus: window.terminalFindReturnFocus,
                                     onClose: { window.showsTerminalFind = false })
                         .padding(10)
@@ -852,6 +852,12 @@ private struct DestinationContentView: View {
             }
         } else if let pane = selectedPanes.first {
             terminalPane(pane)
+        } else if herdr.backendKind == .core, herdr.session?.panes.isEmpty == true {
+            ContentUnavailableView {
+                Label("No running terminals", systemImage: "terminal")
+            } actions: {
+                Button("New Space and Terminal") { destinations.createSpace(on: herdr) }
+            }
         } else {
             emptyState("This tab has no panes")
         }
@@ -1624,7 +1630,10 @@ private struct DestinationContentView: View {
     /// Shown until the session connects. A stopped server can be started from here.
     @ViewBuilder
     private var connectionState: some View {
-        if managesRuntime && herdr.machine == nil && herdr.isServerStopped {
+        if herdr.backendKind == .core, herdr.isServerStopped {
+            ContentUnavailableView("Disconnected", systemImage: "network.slash",
+                                   description: Text("Waiting for herdr-core session “\(herdr.sessionName)” to restart."))
+        } else if managesRuntime && herdr.machine == nil && herdr.isServerStopped {
             VStack(spacing: 8) {
                 Image(systemName: "power")
                     .font(.system(size: 24, weight: .light))

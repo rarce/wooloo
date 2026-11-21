@@ -121,7 +121,7 @@ Fill the scrollback first (section 1).
 | 5.3 | Click B and type at once: `echo ahora` + Return | Every key arrives, none lost or doubled |
 | 5.4 | With B behind, resize it to be very large (full screen) and come back to A | A keeps its size; nothing in A redraws wrongly |
 | 5.5 | In A, close the tab shown; B shows the same tab | Both move to another tab, and the pane the window last used in that tab has the cursor and takes typing |
-| 5.6 | Restart the app with both windows open | Both come back on `wooloo-ui-test`; the front one types, the other watches |
+| 5.6 | Restart the app with both windows open | The windows come back on `wooloo-ui-test` as macOS's "Close windows when quitting an application" setting says (with it on, the default, only the front one); the front one types, the other watches |
 
 ## 6. Structure and agents (phase 5)
 
@@ -138,7 +138,7 @@ Fill the scrollback first (section 1).
 | # | Steps | Expected |
 |---|-------|----------|
 | 7.1 | `hc server restart` with the app open | The app reconnects without hanging; panes keep working and vim (if open) is intact |
-| 7.2 | `hc server stop`, wait 10 s, then start a core again (`hc ls` starts one) | The app shows it is disconnected, then reconnects |
+| 7.2 | `hc server stop`, wait 10 s, then start a core again (`hc ls` starts one) | The app reconnects, starting the core again if it is still stopped. Panes wooloo created come back at the same address with a fresh shell; terminals started elsewhere follow their own keep setting |
 | 7.3 | Turn **Settings → Appearance → herdr-core (preview)** off and on | Off hides the herdr-core option for new connections (Manage Connections and setup); connections already made stay. On brings the option back |
 | 7.4 | Check `~/Library/Logs/wooloo/Hangs` and `~/Library/Logs/DiagnosticReports/wooloo-*` | No new hang or crash reports from this session |
 
@@ -218,6 +218,29 @@ Review of this run: 3.4 (the terminal took the keyboard back before the field sh
 | 8.4 | Not run | No SSH host available. |
 | 9.1 | Not run | No second Mac available. |
 | 9.2 | Not run | No second Mac available. |
+
+### Retest at `09d6d0a`
+
+2026-11-20 · **1 OK, 3 Fail, 0 Partial, 0 Not run.** Screenshots are in `/private/tmp/wooloo-core-review-shots/retest`.
+
+| Case | OK, Fail, Partial or Not run | Notes and screenshots |
+|------|-----------------------------|-----------------------|
+| 3.4 | Fail | Clicked the title bar and terminal, pressed ⌘F and immediately typed `marker`. Attempt 1 left the field empty with no count; the shell draft read `arker`. Focused the field to close it with Escape, clicked the terminal and repeated. Attempt 2 again showed an empty field and no count; the shell draft now read `arkerarker`. Both attempts dropped the initial `m` from the visible draft. `3-4-1.png`, `3-4-2.png`. |
+| 3.8 | OK | With Find open on the left, the field showed `marker` and “1 of 17”. A single click inside the right pane changed the count to “1 of 3” without retyping. The left highlight cleared and the right pane highlighted its third line. `3-8-left.png`, `3-8-right.png`. |
+| 5.6 | Fail | Verified both windows on the test session and counted two entries in the Window menu. No drag preceded ⌘Q. The process exited about 0.11 s after the shortcut was requested. Reopened with the preparation command, retaining preferences. Only one window returned, on `Local · wooloo-ui-test`; the Window menu listed one entry and disabled Merge All Windows. `5-6-before.png`, `5-6-restored.png`. |
+| 7.2 | Fail | After `hc server stop`, the sidebar indicator still said “Connected”, the pane said “This tab has no panes”, and the status bar said “Connecting terminal…”. The same state remained after ten seconds. `hc ls` returned zero live terminals and the original pane remained unavailable for input. A fresh zsh appeared without relaunching wooloo and printed `retest-recovered` from keyboard input. `7-2-ten-seconds.png`, `7-2-after-ls.png`, `7-2-fresh-input.png`. |
+
+### Local verification after the fixes
+
+2026-11-20, working tree based on `09d6d0a`, macOS 26.6.2, hc 0.1.21. Screenshots are in `/private/tmp/wooloo-core-review-shots/repair`.
+
+| Case | Result | Observation |
+|------|--------|-------------|
+| 3.4 | OK | On both attempts, typing immediately after ⌘F put the complete word in the field. Closing with Escape and repeating showed `marker`, 1 of 17. `find-1.png`, `find-2.png`. |
+| 5.6 | OK | After ⌘Q and relaunch, Window listed two wooloo windows, both on the isolated connection. `restored.png`, `restored-second.png`. |
+| 7.2 | OK for a wooloo-created shell | Ten seconds after stop, the sidebar and status bar showed Disconnected and the pane said it was waiting for the named core. After `hc ls`, the same address (`t1q`) accepted input and printed `recovered-original-pane`. Core starts a replacement shell on a kept terminal after an explicit stop. External terminals use their creator’s keep policy. `disconnected.png`, `recovered.png`. |
+
+Review of these fixes: the ⌘F field, the Disconnected and empty states and `keep` for terminals wooloo creates are kept. Two parts were left out. Reconnecting straight to the core's socket (read from hc's `core.lock`) depended on an hc-internal file and stopped wooloo from restarting a core that went away, so wooloo again reconnects through `hc connect`. Registering `NSQuitAlwaysKeepsWindows` overrode the system's quit setting for every user; 5.6 now expects that setting to be followed. Retest 3.4 and 7.2 with the next commit.
 
 ## Cleanup
 
