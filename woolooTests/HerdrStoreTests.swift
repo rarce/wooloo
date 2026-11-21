@@ -1846,6 +1846,36 @@ final class HerdrStoreTests: XCTestCase {
         }
     }
 
+    /// File → New Window opens the connection of the window in front, not the last local Herdr
+    /// session, which may be another session (such as `default` beside a herdr-core window).
+    func testANewWindowOpensTheFrontWindowsConnection() throws {
+        let suite = "connections-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let notifier = HerdrNotifier()
+        defer { notifier.reset() }
+        let first = HerdrDestinations(notifier: notifier)
+        first.restoreWindow("", defaults: defaults)
+        first.configureInitialSession("front-session")
+        first.start()
+        defer { first.stop() }
+        first.becameFrontmost()
+
+        let second = HerdrDestinations(notifier: notifier)
+        second.becameFrontmost()  // A window not yet running does not count.
+        second.restoreWindow("", defaults: defaults)
+        defer { second.stop() }
+        XCTAssertEqual(second.stores.map(\.sessionName), ["front-session"])
+        XCTAssertEqual(second.active.sessionName, "front-session")
+        XCTAssertFalse(second.active === first.active, "Each window has its own store")
+
+        first.stop()
+        let third = HerdrDestinations(notifier: notifier)
+        third.restoreWindow("", defaults: defaults)
+        defer { third.stop() }
+        XCTAssertNotEqual(third.active.sessionName, "front-session", "No window in front: the usual default")
+    }
+
     func testNewProfilesRemainAvailableWithoutAutomaticallyOpeningConnections() async {
         let notifier = HerdrNotifier()
         let destinations = HerdrDestinations(store: store, notifier: notifier)

@@ -231,3 +231,28 @@ final class CoreTerminalInputTests: XCTestCase {
                        "Text that is already reversed stays reversed, bold and underlined")
     }
 }
+
+/// Opening the terminal find bar takes the keyboard from the terminal at once: SwiftUI focuses
+/// the field only after it shows it, and keys typed meanwhile must not reach the shell.
+@MainActor
+final class TerminalFindBarFocusTests: XCTestCase {
+    func testOpeningTheBarTakesTheKeyboardFromTheTerminal() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: .titled,
+                              backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let terminal = HerdrTerminalTextView(usingTextLayoutManager: false)
+        window.contentView = terminal
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        XCTAssertTrue(TerminalFindBar.releaseKeyboard(in: window) === terminal, "Kept to give it back on close")
+        XCTAssertFalse(window.firstResponder === terminal)
+        terminal.claimKeyboardFocusIfIdle()
+        XCTAssertFalse(window.firstResponder === terminal, "Keys typed before the field shows must not reach the shell")
+        XCTAssertNil(TerminalFindBar.releaseKeyboard(in: window), "Nothing to take when the terminal lacks it")
+        XCTAssertTrue(window.makeFirstResponder(terminal), "The bar gives it back on close")
+        window.makeFirstResponder(nil)
+        terminal.claimKeyboardFocusIfIdle()
+        XCTAssertTrue(window.firstResponder === terminal, "Once given back, it claims the keyboard as before")
+        XCTAssertNil(TerminalFindBar.releaseKeyboard(in: nil))
+    }
+}

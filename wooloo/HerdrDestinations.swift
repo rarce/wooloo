@@ -105,6 +105,8 @@ final class HerdrDestinations: ObservableObject {
     private var restorationFailed = false
     private var hasWindowClaim = false
     private static var claimedWindows: Set<String> = []
+    /// The window last brought to the front: a new window opens its connection.
+    private static weak var frontmost: HerdrDestinations?
     private(set) var isRunning = false
     private var subscriptions: [ObjectIdentifier: AnyCancellable] = [:]
     private var catalogSubscription: AnyCancellable?
@@ -169,9 +171,23 @@ final class HerdrDestinations: ObservableObject {
                 active.setDestinationEnabled(false, reason: "No connections are open in this window.")
             }
             lastLocal = stores.first { $0.machine == nil && $0.backendKind == .tui }
+        } else if let source = Self.frontmost, source !== self, source.isRunning, source.isActiveDestinationOpen {
+            // A new window, such as File → New Window, opens the connection of the window in
+            // front rather than the last local Herdr session, which may be another session.
+            let store = makeStore(source.descriptor(source.active))
+            stores = [store]
+            active = store
+            lastLocal = store.machine == nil && store.backendKind == .tui ? store : nil
         }
         persistWindow()
         return key
+    }
+
+    /// Records that this window came to the front. A window counts once it runs: a new window
+    /// comes to the front before it reads the connection of the one it was opened from.
+    func becameFrontmost() {
+        guard isRunning else { return }
+        Self.frontmost = self
     }
 
     private func makeStore(_ descriptor: HerdrWindowConnection) -> HerdrStore {
@@ -232,6 +248,7 @@ final class HerdrDestinations: ObservableObject {
             hasWindowClaim = true
         }
         isRunning = true
+        if Self.frontmost == nil || nativeWindow?.isKeyWindow == true { Self.frontmost = self }
         if catalogSubscription == nil, let pool {
             catalogSubscription = pool.profiles.sink { [weak self] profiles in
                 guard let self, !requiresFreshCatalog else { return }
@@ -262,6 +279,7 @@ final class HerdrDestinations: ObservableObject {
             }
         }
         isRunning = false
+        if Self.frontmost === self { Self.frontmost = nil }
         acknowledgeTask?.cancel()
         navigation = UUID()
         notifier.unregister(windowID)
@@ -519,7 +537,19 @@ struct DestinationWindowObserver: NSViewRepresentable {
             super.init(frame: .zero)
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-        override func viewDidMoveToWindow() { destinations.nativeWindow = window }
+        nonisolated(unsafe) private var keyObserver: NSObjectProtocol?
+        override func viewDidMoveToWindow() {
+            destinations.nativeWindow = window
+            if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+            keyObserver = window.map { window in
+                NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window,
+                                                       queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.destinations.becameFrontmost() }
+                }
+            }
+            if window?.isKeyWindow == true { destinations.becameFrontmost() }
+        }
+        deinit { if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) } }
     }
 }
 

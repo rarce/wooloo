@@ -277,9 +277,10 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
 
     // MARK: - Commands
 
-    /// Starts a shell terminal filed under `space`.
+    /// Starts a shell terminal filed under `space`. `keep` has the core put a fresh shell at
+    /// the same address when the program is lost, so a pane comes back after the core restarts.
     private func run(in space: String, cwd: String?) throws -> String {
-        var params: [String: Any] = ["no_parent": true, "labels": [CoreStructure.spaceLabel: space]]
+        var params: [String: Any] = ["no_parent": true, "keep": true, "labels": [CoreStructure.spaceLabel: space]]
         if let cwd { params["cwd"] = cwd }
         return try connection().call("terminal.run", params, as: CoreTerminal.self).address
     }
