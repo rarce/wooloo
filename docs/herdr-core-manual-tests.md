@@ -242,6 +242,17 @@ Review of this run: 3.4 (the terminal took the keyboard back before the field sh
 
 Review of these fixes: the ⌘F field, the Disconnected and empty states and `keep` for terminals wooloo creates are kept. Two parts were left out. Reconnecting straight to the core's socket (read from hc's `core.lock`) depended on an hc-internal file and stopped wooloo from restarting a core that went away, so wooloo again reconnects through `hc connect`. Registering `NSQuitAlwaysKeepsWindows` overrode the system's quit setting for every user; 5.6 now expects that setting to be followed. Retest 3.4 and 7.2 with the next commit.
 
+### Retest at `6e9d04c`
+
+2026-11-21 to 2026-11-22 · **4 OK, 0 Fail, 0 Partial, 0 Not run.** Screenshots are in `/private/tmp/wooloo-core-review-shots/retest2`.
+
+| Case | OK, Fail, Partial or Not run | Notes and screenshots |
+|------|-----------------------------|-----------------------|
+| 3.4 | OK | On both attempts, typing immediately after ⌘F put all of `marker` in Find and left the shell prompt clear. Both started at 1 of 301. Return moved to 2 of 301 and Shift-Return returned to 1 of 301. Escape closed Find between attempts. `3-4-first.png`, `3-4-second.png`. |
+| 5.6 | OK | Desktop & Dock showed “Close windows when quitting an application” on. The Window menu listed two windows before ⌘Q and one after relaunch, as expected. The restored window showed `Local · wooloo-ui-test` and accepted `echo restored-input`. `5-6-before.png`, `5-6-restored.png`. |
+| 7.2 | OK | Stopped the isolated core with the wooloo-created pane `t1s` selected. By the first observation the sidebar already said Connected, the status bar showed `Local · wooloo-ui-test Space`, and the pane showed a shell. The same state persisted ten seconds later. No disconnected frame was captured. Before any further hc command, the pane accepted `echo original-pane-recovered`. A subsequent `hc read t1s` confirmed its output at the original address. `7-2-stop.png`, `7-2-ten.png`, `7-2-input.png`. |
+| Extra · normal exit | OK | Typed `exit` and Return in `t1s`. Its tab closed, leaving one zsh tab. `hc ls` showed only `t1q` live and one finished terminal. `extra-exit.png`. |
+
 ## Cleanup
 
 ```sh
