@@ -1,6 +1,7 @@
 import Foundation
 import GhosttyVt
 #if canImport(ImageIO)
+import Accelerate
 import CoreGraphics
 import ImageIO
 #endif
@@ -86,12 +87,12 @@ enum VTSystem {
             context.clear(CGRect(x: 0, y: 0, width: width, height: height))
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             // Core Graphics draws premultiplied; the protocol's pixels are straight alpha.
-            for pixel in stride(from: 0, to: count, by: 4) {
-                let alpha = Int(buffer[pixel + 3])
-                guard alpha > 0, alpha < 255 else { continue }
-                for channel in 0..<3 {
-                    buffer[pixel + channel] = UInt8(min(255, (Int(buffer[pixel + channel]) * 255 + alpha / 2) / alpha))
-                }
+            var sourcePixels = vImage_Buffer(data: buffer, height: vImagePixelCount(height),
+                                             width: vImagePixelCount(width), rowBytes: width * 4)
+            var destinationPixels = sourcePixels
+            guard vImageUnpremultiplyData_RGBA8888(&sourcePixels, &destinationPixels, vImage_Flags(kvImageNoFlags)) == kvImageNoError else {
+                ghostty_free(allocator, buffer, count)
+                return false
             }
             out.pointee = GhosttySysImage(width: UInt32(width), height: UInt32(height), data: buffer, data_len: count)
             return true

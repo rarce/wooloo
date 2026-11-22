@@ -161,7 +161,7 @@ final class CoreTerminalInputTests: XCTestCase {
                                                     samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                                     colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         let pixels = try XCTUnwrap(bitmap.bitmapData)
-        for (index, byte) in [255, 0, 0, 255, 0, 0, 255, 255].enumerated() { pixels[index] = UInt8(byte) }
+        for (index, byte) in [255, 0, 0, 255, 0, 0, 128, 128].enumerated() { pixels[index] = UInt8(byte) }
         func shown(_ data: Data?) throws -> TerminalImage? {
             let terminal = try terminal()
             let payload = try XCTUnwrap(data).base64EncodedString()
@@ -172,7 +172,7 @@ final class CoreTerminalInputTests: XCTestCase {
         let png = try XCTUnwrap(try shown(bitmap.representation(using: .png, properties: [:])))
         XCTAssertEqual([png.width, png.height], [2, 1])
         XCTAssertEqual(png.format, .rgba)
-        XCTAssertEqual(Array(png.pixels), [255, 0, 0, 255, 0, 0, 255, 255])
+        XCTAssertEqual(Array(png.pixels), [255, 0, 0, 255, 0, 0, 255, 128])
         // The same pixels in formats ImageIO also reads are refused: the protocol's f=100 is PNG.
         XCTAssertNil(try shown(bitmap.representation(using: .tiff, properties: [:])), "TIFF")
         XCTAssertNil(try shown(bitmap.representation(using: .gif, properties: [:])), "GIF")
