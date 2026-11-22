@@ -238,6 +238,13 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         let (connection, channel, bytes, accepted, redraw) = lock.withLock { () -> (CoreConnection?, UInt32?, Data?, Bool, Bool) in
             guard let attachment = attachments[paneID] else { return (nil, nil, nil, false, false) }
             let emulator = attachment.emulator
+            func deliver(_ bytes: Data?, accepted: Bool, redraw: Bool) -> (CoreConnection?, UInt32?, Data?, Bool, Bool) {
+                if attachment.draining {
+                    if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(.bytes(bytes)) }
+                    return (nil, nil, nil, true, redraw)
+                }
+                return (self.connection, attachment.channel, bytes, accepted, redraw)
+            }
             let bytes: Data?
             switch event {
             case .mouse(let mouse):
@@ -277,11 +284,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     }
                     return (nil, nil, nil, true, true)
                 }
-                if attachment.draining {
-                    if let bytes = input.bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(.bytes(bytes)) }
-                    return (nil, nil, nil, true, input.scrolled)
-                }
-                return (self.connection, attachment.channel, input.bytes, true, input.scrolled)
+                return deliver(input.bytes, accepted: true, redraw: input.scrolled)
             case .text(let text): bytes = Data(text.utf8)
             case .paste(let text): bytes = emulator.encodePaste(text)
             case .key(let name): bytes = emulator.encodeKey(name)
@@ -299,11 +302,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             if !emulator.isAtBottom { emulator.scrollToBottom(); moved = true }
             if attachment.highlight != nil { attachments[paneID]?.highlight = nil; moved = true }
             if moved { dirty = true }
-            if attachment.draining {
-                if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(.bytes(bytes)) }
-                return (nil, nil, nil, true, moved)
-            }
-            return (self.connection, attachment.channel, bytes, false, moved)
+            return deliver(bytes, accepted: false, redraw: moved)
         }
         if redraw { wake.signal() }
         guard let connection, let channel, let bytes, !bytes.isEmpty else { return accepted }

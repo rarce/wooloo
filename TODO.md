@@ -38,7 +38,6 @@ Left from the review of PR #159.
 - [ ] A find running when the pane's attachment is replaced (activation, a reattach) goes on with the new emulator, which has no search, and reports no results. Notice the channel change and search again.
 - [ ] A selected match that scrolls out of view loses its highlight for good: `drain` follows the match only while a highlight is set, so scrolling it back shows it plain while the bar still counts it. Keep following while a search is active.
 - [ ] Each change of window focus attaches afresh (active ↔ observing), replaying `attachHistory` lines per pane and losing that pane's scrollback position and find highlight. Needs a core call that switches an attachment's mode in place.
-- [ ] `CoreTerminalPresentation.sendInput` repeats the hold-while-draining logic in two branches; share it.
 - [ ] The RESIZE frame's wire format is built in two files; keep it in `CoreProtocol` beside `CoreFrame.credit`.
 - [ ] With the core stopped (`hc server stop`), the sidebar still said Connected while the pane said "Connecting terminal…" (manual test 7.2 at `d2187b0`). Show the connection as disconnected while the core is gone.
 - [ ] Quitting with ⌘Q hung for over 3 s in `-[NSApplication terminate:]`, with AppKit resolving a drag's promised data (`CFPasteboardResolveAllPromisedData` → `NSFilePromiseProvider`), after a tab drag to another Space that moved nothing (manual tests 6.1 and 7.4 at `d2187b0`; the drag was synthetic, from Computer Use). Check whether a real drag that ends without a drop does the same.
