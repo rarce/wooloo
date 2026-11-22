@@ -255,13 +255,13 @@ Review of these fixes: the ⌘F field, the Disconnected and empty states and `ke
 
 ### SSH to OrbStack on 2026-11-22
 
-Tested application code at `bd96a05` against a Debian arm64 container with herdr-core 0.1.21 and session `wooloo-ui-test`. The GUI connection attempt used the keyboard-fix build at `6581864`. All four SSH cases were partially verified. Two second-Mac cases were not run. The service checks used a test host process and produced logs rather than window screenshots.
+Tested application code at `bd96a05` against a Debian arm64 container with herdr-core 0.1.21 and session `wooloo-ui-test`. The initial GUI connection attempt used `6581864`. The loopback GUI checks used the drag-review build with application code at `d13a3e1`. Two SSH cases passed and two were partially verified. Two second-Mac cases were not run. GUI screenshots are in `/private/tmp/wooloo-core-review-shots/orbstack`. The separate service checks produced logs.
 
 | Case | Result | Observation |
 |---|---|---|
-| 8.1 | Partial | Added the container profile in Manage Connections. The direct OrbStack hostname gave the app “No route to host”. Via a loopback SSH forward, Wooloo's installer installed the pinned executable at `/home/review/.local/bin/herdr-core`. Wooloo's backend then created a Space and read a fixture through its remote terminal. The install confirmation was not exercised in the GUI. |
-| 8.2 | Partial | The window store opened remote vim on /etc/services, observed mouse reporting, sent click, arrow and wheel input, and returned to the shell after :q. Its search found at least 30 remote markers, and its terminal surface contained a kitty PNG. Physical gestures, the find field and the drawn image were not checked visually. |
-| 8.3 | Partial | The file and repository services used by the two panels found the remote Git root and read the expected fixture bytes. The visible panels were not checked. |
+| 8.1 | Pass | The direct OrbStack hostname produced “No route to host” in the app. Added the host with a loopback SSH forward and session `wooloo-ui-test`. Removed the initially failed connection from the window to expose the install action on the saved profile. On a clean remote account, confirmed the GUI installation, saw the 0.1.21 installed notice, reopened the profile and created a remote Space. See `ssh-connected.png`. |
+| 8.2 | Partial | Opened remote vim on /etc/services, clicked, dragged to select and scrolled to later service entries. See `ssh-vim.png`. Separate store checks found at least 30 remote markers and a kitty PNG on the terminal surface. The Mac locked before the final visual image and find-field checks. |
+| 8.3 | Pass | Opened `/home/reviewui/visible-remote-file.txt` in the editor. The Changes panel showed it modified and showed the remote branch `review`. The independent service check verified the fixture contents and Git root. See `ssh-file-and-git.png`. |
 | 8.4 | Partial | With a real remote pane attached, closed the loopback SSH forward for 30 seconds. The window's store reported disconnection, reconnected automatically and presented the same pane ID. The test observed store and surface state directly. |
 | 9.1–9.2 | Not run | A second Mac was unavailable for this run. |
 
