@@ -211,6 +211,43 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual(resizes(), before, "A window in the background never sends its size")
     }
 
+    func testRefusedActivationWaitsBeforeRetrying() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("watching") { attachedServer() != nil }
+        core.update { $0.overrides["terminal.attach"] = { _ in nil } }
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("first refusal") { core.callsTo("terminal.attach").count >= 2 }
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 2)
+        core.update { $0.overrides["terminal.attach"] = nil }
+        await waitUntil("retry succeeds") { core.callsTo("terminal.attach").count >= 3 }
+    }
+
+    func testReleaseOfASwallowedPressStaysLocalAfterPromotion() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("watching") { attachedServer() != nil && store.surface != nil }
+        let (server, watching) = try XCTUnwrap(attachedServer())
+        server.send(Data((1...90).map { "line \($0)" }.joined(separator: "\r\n").utf8), on: watching)
+        await waitUntil("output drawn") { store.surface?.cells.row(0).first?.symbol == "l" }
+        let stream = try XCTUnwrap(store.surfaceStream)
+        XCTAssertTrue(stream.sendInput(.mouse(.init(kind: .scrollUp, column: 0, row: 0, modifiers: 0, lines: 10)), to: "t1"))
+        server.send(Data("\u{1b}[?1000h\u{1b}[?1006h".utf8), on: watching)
+        await waitUntil("mouse reporting") { store.surface?.mouseReportingPaneIDs.contains("t1") == true }
+        XCTAssertTrue(stream.sendInput(.mouse(.init(kind: .down(0), column: 2, row: 1, modifiers: 0, lines: 1)), to: "t1"))
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("promoted") { server.recordedFrames().contains { $0.channel == watching && $0.kind == .close } }
+        store.sendMouse(.init(kind: .up(0), column: 2, row: 1, modifiers: 0, lines: 1), to: "t1")
+        store.sendText("after", to: "t1")
+        await waitUntil("input flushed") { server.recordedFrames().contains { $0.payload == Data("after".utf8) } }
+        XCTAssertFalse(server.recordedFrames().contains { $0.payload == Data("\u{1b}[<0;3;2m".utf8) })
+    }
+
     /// A click into a watching pane can come before the window's activation, like keys: it is
     /// kept and sent once the pane attaches actively.
     func testAClickBeforeTheActivationIsNotLost() async throws {
