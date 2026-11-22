@@ -481,6 +481,23 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(seen.values, [["tab-t1"], ["tab-t1", "tab-t2"]])
     }
 
+    func testClosingTheEventSubscriptionDisconnectsTheWatcher() throws {
+        let core = FakeCore()
+        let watcher = backend(core).makeWatcher()
+        defer { watcher.cancel() }
+        let connected = expectation(description: "snapshot received")
+        let ended = expectation(description: "watcher reported disconnection")
+        Thread {
+            do { try watcher.run { _ in connected.fulfill() } }
+            catch CoreProtocolError.closed { ended.fulfill() }
+            catch { XCTFail("Unexpected watcher error: \(error)") }
+        }.start()
+        wait(for: [connected], timeout: 5)
+        let server = try XCTUnwrap(core.connections.first { $0.eventsChannel != nil })
+        server.closeChannel(try XCTUnwrap(server.eventsChannel))
+        wait(for: [ended], timeout: 2)
+    }
+
     // MARK: Live
 
     func testLiveCore() throws {
