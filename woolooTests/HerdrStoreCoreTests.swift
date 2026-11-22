@@ -214,6 +214,7 @@ final class HerdrStoreCoreTests: XCTestCase {
     /// A click into a watching pane can come before the window's activation, like keys: it is
     /// kept and sent once the pane attaches actively.
     func testAClickBeforeTheActivationIsNotLost() async throws {
+        core.terminals = [CoreTerminal(address: "t1", argv: ["/bin/zsh"], cols: 8, rows: 8, cwd: "/src/app")]
         let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
         store.requiresSurfaceForInput = true
         store.updateTerminalHost(theme: theme, focused: false)
@@ -227,8 +228,8 @@ final class HerdrStoreCoreTests: XCTestCase {
         // The program reports clicks (SGR), as vim with `mouse=a` does.
         server.send(Data("\u{1b}[?1000h\u{1b}[?1006hvim".utf8), on: watching)
         await waitUntil("reporting") { store.surface.map { $0.cells.row(0).prefix(3).map(\.symbol).joined() } == "vim" }
-        let press = Data("\u{1b}[<0;3;2M".utf8)
-        store.sendMouse(HerdrMouseEvent(kind: .down(0), column: 2, row: 1, modifiers: 0, lines: 0), to: "t1")
+        let press = Data("\u{1b}[<0;21;2M".utf8)
+        store.sendMouse(HerdrMouseEvent(kind: .down(0), column: 20, row: 1, modifiers: 0, lines: 0), to: "t1")
         await waitUntil("the click reaches the active stream") {
             self.core.connections.contains { server in
                 server.recordedFrames().contains { $0.channel != watching && $0.kind == .data && $0.payload == press }

@@ -67,7 +67,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     private var newestFindRequest: UInt64 = 0
     /// Keys typed into an observed terminal after the window became active, sent once the
     /// active attach replaces the observer.
-    private var heldInput: [String: [Data]] = [:]
+    private enum HeldInput {
+        case bytes(Data)
+        case mouse(HerdrMouseEvent)
+    }
+    private var heldInput: [String: [HeldInput]] = [:]
 
     private struct Attachment {
         let terminal: String
@@ -248,6 +252,15 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 default:
                     break
                 }
+                // Keep viewport coordinates until the active attach has sized the terminal.
+                if attachment.observing && emulator.isAtBottom && emulator.reportsMouse {
+                    switch mouse.kind {
+                    case .down, .drag, .up:
+                        heldInput[paneID, default: []].append(.mouse(mouse))
+                        return (nil, nil, nil, true, true)
+                    default: break
+                    }
+                }
                 let input = Self.mouseInput(mouse, to: emulator)
                 // A press that returned to the live screen is not reported, nor is the rest of it.
                 if case .down = mouse.kind, input.scrolled { attachments[paneID]?.swallowsClick = true }
@@ -258,14 +271,14 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     // Wheel reports reach windows in the background too, so they never do.
                     switch mouse.kind {
                     case .down, .up, .drag:
-                        if let bytes = input.bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
+                        if let bytes = input.bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(.bytes(bytes)) }
                     case .scrollUp, .scrollDown, .scrollLeft, .scrollRight:
                         break
                     }
                     return (nil, nil, nil, true, true)
                 }
                 if attachment.draining {
-                    if let bytes = input.bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
+                    if let bytes = input.bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(.bytes(bytes)) }
                     return (nil, nil, nil, true, input.scrolled)
                 }
                 return (self.connection, attachment.channel, input.bytes, true, input.scrolled)
@@ -277,7 +290,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 // The window attaches actively once it is active; keys typed meanwhile wait for
                 // that. Keys can come before the window's activation reaches here, and typing
                 // into a pane makes it active anyway, so held keys also start the active attach.
-                if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
+                if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(.bytes(bytes)) }
                 return (nil, nil, nil, true, true)
             }
             // Typing returns to the live screen, as in other terminals, at once even when the
@@ -287,7 +300,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             if attachment.highlight != nil { attachments[paneID]?.highlight = nil; moved = true }
             if moved { dirty = true }
             if attachment.draining {
-                if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(bytes) }
+                if let bytes, !bytes.isEmpty { heldInput[paneID, default: []].append(.bytes(bytes)) }
                 return (nil, nil, nil, true, moved)
             }
             return (self.connection, attachment.channel, bytes, false, moved)
@@ -613,7 +626,15 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         // Without RESIZE frames confirmed by both sides, an observer follows `size` events.
         let followsSizeEvents = observe && !(offersResizes && result.resizeNotifications == true)
         lock.withLock {
-            let swallowsClick = attachments[terminal]?.swallowsClick ?? false
+            let previous = attachments[terminal]
+            let swallowsClick = previous?.swallowsClick ?? false
+            if !observe, let previous, previous.observing {
+                // Both streams represent the same running program. The replay may arrive
+                // after queued clicks, so seed the active encoder with its last mouse modes.
+                for mode: UInt16 in [9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016] where previous.emulator.mode(mode) {
+                    emulator.write(Data("\u{1b}[?\(mode)h".utf8))
+                }
+            }
             attachments[terminal] = Attachment(terminal: terminal, channel: channel, emulator: emulator, rect: rect,
                                                observing: observe, followsSizeEvents: followsSizeEvents, swallowsClick: swallowsClick,
                                                grid: Self.blankGrid(cols: cols, rows: rows))
@@ -661,7 +682,13 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     attachments[terminal]?.draining = false
                     return nil
                 }
-                return held
+                guard let emulator = attachments[terminal]?.emulator else { return nil }
+                return held.compactMap { event in
+                    switch event {
+                    case .bytes(let bytes): return bytes
+                    case .mouse(let mouse): return Self.mouseInput(mouse, to: emulator).bytes
+                    }
+                }
             }
             guard let batch else { return }
             for bytes in batch {
