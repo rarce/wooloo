@@ -32,6 +32,13 @@ struct CoreFrame: Equatable, Sendable {
         return data
     }
 
+    static func resize(cols: Int, rows: Int, channel: UInt32) -> CoreFrame {
+        var payload = Data()
+        withUnsafeBytes(of: UInt16(clamping: cols).littleEndian) { payload.append(contentsOf: $0) }
+        withUnsafeBytes(of: UInt16(clamping: rows).littleEndian) { payload.append(contentsOf: $0) }
+        return CoreFrame(channel: channel, kind: .resize, payload: payload)
+    }
+
     static func credit(_ bytes: Int, channel: UInt32) -> CoreFrame {
         var payload = Data()
         withUnsafeBytes(of: UInt32(clamping: bytes).littleEndian) { payload.append(contentsOf: $0) }
