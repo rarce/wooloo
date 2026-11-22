@@ -175,12 +175,24 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     }
 
     func focus(tabID: String) {
-        lock.withLock {
-            if wantedTab != tabID { focusedPane = nil }
-            wantedTab = tabID
-            needsTree = true
+        reconcileSelection(tabID: tabID, paneID: nil)
+    }
+
+    func reconcileSelection(tabID: String, paneID: String?) {
+        let changed = lock.withLock {
+            if wantedTab != tabID {
+                wantedTab = tabID
+                focusedPane = paneID
+                needsTree = true
+            } else if let paneID, focusedPane != paneID {
+                focusedPane = paneID
+                dirty = true
+            } else {
+                return false
+            }
+            return true
         }
-        wake.signal()
+        if changed { wake.signal() }
     }
 
     @discardableResult
@@ -399,10 +411,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         let arrangement = try backend.arrangement(on: connection)
         let found = arrangement.structure.tab(wanted).map { arrangement.structure.spaces[$0.space].tabs[$0.tab].root }
         lock.withLock {
-            needsTree = false
-            lastTreeRead = Date()
             // The tree changed while it was read: a drag that started meanwhile wins.
             guard wantedTab == wanted, pendingRatio == nil else { return }
+            needsTree = false
+            lastTreeRead = Date()
             if let found {
                 if tab?.id != wanted { bootID = "core-\(wanted)-\(UUID().uuidString)" }
                 if tab?.id != wanted || tab?.root != found { dirty = true }
@@ -661,7 +673,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// Feeds what arrived to each emulator and composes the next surface, when anything changed.
     private func drain() -> HerdrSurface? {
         lock.withLock { () -> HerdrSurface? in
-            guard let tab else { return nil }
+            guard let tab, tab.id == wantedTab else { return nil }
             var changed = dirty
             for terminal in Array(attachments.keys) {
                 guard var attachment = attachments[terminal] else { continue }
