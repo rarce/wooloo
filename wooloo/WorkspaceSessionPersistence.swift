@@ -406,6 +406,7 @@ final class WoolooAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if WoolooApp.isHostingTests { return .terminateNow }
+        WoolooDragPasteboard.discardOwnedDrag(on: NSPasteboard(name: .drag))
         guard !isFlushing else { return .terminateLater }
         isFlushing = true
         Task {
