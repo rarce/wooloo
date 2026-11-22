@@ -91,7 +91,7 @@ final class TerminalTabDropViewTests: XCTestCase {
         let draggingLocation: NSPoint
         let draggingDestinationWindow: NSWindow?
 
-        init(pasteboard: NSPasteboard, location: NSPoint, window: NSWindow) {
+        @MainActor init(pasteboard: NSPasteboard, location: NSPoint, window: NSWindow) {
             draggingPasteboard = pasteboard
             draggingLocation = location
             draggingDestinationWindow = window

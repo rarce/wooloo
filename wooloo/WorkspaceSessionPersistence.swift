@@ -495,7 +495,21 @@ final class SessionWindowView: NSView {
 final class WorkspaceSessionWindowDelegate: NSObject, NSWindowDelegate {
     private let store: WorkspaceDocumentStore
     private weak var window: NSWindow?
-    private weak var original: NSWindowDelegate?
+    /// NSObject may query forwarding outside the main actor. Serialize access to the
+    /// weak delegate without requiring those runtime hooks to hop to the main thread.
+    private final class ForwardingDelegate: @unchecked Sendable {
+        private let lock = NSLock()
+        private weak var value: NSWindowDelegate?
+        var delegate: NSWindowDelegate? {
+            get { lock.withLock { value } }
+            set { lock.withLock { value = newValue } }
+        }
+    }
+    private let forwarding = ForwardingDelegate()
+    private var original: NSWindowDelegate? {
+        get { forwarding.delegate }
+        set { forwarding.delegate = newValue }
+    }
     private var isFlushing = false
 
     init(store: WorkspaceDocumentStore) { self.store = store }
@@ -514,10 +528,11 @@ final class WorkspaceSessionWindowDelegate: NSObject, NSWindowDelegate {
     }
 
     override func responds(to selector: Selector!) -> Bool {
-        super.responds(to: selector) || (original?.responds(to: selector) ?? false)
+        if super.responds(to: selector) { return true }
+        return forwarding.delegate?.responds(to: selector) ?? false
     }
 
-    override func forwardingTarget(for selector: Selector!) -> Any? { original }
+    override func forwardingTarget(for selector: Selector!) -> Any? { forwarding.delegate }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !isFlushing, original?.windowShouldClose?(sender) != false else { return false }
@@ -552,7 +567,9 @@ struct EditorScrollAnchor: Codable, Equatable {
 }
 
 /// Keeps the viewport with the document, independently of the editor view's lifetime.
-final class EditorSessionCoordinator: TextViewCoordinator {
+@MainActor
+@preconcurrency
+final class EditorSessionCoordinator: @preconcurrency TextViewCoordinator {
     private weak var controller: TextViewController?
     private var observer: NSObjectProtocol?
     private var restoration: (position: CGPoint, anchor: EditorScrollAnchor?)?
@@ -596,7 +613,7 @@ final class EditorSessionCoordinator: TextViewCoordinator {
         guard observer == nil else { return }
         clip.postsBoundsChangedNotifications = true
         observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
-            object: clip, queue: .main) { [weak self] _ in self?.report() }
+            object: clip, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.report() } }
     }
 
     /// An edit above the top moves the text under it without scrolling. Reported once the edit,
