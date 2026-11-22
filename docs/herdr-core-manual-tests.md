@@ -164,21 +164,6 @@ Both Macs connect to the same core (one locally, the other through section 8 poi
 
 ## Results
 
-### SSH to OrbStack on 2026-11-22
-
-Tested application code at `bd96a05` against a Debian arm64 container with herdr-core 0.1.21 and session `wooloo-ui-test`. The GUI connection attempt used the keyboard-fix build at `6581864`. SSH results comprise three partial checks and one not run. Two second-Mac cases were not run. The service checks used a test host process and produced logs rather than window screenshots.
-
-| Case | Result | Observation |
-|---|---|---|
-| 8.1 | Partial | Added the container profile in Manage Connections. The direct OrbStack hostname gave the app “No route to host”. Via a loopback SSH forward, Wooloo's installer installed the pinned executable at `/home/review/.local/bin/herdr-core`. Wooloo's backend then created a Space and read a fixture through its remote terminal. The install confirmation was not exercised in the GUI. |
-| 8.2 | Not run | Remote terminal I/O worked in the service check. The manual vim, find and kitty image interactions remain unverified. |
-| 8.3 | Partial | The file and repository services used by the two panels found the remote Git root and read the expected fixture bytes. The visible panels were not checked. |
-| 8.4 | Partial | With a real remote pane attached, closed the loopback SSH forward for 30 seconds. The window's store reported disconnection, reconnected automatically and presented the same pane ID. The test observed store and surface state directly. |
-| 9.1–9.2 | Not run | A second Mac was unavailable for this run. |
-
-Local logs: `/private/tmp/wooloo-ssh-probe.log` and `/private/tmp/wooloo-ssh-recovery2.log`.
-
-
 Previous run: `50090e9`, 2026-11-19 — 15 OK, 2 failed (3.4 typing right after ⌘F reached the shell; 5.1 a new window opened `default`), 7 partial, 18 not run. Both failures are addressed in the commit after it.
 
 Attempt: `d03fa6d`, 2026-11-20 — no results. Run through `codex exec` with stdin closed, Computer Use was denied access to the app, so no case that needs the window could be checked. Run it from an interactive Codex session and approve access to wooloo when asked.
@@ -267,6 +252,20 @@ Review of these fixes: the ⌘F field, the Disconnected and empty states and `ke
 | 5.6 | OK | Desktop & Dock showed “Close windows when quitting an application” on. The Window menu listed two windows before ⌘Q and one after relaunch, as expected. The restored window showed `Local · wooloo-ui-test` and accepted `echo restored-input`. `5-6-before.png`, `5-6-restored.png`. |
 | 7.2 | OK | Stopped the isolated core with the wooloo-created pane `t1s` selected. By the first observation the sidebar already said Connected, the status bar showed `Local · wooloo-ui-test Space`, and the pane showed a shell. The same state persisted ten seconds later. No disconnected frame was captured. Before any further hc command, the pane accepted `echo original-pane-recovered`. A subsequent `hc read t1s` confirmed its output at the original address. `7-2-stop.png`, `7-2-ten.png`, `7-2-input.png`. |
 | Extra · normal exit | OK | Typed `exit` and Return in `t1s`. Its tab closed, leaving one zsh tab. `hc ls` showed only `t1q` live and one finished terminal. `extra-exit.png`. |
+
+### SSH to OrbStack on 2026-11-22
+
+Tested application code at `bd96a05` against a Debian arm64 container with herdr-core 0.1.21 and session `wooloo-ui-test`. The GUI connection attempt used the keyboard-fix build at `6581864`. SSH results comprise three partial checks and one not run. Two second-Mac cases were not run. The service checks used a test host process and produced logs rather than window screenshots.
+
+| Case | Result | Observation |
+|---|---|---|
+| 8.1 | Partial | Added the container profile in Manage Connections. The direct OrbStack hostname gave the app “No route to host”. Via a loopback SSH forward, Wooloo's installer installed the pinned executable at `/home/review/.local/bin/herdr-core`. Wooloo's backend then created a Space and read a fixture through its remote terminal. The install confirmation was not exercised in the GUI. |
+| 8.2 | Not run | Remote terminal I/O worked in the service check. The manual vim, find and kitty image interactions remain unverified. |
+| 8.3 | Partial | The file and repository services used by the two panels found the remote Git root and read the expected fixture bytes. The visible panels were not checked. |
+| 8.4 | Partial | With a real remote pane attached, closed the loopback SSH forward for 30 seconds. The window's store reported disconnection, reconnected automatically and presented the same pane ID. The test observed store and surface state directly. |
+| 9.1–9.2 | Not run | A second Mac was unavailable for this run. |
+
+Local logs: `/private/tmp/wooloo-ssh-probe.log` and `/private/tmp/wooloo-ssh-recovery2.log`.
 
 ## Cleanup
 
