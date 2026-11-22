@@ -1259,9 +1259,19 @@ final class HerdrTerminalTextView: NSTextView {
         if let keyWindowObserver { NotificationCenter.default.removeObserver(keyWindowObserver) }
     }
 
+    /// Set while a find bar is taking the keyboard from this terminal: the field gets it only
+    /// once SwiftUI shows it, and until then the window has no text input this view would defer to.
+    var yieldsKeyboard = false
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { yieldsKeyboard = false }
+        return became
+    }
+
     /// Takes keyboard focus unless another text input in this window is being used.
     func claimKeyboardFocusIfIdle() {
-        guard let window, window.firstResponder !== self else { return }
+        guard let window, window.firstResponder !== self, !yieldsKeyboard else { return }
         if let view = window.firstResponder as? NSView, view.window === window,
            view is NSTextInputClient, !(view is HerdrTerminalTextView) { return }
         window.makeFirstResponder(self)

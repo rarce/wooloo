@@ -294,6 +294,8 @@ struct PickerField: NSViewRepresentable {
     let onSubmit: () -> Void
     let onCancel: () -> Void
 
+    var prepareField: ((NSTextField) -> Void)? = nil
+
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSTextField {
@@ -305,7 +307,8 @@ struct PickerField: NSViewRepresentable {
         field.cell?.usesSingleLineMode = true
         field.placeholderString = placeholder
         field.delegate = context.coordinator
-        DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
+        if let prepareField { prepareField(field) }
+        else { DispatchQueue.main.async { field.window?.makeFirstResponder(field) } }
         return field
     }
 

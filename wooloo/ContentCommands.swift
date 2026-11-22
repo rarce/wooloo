@@ -98,9 +98,10 @@ final class ContentWindowModel: ObservableObject {
     /// Bumped to reload the explorer and repository views.
     @Published var fileRefreshVersion = 0
     @Published var showsSearchTab = false
-    /// The find bar over a herdr-core terminal, and a count bumped each time it is asked for.
+    /// Whether the find bar over a herdr-core terminal is visible.
     @Published var showsTerminalFind = false
-    @Published var terminalFindRequest = 0
+    /// The terminal that had the keyboard when the find bar opened, which gets it back on close.
+    let terminalFindReturnFocus = TerminalFindBar.WeakView()
     weak var commandStore: HerdrStore?
     var renameConnection: HerdrActionConnection?
     var closeConnection: HerdrActionConnection?
@@ -154,6 +155,9 @@ struct ContentCommandEffects {
     var copy: (String) -> Void = { AppActions.copy($0) }
     var reveal: (String) -> Void = { AppActions.reveal($0) }
     var beep: () -> Void = { NSSound.beep() }
+    /// Takes the keyboard from the window's terminal, returning that terminal. `ContentView`
+    /// passes its own window: the command may run while another window is key.
+    var releaseTerminalKeyboard: @MainActor () -> NSView? = { TerminalFindBar.releaseKeyboard(in: NSApp.keyWindow) }
     var canCheckForUpdates: @MainActor () -> Bool = { AppUpdater.shared.canCheckForUpdates }
     var checkForUpdates: @MainActor () -> Void = { AppUpdater.shared.checkForUpdates() }
 }
@@ -339,8 +343,11 @@ struct ContentCommands {
             }
         case .findInTerminal:
             guard herdr.findsInTerminal else { return }
+            // Move the keyboard before returning from the shortcut, even on the first search.
+            let terminal = effects.releaseTerminalKeyboard()
+            if terminal != nil || !window.showsTerminalFind { window.terminalFindReturnFocus.view = terminal }
             window.showsTerminalFind = true
-            window.terminalFindRequest &+= 1
+            if let field = window.terminalFindReturnFocus.field { field.window?.makeFirstResponder(field) }
         case .copyPaneDirectory, .revealPaneDirectory:
             guard let cwd = herdr.selectedPanes.first(where: { $0.id == herdr.selectedPaneID })?.cwd else { return }
             if command == .copyPaneDirectory { effects.copy(cwd) } else { effects.reveal(cwd) }

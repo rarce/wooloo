@@ -304,6 +304,8 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(arranged.spaces.first?.tabs.map(\.id).last, tab)
         XCTAssertEqual(arranged.spaces.first?.tabs.last?.root,
                        .split(.down, ratio: 0.5, first: .terminal("t2"), second: .terminal("t3")))
+        XCTAssertTrue(core.callsTo("terminal.run").allSatisfy { $0.params["keep"] as? Bool == true },
+                      "A Space, tab or split created by wooloo can recover its shell after a core stop")
         let afterSplit = try backend.snapshot()
         XCTAssertEqual(afterSplit.focusedPaneID, "t3", "The window follows the new pane")
         XCTAssertNil(try backend.snapshot().focusedPaneID, "only once")
