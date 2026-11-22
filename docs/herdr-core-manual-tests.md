@@ -164,16 +164,6 @@ Both Macs connect to the same core (one locally, the other through section 8 poi
 
 ## Results
 
-### Drag and quit on 2026-11-22
-
-Baseline `bd96a05`, session `wooloo-ui-test`, herdr-core 0.1.21. One failure and one partial result. Evidence is in `/private/tmp/wooloo-core-review-shots/pending`.
-
-| Case | Result | Observation |
-|---|---|---|
-| 7.4 | Fail | Dragged the tab away from the tab bar, cancelled and pressed ⌘Q. The process stayed alive. A one-second sample found the main thread in AppKit termination resolving a file promise on all 881 samples. See `quit-sample.txt`. |
-| 6.1 | Partial | On the candidate fix, created a second tab and Space. Computer Use initiated a drag from the second tab toward the other Space. The original Space still showed both tabs. Physical drop remains unverified. |
-
-
 Previous run: `50090e9`, 2026-11-19 — 15 OK, 2 failed (3.4 typing right after ⌘F reached the shell; 5.1 a new window opened `default`), 7 partial, 18 not run. Both failures are addressed in the commit after it.
 
 Attempt: `d03fa6d`, 2026-11-20 — no results. Run through `codex exec` with stdin closed, Computer Use was denied access to the app, so no case that needs the window could be checked. Run it from an interactive Codex session and approve access to wooloo when asked.
@@ -228,6 +218,15 @@ Review of this run: 3.4 (the terminal took the keyboard back before the field sh
 | 8.4 | Not run | No SSH host available. |
 | 9.1 | Not run | No second Mac available. |
 | 9.2 | Not run | No second Mac available. |
+
+### Drag and quit on 2026-11-22
+
+Baseline `bd96a05`, session `wooloo-ui-test`, herdr-core 0.1.21. One failure and one partial result. Evidence is in `/private/tmp/wooloo-core-review-shots/pending`.
+
+| Case | Result | Observation |
+|---|---|---|
+| 7.4 | Fail | Dragged the tab away from the tab bar, cancelled and pressed ⌘Q. The process stayed alive. A one-second sample found the main thread in AppKit termination resolving a file promise on all 881 samples. See `quit-sample.txt`. |
+| 6.1 | Partial | On the candidate fix, created a second tab and Space. Computer Use initiated a drag from the second tab toward the other Space. The original Space still showed both tabs. Physical drop remains unverified. |
 
 ### Retest at `09d6d0a`
 
