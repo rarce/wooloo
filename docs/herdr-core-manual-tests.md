@@ -166,6 +166,8 @@ Both Macs connect to the same core (one locally, the other through section 8 poi
 
 ### Agent keyboard input on 2026-11-22
 
+Retested the interrupt sequence in `6581864` against the same Codex session. Two targeted Control-C events returned to the zsh prompt. See `fixed-first-interrupt.png` and `fixed-second-interrupt.png`.
+
 Tested `bd96a05` with herdr-core 0.1.21 and Codex 0.171.0. One case failed.
 Screenshots are in `/private/tmp/wooloo-core-review-shots/pending`.
 
