@@ -505,7 +505,7 @@ final class HerdrStore: ObservableObject {
     private var unreadHold: String?
     private func markShownTurnSeen() {
         if let unreadHold, unreadHold != selectedPaneID { self.unreadHold = nil }
-        guard backendKind == .core, terminalFocused, let coreBackend, let paneID = selectedPaneID, paneID != unreadHold,
+        guard backendKind == .core, terminalFocused == true, let coreBackend, let paneID = selectedPaneID, paneID != unreadHold,
               let rect = surface?.paneRects[paneID], rect.width > 0, rect.height > 0,
               snapshotValue?.agents.contains(where: { $0.paneID == paneID && $0.agentStatus == "done" }) == true,
               seenRequests.insert(paneID).inserted else { return }
@@ -551,7 +551,7 @@ final class HerdrStore: ObservableObject {
     /// The pane last sent a pane.focus, until a surface shows it focused (see `select(paneID:)`).
     private var requestedFocusPaneID: String?
     private var terminalTheme = WoolooTheme.named(WoolooTheme.fallbackID)!
-    private var terminalFocused = false
+    private var terminalFocused: Bool?
     /// Tests use an isolated pasteboard, leaving the user's clipboard untouched.
     var clipboardPasteboard = NSPasteboard.general
 
@@ -963,7 +963,11 @@ final class HerdrStore: ObservableObject {
                                     stream.resize(cols: store.surfaceCols, rows: store.surfaceRows,
                                                   cellWidth: store.cellWidth, cellHeight: store.cellHeight)
                                 }
-                                stream.updateHost(theme: store.terminalTheme, focused: store.terminalFocused)
+                                if let focused = store.terminalFocused {
+                                    stream.updateHost(theme: store.terminalTheme, focused: focused)
+                                } else if store.backendKind != .core {
+                                    stream.updateHost(theme: store.terminalTheme, focused: false)
+                                }
                                 if let tabID = store.selectedTabID {
                                     stream.focus(tabID: tabID)
                                 } else if let workspaceID = store.selectedWorkspaceID {

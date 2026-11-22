@@ -76,6 +76,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         var rect: HerdrRect
         /// Watching only: Core keeps the size another viewer set, and takes no input from here.
         var observing = false
+        var retryActivationAfter: TimeInterval = 0
         /// A watching stream whose core sends no RESIZE frames: it takes the size from `size`
         /// events instead.
         var followsSizeEvents = false
@@ -456,7 +457,14 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             }
         }
         for (terminal, attachment) in current where attachment.observing && (focused || typedInto.contains(terminal)) {
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now >= attachment.retryActivationAfter else { continue }
             try replace(terminal, attachment, observe: false)
+            lock.withLock {
+                if attachments[terminal]?.channel == attachment.channel {
+                    attachments[terminal]?.retryActivationAfter = now + 2
+                }
+            }
         }
         // A background window's stream watches instead once Core reports that another viewer
         // resized the terminal: a stream that is not watching hears of no other size, and only
@@ -593,8 +601,9 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         // Without RESIZE frames confirmed by both sides, an observer follows `size` events.
         let followsSizeEvents = observe && !(offersResizes && result.resizeNotifications == true)
         lock.withLock {
+            let swallowsClick = attachments[terminal]?.swallowsClick ?? false
             attachments[terminal] = Attachment(terminal: terminal, channel: channel, emulator: emulator, rect: rect,
-                                               observing: observe, followsSizeEvents: followsSizeEvents,
+                                               observing: observe, followsSizeEvents: followsSizeEvents, swallowsClick: swallowsClick,
                                                grid: Self.blankGrid(cols: cols, rows: rows))
             if !observe {
                 attachments[terminal]?.recordSent(rect)

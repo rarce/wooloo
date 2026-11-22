@@ -75,6 +75,18 @@ final class HerdrStoreCoreTests: XCTestCase {
 
     /// The first tab is chosen by the store when the state arrives, not by the user: the
     /// presentation still has to be told, or the pane stays on text with input withheld.
+    func testInitialAttachWaitsForTheWindowsFirstFocusReport() async throws {
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("tab chosen") { store.selectedTabID == "tab-t1" }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertTrue(core.callsTo("terminal.attach").isEmpty)
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
+        await waitUntil("active attach") { attachedServer() != nil }
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 1)
+        XCTAssertNil(core.callsTo("terminal.attach").first?.params["observe"])
+    }
+
     func testTheTabChosenOnConnectGoesLive() async throws {
         store.requiresSurfaceForInput = true
         store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
@@ -504,6 +516,7 @@ final class HerdrStoreCoreTests: XCTestCase {
     func testShowingADoneTurnMarksItSeenOnlyInFrontOfSomeone() async throws {
         core.terminals = [CoreTerminal(address: "t1", argv: ["claude"], cols: 100, rows: 30, cwd: "/src/app",
                                        status: CoreStatus(state: "done", app: "claude", msg: nil, title: nil), turn: 4)]
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: false)
         store.connect(toCore: "wooloo-ui-test")
         store.setPresentationActive(true)
         await waitUntil("connected") { store.isConnected }
