@@ -315,6 +315,8 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             }
             guard let step else { return nil }
             if step { break }
+            // Give input and rendering threads a turn between bounded searches.
+            Thread.sleep(forTimeInterval: 0.001)
         }
         let result = lock.withLock { () -> TerminalFindResult? in
             guard findGeneration == generation, let attachment = attachments[paneID] else { return nil }
@@ -670,7 +672,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     attachment.cursor = attachment.emulator.isAtBottom ? frame.cursor : nil
                     // A match highlight is in viewport cells: it follows the text that output,
                     // a scroll or a resize moved, and goes once the match is out of view.
-                    if attachment.highlight != nil { attachment.highlight = attachment.emulator.followMatch() }
+                    if attachment.emulator.isSearching { attachment.highlight = attachment.emulator.followMatch() }
                     changed = true
                 }
                 if let images = attachment.emulator.imagesIfChanged() {

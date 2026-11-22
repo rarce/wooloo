@@ -203,6 +203,15 @@ final class CoreTerminalInputTests: XCTestCase {
         terminal.endSearch()
     }
 
+    func testSelectedMatchBelowTheViewportReturnsWhenScrolledBack() throws {
+        let terminal = try terminal((1...80).map { "line \($0)" }.joined(separator: "\r\n"))
+        XCTAssertEqual(try XCTUnwrap(terminal.find("line 80")).start?.row, 23)
+        terminal.scroll(by: -5)
+        XCTAssertNil(terminal.followMatch())
+        terminal.scrollToBottom()
+        XCTAssertEqual(terminal.followMatch()?.start.row, 23)
+    }
+
     func testTheSelectedMatchFollowsNewOutput() throws {
         let terminal = try terminal((1...30).map { "line \($0)" }.joined(separator: "\r\n"))
         XCTAssertTrue(terminal.beginFind("line 29"))
