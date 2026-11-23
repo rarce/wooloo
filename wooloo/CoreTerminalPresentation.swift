@@ -479,7 +479,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             if let attachment = refreshed[terminal] {
                 if attachment.rect == rect {
                     if reassert && !attachment.observing {
-                        try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
+                        try? connection.send(CoreFrame.resize(cols: rect.width, rows: rect.height, channel: attachment.channel))
                     }
                     continue
                 }
@@ -488,7 +488,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     // only its place in the tab changes.
                     lock.withLock { attachments[terminal]?.rect = rect; dirty = true }
                     if reassert && !attachment.observing {
-                        try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
+                        try? connection.send(CoreFrame.resize(cols: rect.width, rows: rect.height, channel: attachment.channel))
                     }
                     continue
                 }
@@ -505,7 +505,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     attachments[terminal]?.grid = Self.blankGrid(cols: rect.width, rows: rect.height)
                     dirty = true
                 }
-                try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
+                try? connection.send(CoreFrame.resize(cols: rect.width, rows: rect.height, channel: attachment.channel))
                 continue
             }
             try attach(terminal, rect: rect, cell: size, colors: colors, observe: !focused, on: connection)
@@ -530,12 +530,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         attachments[terminal]?.grid = blankGrid(cols: size.cols, rows: size.rows)
     }
 
-    private static func resizeFrame(_ rect: HerdrRect, channel: UInt32) -> CoreFrame {
-        var payload = Data()
-        withUnsafeBytes(of: UInt16(clamping: rect.width).littleEndian) { payload.append(contentsOf: $0) }
-        withUnsafeBytes(of: UInt16(clamping: rect.height).littleEndian) { payload.append(contentsOf: $0) }
-        return CoreFrame(channel: channel, kind: .resize, payload: payload)
-    }
+
 
     /// Attaches to a terminal. A window that is not active when it attaches, such as one
     /// restored behind others at launch, only watches (`observe`): it does not take the

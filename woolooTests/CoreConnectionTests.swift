@@ -23,6 +23,12 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(Array(decoded[1].payload), [0x70, 0x11, 0x01, 0x00])
     }
 
+    func testResizeFrameEncodesClampedLittleEndianDimensions() {
+        XCTAssertEqual(CoreFrame.resize(cols: 300, rows: 1025, channel: 9),
+                       CoreFrame(channel: 9, kind: .resize, payload: Data([44, 1, 1, 4])))
+        XCTAssertEqual(CoreFrame.resize(cols: -1, rows: 70000, channel: 2).payload, Data([0, 0, 255, 255]))
+    }
+
     func testOversizedAndUnknownFramesAreRefused() {
         var decoder = CoreFrameDecoder()
         decoder.append(Data([1, 0, 0, 0, 0]) + Data([0, 0, 0, 2]))
