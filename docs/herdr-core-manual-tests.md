@@ -164,6 +164,18 @@ Both Macs connect to the same core (one locally, the other through section 8 poi
 
 ## Results
 
+### Agent keyboard input on 2026-11-22
+
+Retested the interrupt sequence in `6581864` against the same Codex session. The first targeted Control-C cleared the draft and left Codex at its empty prompt. The second returned to zsh. The first screenshot shows the prompt placeholder and no explicit quit hint. See `fixed-first-interrupt.png` and `fixed-second-interrupt.png`.
+
+Tested `bd96a05` with herdr-core 0.1.21 and Codex 0.171.0. One case failed.
+Screenshots are in `/private/tmp/wooloo-core-review-shots/pending`.
+
+| Case | Result | Observation |
+|---|---|---|
+| 2.4 | Fail | In the isolated local window, typed a draft, pasted text, used Option-Left and Escape, and scrolled. Two Control-modified C key events sent directly to the review app's PID inserted two literal letters at the cursor. Codex stayed open. See `first-interrupt.png` and `second-interrupt.png`. |
+
+
 Previous run: `50090e9`, 2026-11-19 — 15 OK, 2 failed (3.4 typing right after ⌘F reached the shell; 5.1 a new window opened `default`), 7 partial, 18 not run. Both failures are addressed in the commit after it.
 
 Attempt: `d03fa6d`, 2026-11-20 — no results. Run through `codex exec` with stdin closed, Computer Use was denied access to the app, so no case that needs the window could be checked. Run it from an interactive Codex session and approve access to wooloo when asked.

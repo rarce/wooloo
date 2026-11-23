@@ -565,6 +565,11 @@ public final class VTTerminal {
         _ = ghostty_key_event_set_action(keyEvent, GHOSTTY_KEY_ACTION_PRESS)
         _ = ghostty_key_event_set_key(keyEvent, key)
         _ = ghostty_key_event_set_mods(keyEvent, mods)
+        // Kitty identifies printable chords by their base codepoint. Reset it on
+        // every key because keyEvent is reused, including for navigation keys.
+        let base = text?.lowercased().unicodeScalars
+        let codepoint = base?.count == 1 ? base?.first?.value : nil
+        _ = ghostty_key_event_set_unshifted_codepoint(keyEvent, codepoint ?? 0)
         let utf8 = Array((text ?? "").utf8)
         return utf8.withUnsafeBufferPointer { buffer -> Data? in
             _ = ghostty_key_event_set_utf8(keyEvent, GhosttyString(ptr: buffer.baseAddress, len: buffer.count))
