@@ -474,6 +474,23 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    func testRemoteReadClassifiesLargeBinaryFilesAsBinary() throws {
+        try sandbox.repository("repo")
+        var largePptx = Data([0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00])
+        largePptx.append(Data(repeating: 0x41, count: WorkspaceFiles.maximumFileBytes + 64))
+        try largePptx.write(to: URL(fileURLWithPath: sandbox.path("repo/slides.pptx")))
+        let largeText = Data(repeating: 0x78, count: WorkspaceFiles.maximumFileBytes + 64)
+        try largeText.write(to: URL(fileURLWithPath: sandbox.path("repo/large.txt")))
+
+        let location = remote("repo")
+        XCTAssertThrowsError(try WorkspaceFiles.read("slides.pptx", at: location)) { error in
+            XCTAssertEqual(error as? WorkspaceFileError, .binary)
+        }
+        XCTAssertThrowsError(try WorkspaceFiles.read("large.txt", at: location)) { error in
+            XCTAssertEqual(error as? WorkspaceFileError, .fileTooLarge)
+        }
+    }
+
     func testRemoteWalkWithoutGitMatchesTheLocalOne() throws {
         let depth = WorkspaceFiles.folderWalkMaximumDepth
         let chain = (1..<depth).map { "d\($0)" }.joined(separator: "/")
