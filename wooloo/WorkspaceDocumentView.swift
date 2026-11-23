@@ -100,6 +100,8 @@ struct WorkspaceDocument: Identifiable {
     var loadRequest = UUID()
     var isLoading = true
     var isSaving = false
+    /// True when the file could not be opened as UTF-8 text because it is binary.
+    var isBinary = false
     var error: String?
     var reveal: WorkspaceDocumentReveal? {
         didSet { if reveal != nil, markdownMode == .preview { markdownMode = .source } }
@@ -135,7 +137,7 @@ struct WorkspaceDocument: Identifiable {
     var canSave: Bool { isEditable && (isDirty || isUntitled || isDeletedOnDisk) }
     var isPDF: Bool { kind == .file && !isUntitled && WorkspacePDF.supports(path) }
     var isImage: Bool { kind == .file && !isUntitled && WorkspaceImage.supports(path) }
-    var isReadOnly: Bool { isPDF || isImage }
+    var isReadOnly: Bool { isPDF || isImage || isBinary }
     var isEditable: Bool { kind == .file && !isReadOnly }
     var icon: String {
         if isImage { return "photo" }
@@ -198,6 +200,8 @@ struct WorkspaceDocumentView: View {
     var onKeepEdits: () -> Void = {}
     var onCompareDisk: () -> Void = {}
     var onOpenFile: (String) -> Void = { _ in }
+    var onOpenInDefaultApp: (String) -> Void = { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) }
+    var defaultAppName: (String) -> String? = WorkspaceDocumentView.defaultApplicationName(for:)
     /// Records where the editor is scrolled. The document store looks the document up by id:
     /// `document`, a binding to its index, can outlive that index when a tab before it closes.
     var onScroll: (CGPoint, EditorScrollAnchor?) -> Void = { _, _ in }
@@ -295,6 +299,8 @@ struct WorkspaceDocumentView: View {
 
             if document.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if document.isBinary && document.kind == .file && !document.isUntitled {
+                binaryFileView
             } else if let error = document.error, document.version == nil, !document.isUntitled {
                 Text(error)
                     .font(.system(size: typography.emphasis))
@@ -420,6 +426,61 @@ struct WorkspaceDocumentView: View {
     private func updateStructure() {
         structure.update(source: document.isEditable ? document.text : "",
                          languageID: document.isEditable ? syntax.id : "plaintext")
+    }
+
+    static func defaultApplicationName(for path: String) -> String? {
+        let url = URL(fileURLWithPath: path)
+        guard let appURL = NSWorkspace.shared.urlForApplication(toOpen: url) else { return nil }
+        let name = FileManager.default.displayName(atPath: appURL.path)
+        return name.isEmpty ? appURL.deletingPathExtension().lastPathComponent : name
+    }
+
+    private var binaryFileView: some View {
+        let absolutePath = document.location.absolutePath(document.path)
+        let defaultApp = document.location.isLocal ? defaultAppName(absolutePath) : nil
+        return VStack(spacing: 12) {
+            Image(systemName: document.icon)
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(.secondary)
+            Text("This binary file cannot be displayed in wooloo.")
+                .font(.system(size: typography.emphasis, weight: .medium))
+                .foregroundStyle(.primary)
+            if document.location.isLocal {
+                if let defaultApp {
+                    Text("Open \(document.title) in \(defaultApp) to view or edit it.")
+                        .font(.system(size: typography.body))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Text("No default application is registered for \(document.title).")
+                        .font(.system(size: typography.body))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                HStack(spacing: 8) {
+                    if let defaultApp {
+                        Button("Open in \(defaultApp)", systemImage: "arrow.up.forward.app") {
+                            onOpenInDefaultApp(absolutePath)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("binary-open-default-app")
+                    }
+                    Button("Reveal in Finder", systemImage: "folder") {
+                        AppActions.reveal(absolutePath)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("binary-reveal-in-finder")
+                }
+                .padding(.top, 4)
+            } else {
+                Text("This file is on \(document.location.machineLabel) and cannot be opened in a local application.")
+                    .font(.system(size: typography.body))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var fileContents: some View {
@@ -584,6 +645,7 @@ struct WorkspaceDocumentView: View {
                 }
                 if document.location.isLocal {
                     Button("Reveal in Finder") { AppActions.reveal(document.location.absolutePath(document.path)) }
+                    Button("Open in Default App") { onOpenInDefaultApp(document.location.absolutePath(document.path)) }
                 }
             }
             if let commit = document.commit { Text("Commit \(commit)") }
@@ -738,6 +800,7 @@ struct WorkspaceDocumentView: View {
         if document.kind != .file { return document.kind == .commit ? "Commit diff" : "Git diff" }
         if document.isImage { return "\(document.image?.contents.format ?? "Image") · Read only" }
         if document.isPDF { return "PDF · Read only" }
+        if document.isBinary { return "Binary · Read only" }
         if document.isLoading { return "Loading…" }
         return document.isSaving ? "Saving…" : document.isDirty || document.isUntitled ? "Unsaved" : "Saved"
     }

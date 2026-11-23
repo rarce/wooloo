@@ -377,17 +377,24 @@ struct WorkspaceRepositoryListing {
     let root: String
 }
 
-enum WorkspaceFileError: LocalizedError {
+enum WorkspaceFileError: LocalizedError, Equatable {
     case message(String)
     /// A file to read is a folder, such as a linked folder listed as a file.
     case folder
+    /// A file is not UTF-8 text (e.g. a presentation, archive, or compiled binary).
+    case binary
+    /// A file exceeds the byte limit for reading or saving.
+    case fileTooLarge
 
     static let folderMessage = "Is a folder"
+    static let tooLargeMessage = "File is too large"
 
     var errorDescription: String? {
         switch self {
         case .message(let value): value
         case .folder: Self.folderMessage
+        case .binary: "This binary file cannot be displayed in wooloo"
+        case .fileTooLarge: Self.tooLargeMessage
         }
     }
 }
@@ -495,13 +502,67 @@ enum WorkspaceFiles {
         return WorkspaceTerminalPath(path: real, isDirectory: isDirectory, pathInRoot: inside)
     }
 
+    static let binaryProbeBytes = 8_192
+
+    /// Whether `data` contains NUL bytes or invalid UTF-8. When `truncated` is true, an incomplete
+    /// trailing multi-byte UTF-8 sequence at the buffer boundary is ignored.
+    static func isBinaryData(_ data: Data, truncated: Bool = false) -> Bool {
+        if data.contains(0) { return true }
+        var sample = data
+        if truncated, !sample.isEmpty {
+            var trailing = 0
+            var index = sample.endIndex
+            while trailing < 3, index > sample.startIndex {
+                let previous = sample.index(before: index)
+                let byte = sample[previous]
+                if (byte & 0xC0) == 0x80 {
+                    trailing += 1
+                    index = previous
+                } else {
+                    let expectedLength: Int? = switch byte {
+                    case 0xC0...0xDF: 2
+                    case 0xE0...0xEF: 3
+                    case 0xF0...0xF7: 4
+                    default: nil
+                    }
+                    if let expectedLength, trailing + 1 < expectedLength {
+                        sample = sample[..<previous]
+                    }
+                    break
+                }
+            }
+        }
+        return String(data: sample, encoding: .utf8) == nil
+    }
+
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func read(_ path: String, at location: WorkspaceFileLocation) throws -> WorkspaceFileContents {
-        let data = try readData(path, at: location, limit: fileByteLimit(for: path))
-        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
-            throw WorkspaceFileError.message("Only UTF-8 text files can be edited")
+        do {
+            let data = try readData(path, at: location, limit: fileByteLimit(for: path))
+            guard !isBinaryData(data), let text = String(data: data, encoding: .utf8) else {
+                throw WorkspaceFileError.binary
+            }
+            return WorkspaceFileContents(text: text, version: gitBlobHash(data))
+        } catch WorkspaceFileError.fileTooLarge {
+            if let sample = try? readPrefix(path, at: location, limit: binaryProbeBytes),
+               isBinaryData(sample, truncated: sample.count == binaryProbeBytes) {
+                throw WorkspaceFileError.binary
+            }
+            throw WorkspaceFileError.fileTooLarge
         }
-        return WorkspaceFileContents(text: text, version: gitBlobHash(data))
+    }
+
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    private static func readPrefix(_ path: String, at location: WorkspaceFileLocation, limit: Int) throws -> Data {
+        if let machine = location.machine {
+            let script = try remoteFilePrelude(path, at: location, rejectingFolders: true)
+                + "head -c \(limit) \"$file\""
+            return try ssh(machine, script, limit: limit)
+        }
+        let url = try localFileURL(path, root: location.root)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        return try handle.read(upToCount: limit) ?? Data()
     }
 
     /// Raw bytes of a file in the Space, e.g. an image referenced by a Markdown preview.
@@ -515,6 +576,8 @@ enum WorkspaceFiles {
                 data = try ssh(machine, script, limit: limit)
             } catch WorkspaceFileError.message(let message) where message.hasSuffix(WorkspaceFileError.folderMessage) {
                 throw WorkspaceFileError.folder
+            } catch WorkspaceFileError.message(let message) where message.hasSuffix(WorkspaceFileError.tooLargeMessage) {
+                throw WorkspaceFileError.fileTooLarge
             }
         } else {
             if (try? validateRelativePath(path)) != nil, (try? URL(fileURLWithPath: location.absolutePath(path))
@@ -523,10 +586,10 @@ enum WorkspaceFiles {
             }
             let url = try localFileURL(path, root: location.root)
             let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-            guard size <= limit else { throw WorkspaceFileError.message("File is too large") }
+            guard size <= limit else { throw WorkspaceFileError.fileTooLarge }
             data = try Data(contentsOf: url)
         }
-        guard data.count <= limit else { throw WorkspaceFileError.message("File is too large") }
+        guard data.count <= limit else { throw WorkspaceFileError.fileTooLarge }
         return data
     }
 

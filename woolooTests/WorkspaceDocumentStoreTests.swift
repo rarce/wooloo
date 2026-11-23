@@ -1298,4 +1298,34 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertEqual(store.visibleDocuments.map(\.path), ["c.txt"])
         XCTAssertEqual(store.documents.filter { $0.space == "two" }.count, 1)
     }
+
+    func testOpeningBinaryFileMarksDocumentAsBinaryReadOnlyEvenWhenLarge() async throws {
+        var largePptx = Data([0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00])
+        largePptx.append(Data(repeating: 0x41, count: WorkspaceFiles.maximumFileBytes + 64))
+        try largePptx.write(to: URL(fileURLWithPath: repo.absolutePath("deck.pptx")))
+        let largeText = Data(repeating: 0x78, count: WorkspaceFiles.maximumFileBytes + 64)
+        try largeText.write(to: URL(fileURLWithPath: repo.absolutePath("large.txt")))
+
+        let openedPptx = await open("deck.pptx")
+        let pptx = try XCTUnwrap(openedPptx)
+        XCTAssertTrue(pptx.isBinary)
+        XCTAssertTrue(pptx.isReadOnly)
+        XCTAssertFalse(pptx.isEditable)
+        XCTAssertNil(pptx.version)
+
+        let openedText = await open("large.txt")
+        let text = try XCTUnwrap(openedText)
+        XCTAssertFalse(text.isBinary)
+        XCTAssertEqual(text.error, "File is too large")
+
+        // Replacing the binary file with UTF-8 text and reloading clears binary state.
+        try sandbox.write(["deck.pptx": "plain text now\n"], in: "repo")
+        store.load(pptx.id)
+        await wait("Reloading after replacing binary with text") { store.document(pptx.id)?.version != nil }
+        let reloaded = try XCTUnwrap(store.document(pptx.id))
+        XCTAssertFalse(reloaded.isBinary)
+        XCTAssertTrue(reloaded.isEditable)
+        XCTAssertEqual(reloaded.text, "plain text now\n")
+        XCTAssertNil(reloaded.error)
+    }
 }
