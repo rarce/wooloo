@@ -275,6 +275,20 @@ Review of these fixes: the ⌘F field, the Disconnected and empty states and `ke
 | 7.2 | OK | Stopped the isolated core with the wooloo-created pane `t1s` selected. By the first observation the sidebar already said Connected, the status bar showed `Local · wooloo-ui-test Space`, and the pane showed a shell. The same state persisted ten seconds later. No disconnected frame was captured. Before any further hc command, the pane accepted `echo original-pane-recovered`. A subsequent `hc read t1s` confirmed its output at the original address. `7-2-stop.png`, `7-2-ten.png`, `7-2-input.png`. |
 | Extra · normal exit | OK | Typed `exit` and Return in `t1s`. Its tab closed, leaving one zsh tab. `hc ls` showed only `t1q` live and one finished terminal. `extra-exit.png`. |
 
+### SSH to OrbStack on 2026-11-22
+
+Tested application code at `bd96a05` against a Debian arm64 container with herdr-core 0.1.21 and session `wooloo-ui-test`. The initial GUI connection attempt used `6581864`. The loopback GUI checks used the drag-review build with application code at `d13a3e1`. On November 23 the GUI retest completed the visual PNG, search navigation and network recovery checks. Three SSH cases passed. Case 8.2 retains one timing limitation. Two second-Mac cases were not run. GUI screenshots are in `/private/tmp/wooloo-core-review-shots/orbstack`. The separate service checks produced logs.
+
+| Case | Result | Observation |
+|---|---|---|
+| 8.1 | Pass | The direct OrbStack hostname produced “No route to host” in the app. Added the host with a loopback SSH forward and session `wooloo-ui-test`. Removed the initially failed connection from the window to expose the install action on the saved profile. On a clean remote account, confirmed the GUI installation, saw the 0.1.21 installed notice, reopened the profile and created a remote Space. See `ssh-connected.png`. |
+| 8.2 | Partial | Opened remote vim on /etc/services, clicked, dragged to select and scrolled to later service entries. See `ssh-vim.png`. Separate store checks found at least 30 remote markers and a kitty PNG on the terminal surface. After unlocking the Mac, the Calculator PNG appeared above the remote prompt. ⌘F focused the find field. Setting its value to marker- showed 1 of 602, Return moved to 2 of 602 and Shift-Return returned to 1 of 602. The field was set after verifying focus, so immediate typing in the same keystroke sequence remains unverified remotely. See `ssh-kitty-retest.png`. |
+| 8.3 | Pass | Opened `/home/reviewui/visible-remote-file.txt` in the editor. The Changes panel showed it modified and showed the remote branch `review`. The independent service check verified the fixture contents and Git root. See `ssh-file-and-git.png`. |
+| 8.4 | Pass | With a real remote pane attached, closed the loopback SSH forward for 30 seconds. The window's store reported disconnection, reconnected automatically and presented the same pane ID. Repeated in the GUI on November 23. Wooloo showed “Disconnected · last known Spaces” during the outage and automatically reopened the remote Space after the forward returned. The same t1 terminal accepted another command. See `ssh-outage.png` and `ssh-recovered.png`. |
+| 9.1–9.2 | Not run | A second Mac was unavailable for this run. |
+
+Local logs: `/private/tmp/wooloo-ssh-probe.log`, `/private/tmp/wooloo-ssh-terminal.log` and `/private/tmp/wooloo-ssh-recovery2.log`.
+
 ## Cleanup
 
 ```sh
