@@ -27,17 +27,10 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 
 Left from the review of PR #159.
 
-- [ ] Decoding a large kitty PNG un-premultiplies alpha in a per-pixel Swift loop (`Vendor/GhosttyVt/Sources/WoolooTerminalEngine/VTImages.swift`) inside `emulator.write`, under the presentation's lock, which holds up every pane. Use `vImageUnpremultiplyData_RGBA8888`, or decode outside the lock.
 - [ ] Two windows of the same size on one tab: a background window is demoted to watching only when Core reports a size it did not send, so with equal sizes it keeps an active stream, and resizing it then takes the terminal from the window in front. Demote it on its own resize too, once the core can say whether another viewer is attached (it exposes no viewer count yet).
 - [ ] With a core that lacks `resize_notifications`, an observer applies the size from the events channel, whose `size` event can arrive after output Core already laid out at that size on the stream, so a few lines may wrap at the old width until the program redraws. Today's core sends RESIZE frames, which arrive in order.
-- [ ] At launch the presentation can be ready before the window reports that it is key (`terminalFocused` starts false), so every pane attaches as an observer and then again actively, replaying its history twice. Tell "not known yet" apart from "inactive" in `HerdrStore` and pass nil to `updateHost` until the window reports.
 - [ ] A window that is not key attaches new panes (a split or tab another client adds) as observers, so when it is the terminal's only viewer nothing sizes the terminal until the window comes to the front. Attaching them actively, like the streams already open, would take the size from a window in front that shows the same tab; needs the core to say whether another viewer is attached.
-- [ ] A click held for an observer is encoded by the observer's emulator, at Core's size, and sent on the active stream after it resized the terminal: a click past the old width is clamped to it. Only the activation race holds clicks (the first click on an inactive window only activates it). Hold the event and encode it once the active stream's emulator has its modes.
-- [ ] Focus for herdr-core tabs and panes is spread over special cases in `HerdrStore` (the `selectedTabID` setter, two `backendKind != .core` guards in `select`, and a pane focus in `repairSelection`) because `CoreTerminalPresentation.focus(tabID:)` forgets the focused pane. Keep the focused pane per tab in the presentation, or add `focus(tabID:paneID:)`, and drop the branches.
-- [ ] While the window is front, `arrange` tries to replace every observer with an active attach on each pass (4 a second), with no backoff when Core keeps refusing it.
 - [ ] Each change of window focus attaches afresh (active ↔ observing), replaying `attachHistory` lines per pane and losing that pane's scrollback position and find highlight. Needs a core call that switches an attachment's mode in place.
-- [ ] `Attachment.swallowsClick` is lost when the pane reattaches between the swallowed press and its release, so the release reaches the program.
-- [ ] `CoreTerminalPresentation.sendInput` repeats the hold-while-draining logic in two branches; share it.
 - [ ] Verify the physical tab drop between Spaces in manual case 6.1. The automated drag initiated the operation but the source Space kept the tab.
 
 ## Testing

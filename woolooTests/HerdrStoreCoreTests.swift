@@ -75,6 +75,18 @@ final class HerdrStoreCoreTests: XCTestCase {
 
     /// The first tab is chosen by the store when the state arrives, not by the user: the
     /// presentation still has to be told, or the pane stays on text with input withheld.
+    func testInitialAttachWaitsForTheWindowsFirstFocusReport() async throws {
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("tab chosen") { store.selectedTabID == "tab-t1" }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertTrue(core.callsTo("terminal.attach").isEmpty)
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
+        await waitUntil("active attach") { attachedServer() != nil }
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 1)
+        XCTAssertNil(core.callsTo("terminal.attach").first?.params["observe"])
+    }
+
     func testTheTabChosenOnConnectGoesLive() async throws {
         store.requiresSurfaceForInput = true
         store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: true)
@@ -199,9 +211,47 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual(resizes(), before, "A window in the background never sends its size")
     }
 
+    func testRefusedActivationWaitsBeforeRetrying() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("watching") { attachedServer() != nil }
+        core.update { $0.overrides["terminal.attach"] = { _ in nil } }
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("first refusal") { core.callsTo("terminal.attach").count >= 2 }
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 2)
+        core.update { $0.overrides["terminal.attach"] = nil }
+        await waitUntil("retry succeeds") { core.callsTo("terminal.attach").count >= 3 }
+    }
+
+    func testReleaseOfASwallowedPressStaysLocalAfterPromotion() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.updateTerminalHost(theme: theme, focused: false)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("watching") { attachedServer() != nil && store.surface != nil }
+        let (server, watching) = try XCTUnwrap(attachedServer())
+        server.send(Data((1...90).map { "line \($0)" }.joined(separator: "\r\n").utf8), on: watching)
+        await waitUntil("output drawn") { store.surface?.cells.row(0).first?.symbol == "l" }
+        let stream = try XCTUnwrap(store.surfaceStream)
+        XCTAssertTrue(stream.sendInput(.mouse(.init(kind: .scrollUp, column: 0, row: 0, modifiers: 0, lines: 10)), to: "t1"))
+        server.send(Data("\u{1b}[?1000h\u{1b}[?1006h".utf8), on: watching)
+        await waitUntil("mouse reporting") { store.surface?.mouseReportingPaneIDs.contains("t1") == true }
+        XCTAssertTrue(stream.sendInput(.mouse(.init(kind: .down(0), column: 2, row: 1, modifiers: 0, lines: 1)), to: "t1"))
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("promoted") { server.recordedFrames().contains { $0.channel == watching && $0.kind == .close } }
+        store.sendMouse(.init(kind: .up(0), column: 2, row: 1, modifiers: 0, lines: 1), to: "t1")
+        store.sendText("after", to: "t1")
+        await waitUntil("input flushed") { server.recordedFrames().contains { $0.payload == Data("after".utf8) } }
+        XCTAssertFalse(server.recordedFrames().contains { $0.payload == Data("\u{1b}[<0;3;2m".utf8) })
+    }
+
     /// A click into a watching pane can come before the window's activation, like keys: it is
     /// kept and sent once the pane attaches actively.
     func testAClickBeforeTheActivationIsNotLost() async throws {
+        core.terminals = [CoreTerminal(address: "t1", argv: ["/bin/zsh"], cols: 8, rows: 8, cwd: "/src/app")]
         let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
         store.requiresSurfaceForInput = true
         store.updateTerminalHost(theme: theme, focused: false)
@@ -215,8 +265,8 @@ final class HerdrStoreCoreTests: XCTestCase {
         // The program reports clicks (SGR), as vim with `mouse=a` does.
         server.send(Data("\u{1b}[?1000h\u{1b}[?1006hvim".utf8), on: watching)
         await waitUntil("reporting") { store.surface.map { $0.cells.row(0).prefix(3).map(\.symbol).joined() } == "vim" }
-        let press = Data("\u{1b}[<0;3;2M".utf8)
-        store.sendMouse(HerdrMouseEvent(kind: .down(0), column: 2, row: 1, modifiers: 0, lines: 0), to: "t1")
+        let press = Data("\u{1b}[<0;21;2M".utf8)
+        store.sendMouse(HerdrMouseEvent(kind: .down(0), column: 20, row: 1, modifiers: 0, lines: 0), to: "t1")
         await waitUntil("the click reaches the active stream") {
             self.core.connections.contains { server in
                 server.recordedFrames().contains { $0.channel != watching && $0.kind == .data && $0.payload == press }
@@ -504,6 +554,7 @@ final class HerdrStoreCoreTests: XCTestCase {
     func testShowingADoneTurnMarksItSeenOnlyInFrontOfSomeone() async throws {
         core.terminals = [CoreTerminal(address: "t1", argv: ["claude"], cols: 100, rows: 30, cwd: "/src/app",
                                        status: CoreStatus(state: "done", app: "claude", msg: nil, title: nil), turn: 4)]
+        store.updateTerminalHost(theme: WoolooTheme.named(WoolooTheme.fallbackID)!, focused: false)
         store.connect(toCore: "wooloo-ui-test")
         store.setPresentationActive(true)
         await waitUntil("connected") { store.isConnected }
