@@ -199,6 +199,16 @@ final class MarkdownPreviewRenderingTests: XCTestCase {
             RunLoop.main.run(until: Date().addingTimeInterval(0.002))
             host.layoutSubtreeIfNeeded()
         }
+        // Mouse wheels can send a stream without gesture phases. Exercise the tall
+        // Document viewport from the incident before resizing or changing focus.
+        window.setContentSize(NSSize(width: 1201, height: 1502))
+        host.layoutSubtreeIfNeeded()
+        let initialScroll = try XCTUnwrap(markdownScrollView(in: host))
+        let initialY = initialScroll.documentVisibleRect.minY
+        for _ in 0..<80 { try wheel(-8) }
+        XCTAssertGreaterThan(initialScroll.documentVisibleRect.minY, initialY + 200)
+        for _ in 0..<80 { try wheel(8) }
+
         for width in [449.0, 780.5] {
             window.setContentSize(NSSize(width: width, height: 320))
             for delta: Int32 in [-50, 50, -50, 50] {
@@ -219,7 +229,10 @@ final class MarkdownPreviewRenderingTests: XCTestCase {
                 try wheel(0, momentum: 3)
                 if delta < 0 && canScrollDown {
                     let liveScroll = try XCTUnwrap(markdownScrollView(in: host))
-                    XCTAssertGreaterThan(liveScroll.documentVisibleRect.minY, start + 200,
+                    // Changing typography can shrink the document during the gesture.
+                    // Reaching its new bottom is also a successful downward scroll.
+                    let bottom = try XCTUnwrap(liveScroll.documentView).bounds.maxY - liveScroll.documentVisibleRect.height
+                    XCTAssertGreaterThanOrEqual(liveScroll.documentVisibleRect.minY + 1, min(start + 200, bottom),
                                          "Scrolling must advance within the table instead of retargeting its top")
                 }
             }
