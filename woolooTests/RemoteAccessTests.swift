@@ -1,3 +1,6 @@
+import AppKit
+import ApplicationServices
+import SwiftUI
 import XCTest
 @testable import wooloo
 
@@ -390,6 +393,136 @@ final class RemoteAccessTests: XCTestCase {
         XCTAssertEqual(model.state, .running(hostname: "fake-host.trycloudflare.com"), "The user confirmed passwords")
         found.value = .acceptsNoCredential(user: "me")
         try await waitFor { if case .failed = model.state { true } else { false } }
+    }
+
+    /// The Remote Access status view's Start, Cancel, Start Anyway and Stop buttons drive the
+    /// confirmation flow end to end.
+    func testConfirmationViewButtonsCancelAndStartAnyway() async throws {
+        let marker = directory.appendingPathComponent("ran-ui")
+        let passwords = RemoteAccessSSHCheck.acceptsPasswords(user: "me", methods: ["password"])
+        let model = makeModel(script: markedTunnel(marker), check: { passwords })
+        defer { model.stop() }
+
+        let host = NSHostingView(rootView: RemoteAccessStatusView(model: model)
+            .environment(\.woolooTheme, WoolooTheme.named(WoolooTheme.fallbackID)!)
+            .environment(\.woolooTypography, WoolooTypography())
+            .frame(width: 480, height: 180))
+        host.frame = NSRect(x: 0, y: 0, width: 480, height: 180)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "RemoteAccessConfirmTest-\(UUID().uuidString)"
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        let axWindow = try await waitForAXWindow(titled: window.title)
+        let startButton = try await waitForAXButton(titled: "Start", in: axWindow)
+        XCTAssertEqual(AXUIElementPerformAction(startButton, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .needsConfirmation(passwords) }
+
+        let cancelButton = try await waitForAXButton(titled: "Cancel", in: axWindow)
+        _ = try await waitForAXButton(titled: "Start Anyway", in: axWindow)
+        XCTAssertNil(findAXButton(titled: "Start", in: axWindow), "Start should be hidden while confirming")
+        let confirmationTexts = axTexts(in: axWindow)
+        XCTAssertTrue(confirmationTexts.contains { $0.contains("wooloo does not change sshd's sign-in methods") },
+                      "Expected confirmation warning, got: \(confirmationTexts)")
+
+        XCTAssertEqual(AXUIElementPerformAction(cancelButton, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .stopped }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Cancel must not launch cloudflared")
+
+        let startAgain = try await waitForAXButton(titled: "Start", in: axWindow)
+        XCTAssertEqual(AXUIElementPerformAction(startAgain, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .needsConfirmation(passwords) }
+
+        let startAnyway = try await waitForAXButton(titled: "Start Anyway", in: axWindow)
+        XCTAssertEqual(AXUIElementPerformAction(startAnyway, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .running(hostname: "fake-host.trycloudflare.com") }
+        XCTAssertTrue(model.runsWithoutVerifiedKeys)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+
+        let stopButton = try await waitForAXButton(titled: "Stop", in: axWindow)
+        let runningTexts = axTexts(in: axWindow)
+        XCTAssertTrue(runningTexts.contains { $0.contains("without verified key-only SSH") },
+                      "Expected unverified warning in status, got: \(runningTexts)")
+
+        XCTAssertEqual(AXUIElementPerformAction(stopButton, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .stopped }
+    }
+
+    private func axAttribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value
+    }
+
+    private func axString(_ element: AXUIElement, _ name: String) -> String? {
+        axAttribute(element, name) as? String
+    }
+
+    private func walkAX(_ root: AXUIElement, visit: (AXUIElement) -> Bool) {
+        var stack: [AXUIElement] = [root]
+        var remaining = 500
+        while let current = stack.popLast(), remaining > 0 {
+            remaining -= 1
+            if visit(current) { return }
+            if let children = axAttribute(current, kAXChildrenAttribute) as? [AXUIElement] {
+                stack.append(contentsOf: children.reversed())
+            }
+        }
+    }
+
+    private func findAXButton(titled title: String, in root: AXUIElement) -> AXUIElement? {
+        var found: AXUIElement?
+        walkAX(root) { node in
+            guard axString(node, kAXRoleAttribute) == (kAXButtonRole as String) else { return false }
+            if axString(node, kAXTitleAttribute) == title || axString(node, kAXDescriptionAttribute) == title {
+                found = node
+                return true
+            }
+            return false
+        }
+        return found
+    }
+
+    private func axTexts(in root: AXUIElement) -> [String] {
+        var result: [String] = []
+        walkAX(root) { node in
+            if let value = axString(node, kAXValueAttribute), !value.isEmpty { result.append(value) }
+            if let title = axString(node, kAXTitleAttribute), !title.isEmpty { result.append(title) }
+            return false
+        }
+        return result
+    }
+
+    private func waitForAXWindow(titled title: String, timeout: TimeInterval = 5) async throws -> AXUIElement {
+        let app = AXUIElementCreateApplication(getpid())
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let windows = axAttribute(app, kAXWindowsAttribute) as? [AXUIElement],
+               let match = windows.first(where: { axString($0, kAXTitleAttribute) == title }) {
+                return match
+            }
+            if Date() > deadline {
+                XCTFail("AX window “\(title)” did not appear")
+                throw CancellationError()
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func waitForAXButton(titled title: String, in root: AXUIElement, timeout: TimeInterval = 5) async throws -> AXUIElement {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let button = findAXButton(titled: title, in: root) { return button }
+            if Date() > deadline {
+                XCTFail("Button “\(title)” did not appear; texts: \(axTexts(in: root))")
+                throw CancellationError()
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     // MARK: Helpers

@@ -1,3 +1,6 @@
+import AppKit
+import ApplicationServices
+import SwiftUI
 import XCTest
 @testable import wooloo
 
@@ -474,5 +477,196 @@ final class AgentQuotaTests: XCTestCase {
         XCTAssertTrue(monitors.inUse(nil))
         activation.show(machine: nil, windowActive: false)
         XCTAssertFalse(monitors.inUse(nil))
+    }
+
+    /// Clicking "Turn On Quotas…" in the sidebar presents the SwiftUI consent alert; Cancel
+    /// leaves quotas off without polling, and Turn On enables and starts polling.
+    @MainActor
+    func testQuotaConsentAlertButtonsCancelAndEnable() async throws {
+        let defaults = consentDefaults()
+        defaults.set(false, forKey: "AgentQuotasCollapsed")
+        let monitors = Monitors()
+        let activation = makeActivation(defaults, monitors)
+        let host = NSHostingView(rootView: AgentQuotaSection(machine: nil, activation: activation)
+            .defaultAppStorage(defaults)
+            .environment(\.controlActiveState, .key)
+            .environment(\.woolooTheme, WoolooTheme.named(WoolooTheme.fallbackID)!)
+            .environment(\.woolooTypography, WoolooTypography())
+            .frame(width: 280, height: 220))
+        host.frame = NSRect(x: 0, y: 0, width: 280, height: 220)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "AgentQuotaConsentTest-\(UUID().uuidString)"
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+            window.close()
+        }
+
+        let axWindow = try await waitForAXWindow(titled: window.title)
+        let enableButton = try await waitForAXButton(titled: "Turn On Quotas…", in: axWindow)
+        XCTAssertEqual(AXUIElementPerformAction(enableButton, kAXPressAction as CFString), .success)
+
+        let cancelAlert = try await waitForSheet(on: window)
+        let cancelSheetAX = try await waitForAXSheet(in: axWindow)
+        let texts = axTexts(in: cancelSheetAX)
+        XCTAssertTrue(texts.contains { $0.contains(AgentQuotaConsent.title(for: nil)) },
+                      "Expected consent title in alert, got: \(texts)")
+        XCTAssertTrue(texts.contains { $0.contains("unofficial") },
+                      "Expected consent explanation in alert, got: \(texts)")
+        let cancelButton = try XCTUnwrap(findNSButton(titled: "Cancel", in: try XCTUnwrap(cancelAlert.contentView)))
+        cancelButton.performClick(nil)
+
+        try await waitForCondition { window.attachedSheet == nil && activation.request == nil }
+        XCTAssertFalse(activation.isEnabled)
+        XCTAssertTrue(monitors.asked.isEmpty, "Cancelling the alert must not poll")
+        XCTAssertNil(defaults.string(forKey: AgentQuotaConsent.storageKey))
+
+        let enableAgain = try await waitForAXButton(titled: "Turn On Quotas…", in: axWindow)
+        XCTAssertEqual(AXUIElementPerformAction(enableAgain, kAXPressAction as CFString), .success)
+
+        let acceptAlert = try await waitForSheet(on: window)
+        let turnOnButton = try XCTUnwrap(findNSButton(titled: "Turn On", in: try XCTUnwrap(acceptAlert.contentView)))
+        turnOnButton.performClick(nil)
+
+        try await waitForCondition { window.attachedSheet == nil && activation.isEnabled }
+        XCTAssertNil(activation.request)
+        XCTAssertTrue(monitors.inUse(nil))
+        XCTAssertEqual(AgentQuotaConsent(stored: defaults.string(forKey: AgentQuotaConsent.storageKey)),
+                       AgentQuotaConsent(machines: ["local"]))
+        try await waitForCondition { self.findAXButton(titled: "Turn On Quotas…", in: axWindow) == nil }
+    }
+
+    @MainActor
+    private func findNSButton(titled title: String, in root: NSView) -> NSButton? {
+        if let button = root as? NSButton, button.title == title { return button }
+        for subview in root.subviews {
+            if let found = findNSButton(titled: title, in: subview) { return found }
+        }
+        return nil
+    }
+
+    @MainActor
+    private func axAttribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value
+    }
+
+    @MainActor
+    private func axString(_ element: AXUIElement, _ name: String) -> String? {
+        axAttribute(element, name) as? String
+    }
+
+    @MainActor
+    private func walkAX(_ root: AXUIElement, visit: (AXUIElement) -> Bool) {
+        var stack: [AXUIElement] = [root]
+        var remaining = 500
+        while let current = stack.popLast(), remaining > 0 {
+            remaining -= 1
+            if visit(current) { return }
+            if let children = axAttribute(current, kAXChildrenAttribute) as? [AXUIElement] {
+                stack.append(contentsOf: children.reversed())
+            }
+        }
+    }
+
+    @MainActor
+    private func findAXButton(titled title: String, in root: AXUIElement) -> AXUIElement? {
+        var found: AXUIElement?
+        walkAX(root) { node in
+            guard axString(node, kAXRoleAttribute) == (kAXButtonRole as String) else { return false }
+            if axString(node, kAXTitleAttribute) == title || axString(node, kAXDescriptionAttribute) == title {
+                found = node
+                return true
+            }
+            return false
+        }
+        return found
+    }
+
+    @MainActor
+    private func axTexts(in root: AXUIElement) -> [String] {
+        var result: [String] = []
+        walkAX(root) { node in
+            if let value = axString(node, kAXValueAttribute), !value.isEmpty { result.append(value) }
+            if let title = axString(node, kAXTitleAttribute), !title.isEmpty { result.append(title) }
+            return false
+        }
+        return result
+    }
+
+    @MainActor
+    private func waitForAXWindow(titled title: String, timeout: TimeInterval = 5) async throws -> AXUIElement {
+        let app = AXUIElementCreateApplication(getpid())
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let windows = axAttribute(app, kAXWindowsAttribute) as? [AXUIElement],
+               let match = windows.first(where: { axString($0, kAXTitleAttribute) == title }) {
+                return match
+            }
+            if Date() > deadline {
+                XCTFail("AX window “\(title)” did not appear")
+                throw CancellationError()
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @MainActor
+    private func waitForAXSheet(in window: AXUIElement, timeout: TimeInterval = 5) async throws -> AXUIElement {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let children = axAttribute(window, kAXChildrenAttribute) as? [AXUIElement],
+               let sheet = children.first(where: { axString($0, kAXRoleAttribute) == (kAXSheetRole as String) }) {
+                return sheet
+            }
+            if Date() > deadline {
+                XCTFail("AX sheet did not appear")
+                throw CancellationError()
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @MainActor
+    private func waitForCondition(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { XCTFail("Timed out waiting for UI state"); return }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @MainActor
+    private func waitForAXButton(titled title: String, in root: AXUIElement, timeout: TimeInterval = 5) async throws -> AXUIElement {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let button = findAXButton(titled: title, in: root) { return button }
+            if Date() > deadline {
+                XCTFail("Button “\(title)” did not appear; texts: \(axTexts(in: root))")
+                throw CancellationError()
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @MainActor
+    private func waitForSheet(on window: NSWindow, timeout: TimeInterval = 5) async throws -> NSWindow {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let sheet = window.attachedSheet { return sheet }
+            if Date() > deadline {
+                XCTFail("Expected alert sheet on window")
+                throw CancellationError()
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 }
