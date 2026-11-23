@@ -488,6 +488,7 @@ final class CoreSessionWatcher: SessionWatcher, @unchecked Sendable {
         defer { connection.close() }
         let changes = DispatchSemaphore(value: 0)
         let pending = PendingFlag()
+        let subscriptionClosed = PendingFlag()
         let subscribed = try connection.call("events.subscribe", [:], as: CoreSubscribeResult.self)
         if let channel = subscribed.channel {
             var lines = CoreEventLines()
@@ -498,14 +499,14 @@ final class CoreSessionWatcher: SessionWatcher, @unchecked Sendable {
                     pending.set()
                 }
                 changes.signal()
-            }, onClose: { changes.signal() })
+            }, onClose: { subscriptionClosed.set(); changes.signal() })
         }
         _ = subscribed
         onChange(try backend.snapshot(on: connection))
         while true {
             _ = changes.wait(timeout: .now() + 5)
             if lock.withLock({ cancelled }) { return }
-            if connection.isClosed { throw CoreProtocolError.closed }
+            if subscriptionClosed.take() || connection.isClosed { throw CoreProtocolError.closed }
             if Date().timeIntervalSince(connection.lastActivity) > Self.silenceLimit {
                 throw CoreProtocolError.timedOut("events.subscribe")
             }

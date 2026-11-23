@@ -31,7 +31,6 @@ Left from the review of PR #159.
 - [ ] With a core that lacks `resize_notifications`, an observer applies the size from the events channel, whose `size` event can arrive after output Core already laid out at that size on the stream, so a few lines may wrap at the old width until the program redraws. Today's core sends RESIZE frames, which arrive in order.
 - [ ] A window that is not key attaches new panes (a split or tab another client adds) as observers, so when it is the terminal's only viewer nothing sizes the terminal until the window comes to the front. Attaching them actively, like the streams already open, would take the size from a window in front that shows the same tab; needs the core to say whether another viewer is attached.
 - [ ] Each change of window focus attaches afresh (active ↔ observing), replaying `attachHistory` lines per pane and losing that pane's scrollback position and find highlight. Needs a core call that switches an attachment's mode in place.
-- [ ] With the core stopped (`hc server stop`), the sidebar still said Connected while the pane said "Connecting terminal…" (manual test 7.2 at `d2187b0`). Show the connection as disconnected while the core is gone.
 - [ ] Verify the physical tab drop between Spaces in manual case 6.1. The automated drag initiated the operation but the source Space kept the tab.
 
 ## Testing

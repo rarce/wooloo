@@ -164,6 +164,14 @@ Both Macs connect to the same core (one locally, the other through section 8 poi
 
 ## Results
 
+### Stopped core on OrbStack, 2026-11-23
+
+Tested `209a305` with herdr-core 0.1.21 in the isolated SSH session. One integration check passed.
+
+| Case | Result | Observation |
+|---|---|---|
+| 7.2, connection state | Pass | A real `hc server stop` ended the store's event subscription. With the disposable account's executable held aside to prevent automatic restart, the store reported “The connection to herdr-core ended” and remained disconnected for ten seconds. After restoring the executable and running `hc ls`, the same store reconnected. The probe exercised the model that drives the sidebar. Log: `/private/tmp/wooloo-unlocked-stopprobe.log`. |
+
 ### Agent keyboard input on 2026-11-22
 
 Retested the interrupt sequence in `6581864` against the same Codex session. The first targeted Control-C cleared the draft and left Codex at its empty prompt. The second returned to zsh. The first screenshot shows the prompt placeholder and no explicit quit hint. See `fixed-first-interrupt.png` and `fixed-second-interrupt.png`.
