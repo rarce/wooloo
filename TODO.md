@@ -27,20 +27,13 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 
 Left from the review of PR #159.
 
-- [ ] Find in a long scrollback can starve output and typing: `CoreTerminalPresentation.find` takes the presentation's lock again right after each bounded step, and macOS locks are not fair, so `drain` and `sendInput` may wait for the whole search. Yield between steps, or run the steps on the presentation's own thread.
 - [ ] Decoding a large kitty PNG un-premultiplies alpha in a per-pixel Swift loop (`Vendor/GhosttyVt/Sources/WoolooTerminalEngine/VTImages.swift`) inside `emulator.write`, under the presentation's lock, which holds up every pane. Use `vImageUnpremultiplyData_RGBA8888`, or decode outside the lock.
-- [ ] `TerminalFindBar` repeats `DocumentFindBar`'s chrome (field, counter, previous/next, Escape) and lacks its ⌘G / ⇧⌘G. Share one view, with the search model behind a protocol.
 - [ ] Two windows of the same size on one tab: a background window is demoted to watching only when Core reports a size it did not send, so with equal sizes it keeps an active stream, and resizing it then takes the terminal from the window in front. Demote it on its own resize too, once the core can say whether another viewer is attached (it exposes no viewer count yet).
 - [ ] With a core that lacks `resize_notifications`, an observer applies the size from the events channel, whose `size` event can arrive after output Core already laid out at that size on the stream, so a few lines may wrap at the old width until the program redraws. Today's core sends RESIZE frames, which arrive in order.
-- [ ] `VTTerminal.selectedMatchInViewport` accepts any point that converts to viewport coordinates; libghostty-vt can convert rows past the visible ones, so a match just below the screen keeps its highlight (drawn nowhere) and `followMatch` keeps running each frame. Check the row against the screen's rows.
 - [ ] A window that is not key attaches new panes (a split or tab another client adds) as observers, so when it is the terminal's only viewer nothing sizes the terminal until the window comes to the front. Attaching them actively, like the streams already open, would take the size from a window in front that shows the same tab; needs the core to say whether another viewer is attached.
-- [ ] When `findsInTerminal` turns false with the terminal find bar open (the stream drops, a reconnect, a session switch), the bar goes and its search ends, but `showsTerminalFind` stays true, so an empty bar comes back with the stream. Clear it, or keep the query.
-- [ ] A find running when the pane's attachment is replaced (activation, a reattach) goes on with the new emulator, which has no search, and reports no results. Notice the channel change and search again.
-- [ ] A selected match that scrolls out of view loses its highlight for good: `drain` follows the match only while a highlight is set, so scrolling it back shows it plain while the bar still counts it. Keep following while a search is active.
 - [ ] Each change of window focus attaches afresh (active ↔ observing), replaying `attachHistory` lines per pane and losing that pane's scrollback position and find highlight. Needs a core call that switches an attachment's mode in place.
-- [ ] The RESIZE frame's wire format is built in two files; keep it in `CoreProtocol` beside `CoreFrame.credit`.
 - [ ] With the core stopped (`hc server stop`), the sidebar still said Connected while the pane said "Connecting terminal…" (manual test 7.2 at `d2187b0`). Show the connection as disconnected while the core is gone.
-- [ ] Quitting with ⌘Q hung for over 3 s in `-[NSApplication terminate:]`, with AppKit resolving a drag's promised data (`CFPasteboardResolveAllPromisedData` → `NSFilePromiseProvider`), after a tab drag to another Space that moved nothing (manual tests 6.1 and 7.4 at `d2187b0`; the drag was synthetic, from Computer Use). Check whether a real drag that ends without a drop does the same.
+- [ ] Verify the physical tab drop between Spaces in manual case 6.1. The automated drag initiated the operation but the source Space kept the tab.
 
 ## Testing
 

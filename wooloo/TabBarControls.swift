@@ -139,8 +139,8 @@ final class TabDragModel: ObservableObject {
             // SwiftUI retains its item provider after cancelled drags. Watch the physical
             // release as well as successful drops, including releases outside the window.
             let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return }
                 MainActor.assumeIsolated {
-                    guard let self else { timer.invalidate(); return }
                     if NSEvent.pressedMouseButtons & 1 == 0 { self.finishDragging() }
                 }
             }
@@ -153,6 +153,7 @@ final class TabDragModel: ObservableObject {
             completion(Data(payload.utf8), nil)
             return nil
         }
+        WoolooDragPasteboard.mark(provider)
         return provider
     }
 
