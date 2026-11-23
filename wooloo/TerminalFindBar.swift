@@ -4,7 +4,7 @@ import SwiftUI
 /// and scrollback it emulates, scrolls to the match and highlights it. Return goes to the
 /// next older match and Shift-Return to the next newer one, as in other terminals; Escape
 /// closes the bar and removes the highlight.
-struct TerminalFindBar: View {
+struct TerminalFindBar: View, FindNavigation {
     /// Not observed: the bar reads none of the store's published state, and would redraw on each change.
     let store: HerdrStore
     /// Keep the field mounted so the shortcut can give it the next key event synchronously.
@@ -36,7 +36,7 @@ struct TerminalFindBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        FindNavigationRow(model: self, shortcuts: isPresented, nextIsOlder: true) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             PickerField(text: $query, placeholder: "Find in Terminal", font: .systemFont(ofSize: NSFont.systemFontSize),
                         onMove: { find(older: $0 < 0) },
@@ -47,16 +47,7 @@ struct TerminalFindBar: View {
                         })
                 .frame(width: 180)
                 .onChange(of: query) { _, _ in find(older: true) }
-            Text(status)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 64, alignment: .trailing)
-            Button { find(older: true) } label: { Image(systemName: "chevron.up") }
-                .help("Older Match (Return)")
-                .disabled(query.isEmpty)
-            Button { find(older: false) } label: { Image(systemName: "chevron.down") }
-                .help("Newer Match (Shift-Return)")
-                .disabled(query.isEmpty)
+        } actions: {
             Button { close() } label: { Image(systemName: "xmark") }
                 .help("Close (Escape)")
         }
@@ -83,7 +74,11 @@ struct TerminalFindBar: View {
         (event?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
     }
 
-    private var status: String {
+    var canMoveMatch: Bool { !query.isEmpty }
+
+    func move(_ delta: Int) { find(older: delta > 0) }
+
+    var matchStatus: String {
         guard searched, !query.isEmpty else { return "" }
         guard let result else { return "No results" }
         return "\(result.index) of \(result.total)"
