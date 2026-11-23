@@ -337,7 +337,7 @@ struct WorkspaceDocumentView: View {
         }
         .background(theme.contentBackground)
         .background {
-            if isFocused && document.kind == .file && !document.isImage { findShortcuts }
+            if isFocused && document.kind == .file && !document.isImage && !document.isBinary { findShortcuts }
         }
         .onAppear { updateStructure() }
         .onChange(of: document.text) { _, _ in updateStructure() }
@@ -381,7 +381,7 @@ struct WorkspaceDocumentView: View {
 
     /// An editor command from the command palette.
     private func run(_ command: EditorCommand) {
-        guard document.kind == .file, !document.isImage else { return }
+        guard document.kind == .file, !document.isImage, !document.isBinary else { return }
         if document.isPDF {
             guard let pdf = document.pdf, !pdf.isLocked else { return }
             switch command {
@@ -428,6 +428,12 @@ struct WorkspaceDocumentView: View {
                          languageID: document.isEditable ? syntax.id : "plaintext")
     }
 
+    /// Validates that a local document's path resolves to a regular file inside its Space.
+    static func validatedLocalFilePath(for document: WorkspaceDocument) -> String? {
+        guard document.location.isLocal, !document.isUntitled else { return nil }
+        return try? WorkspaceFiles.localFileURL(document.path, root: document.location.root).path
+    }
+
     static func defaultApplicationName(for path: String) -> String? {
         let url = URL(fileURLWithPath: path)
         guard let appURL = NSWorkspace.shared.urlForApplication(toOpen: url) else { return nil }
@@ -435,9 +441,14 @@ struct WorkspaceDocumentView: View {
         return name.isEmpty ? appURL.deletingPathExtension().lastPathComponent : name
     }
 
+    private func openInDefaultApp() {
+        guard let validatedPath = Self.validatedLocalFilePath(for: document) else { return }
+        onOpenInDefaultApp(validatedPath)
+    }
+
     private var binaryFileView: some View {
         let absolutePath = document.location.absolutePath(document.path)
-        let defaultApp = document.location.isLocal ? defaultAppName(absolutePath) : nil
+        let defaultApp = Self.validatedLocalFilePath(for: document).flatMap(defaultAppName)
         return VStack(spacing: 12) {
             Image(systemName: document.icon)
                 .font(.system(size: 32, weight: .light))
@@ -460,7 +471,7 @@ struct WorkspaceDocumentView: View {
                 HStack(spacing: 8) {
                     if let defaultApp {
                         Button("Open in \(defaultApp)", systemImage: "arrow.up.forward.app") {
-                            onOpenInDefaultApp(absolutePath)
+                            openInDefaultApp()
                         }
                         .buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("binary-open-default-app")
@@ -573,7 +584,7 @@ struct WorkspaceDocumentView: View {
 
     @ViewBuilder
     private func toolbarControls(compact: Bool) -> some View {
-        if document.kind == .file && document.supportsPreview {
+        if document.isEditable && document.supportsPreview {
             Picker("View", selection: $document.markdownMode) {
                 ForEach(MarkdownDisplayMode.allCases) { mode in
                     Label(mode.rawValue, systemImage: mode.icon).tag(mode)
@@ -645,7 +656,9 @@ struct WorkspaceDocumentView: View {
                 }
                 if document.location.isLocal {
                     Button("Reveal in Finder") { AppActions.reveal(document.location.absolutePath(document.path)) }
-                    Button("Open in Default App") { onOpenInDefaultApp(document.location.absolutePath(document.path)) }
+                    if let defaultApp = Self.validatedLocalFilePath(for: document).flatMap(defaultAppName) {
+                        Button("Open in \(defaultApp)") { openInDefaultApp() }
+                    }
                 }
             }
             if let commit = document.commit { Text("Commit \(commit)") }

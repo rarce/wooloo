@@ -520,9 +520,9 @@ enum WorkspaceFiles {
                     index = previous
                 } else {
                     let expectedLength: Int? = switch byte {
-                    case 0xC0...0xDF: 2
+                    case 0xC2...0xDF: 2
                     case 0xE0...0xEF: 3
-                    case 0xF0...0xF7: 4
+                    case 0xF0...0xF4: 4
                     default: nil
                     }
                     if let expectedLength, trailing + 1 < expectedLength {
@@ -761,7 +761,7 @@ enum WorkspaceFiles {
     /// The last version hashed of each local file `diskVersions` was asked about.
     private static let localVersions = OSAllocatedUnfairLock<[String: LocalVersion]>(initialState: [:])
 
-    private static func localFileURL(_ path: String, root: String) throws -> URL {
+    static func localFileURL(_ path: String, root: String) throws -> URL {
         try validateRelativePath(path)
         let base = URL(fileURLWithPath: root).resolvingSymlinksInPath()
         let url = base.appendingPathComponent(path).resolvingSymlinksInPath()

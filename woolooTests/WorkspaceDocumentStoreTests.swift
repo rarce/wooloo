@@ -1328,4 +1328,53 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.text, "plain text now\n")
         XCTAssertNil(reloaded.error)
     }
+
+    func testReloadingDirtyDocumentWhoseFileBecameBinaryPreservesUnsavedEdits() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "unsaved draft\n")
+        try Data([0x50, 0x4B, 0x03, 0x04, 0x00, 0xFF]).write(to: URL(fileURLWithPath: repo.absolutePath("a.txt")))
+
+        store.load(document.id)
+        await wait("Reloading dirty document against binary file on disk") {
+            store.document(document.id)?.error != nil
+        }
+
+        let updated = try XCTUnwrap(store.document(document.id))
+        XCTAssertFalse(updated.isBinary)
+        XCTAssertTrue(updated.isEditable)
+        XCTAssertTrue(updated.isDirty)
+        XCTAssertEqual(updated.text, "unsaved draft\n")
+        XCTAssertEqual(updated.error, WorkspaceFileError.binary.localizedDescription)
+        XCTAssertFalse(store.close(document.id), "Dirty buffer must still prompt before closing")
+    }
+
+    func testValidatedLocalFilePathRejectsEscapingSymlinkAndNonRegularFiles() throws {
+        let outsidePath = sandbox.path("outside.txt")
+        try Data("secret\n".utf8).write(to: URL(fileURLWithPath: outsidePath))
+        try FileManager.default.createSymbolicLink(atPath: repo.absolutePath("escape.txt"),
+                                                   withDestinationPath: outsidePath)
+        try FileManager.default.createDirectory(atPath: repo.absolutePath("subdir"),
+                                                withIntermediateDirectories: true)
+
+        let validDoc = WorkspaceDocument(location: repo, path: "a.txt", kind: .file)
+        XCTAssertEqual(WorkspaceDocumentView.validatedLocalFilePath(for: validDoc),
+                       URL(fileURLWithPath: repo.absolutePath("a.txt")).resolvingSymlinksInPath().path)
+
+        let symlinkDoc = WorkspaceDocument(location: repo, path: "escape.txt", kind: .file)
+        XCTAssertNil(WorkspaceDocumentView.validatedLocalFilePath(for: symlinkDoc))
+
+        let folderDoc = WorkspaceDocument(location: repo, path: "subdir", kind: .file)
+        XCTAssertNil(WorkspaceDocumentView.validatedLocalFilePath(for: folderDoc))
+
+        var untitledDoc = WorkspaceDocument(location: repo, path: "", kind: .file)
+        untitledDoc.untitledNumber = 1
+        XCTAssertNil(WorkspaceDocumentView.validatedLocalFilePath(for: untitledDoc))
+
+        let remoteLocation = WorkspaceFileLocation(machine: HerdrMachineProfile(id: "m", label: "box", target: "box",
+                                                                                session: "s", enabled: true),
+                                                   session: "s", workspaceID: "w", workspaceLabel: "repo", root: repo.root)
+        let remoteDoc = WorkspaceDocument(location: remoteLocation, path: "a.txt", kind: .file)
+        XCTAssertNil(WorkspaceDocumentView.validatedLocalFilePath(for: remoteDoc))
+    }
 }
