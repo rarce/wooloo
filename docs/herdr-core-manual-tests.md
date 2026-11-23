@@ -164,6 +164,14 @@ Both Macs connect to the same core (one locally, the other through section 8 poi
 
 ## Results
 
+### Stopped core on OrbStack, 2026-11-23
+
+Tested `209a305` with herdr-core 0.1.21 in the isolated SSH session. One integration check passed.
+
+| Case | Result | Observation |
+|---|---|---|
+| 7.2, connection state | Pass | A real `hc server stop` ended the store's event subscription. With the disposable account's executable held aside to prevent automatic restart, the store reported “The connection to herdr-core ended” and remained disconnected for ten seconds. After restoring the executable and running `hc ls`, the same store reconnected. The probe exercised the model that drives the sidebar. Log: `/private/tmp/wooloo-unlocked-stopprobe.log`. |
+
 Previous run: `50090e9`, 2026-11-19 — 15 OK, 2 failed (3.4 typing right after ⌘F reached the shell; 5.1 a new window opened `default`), 7 partial, 18 not run. Both failures are addressed in the commit after it.
 
 Attempt: `d03fa6d`, 2026-11-20 — no results. Run through `codex exec` with stdin closed, Computer Use was denied access to the app, so no case that needs the window could be checked. Run it from an interactive Codex session and approve access to wooloo when asked.
