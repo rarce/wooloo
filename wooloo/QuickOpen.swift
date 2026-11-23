@@ -119,6 +119,42 @@ struct QuickOpenSymbolMatch: Equatable, Sendable {
     let positions: [Int]
 }
 
+/// A symbol in any supported file of the current Space, which `#` in Go to File (⇧⌘T) searches.
+struct QuickOpenWorkspaceSymbol: Equatable, Sendable {
+    let path: String
+    let symbol: QuickOpenSymbol
+    var id: String { "\(path)#\(symbol.symbol.id)" }
+}
+
+struct QuickOpenWorkspaceSymbolMatch: Equatable, Sendable {
+    let item: QuickOpenWorkspaceSymbol
+    /// UTF-8 offsets in the symbol's name of the matched characters.
+    let positions: [Int]
+}
+
+struct WorkspaceSymbolListing: Sendable {
+    var symbols: [QuickOpenWorkspaceSymbol]
+    var truncated = false
+}
+
+/// Pre-indexed Space symbols so `#` keystrokes match without rebuilding the name buffer.
+struct WorkspaceSymbolIndex: Sendable {
+    let symbols: [QuickOpenWorkspaceSymbol]
+    let names: QuickOpenIndex
+    fileprivate let byName: [String: [Int]]
+
+    init(_ symbols: [QuickOpenWorkspaceSymbol]) {
+        self.symbols = symbols
+        let symbolNames = symbols.map(\.symbol.symbol.name)
+        names = QuickOpenIndex(symbolNames)
+        var grouped: [String: [Int]] = [:]
+        for (offset, name) in symbolNames.enumerated() {
+            grouped[name, default: []].append(offset)
+        }
+        byName = grouped
+    }
+}
+
 /// Fuzzy path matching for Go to File. Each query term must appear in the path in order, not
 /// necessarily contiguously; matches score higher when they are contiguous, start words, or
 /// fall in the file name.
@@ -274,6 +310,26 @@ enum QuickOpenMatcher {
         }
     }
 
+    /// Symbols across the Space whose name has every space-separated term of `query`, best first.
+    static func match(workspaceSymbolQuery query: String, in index: WorkspaceSymbolIndex,
+                      limit: Int = 100) -> [QuickOpenWorkspaceSymbolMatch]? {
+        let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !terms.isEmpty else {
+            return index.symbols.prefix(limit).map { QuickOpenWorkspaceSymbolMatch(item: $0, positions: []) }
+        }
+        guard let matches = match(QuickOpenQuery(terms: terms), in: index.names, recents: [], limit: limit) else {
+            return nil
+        }
+        var taken: [String: Int] = [:]
+        return matches.compactMap { match in
+            guard let list = index.byName[match.path] else { return nil }
+            let next = taken[match.path, default: 0]
+            guard next < list.count else { return nil }
+            taken[match.path] = next + 1
+            return QuickOpenWorkspaceSymbolMatch(item: index.symbols[list[next]], positions: match.positions)
+        }
+    }
+
     private static func isSeparator(_ byte: UInt8) -> Bool {
         byte == UInt8(ascii: "_") || byte == UInt8(ascii: "-") || byte == UInt8(ascii: ".") || byte == UInt8(ascii: " ")
     }
@@ -304,10 +360,15 @@ final class QuickOpenModel: ObservableObject {
     @Published private(set) var results: [QuickOpenMatch] = []
     /// What a query starting with `@` found among `symbols`.
     @Published private(set) var symbolResults: [QuickOpenSymbolMatch] = []
+    /// What a query starting with `#` found across the Space's indexed symbols.
+    @Published private(set) var workspaceSymbolResults: [QuickOpenWorkspaceSymbolMatch] = []
     @Published var selection = 0
     @Published private(set) var isIndexing = false
+    @Published private(set) var isIndexingWorkspaceSymbols = false
     /// True when the Space has more files than the listing keeps.
     @Published private(set) var isTruncated = false
+    /// True when the Space symbol index hit its file, byte, or symbol budget.
+    @Published private(set) var workspaceSymbolsTruncated = false
     /// True when a folder outside a repository was read only near its root, at the walk's limit.
     @Published private(set) var isPartial = false
     @Published private(set) var error: String?
@@ -326,6 +387,10 @@ final class QuickOpenModel: ObservableObject {
     var loadFiles: @Sendable (WorkspaceFileLocation, Bool) throws -> QuickOpenListing = {
         try WorkspaceFiles.quickOpenFiles(at: $0, includeIgnored: $1)
     }
+    /// Indexes symbols across a location's files; tests replace it.
+    var loadWorkspaceSymbols: @Sendable (WorkspaceFileLocation, [String]) throws -> WorkspaceSymbolListing = {
+        try WorkspaceSymbolIndexer.index(paths: $1, at: $0)
+    }
 
     private let defaults: UserDefaults
 
@@ -335,9 +400,13 @@ final class QuickOpenModel: ObservableObject {
     private(set) var symbolSource: SymbolSource?
     private var index: QuickOpenIndex?
     private var indexIdentity: String?
+    private var workspaceSymbolIndex: WorkspaceSymbolIndex?
+    private var workspaceSymbolIndexIdentity: String?
     private var loadGeneration = 0
+    private var workspaceSymbolGeneration = 0
     private var matchGeneration = 0
     private var matchTask: Task<Void, Never>?
+    private var workspaceSymbolTask: Task<Void, Never>?
     private weak var previousResponder: NSResponder?
 
     init(defaults: UserDefaults = .standard) {
@@ -347,16 +416,27 @@ final class QuickOpenModel: ObservableObject {
 
     /// A query starting with `@` searches the symbols of the open file, as ⇧⌘O does.
     var isSymbolSearch: Bool { query.hasPrefix("@") }
+    /// A query starting with `#` searches symbols across the Space, as ⇧⌘T does.
+    var isWorkspaceSymbolSearch: Bool { query.hasPrefix("#") }
     var selectedMatch: QuickOpenMatch? {
-        !isSymbolSearch && results.indices.contains(selection) ? results[selection] : nil
+        !isSymbolSearch && !isWorkspaceSymbolSearch && results.indices.contains(selection) ? results[selection] : nil
     }
     var selectedSymbol: QuickOpenSymbolMatch? {
         isSymbolSearch && symbolResults.indices.contains(selection) ? symbolResults[selection] : nil
     }
+    var selectedWorkspaceSymbol: QuickOpenWorkspaceSymbolMatch? {
+        isWorkspaceSymbolSearch && workspaceSymbolResults.indices.contains(selection) ? workspaceSymbolResults[selection] : nil
+    }
     /// The path to create when the create row is selected.
-    var selectedCreatePath: String? { !isSymbolSearch && selection == results.count ? createPath : nil }
+    var selectedCreatePath: String? {
+        !isSymbolSearch && !isWorkspaceSymbolSearch && selection == results.count ? createPath : nil
+    }
     /// Matches plus the create row, or the symbols found.
-    var rowCount: Int { isSymbolSearch ? symbolResults.count : results.count + (createPath == nil ? 0 : 1) }
+    var rowCount: Int {
+        if isSymbolSearch { return symbolResults.count }
+        if isWorkspaceSymbolSearch { return workspaceSymbolResults.count }
+        return results.count + (createPath == nil ? 0 : 1)
+    }
 
     private func identity(_ location: WorkspaceFileLocation) -> String { "\(location.identity)|\(includesIgnored)" }
 
@@ -369,6 +449,11 @@ final class QuickOpenModel: ObservableObject {
         if identity(location) != indexIdentity {
             index = nil
             indexIdentity = identity(location)
+            workspaceSymbolIndex = nil
+            workspaceSymbolIndexIdentity = nil
+            workspaceSymbolTask?.cancel()
+            isIndexingWorkspaceSymbols = false
+            workspaceSymbolsTruncated = false
             isTruncated = false
             isPartial = false
             changes = [:]
@@ -390,6 +475,8 @@ final class QuickOpenModel: ObservableObject {
         isPresented = false
         symbolSource = nil
         matchTask?.cancel()
+        workspaceSymbolTask?.cancel()
+        isIndexingWorkspaceSymbols = false
         if restoringFocus, let view = previousResponder as? NSView, let window = view.window {
             window.makeFirstResponder(view)
         }
@@ -407,6 +494,10 @@ final class QuickOpenModel: ObservableObject {
         defaults.set(includesIgnored, forKey: Self.includesIgnoredKey)
         guard let location, isPresented else { return }
         indexIdentity = identity(location)
+        workspaceSymbolIndex = nil
+        workspaceSymbolIndexIdentity = nil
+        workspaceSymbolTask?.cancel()
+        isIndexingWorkspaceSymbols = false
         loadIndex(location)
     }
 
@@ -436,13 +527,51 @@ final class QuickOpenModel: ObservableObject {
                 isPartial = listing.partial
                 if changes != listing.changes { changes = listing.changes }
                 if ignored != listing.ignored { ignored = listing.ignored }
-                guard newIndex.paths != index?.paths else { return }
-                index = newIndex
-                refresh(keepingSelection: true)
+                let pathsChanged = newIndex.paths != index?.paths
+                if pathsChanged {
+                    index = newIndex
+                    workspaceSymbolIndex = nil
+                    workspaceSymbolIndexIdentity = nil
+                    refresh(keepingSelection: true)
+                }
+                if isWorkspaceSymbolSearch {
+                    loadWorkspaceSymbolsIfNeeded(at: location)
+                }
             case .failure(let failure):
                 // No limit warning from an earlier listing stays beside the error.
                 isTruncated = false
                 isPartial = false
+                error = failure.localizedDescription
+            }
+        }
+    }
+
+    private func loadWorkspaceSymbolsIfNeeded(at location: WorkspaceFileLocation) {
+        let key = identity(location)
+        guard workspaceSymbolIndexIdentity != key || workspaceSymbolIndex == nil else { return }
+        guard let paths = index?.paths else { return }
+        workspaceSymbolTask?.cancel()
+        workspaceSymbolGeneration += 1
+        let generation = workspaceSymbolGeneration
+        isIndexingWorkspaceSymbols = true
+        let load = loadWorkspaceSymbols
+        workspaceSymbolTask = Task {
+            let outcome = await WorkspaceFiles.blocking(at: location, priority: .userInitiated) {
+                Result { () -> (WorkspaceSymbolIndex, Bool) in
+                    let listing = try load(location, paths)
+                    return (WorkspaceSymbolIndex(listing.symbols), listing.truncated)
+                }
+            }
+            guard generation == workspaceSymbolGeneration, !Task.isCancelled else { return }
+            isIndexingWorkspaceSymbols = false
+            switch outcome {
+            case .success(let (built, truncated)):
+                workspaceSymbolIndex = built
+                workspaceSymbolIndexIdentity = key
+                workspaceSymbolsTruncated = truncated
+                if isWorkspaceSymbolSearch { refresh(keepingSelection: true) }
+            case .failure(let failure):
+                workspaceSymbolsTruncated = false
                 error = failure.localizedDescription
             }
         }
@@ -457,11 +586,36 @@ final class QuickOpenModel: ObservableObject {
             let selectedID = keepingSelection ? selectedSymbol?.symbol.symbol.id : nil
             symbolResults = QuickOpenMatcher.match(symbolQuery: String(query.dropFirst()), in: symbols)
             results = []
+            workspaceSymbolResults = []
             createPath = nil
             selection = selectedID.flatMap { id in symbolResults.firstIndex { $0.symbol.symbol.id == id } } ?? 0
             return
         }
+        if isWorkspaceSymbolSearch {
+            let selectedID = keepingSelection ? selectedWorkspaceSymbol?.item.id : nil
+            if !results.isEmpty { results = [] }
+            if !symbolResults.isEmpty { symbolResults = [] }
+            createPath = nil
+            if let location { loadWorkspaceSymbolsIfNeeded(at: location) }
+            guard let workspaceSymbolIndex else {
+                workspaceSymbolResults = []
+                selection = 0
+                return
+            }
+            let symbolQuery = String(query.dropFirst())
+            if symbolQuery.trimmingCharacters(in: .whitespaces).isEmpty || workspaceSymbolIndex.symbols.count < 2_000 {
+                applyWorkspaceSymbols(QuickOpenMatcher.match(workspaceSymbolQuery: symbolQuery, in: workspaceSymbolIndex) ?? [],
+                                      selectedID: selectedID)
+                return
+            }
+            matchTask = Task.detached(priority: .userInitiated) { [weak self] in
+                guard let matches = QuickOpenMatcher.match(workspaceSymbolQuery: symbolQuery, in: workspaceSymbolIndex) else { return }
+                await self?.applyWorkspaceSymbols(matches, selectedID: selectedID, generation: generation)
+            }
+            return
+        }
         if !symbolResults.isEmpty { symbolResults = [] }
+        if !workspaceSymbolResults.isEmpty { workspaceSymbolResults = [] }
         let selectedPath = keepingSelection ? selectedMatch?.path : nil
         let query = QuickOpenQuery(self.query)
         let recents = recents
@@ -477,6 +631,12 @@ final class QuickOpenModel: ObservableObject {
             guard let matches = QuickOpenMatcher.match(query, in: searched, recents: recents) else { return }
             await self?.apply(matches, createPath: createPath, selectedPath: selectedPath, generation: generation)
         }
+    }
+
+    private func applyWorkspaceSymbols(_ matches: [QuickOpenWorkspaceSymbolMatch], selectedID: String?, generation: Int? = nil) {
+        if let generation, generation != matchGeneration { return }
+        workspaceSymbolResults = matches
+        selection = selectedID.flatMap { id in matches.firstIndex { $0.item.id == id } } ?? 0
     }
 
     /// `text` when it is a valid relative file path that the index does not have.

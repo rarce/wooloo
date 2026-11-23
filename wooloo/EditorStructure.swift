@@ -1,6 +1,8 @@
 import AppKit
-import SwiftUI
+import CodeEditLanguages
 import CodeEditSourceEditor
+import Darwin
+import SwiftUI
 
 /// Shared by outline, breadcrumbs and future file-symbol navigation. Cursor changes only read
 /// this cached hierarchy; parsing/indexing never happens on the cursor path.
@@ -275,5 +277,154 @@ struct EditorOutlineRow: View {
         .help(symbol.name)
         .accessibilityLabel("Go to \(symbol.name)")
         .padding(.vertical, 3)
+    }
+}
+
+/// Extracts symbols across the files of a Space for `#` in Go to File (`Go to Symbol in Space…`).
+/// Reuses `EditorStructure.markdown` and `TreeSitterClient.symbols(in:language:)` so single-file
+/// outline and Space symbol search produce the same symbols.
+enum WorkspaceSymbolIndexer {
+    static let maximumFiles = 2_000
+    static let maximumFileBytes = 512_000
+    static let maximumTotalBytes = 16_000_000
+    static let maximumSymbols = 50_000
+
+    static func language(for path: String) -> CodeLanguage? {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "md", "markdown", "mdown", "mkd", "mkdn": return .markdown
+        case "swift": return .swift
+        case "js", "mjs", "cjs": return .javascript
+        case "jsx": return .jsx
+        case "ts", "mts", "cts": return .typescript
+        case "tsx": return .tsx
+        case "py", "pyi": return .python
+        default: return nil
+        }
+    }
+
+    /// Extracts all flattened symbols from a single file's contents.
+    static func extract(path: String, source: String) -> [QuickOpenWorkspaceSymbol] {
+        guard let language = language(for: path) else { return [] }
+        let rawSymbols: [SourceSymbol] = language.id == .markdown
+            ? EditorStructure.markdown(source)
+            : TreeSitterClient.symbols(in: source, language: language)
+        guard !rawSymbols.isEmpty else { return [] }
+        let starts = utf16LineStarts(in: source)
+        let flattened = QuickOpenSymbol.flatten(rawSymbols) { line(at: $0, starts: starts) }
+        return flattened.map { QuickOpenWorkspaceSymbol(path: path, symbol: $0) }
+    }
+
+    /// Reads supported files in `paths` at `location` (local or SSH) and extracts their symbols
+    /// within bounded file, byte, and symbol budgets.
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func index(paths: [String], at location: WorkspaceFileLocation) throws -> WorkspaceSymbolListing {
+        let supported = paths.filter { language(for: $0) != nil }
+        var truncated = supported.count > maximumFiles
+        let candidates = Array(supported.prefix(maximumFiles))
+        guard !candidates.isEmpty else { return WorkspaceSymbolListing(symbols: [], truncated: false) }
+
+        if let machine = location.machine {
+            return try indexRemote(candidates, at: location, machine: machine, initiallyTruncated: truncated)
+        }
+        return indexLocal(candidates, at: location, initiallyTruncated: truncated)
+    }
+
+    private static func indexLocal(_ candidates: [String], at location: WorkspaceFileLocation,
+                                   initiallyTruncated: Bool) -> WorkspaceSymbolListing {
+        var symbols: [QuickOpenWorkspaceSymbol] = []
+        var totalBytes = 0
+        var truncated = initiallyTruncated
+        for path in candidates {
+            if Task.isCancelled { return WorkspaceSymbolListing(symbols: [], truncated: false) }
+            guard (try? WorkspaceFiles.validateRelativePath(path)) != nil else { continue }
+            let absolute = location.absolutePath(path)
+            var info = stat()
+            guard stat(absolute, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            let size = Int(info.st_size)
+            guard size > 0, size <= maximumFileBytes else { continue }
+            if totalBytes + size > maximumTotalBytes {
+                truncated = true
+                break
+            }
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: absolute)),
+                  let source = String(data: data, encoding: .utf8) else { continue }
+            totalBytes += data.count
+            let extracted = extract(path: path, source: source)
+            if symbols.count + extracted.count > maximumSymbols {
+                symbols.append(contentsOf: extracted.prefix(maximumSymbols - symbols.count))
+                truncated = true
+                break
+            }
+            symbols.append(contentsOf: extracted)
+        }
+        return WorkspaceSymbolListing(symbols: symbols, truncated: truncated)
+    }
+
+    private static func indexRemote(_ candidates: [String], at location: WorkspaceFileLocation,
+                                    machine: HerdrMachineProfile,
+                                    initiallyTruncated: Bool) throws -> WorkspaceSymbolListing {
+        let valid = candidates.filter { (try? WorkspaceFiles.validateRelativePath($0)) != nil }
+        guard !valid.isEmpty else { return WorkspaceSymbolListing(symbols: [], truncated: initiallyTruncated) }
+        var input = Data()
+        for path in valid {
+            input.append(contentsOf: path.utf8)
+            input.append(0)
+        }
+        let body = #"for p do [ -f "$p" ] || continue; s=$(wc -c < "$p" 2>/dev/null) || continue; s=${s##* }; "#
+            + #"[ "$s" -gt 0 ] && [ "$s" -le "# + String(maximumFileBytes)
+            + #" ] || continue; printf '%s\0%s\0' "$p" "$s"; cat "$p"; done"#
+        let script = "LC_ALL=C; export LC_ALL; cd \(WorkspaceFiles.quote(location.root)) || exit 1; "
+            + "xargs -0 sh -c \(WorkspaceFiles.quote(body)) sh | head -c \(maximumTotalBytes)"
+        let data = try WorkspaceFiles.ssh(machine, script, input: input,
+                                          limit: maximumTotalBytes + 64_000, timeout: 15, label: "symbols")
+        var truncated = initiallyTruncated || data.count >= maximumTotalBytes
+        var symbols: [QuickOpenWorkspaceSymbol] = []
+        var offset = data.startIndex
+        while offset < data.endIndex {
+            if Task.isCancelled { return WorkspaceSymbolListing(symbols: [], truncated: false) }
+            guard let pathEnd = data[offset...].firstIndex(of: 0) else { truncated = true; break }
+            let pathData = data[offset..<pathEnd]
+            offset = data.index(after: pathEnd)
+            guard let sizeEnd = data[offset...].firstIndex(of: 0) else { truncated = true; break }
+            let sizeString = String(decoding: data[offset..<sizeEnd], as: UTF8.self)
+            offset = data.index(after: sizeEnd)
+            guard let size = Int(sizeString), size >= 0, data.distance(from: offset, to: data.endIndex) >= size else {
+                truncated = true
+                break
+            }
+            let contentEnd = data.index(offset, offsetBy: size)
+            let path = String(decoding: pathData, as: UTF8.self)
+            if let source = String(data: data[offset..<contentEnd], encoding: .utf8) {
+                let extracted = extract(path: path, source: source)
+                if symbols.count + extracted.count > maximumSymbols {
+                    symbols.append(contentsOf: extracted.prefix(maximumSymbols - symbols.count))
+                    truncated = true
+                    break
+                }
+                symbols.append(contentsOf: extracted)
+            }
+            offset = contentEnd
+        }
+        return WorkspaceSymbolListing(symbols: symbols, truncated: truncated)
+    }
+
+    private static func utf16LineStarts(in source: String) -> [Int] {
+        var starts = [0]
+        var offset = 0
+        for unit in source.utf16 {
+            offset += 1
+            if unit == 10 { starts.append(offset) }
+        }
+        return starts
+    }
+
+    /// 1-based line number for a UTF-16 offset.
+    private static func line(at offset: Int, starts: [Int]) -> Int {
+        var low = 0, high = starts.count
+        while low < high {
+            let mid = (low + high) / 2
+            if starts[mid] <= offset { low = mid + 1 } else { high = mid }
+        }
+        return max(low, 1)
     }
 }
