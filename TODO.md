@@ -39,7 +39,7 @@ Left from the review of PR #159.
 - [ ] `Attachment.swallowsClick` is lost when the pane reattaches between the swallowed press and its release, so the release reaches the program.
 - [ ] `CoreTerminalPresentation.sendInput` repeats the hold-while-draining logic in two branches; share it.
 - [ ] With the core stopped (`hc server stop`), the sidebar still said Connected while the pane said "Connecting terminal…" (manual test 7.2 at `d2187b0`). Show the connection as disconnected while the core is gone.
-- [ ] Quitting with ⌘Q hung for over 3 s in `-[NSApplication terminate:]`, with AppKit resolving a drag's promised data (`CFPasteboardResolveAllPromisedData` → `NSFilePromiseProvider`), after a tab drag to another Space that moved nothing (manual tests 6.1 and 7.4 at `d2187b0`; the drag was synthetic, from Computer Use). Check whether a real drag that ends without a drop does the same.
+- [ ] Verify the physical tab drop between Spaces in manual case 6.1. The automated drag initiated the operation but the source Space kept the tab.
 
 ## Testing
 

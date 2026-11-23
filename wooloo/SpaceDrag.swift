@@ -1,6 +1,25 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// SwiftUI also publishes a file promise for data-only drags. Mark this process's
+/// providers so quitting can discard that promise without resolving another app's drag.
+enum WoolooDragPasteboard {
+    static let ownerType = "dev.wooloo.drag-owner." + UUID().uuidString.lowercased()
+
+    static func mark(_ provider: NSItemProvider) {
+        provider.registerDataRepresentation(forTypeIdentifier: ownerType, visibility: .ownProcess) { completion in
+            completion(Data(), nil)
+            return nil
+        }
+    }
+
+    static func discardOwnedDrag(on pasteboard: NSPasteboard) {
+        if pasteboard.types?.contains(NSPasteboard.PasteboardType(ownerType)) == true {
+            pasteboard.clearContents()
+        }
+    }
+}
+
 /// Window-local state. Provider nonces distinguish cancelled/foreign drags with matching IDs.
 @MainActor
 final class SpaceDragModel: ObservableObject {
@@ -32,6 +51,7 @@ final class SpaceDragModel: ObservableObject {
             completion(Data(nonce.utf8), nil)
             return nil
         }
+        WoolooDragPasteboard.mark(provider)
         return provider
     }
 
