@@ -23,7 +23,7 @@ struct MarkdownFindFocus: Equatable {
 final class DocumentFindModel: ObservableObject {
     enum Target { case source, preview }
 
-    static let maximumMatches = 10_000
+    nonisolated static let maximumMatches = 10_000
 
     @Published var isVisible = false
     @Published var showsReplace = false
@@ -178,6 +178,68 @@ private struct MarkdownFindWalker: MarkupWalker {
     }
 }
 
+/// The common result counter and navigation for document and terminal searches.
+@MainActor
+protocol FindNavigation {
+    var matchStatus: String { get }
+    var canMoveMatch: Bool { get }
+    func move(_ delta: Int)
+}
+
+extension DocumentFindModel: FindNavigation {
+    var canMoveMatch: Bool { count > 0 }
+    var matchStatus: String {
+        if error != nil { return "Invalid" }
+        if options.query.isEmpty { return "" }
+        guard count > 0 else { return "No results" }
+        let total = isTruncated ? "\(count)+" : "\(count)"
+        return current.map { "\($0 + 1) of \(total)" } ?? total
+    }
+}
+
+struct FindNavigationRow<Model: FindNavigation, Fields: View, Actions: View>: View {
+    let model: Model
+    var error: String?
+    var shortcuts = false
+    var nextIsOlder = false
+    @ViewBuilder let fields: () -> Fields
+    @ViewBuilder let actions: () -> Actions
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 6) {
+            fields()
+            Text(model.matchStatus)
+                .font(.system(size: typography.secondary))
+                .foregroundStyle(error != nil ? theme.error : Color.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .frame(minWidth: 70)
+                .help(error ?? "")
+            navigationButton(nextIsOlder ? 1 : -1, symbol: "chevron.up",
+                             help: nextIsOlder ? "Older Match (Return, ⌘G)" : "Previous Match (⇧⌘G)")
+            navigationButton(nextIsOlder ? -1 : 1, symbol: "chevron.down",
+                             help: nextIsOlder ? "Newer Match (Shift-Return, ⇧⌘G)" : "Next Match (⌘G)")
+            actions()
+        }
+    }
+
+    private func navigationButton(_ delta: Int, symbol: String, help: String) -> some View {
+        Button { model.move(delta) } label: {
+            Image(systemName: symbol)
+                .font(.system(size: typography.body))
+                .frame(width: 24, height: typography.metric(22))
+                .foregroundStyle(Color.secondary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(shortcuts ? KeyboardShortcut("g", modifiers: delta > 0 ? .command : [.command, .shift]) : nil)
+        .disabled(!model.canMoveMatch)
+        .help(help)
+    }
+}
+
 /// The bar under a document's header: query, options, match navigation and, for the source, replace.
 struct DocumentFindBar: View {
     @Environment(\.woolooTypography) private var typography
@@ -196,7 +258,7 @@ struct DocumentFindBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+            FindNavigationRow(model: model, error: model.error) {
                 if allowsReplace {
                     iconButton(model.showsReplace ? "chevron.down" : "chevron.right",
                                help: "Show or hide replace (⌥⌘F)") {
@@ -209,17 +271,7 @@ struct DocumentFindBar: View {
                 toggle("Aa", help: "Match Case", isOn: $model.options.caseSensitive)
                 toggle("ab", help: "Match Whole Word", isOn: $model.options.wholeWord, underline: true)
                 toggle(".*", help: "Use Regular Expression", isOn: $model.options.regex)
-                Text(counter)
-                    .font(.system(size: typography.secondary))
-                    .foregroundStyle(model.error != nil ? theme.error : Color.secondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .frame(minWidth: 70)
-                    .help(model.error ?? "")
-                iconButton("chevron.up", help: "Previous Match (⇧⌘G)") { model.move(-1) }
-                    .disabled(model.count == 0)
-                iconButton("chevron.down", help: "Next Match (⌘G)") { model.move(1) }
-                    .disabled(model.count == 0)
+            } actions: {
                 if let onSelectAll, allowsReplace {
                     iconButton("character.cursor.ibeam", help: "Select All Matches (⌥↩)", action: onSelectAll)
                         .keyboardShortcut(.return, modifiers: .option)
@@ -254,14 +306,6 @@ struct DocumentFindBar: View {
 
     private func close() {
         if let onClose { onClose() } else { model.close() }
-    }
-
-    private var counter: String {
-        if model.error != nil { return "Invalid" }
-        if model.options.query.isEmpty { return "" }
-        guard model.count > 0 else { return "No results" }
-        let total = model.isTruncated ? "\(model.count)+" : "\(model.count)"
-        return model.current.map { "\($0 + 1) of \(total)" } ?? total
     }
 
     private func field(_ prompt: String, text: Binding<String>, focus: Field) -> some View {

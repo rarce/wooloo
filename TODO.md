@@ -27,25 +27,18 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 
 Left from the review of PR #159.
 
-- [ ] Find in a long scrollback can starve output and typing: `CoreTerminalPresentation.find` takes the presentation's lock again right after each bounded step, and macOS locks are not fair, so `drain` and `sendInput` may wait for the whole search. Yield between steps, or run the steps on the presentation's own thread.
-- [ ] `TerminalFindBar` repeats `DocumentFindBar`'s chrome (field, counter, previous/next, Escape) and lacks its ⌘G / ⇧⌘G. Share one view, with the search model behind a protocol.
 - [ ] Two windows of the same size on one tab: a background window is demoted to watching only when Core reports a size it did not send, so with equal sizes it keeps an active stream, and resizing it then takes the terminal from the window in front. Demote it on its own resize too, once the core can say whether another viewer is attached (it exposes no viewer count yet).
 - [ ] With a core that lacks `resize_notifications`, an observer applies the size from the events channel, whose `size` event can arrive after output Core already laid out at that size on the stream, so a few lines may wrap at the old width until the program redraws. Today's core sends RESIZE frames, which arrive in order.
 - [ ] At launch the presentation can be ready before the window reports that it is key (`terminalFocused` starts false), so every pane attaches as an observer and then again actively, replaying its history twice. Tell "not known yet" apart from "inactive" in `HerdrStore` and pass nil to `updateHost` until the window reports.
-- [ ] `VTTerminal.selectedMatchInViewport` accepts any point that converts to viewport coordinates; libghostty-vt can convert rows past the visible ones, so a match just below the screen keeps its highlight (drawn nowhere) and `followMatch` keeps running each frame. Check the row against the screen's rows.
 - [ ] A window that is not key attaches new panes (a split or tab another client adds) as observers, so when it is the terminal's only viewer nothing sizes the terminal until the window comes to the front. Attaching them actively, like the streams already open, would take the size from a window in front that shows the same tab; needs the core to say whether another viewer is attached.
 - [ ] A click held for an observer is encoded by the observer's emulator, at Core's size, and sent on the active stream after it resized the terminal: a click past the old width is clamped to it. Only the activation race holds clicks (the first click on an inactive window only activates it). Hold the event and encode it once the active stream's emulator has its modes.
 - [ ] Focus for herdr-core tabs and panes is spread over special cases in `HerdrStore` (the `selectedTabID` setter, two `backendKind != .core` guards in `select`, and a pane focus in `repairSelection`) because `CoreTerminalPresentation.focus(tabID:)` forgets the focused pane. Keep the focused pane per tab in the presentation, or add `focus(tabID:paneID:)`, and drop the branches.
-- [ ] When `findsInTerminal` turns false with the terminal find bar open (the stream drops, a reconnect, a session switch), the bar goes and its search ends, but `showsTerminalFind` stays true, so an empty bar comes back with the stream. Clear it, or keep the query.
-- [ ] A find running when the pane's attachment is replaced (activation, a reattach) goes on with the new emulator, which has no search, and reports no results. Notice the channel change and search again.
 - [ ] While the window is front, `arrange` tries to replace every observer with an active attach on each pass (4 a second), with no backoff when Core keeps refusing it.
-- [ ] A selected match that scrolls out of view loses its highlight for good: `drain` follows the match only while a highlight is set, so scrolling it back shows it plain while the bar still counts it. Keep following while a search is active.
 - [ ] Each change of window focus attaches afresh (active ↔ observing), replaying `attachHistory` lines per pane and losing that pane's scrollback position and find highlight. Needs a core call that switches an attachment's mode in place.
 - [ ] `Attachment.swallowsClick` is lost when the pane reattaches between the swallowed press and its release, so the release reaches the program.
 - [ ] `CoreTerminalPresentation.sendInput` repeats the hold-while-draining logic in two branches; share it.
-- [ ] The RESIZE frame's wire format is built in two files; keep it in `CoreProtocol` beside `CoreFrame.credit`.
 - [ ] With the core stopped (`hc server stop`), the sidebar still said Connected while the pane said "Connecting terminal…" (manual test 7.2 at `d2187b0`). Show the connection as disconnected while the core is gone.
-- [ ] Quitting with ⌘Q hung for over 3 s in `-[NSApplication terminate:]`, with AppKit resolving a drag's promised data (`CFPasteboardResolveAllPromisedData` → `NSFilePromiseProvider`), after a tab drag to another Space that moved nothing (manual tests 6.1 and 7.4 at `d2187b0`; the drag was synthetic, from Computer Use). Check whether a real drag that ends without a drop does the same.
+- [ ] Verify the physical tab drop between Spaces in manual case 6.1. The automated drag initiated the operation but the source Space kept the tab.
 
 ## Testing
 

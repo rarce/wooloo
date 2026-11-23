@@ -104,10 +104,7 @@ final class FakeCoreServer: CoreTransport, @unchecked Sendable {
 
     /// Tells an observer the terminal's size, as Core does with `resize_notifications`.
     func sendResize(cols: Int, rows: Int, on channel: UInt32) {
-        var payload = Data()
-        withUnsafeBytes(of: UInt16(cols).littleEndian) { payload.append(contentsOf: $0) }
-        withUnsafeBytes(of: UInt16(rows).littleEndian) { payload.append(contentsOf: $0) }
-        lock.withLock { enqueue(CoreFrame(channel: channel, kind: .resize, payload: payload).encoded()) }
+        lock.withLock { enqueue(CoreFrame.resize(cols: cols, rows: rows, channel: channel).encoded()) }
     }
 
     /// Sends a terminal's output on an attach channel.
