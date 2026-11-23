@@ -13,6 +13,8 @@ protocol TerminalSurfaceConnection: AnyObject, Sendable {
     /// The window's colours and focus, which programs read through terminal queries.
     func updateHost(theme: WoolooTheme, focused: Bool)
     func focus(tabID: String)
+    /// Reflect a locally chosen or repaired selection in client-owned presentations.
+    func reconcileSelection(tabID: String, paneID: String?)
     @discardableResult func focus(paneID: String) -> Bool
     func focus(workspaceID: String)
     @discardableResult func setSplitRatio(tabID: String, path: [Bool], ratio: Double) -> Bool
@@ -37,6 +39,8 @@ struct TerminalFindResult: Equatable, Sendable {
 }
 
 extension TerminalSurfaceConnection {
+    func reconcileSelection(tabID: String, paneID: String?) {}
+
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     func find(_ query: String, in paneID: String, older: Bool, request: UInt64) -> TerminalFindResult? { nil }
     func endFind() {}
