@@ -291,7 +291,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     /// input go on during a long scrollback search. A newer find or `endFind` stops it.
     @available(*, noasync, message: "Blocks its thread: call it inside BlockingWork.run")
     func find(_ query: String, in paneID: String, older: Bool, request: UInt64) -> TerminalFindResult? {
-        let begun = lock.withLock { () -> (UInt64, Bool)? in
+        let begun = lock.withLock { () -> UInt64? in
             // Finds run on worker threads, which may begin them out of order.
             guard request >= newestFindRequest else { return nil }
             newestFindRequest = request
@@ -304,45 +304,42 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     dirty = true
                 }
             }
-            return (findGeneration, attachments[paneID]?.emulator.beginFind(query) == true)
+            return findGeneration
         }
-        guard let (generation, started) = begun else { return nil }
-        guard started else { return clearHighlight(of: paneID, generation: generation) }
+        guard let generation = begun else { return nil }
+        var searchingChannel: UInt32?
+        var result: TerminalFindResult?
         while true {
-            let step = lock.withLock { () -> Bool? in
-                guard findGeneration == generation, let emulator = attachments[paneID]?.emulator else { return nil }
-                return emulator.continueFind()
+            let finished = lock.withLock { () -> Bool in
+                guard findGeneration == generation, let attachment = attachments[paneID] else { return true }
+                // A replacement attachment has its own emulator and search state.
+                if searchingChannel != attachment.channel {
+                    searchingChannel = attachment.channel
+                    guard attachment.emulator.beginFind(query) else {
+                        attachments[paneID]?.highlight = nil
+                        dirty = true
+                        return true
+                    }
+                }
+                guard attachment.emulator.continueFind() else { return false }
+                dirty = true
+                let match = attachment.emulator.selectMatch(older: older)
+                if let match {
+                    result = TerminalFindResult(index: match.index, total: match.total)
+                }
+                if let start = match?.start, let end = match?.end {
+                    attachments[paneID]?.highlight = (start, end)
+                } else {
+                    attachments[paneID]?.highlight = nil
+                }
+                return true
             }
-            guard let step else { return nil }
-            if step { break }
-        }
-        let result = lock.withLock { () -> TerminalFindResult? in
-            guard findGeneration == generation, let attachment = attachments[paneID] else { return nil }
-            dirty = true
-            guard let match = attachment.emulator.selectMatch(older: older) else {
-                attachments[paneID]?.highlight = nil
-                return nil
-            }
-            if let start = match.start, let end = match.end {
-                attachments[paneID]?.highlight = (start, end)
-            } else {
-                attachments[paneID]?.highlight = nil
-            }
-            return TerminalFindResult(index: match.index, total: match.total)
+            if finished { break }
+            // Give input and rendering threads a turn between bounded searches.
+            Thread.sleep(forTimeInterval: 0.001)
         }
         wake.signal()
         return result
-    }
-
-    private func clearHighlight(of paneID: String, generation: UInt64) -> TerminalFindResult? {
-        lock.withLock {
-            if findGeneration == generation, attachments[paneID]?.highlight != nil {
-                attachments[paneID]?.highlight = nil
-                dirty = true
-            }
-        }
-        wake.signal()
-        return nil
     }
 
     /// Whether `paneID`'s emulator has a search open.
@@ -482,7 +479,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             if let attachment = refreshed[terminal] {
                 if attachment.rect == rect {
                     if reassert && !attachment.observing {
-                        try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
+                        try? connection.send(CoreFrame.resize(cols: rect.width, rows: rect.height, channel: attachment.channel))
                     }
                     continue
                 }
@@ -491,7 +488,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     // only its place in the tab changes.
                     lock.withLock { attachments[terminal]?.rect = rect; dirty = true }
                     if reassert && !attachment.observing {
-                        try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
+                        try? connection.send(CoreFrame.resize(cols: rect.width, rows: rect.height, channel: attachment.channel))
                     }
                     continue
                 }
@@ -508,7 +505,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     attachments[terminal]?.grid = Self.blankGrid(cols: rect.width, rows: rect.height)
                     dirty = true
                 }
-                try? connection.send(Self.resizeFrame(rect, channel: attachment.channel))
+                try? connection.send(CoreFrame.resize(cols: rect.width, rows: rect.height, channel: attachment.channel))
                 continue
             }
             try attach(terminal, rect: rect, cell: size, colors: colors, observe: !focused, on: connection)
@@ -533,12 +530,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         attachments[terminal]?.grid = blankGrid(cols: size.cols, rows: size.rows)
     }
 
-    private static func resizeFrame(_ rect: HerdrRect, channel: UInt32) -> CoreFrame {
-        var payload = Data()
-        withUnsafeBytes(of: UInt16(clamping: rect.width).littleEndian) { payload.append(contentsOf: $0) }
-        withUnsafeBytes(of: UInt16(clamping: rect.height).littleEndian) { payload.append(contentsOf: $0) }
-        return CoreFrame(channel: channel, kind: .resize, payload: payload)
-    }
+
 
     /// Attaches to a terminal. A window that is not active when it attaches, such as one
     /// restored behind others at launch, only watches (`observe`): it does not take the
@@ -670,7 +662,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     attachment.cursor = attachment.emulator.isAtBottom ? frame.cursor : nil
                     // A match highlight is in viewport cells: it follows the text that output,
                     // a scroll or a resize moved, and goes once the match is out of view.
-                    if attachment.highlight != nil { attachment.highlight = attachment.emulator.followMatch() }
+                    if attachment.emulator.isSearching { attachment.highlight = attachment.emulator.followMatch() }
                     changed = true
                 }
                 if let images = attachment.emulator.imagesIfChanged() {

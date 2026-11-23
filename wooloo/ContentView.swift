@@ -224,6 +224,9 @@ private struct DestinationContentView: View {
             notifier.refreshDockBadge()
         }
         .onChange(of: previousContextShortcut) { _, _ in shortcutStore.reload() }
+        .onChange(of: herdr.findsInTerminal) { _, available in
+            if !available { window.showsTerminalFind = false }
+        }
         .onChange(of: herdr.selectedPaneID) { _, _ in destinations.acknowledgeVisiblePane() }
         .onChange(of: herdr.surfaceLayout) { _, _ in destinations.acknowledgeVisiblePane() }
         .onChange(of: activeDocumentID) { _, _ in destinations.acknowledgeVisiblePane() }

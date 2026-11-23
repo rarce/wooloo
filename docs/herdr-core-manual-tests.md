@@ -172,6 +172,18 @@ Tested `209a305` with herdr-core 0.1.21 in the isolated SSH session. One integra
 |---|---|---|
 | 7.2, connection state | Pass | A real `hc server stop` ended the store's event subscription. With the disposable account's executable held aside to prevent automatic restart, the store reported “The connection to herdr-core ended” and remained disconnected for ten seconds. After restoring the executable and running `hc ls`, the same store reconnected. The probe exercised the model that drives the sidebar. Log: `/private/tmp/wooloo-unlocked-stopprobe.log`. |
 
+### Agent keyboard input on 2026-11-22
+
+Retested the interrupt sequence in `6581864` against the same Codex session. The first targeted Control-C cleared the draft and left Codex at its empty prompt. The second returned to zsh. The first screenshot shows the prompt placeholder and no explicit quit hint. See `fixed-first-interrupt.png` and `fixed-second-interrupt.png`.
+
+Tested `bd96a05` with herdr-core 0.1.21 and Codex 0.171.0. One case failed.
+Screenshots are in `/private/tmp/wooloo-core-review-shots/pending`.
+
+| Case | Result | Observation |
+|---|---|---|
+| 2.4 | Fail | In the isolated local window, typed a draft, pasted text, used Option-Left and Escape, and scrolled. Two Control-modified C key events sent directly to the review app's PID inserted two literal letters at the cursor. Codex stayed open. See `first-interrupt.png` and `second-interrupt.png`. |
+
+
 Previous run: `50090e9`, 2026-11-19 — 15 OK, 2 failed (3.4 typing right after ⌘F reached the shell; 5.1 a new window opened `default`), 7 partial, 18 not run. Both failures are addressed in the commit after it.
 
 Attempt: `d03fa6d`, 2026-11-20 — no results. Run through `codex exec` with stdin closed, Computer Use was denied access to the app, so no case that needs the window could be checked. Run it from an interactive Codex session and approve access to wooloo when asked.
@@ -227,6 +239,16 @@ Review of this run: 3.4 (the terminal took the keyboard back before the field sh
 | 9.1 | Not run | No second Mac available. |
 | 9.2 | Not run | No second Mac available. |
 
+### Drag and quit on 2026-11-22
+
+Baseline `bd96a05`, session `wooloo-ui-test`, herdr-core 0.1.21. One baseline failure, one passing quit retest and one partial drop check. Evidence is in `/private/tmp/wooloo-core-review-shots/pending`.
+
+| Case | Result | Observation |
+|---|---|---|
+| 7.4 | Fail | Dragged the tab away from the tab bar, cancelled and pressed ⌘Q. The process stayed alive. A one-second sample found the main thread in AppKit termination resolving a file promise on all 881 samples. See `quit-sample.txt`. |
+| 7.4 retest | Pass | With the drag fix from `17f8a2f`, cancelled the unsuccessful drag and pressed ⌘Q. The review process exited on its own. Verified its exact executable path was absent. |
+| 6.1 | Partial | On the candidate fix, created a second tab and Space. Computer Use initiated a drag from the second tab toward the other Space. The original Space still showed both tabs. Physical drop remains unverified. |
+
 ### Retest at `09d6d0a`
 
 2026-11-20 · **1 OK, 3 Fail, 0 Partial, 0 Not run.** Screenshots are in `/private/tmp/wooloo-core-review-shots/retest`.
@@ -260,6 +282,20 @@ Review of these fixes: the ⌘F field, the Disconnected and empty states and `ke
 | 5.6 | OK | Desktop & Dock showed “Close windows when quitting an application” on. The Window menu listed two windows before ⌘Q and one after relaunch, as expected. The restored window showed `Local · wooloo-ui-test` and accepted `echo restored-input`. `5-6-before.png`, `5-6-restored.png`. |
 | 7.2 | OK | Stopped the isolated core with the wooloo-created pane `t1s` selected. By the first observation the sidebar already said Connected, the status bar showed `Local · wooloo-ui-test Space`, and the pane showed a shell. The same state persisted ten seconds later. No disconnected frame was captured. Before any further hc command, the pane accepted `echo original-pane-recovered`. A subsequent `hc read t1s` confirmed its output at the original address. `7-2-stop.png`, `7-2-ten.png`, `7-2-input.png`. |
 | Extra · normal exit | OK | Typed `exit` and Return in `t1s`. Its tab closed, leaving one zsh tab. `hc ls` showed only `t1q` live and one finished terminal. `extra-exit.png`. |
+
+### SSH to OrbStack on 2026-11-22
+
+Tested application code at `bd96a05` against a Debian arm64 container with herdr-core 0.1.21 and session `wooloo-ui-test`. The initial GUI connection attempt used `6581864`. The loopback GUI checks used the drag-review build with application code at `d13a3e1`. On November 23 the GUI retest completed the visual PNG, search navigation and network recovery checks. Three SSH cases passed. Case 8.2 retains one timing limitation. Two second-Mac cases were not run. GUI screenshots are in `/private/tmp/wooloo-core-review-shots/orbstack`. The separate service checks produced logs.
+
+| Case | Result | Observation |
+|---|---|---|
+| 8.1 | Pass | The direct OrbStack hostname produced “No route to host” in the app. Added the host with a loopback SSH forward and session `wooloo-ui-test`. Removed the initially failed connection from the window to expose the install action on the saved profile. On a clean remote account, confirmed the GUI installation, saw the 0.1.21 installed notice, reopened the profile and created a remote Space. See `ssh-connected.png`. |
+| 8.2 | Partial | Opened remote vim on /etc/services, clicked, dragged to select and scrolled to later service entries. See `ssh-vim.png`. Separate store checks found at least 30 remote markers and a kitty PNG on the terminal surface. After unlocking the Mac, the Calculator PNG appeared above the remote prompt. ⌘F focused the find field. Setting its value to marker- showed 1 of 602, Return moved to 2 of 602 and Shift-Return returned to 1 of 602. The field was set after verifying focus, so immediate typing in the same keystroke sequence remains unverified remotely. See `ssh-kitty-retest.png`. |
+| 8.3 | Pass | Opened `/home/reviewui/visible-remote-file.txt` in the editor. The Changes panel showed it modified and showed the remote branch `review`. The independent service check verified the fixture contents and Git root. See `ssh-file-and-git.png`. |
+| 8.4 | Pass | With a real remote pane attached, closed the loopback SSH forward for 30 seconds. The window's store reported disconnection, reconnected automatically and presented the same pane ID. Repeated in the GUI on November 23. Wooloo showed “Disconnected · last known Spaces” during the outage and automatically reopened the remote Space after the forward returned. The same t1 terminal accepted another command. See `ssh-outage.png` and `ssh-recovered.png`. |
+| 9.1–9.2 | Not run | A second Mac was unavailable for this run. |
+
+Local logs: `/private/tmp/wooloo-ssh-probe.log`, `/private/tmp/wooloo-ssh-terminal.log` and `/private/tmp/wooloo-ssh-recovery2.log`.
 
 ## Cleanup
 

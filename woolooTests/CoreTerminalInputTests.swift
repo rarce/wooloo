@@ -20,6 +20,13 @@ final class CoreTerminalInputTests: XCTestCase {
 
     private func text(_ data: Data?) -> String? { data.map { String(decoding: $0, as: UTF8.self) } }
 
+    func testControlCUsesTheProgramsKeyboardProtocol() throws {
+        let emulator = try terminal()
+        XCTAssertEqual(emulator.encodeKey("ctrl+c"), Data([3]))
+        emulator.write(Data("\u{1b}[>1u".utf8))
+        XCTAssertEqual(text(emulator.encodeKey("ctrl+c")), "\u{1b}[99;5u")
+    }
+
     func testReportsFollowTheProgramsMouseMode() throws {
         let plain = try terminal()
         XCTAssertFalse(plain.reportsMouse)
@@ -201,6 +208,15 @@ final class CoreTerminalInputTests: XCTestCase {
         XCTAssertNil(terminal.find("not there"))
         XCTAssertNil(terminal.find(""))
         terminal.endSearch()
+    }
+
+    func testSelectedMatchBelowTheViewportReturnsWhenScrolledBack() throws {
+        let terminal = try terminal((1...80).map { "line \($0)" }.joined(separator: "\r\n"))
+        XCTAssertEqual(try XCTUnwrap(terminal.find("line 80")).start?.row, 23)
+        terminal.scroll(by: -5)
+        XCTAssertNil(terminal.followMatch())
+        terminal.scrollToBottom()
+        XCTAssertEqual(terminal.followMatch()?.start.row, 23)
     }
 
     func testTheSelectedMatchFollowsNewOutput() throws {

@@ -91,7 +91,7 @@ final class TerminalTabDropViewTests: XCTestCase {
         let draggingLocation: NSPoint
         let draggingDestinationWindow: NSWindow?
 
-        init(pasteboard: NSPasteboard, location: NSPoint, window: NSWindow) {
+        @MainActor init(pasteboard: NSPasteboard, location: NSPoint, window: NSWindow) {
             draggingPasteboard = pasteboard
             draggingLocation = location
             draggingDestinationWindow = window
@@ -177,10 +177,21 @@ final class TerminalTabDropViewTests: XCTestCase {
 
     /// A tab drag offers the tab type, which the terminal view looks for on the drag pasteboard,
     /// and the dragged terminal tab ends with the drop.
+    func testQuitDiscardsOnlyThisProcessDrag() {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.setString("other drag", forType: .string)
+        WoolooDragPasteboard.discardOwnedDrag(on: board)
+        XCTAssertEqual(board.string(forType: .string), "other drag")
+        board.setData(Data(), forType: .init(WoolooDragPasteboard.ownerType))
+        WoolooDragPasteboard.discardOwnedDrag(on: board)
+        XCTAssertNil(board.string(forType: .string))
+    }
+
     func testTerminalTabDragsEndWithTheDrop() throws {
         let drag = TabDragModel()
         let provider = drag.begin(.terminal, id: "w1:t2")
-        XCTAssertEqual(provider.registeredTypeIdentifiers, [TerminalTabDrop.pasteboardType.rawValue])
+        XCTAssertEqual(provider.registeredTypeIdentifiers, [TerminalTabDrop.pasteboardType.rawValue, WoolooDragPasteboard.ownerType])
         XCTAssertEqual(drag.draggedTerminalTab, "w1:t2")
         XCTAssertEqual(drag.dropTerminalTab(), "w1:t2")
         XCTAssertNil(drag.draggedTerminalTab)
@@ -232,7 +243,7 @@ final class TerminalTabDropViewTests: XCTestCase {
         for (group, id) in [(TabDragGroup.terminal, "w1:t2"), (.document, "document-ä"), (.search, "search")] {
             let provider = drag.begin(group, id: id)
             let type = TabDragModel.type(of: group)
-            XCTAssertEqual(provider.registeredTypeIdentifiers, [type.identifier])
+            XCTAssertEqual(provider.registeredTypeIdentifiers, [type.identifier, WoolooDragPasteboard.ownerType])
             XCTAssertFalse(provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier))
             XCTAssertFalse(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
             let data = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
