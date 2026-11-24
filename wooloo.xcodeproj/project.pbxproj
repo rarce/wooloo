@@ -1019,7 +1019,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.18;
+				MARKETING_VERSION = 0.3.19;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(WOOLOO_APP_BUNDLE_IDENTIFIER)";
 				WOOLOO_APP_BUNDLE_IDENTIFIER = dev.wooloo.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1040,7 +1040,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.18;
+				MARKETING_VERSION = 0.3.19;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(WOOLOO_APP_BUNDLE_IDENTIFIER)";
 				WOOLOO_APP_BUNDLE_IDENTIFIER = dev.wooloo.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
