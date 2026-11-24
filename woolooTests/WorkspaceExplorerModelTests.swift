@@ -484,6 +484,43 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertEqual(model.listingVersion, 2)
     }
 
+    func testRevisitingRemoteSpaceRestoresFilesAndChangesWithoutReading() async throws {
+        let cache = WorkspaceListingCache()
+        let remote = WorkspaceFileLocation(machine: HerdrMachineProfile(id: "build", label: "Build", target: "build",
+            session: "test", enabled: true), session: repo.session, workspaceID: repo.workspaceID,
+            workspaceLabel: repo.workspaceLabel, root: repo.root)
+        model = WorkspaceExplorerModel(listingCache: cache)
+        model.readListing = { _ in
+            let change = WorkspaceFileChange(path: "ssh.txt", indexStatus: " ", worktreeStatus: "M", originalPath: nil)
+            return WorkspaceFileListing(files: [change.path], changes: [change], hasGit: true, totalFiles: 1)
+        }
+        await model.loadListing(at: remote, useCached: true)?.value
+        model.readListing = WorkspaceFiles.listing
+        await model.loadListing(at: repo, useCached: true)?.value
+        XCTAssertTrue(model.listing?.files.contains("a.txt") == true, "The local Space has the same root and ID")
+
+        func checkRemoteSnapshot() {
+            XCTAssertNil(model.loadListing(at: remote, useCached: true), "A warm visit starts no file read")
+            XCTAssertFalse(model.isLoading)
+            XCTAssertEqual(model.listing?.files, ["ssh.txt"])
+            XCTAssertEqual(model.listing?.changes.map(\.path), ["ssh.txt"])
+        }
+        checkRemoteSnapshot()
+        model = WorkspaceExplorerModel(listingCache: cache)
+        checkRemoteSnapshot()
+
+        model.readListing = { _ in throw WorkspaceFileError.message("offline") }
+        await load(remote)
+        guard case .listing(let cached) = model.shown(for: remote) else { return XCTFail("Keep the last good read") }
+        XCTAssertEqual(cached.files, ["ssh.txt"])
+        XCTAssertNotNil(model.error)
+        model.readListing = { _ in WorkspaceFileListing(files: ["new.txt"], changes: [], hasGit: true, totalFiles: 1) }
+        await load(remote)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.listing?.files, ["new.txt"])
+        XCTAssertEqual(model.listing?.changes.count, 0)
+    }
+
     /// Switching to a slow Space (an SSH machine under load): a refresh of the new Space before its
     /// listing arrives, as from the Git bar or a poll, must not show the previous Space's tree.
     func testRefreshingASpaceStillLoadingKeepsTheSpinner() async throws {

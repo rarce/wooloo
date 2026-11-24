@@ -28,7 +28,7 @@ struct WorkspaceBrowserView: View {
     @State private var commandToken = UUID()
 
     /// Not private so snapshot tests can open folders and select a row before it appears.
-    @StateObject var model = WorkspaceExplorerModel()
+    @StateObject var model = WorkspaceExplorerModel(listingCache: .shared)
     @FocusState private var draftFocused: Bool
     /// Whether the Files tree has keyboard focus, so file shortcuts apply to its selection.
     @FocusState private var treeFocused: Bool
@@ -48,10 +48,6 @@ struct WorkspaceBrowserView: View {
     @State private var stickyTop: Int?
     /// Where the rows start in the tree's content, below the root and its hints.
     @State private var rowsOffset: CGFloat = 0
-
-    private var listingIdentity: String {
-        "\(location?.identity ?? "none")|\(refreshVersion)"
-    }
 
     var body: some View {
         Group {
@@ -99,7 +95,8 @@ struct WorkspaceBrowserView: View {
             keyMonitor = nil
             commandTarget?.unregister(commandToken)
         }
-        .task(id: listingIdentity) { loadListing() }
+        .task(id: location?.identity) { model.loadListing(at: location, useCached: true) }
+        .onChange(of: refreshVersion) { _, _ in loadListing() }
         .task(id: location?.identity) { await model.monitor(at: location) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.setApplicationActive(true)
@@ -197,6 +194,9 @@ struct WorkspaceBrowserView: View {
                     .padding(11)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if case .listing(let listing) = shown, let location {
+                if let error = model.error, model.failedIdentity == location.identity {
+                    hint("Showing cached files. " + error)
+                }
                 let shownTree = model.shownTree(listing, location: location)
                 let changesByPath = Dictionary(listing.changes.map { ($0.path, $0) },
                                                uniquingKeysWith: { first, _ in first })
