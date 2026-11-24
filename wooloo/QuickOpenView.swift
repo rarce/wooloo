@@ -45,10 +45,10 @@ private struct QuickOpenPanel: View {
             .frame(height: typography.metric(36))
             Divider()
             if model.rowCount == 0 {
-                message(emptyMessage, isError: model.error != nil)
+                message(emptyMessage, isError: model.activeError != nil)
             } else {
                 results
-                if let error = model.error {
+                if let error = model.activeError {
                     Divider()
                     message(error, isError: true)
                 }
@@ -69,7 +69,7 @@ private struct QuickOpenPanel: View {
     }
 
     private var emptyMessage: String {
-        if let error = model.error { return error }
+        if let error = model.activeError { return error }
         if model.isSymbolSearch {
             if model.symbols.isEmpty { return "No symbols in the file open in the editor." }
             return "No matching symbols"

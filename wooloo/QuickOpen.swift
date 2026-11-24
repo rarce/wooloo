@@ -372,6 +372,8 @@ final class QuickOpenModel: ObservableObject {
     /// True when a folder outside a repository was read only near its root, at the walk's limit.
     @Published private(set) var isPartial = false
     @Published private(set) var error: String?
+    /// Error from indexing Space symbols (`#`), kept separate from file-listing errors.
+    @Published private(set) var workspaceSymbolError: String?
     @Published private(set) var location: WorkspaceFileLocation?
     /// A path typed that no file has, offered as a last row that creates it.
     @Published private(set) var createPath: String?
@@ -402,6 +404,9 @@ final class QuickOpenModel: ObservableObject {
     private var indexIdentity: String?
     private var workspaceSymbolIndex: WorkspaceSymbolIndex?
     private var workspaceSymbolIndexIdentity: String?
+    private var workspaceSymbolIndexFresh = false
+    private var listingVersion = 0
+    private var workspaceSymbolInFlight: (key: String, listingVersion: Int)?
     private var loadGeneration = 0
     private var workspaceSymbolGeneration = 0
     private var matchGeneration = 0
@@ -418,6 +423,8 @@ final class QuickOpenModel: ObservableObject {
     var isSymbolSearch: Bool { query.hasPrefix("@") }
     /// A query starting with `#` searches symbols across the Space, as ⇧⌘T does.
     var isWorkspaceSymbolSearch: Bool { query.hasPrefix("#") }
+    /// The error relevant to the active search mode.
+    var activeError: String? { isWorkspaceSymbolSearch ? (workspaceSymbolError ?? error) : error }
     var selectedMatch: QuickOpenMatch? {
         !isSymbolSearch && !isWorkspaceSymbolSearch && results.indices.contains(selection) ? results[selection] : nil
     }
@@ -445,13 +452,17 @@ final class QuickOpenModel: ObservableObject {
     /// those of the file in the editor, for `query` "@".
     func present(at location: WorkspaceFileLocation, recents: [String], current: String?,
                  symbols: [QuickOpenSymbol] = [], symbolSource: SymbolSource? = nil, query initialQuery: String = "") {
-        previousResponder = NSApp?.keyWindow?.firstResponder
+        if !isPresented {
+            previousResponder = NSApp?.keyWindow?.firstResponder
+        }
         if identity(location) != indexIdentity {
             index = nil
             indexIdentity = identity(location)
+            listingVersion += 1
             workspaceSymbolIndex = nil
             workspaceSymbolIndexIdentity = nil
             workspaceSymbolTask?.cancel()
+            workspaceSymbolInFlight = nil
             isIndexingWorkspaceSymbols = false
             workspaceSymbolsTruncated = false
             isTruncated = false
@@ -459,11 +470,14 @@ final class QuickOpenModel: ObservableObject {
             changes = [:]
             ignored = []
         }
+        // Reopening in the same Space refreshes symbols in the background so edits are picked up.
+        workspaceSymbolIndexFresh = false
         self.location = location
         self.recents = recents.filter { $0 != current } + (current.map { [$0] } ?? [])
         self.symbols = symbols
         self.symbolSource = symbolSource
         error = nil
+        workspaceSymbolError = nil
         isPresented = true
         if query == initialQuery { refresh() } else { query = initialQuery }
         loadIndex(location)
@@ -476,6 +490,7 @@ final class QuickOpenModel: ObservableObject {
         symbolSource = nil
         matchTask?.cancel()
         workspaceSymbolTask?.cancel()
+        workspaceSymbolInFlight = nil
         isIndexingWorkspaceSymbols = false
         if restoringFocus, let view = previousResponder as? NSView, let window = view.window {
             window.makeFirstResponder(view)
@@ -494,9 +509,13 @@ final class QuickOpenModel: ObservableObject {
         defaults.set(includesIgnored, forKey: Self.includesIgnoredKey)
         guard let location, isPresented else { return }
         indexIdentity = identity(location)
+        listingVersion += 1
         workspaceSymbolIndex = nil
         workspaceSymbolIndexIdentity = nil
+        workspaceSymbolIndexFresh = false
+        workspaceSymbolError = nil
         workspaceSymbolTask?.cancel()
+        workspaceSymbolInFlight = nil
         isIndexingWorkspaceSymbols = false
         loadIndex(location)
     }
@@ -530,11 +549,14 @@ final class QuickOpenModel: ObservableObject {
                 let pathsChanged = newIndex.paths != index?.paths
                 if pathsChanged {
                     index = newIndex
+                    listingVersion += 1
                     workspaceSymbolIndex = nil
                     workspaceSymbolIndexIdentity = nil
-                    refresh(keepingSelection: true)
+                    workspaceSymbolIndexFresh = false
+                    workspaceSymbolError = nil
+                    if isPresented { refresh(keepingSelection: true) }
                 }
-                if isWorkspaceSymbolSearch {
+                if isPresented, isWorkspaceSymbolSearch {
                     loadWorkspaceSymbolsIfNeeded(at: location)
                 }
             case .failure(let failure):
@@ -547,12 +569,19 @@ final class QuickOpenModel: ObservableObject {
     }
 
     private func loadWorkspaceSymbolsIfNeeded(at location: WorkspaceFileLocation) {
+        guard isPresented else { return }
         let key = identity(location)
-        guard workspaceSymbolIndexIdentity != key || workspaceSymbolIndex == nil else { return }
         guard let paths = index?.paths else { return }
+        if workspaceSymbolIndexFresh, workspaceSymbolIndexIdentity == key, workspaceSymbolIndex != nil { return }
+        guard workspaceSymbolError == nil else { return }
+        let version = listingVersion
+        if let inFlight = workspaceSymbolInFlight, inFlight.key == key, inFlight.listingVersion == version {
+            return
+        }
         workspaceSymbolTask?.cancel()
         workspaceSymbolGeneration += 1
         let generation = workspaceSymbolGeneration
+        workspaceSymbolInFlight = (key, version)
         isIndexingWorkspaceSymbols = true
         let load = loadWorkspaceSymbols
         workspaceSymbolTask = Task {
@@ -563,16 +592,19 @@ final class QuickOpenModel: ObservableObject {
                 }
             }
             guard generation == workspaceSymbolGeneration, !Task.isCancelled else { return }
+            workspaceSymbolInFlight = nil
             isIndexingWorkspaceSymbols = false
             switch outcome {
             case .success(let (built, truncated)):
                 workspaceSymbolIndex = built
                 workspaceSymbolIndexIdentity = key
+                workspaceSymbolIndexFresh = true
                 workspaceSymbolsTruncated = truncated
-                if isWorkspaceSymbolSearch { refresh(keepingSelection: true) }
+                workspaceSymbolError = nil
+                if isPresented, isWorkspaceSymbolSearch { refresh(keepingSelection: true) }
             case .failure(let failure):
                 workspaceSymbolsTruncated = false
-                error = failure.localizedDescription
+                workspaceSymbolError = failure.localizedDescription
             }
         }
     }

@@ -1598,6 +1598,42 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(result.files.map(\.path), ["src/a.swift"])
         XCTAssertEqual(result.matchCount, 1)
     }
+
+    func testRemoteWorkspaceSymbolIndexerContainsSymlinksHandlesDashNamesAndReportsTruncation() async throws {
+        try sandbox.write(["outside.md": "# Outside Secret\n"], in: ".")
+        _ = try sandbox.repository("repo", files: [
+            "-dash.md": "# Dash Heading\n",
+            "App.swift": "struct RemoteApp {\n    func launch() {}\n}\n",
+            "big.md": "# Oversized\n" + String(repeating: "x", count: 400) + "\n"
+        ])
+        try FileManager.default.createSymbolicLink(
+            atPath: sandbox.path("repo/escape.md"),
+            withDestinationPath: sandbox.path("outside.md")
+        )
+        let location = remote("repo")
+
+        let listing = try await WorkspaceFiles.blocking(at: location) {
+            try WorkspaceSymbolIndexer.index(paths: ["-dash.md", "escape.md", "App.swift"], at: location)
+        }
+        XCTAssertFalse(listing.truncated)
+        let names = listing.symbols.map(\.symbol.symbol.name)
+        XCTAssertTrue(names.contains("Dash Heading"), "Dash-prefixed files must be read safely, got: \(names)")
+        XCTAssertTrue(names.contains("RemoteApp"), "Got: \(names)")
+        XCTAssertTrue(names.contains("launch"), "Got: \(names)")
+        XCTAssertFalse(names.contains("Outside Secret"), "Symlinks outside the Space must not be indexed")
+
+        let perFileTruncated = try await WorkspaceFiles.blocking(at: location) {
+            try WorkspaceSymbolIndexer.index(paths: ["big.md"], at: location, maximumFileBytes: 128)
+        }
+        XCTAssertTrue(perFileTruncated.symbols.isEmpty)
+        XCTAssertTrue(perFileTruncated.truncated)
+
+        let totalTruncated = try await WorkspaceFiles.blocking(at: location) {
+            try WorkspaceSymbolIndexer.index(paths: ["-dash.md", "App.swift"], at: location, maximumTotalBytes: 24)
+        }
+        XCTAssertTrue(totalTruncated.truncated)
+        XCTAssertEqual(totalTruncated.symbols.map(\.symbol.symbol.name), ["Dash Heading"])
+    }
 }
 
 /// The Herdr command that lists SSH machines and reads their snapshots, replaced by a script

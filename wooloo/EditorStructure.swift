@@ -317,38 +317,66 @@ enum WorkspaceSymbolIndexer {
     /// Reads supported files in `paths` at `location` (local or SSH) and extracts their symbols
     /// within bounded file, byte, and symbol budgets.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
-    static func index(paths: [String], at location: WorkspaceFileLocation) throws -> WorkspaceSymbolListing {
+    static func index(paths: [String], at location: WorkspaceFileLocation,
+                      maximumFiles: Int = maximumFiles,
+                      maximumFileBytes: Int = maximumFileBytes,
+                      maximumTotalBytes: Int = maximumTotalBytes,
+                      maximumSymbols: Int = maximumSymbols) throws -> WorkspaceSymbolListing {
         let supported = paths.filter { language(for: $0) != nil }
-        var truncated = supported.count > maximumFiles
+        let truncated = supported.count > maximumFiles
         let candidates = Array(supported.prefix(maximumFiles))
         guard !candidates.isEmpty else { return WorkspaceSymbolListing(symbols: [], truncated: false) }
 
         if let machine = location.machine {
-            return try indexRemote(candidates, at: location, machine: machine, initiallyTruncated: truncated)
+            return try indexRemote(candidates, at: location, machine: machine,
+                                   maximumFileBytes: maximumFileBytes,
+                                   maximumTotalBytes: maximumTotalBytes,
+                                   maximumSymbols: maximumSymbols,
+                                   initiallyTruncated: truncated)
         }
-        return indexLocal(candidates, at: location, initiallyTruncated: truncated)
+        return indexLocal(candidates, at: location,
+                          maximumFileBytes: maximumFileBytes,
+                          maximumTotalBytes: maximumTotalBytes,
+                          maximumSymbols: maximumSymbols,
+                          initiallyTruncated: truncated)
     }
 
     private static func indexLocal(_ candidates: [String], at location: WorkspaceFileLocation,
+                                   maximumFileBytes: Int, maximumTotalBytes: Int, maximumSymbols: Int,
                                    initiallyTruncated: Bool) -> WorkspaceSymbolListing {
+        let base = URL(fileURLWithPath: location.root).resolvingSymlinksInPath()
+        let basePrefix = base.path == "/" ? "/" : base.path + "/"
         var symbols: [QuickOpenWorkspaceSymbol] = []
         var totalBytes = 0
         var truncated = initiallyTruncated
         for path in candidates {
             if Task.isCancelled { return WorkspaceSymbolListing(symbols: [], truncated: false) }
             guard (try? WorkspaceFiles.validateRelativePath(path)) != nil else { continue }
-            let absolute = location.absolutePath(path)
+            let url = base.appendingPathComponent(path).resolvingSymlinksInPath()
+            guard url.path.hasPrefix(basePrefix) else { continue }
             var info = stat()
-            guard stat(absolute, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            guard stat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
             let size = Int(info.st_size)
-            guard size > 0, size <= maximumFileBytes else { continue }
+            guard size > 0 else { continue }
+            if size > maximumFileBytes {
+                truncated = true
+                continue
+            }
             if totalBytes + size > maximumTotalBytes {
                 truncated = true
                 break
             }
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: absolute)),
-                  let source = String(data: data, encoding: .utf8) else { continue }
+            guard let data = try? Data(contentsOf: url) else { continue }
             totalBytes += data.count
+            if data.count > maximumFileBytes {
+                truncated = true
+                continue
+            }
+            if totalBytes > maximumTotalBytes {
+                truncated = true
+                break
+            }
+            guard let source = String(data: data, encoding: .utf8) else { continue }
             let extracted = extract(path: path, source: source)
             if symbols.count + extracted.count > maximumSymbols {
                 symbols.append(contentsOf: extracted.prefix(maximumSymbols - symbols.count))
@@ -362,26 +390,65 @@ enum WorkspaceSymbolIndexer {
 
     private static func indexRemote(_ candidates: [String], at location: WorkspaceFileLocation,
                                     machine: HerdrMachineProfile,
+                                    maximumFileBytes: Int, maximumTotalBytes: Int, maximumSymbols: Int,
                                     initiallyTruncated: Bool) throws -> WorkspaceSymbolListing {
-        let valid = candidates.filter { (try? WorkspaceFiles.validateRelativePath($0)) != nil }
+        let valid = candidates.filter {
+            (try? WorkspaceFiles.validateRelativePath($0)) != nil && !$0.contains("\0") && !$0.contains("\n")
+        }
         guard !valid.isEmpty else { return WorkspaceSymbolListing(symbols: [], truncated: initiallyTruncated) }
         var input = Data()
         for path in valid {
             input.append(contentsOf: path.utf8)
-            input.append(0)
+            input.append(UInt8(ascii: "\n"))
         }
-        let body = #"for p do [ -f "$p" ] || continue; s=$(wc -c < "$p" 2>/dev/null) || continue; s=${s##* }; "#
-            + #"[ "$s" -gt 0 ] && [ "$s" -le "# + String(maximumFileBytes)
-            + #" ] || continue; printf '%s\0%s\0' "$p" "$s"; cat "$p"; done"#
-        let script = "LC_ALL=C; export LC_ALL; cd \(WorkspaceFiles.quote(location.root)) || exit 1; "
-            + "xargs -0 sh -c \(WorkspaceFiles.quote(body)) sh | head -c \(maximumTotalBytes)"
+        let maxFilePlusOne = maximumFileBytes + 1
+        // Resolve the Space root and each target with realpath so symlinks cannot escape the Space,
+        // read each bounded file once into a temporary file so the framing size matches the bytes
+        // emitted even under concurrent saves, and drain stdin after hitting the byte budget so
+        // ssh never fails with EPIPE.
+        let script = """
+            LC_ALL=C; export LC_ALL
+            root=$(realpath \(WorkspaceFiles.quote(location.root)) 2>/dev/null) || exit 1
+            case "$root" in /) prefix=/;; *) prefix="$root/";; esac
+            cd "$root" || exit 1
+            tmp=$(mktemp) || exit 1
+            trap 'rm -f "$tmp"' EXIT HUP INT TERM
+            total=0
+            trunc=0
+            while IFS= read -r p; do
+                if [ "$total" -ge \(maximumTotalBytes) ]; then trunc=1; continue; fi
+                file=$(realpath "./$p" 2>/dev/null) || continue
+                case "$file" in "$prefix"*) ;; *) continue;; esac
+                [ -f "$file" ] || continue
+                head -c \(maxFilePlusOne) < "$file" > "$tmp" 2>/dev/null || continue
+                s=$(wc -c < "$tmp" 2>/dev/null) || continue
+                s=${s##* }
+                [ "$s" -gt 0 ] || continue
+                if [ "$s" -gt \(maximumFileBytes) ]; then trunc=1; continue; fi
+                if [ $((total + s)) -gt \(maximumTotalBytes) ]; then trunc=1; total=\(maximumTotalBytes); continue; fi
+                total=$((total + s))
+                printf 'F\\0%s\\0%s\\0' "$p" "$s"
+                cat "$tmp"
+            done
+            [ "$trunc" -eq 1 ] && printf 'T\\0'
+            exit 0
+            """
+        let outputLimit = maximumTotalBytes + valid.count * 256 + 64_000
         let data = try WorkspaceFiles.ssh(machine, script, input: input,
-                                          limit: maximumTotalBytes + 64_000, timeout: 15, label: "symbols")
-        var truncated = initiallyTruncated || data.count >= maximumTotalBytes
+                                          limit: outputLimit, timeout: 15, label: "symbols")
+        var truncated = initiallyTruncated
         var symbols: [QuickOpenWorkspaceSymbol] = []
         var offset = data.startIndex
         while offset < data.endIndex {
             if Task.isCancelled { return WorkspaceSymbolListing(symbols: [], truncated: false) }
+            guard let tagEnd = data[offset...].firstIndex(of: 0) else { truncated = true; break }
+            let tag = data[offset..<tagEnd]
+            offset = data.index(after: tagEnd)
+            if tag.count == 1, tag.first == UInt8(ascii: "T") {
+                truncated = true
+                break
+            }
+            guard tag.count == 1, tag.first == UInt8(ascii: "F") else { truncated = true; break }
             guard let pathEnd = data[offset...].firstIndex(of: 0) else { truncated = true; break }
             let pathData = data[offset..<pathEnd]
             offset = data.index(after: pathEnd)

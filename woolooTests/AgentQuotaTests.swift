@@ -504,13 +504,13 @@ final class AgentQuotaTests: XCTestCase {
             window.close()
         }
 
-        let axWindow = try await waitForAXWindow(titled: window.title)
-        let enableButton = try await waitForAXButton(titled: "Turn On Quotas…", in: axWindow)
+        let axWindow = try await AXTestHelper.waitForWindow(titled: window.title)
+        let enableButton = try await AXTestHelper.waitForButton(titled: "Turn On Quotas…", in: axWindow)
         XCTAssertEqual(AXUIElementPerformAction(enableButton, kAXPressAction as CFString), .success)
 
         let cancelAlert = try await waitForSheet(on: window)
-        let cancelSheetAX = try await waitForAXSheet(in: axWindow)
-        let texts = axTexts(in: cancelSheetAX)
+        let cancelSheetAX = try await AXTestHelper.waitForSheet(in: axWindow)
+        let texts = AXTestHelper.texts(in: cancelSheetAX)
         XCTAssertTrue(texts.contains { $0.contains(AgentQuotaConsent.title(for: nil)) },
                       "Expected consent title in alert, got: \(texts)")
         XCTAssertTrue(texts.contains { $0.contains("unofficial") },
@@ -523,7 +523,7 @@ final class AgentQuotaTests: XCTestCase {
         XCTAssertTrue(monitors.asked.isEmpty, "Cancelling the alert must not poll")
         XCTAssertNil(defaults.string(forKey: AgentQuotaConsent.storageKey))
 
-        let enableAgain = try await waitForAXButton(titled: "Turn On Quotas…", in: axWindow)
+        let enableAgain = try await AXTestHelper.waitForButton(titled: "Turn On Quotas…", in: axWindow)
         XCTAssertEqual(AXUIElementPerformAction(enableAgain, kAXPressAction as CFString), .success)
 
         let acceptAlert = try await waitForSheet(on: window)
@@ -535,7 +535,7 @@ final class AgentQuotaTests: XCTestCase {
         XCTAssertTrue(monitors.inUse(nil))
         XCTAssertEqual(AgentQuotaConsent(stored: defaults.string(forKey: AgentQuotaConsent.storageKey)),
                        AgentQuotaConsent(machines: ["local"]))
-        try await waitForCondition { self.findAXButton(titled: "Turn On Quotas…", in: axWindow) == nil }
+        try await waitForCondition { AXTestHelper.findButton(titled: "Turn On Quotas…", in: axWindow) == nil }
     }
 
     @MainActor
@@ -545,91 +545,6 @@ final class AgentQuotaTests: XCTestCase {
             if let found = findNSButton(titled: title, in: subview) { return found }
         }
         return nil
-    }
-
-    @MainActor
-    private func axAttribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-        return value
-    }
-
-    @MainActor
-    private func axString(_ element: AXUIElement, _ name: String) -> String? {
-        axAttribute(element, name) as? String
-    }
-
-    @MainActor
-    private func walkAX(_ root: AXUIElement, visit: (AXUIElement) -> Bool) {
-        var stack: [AXUIElement] = [root]
-        var remaining = 500
-        while let current = stack.popLast(), remaining > 0 {
-            remaining -= 1
-            if visit(current) { return }
-            if let children = axAttribute(current, kAXChildrenAttribute) as? [AXUIElement] {
-                stack.append(contentsOf: children.reversed())
-            }
-        }
-    }
-
-    @MainActor
-    private func findAXButton(titled title: String, in root: AXUIElement) -> AXUIElement? {
-        var found: AXUIElement?
-        walkAX(root) { node in
-            guard axString(node, kAXRoleAttribute) == (kAXButtonRole as String) else { return false }
-            if axString(node, kAXTitleAttribute) == title || axString(node, kAXDescriptionAttribute) == title {
-                found = node
-                return true
-            }
-            return false
-        }
-        return found
-    }
-
-    @MainActor
-    private func axTexts(in root: AXUIElement) -> [String] {
-        var result: [String] = []
-        walkAX(root) { node in
-            if let value = axString(node, kAXValueAttribute), !value.isEmpty { result.append(value) }
-            if let title = axString(node, kAXTitleAttribute), !title.isEmpty { result.append(title) }
-            return false
-        }
-        return result
-    }
-
-    @MainActor
-    private func waitForAXWindow(titled title: String, timeout: TimeInterval = 5) async throws -> AXUIElement {
-        let app = AXUIElementCreateApplication(getpid())
-        let deadline = Date().addingTimeInterval(timeout)
-        while true {
-            if let windows = axAttribute(app, kAXWindowsAttribute) as? [AXUIElement],
-               let match = windows.first(where: { axString($0, kAXTitleAttribute) == title }) {
-                return match
-            }
-            if Date() > deadline {
-                XCTFail("AX window “\(title)” did not appear")
-                throw CancellationError()
-            }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-            try await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
-    @MainActor
-    private func waitForAXSheet(in window: AXUIElement, timeout: TimeInterval = 5) async throws -> AXUIElement {
-        let deadline = Date().addingTimeInterval(timeout)
-        while true {
-            if let children = axAttribute(window, kAXChildrenAttribute) as? [AXUIElement],
-               let sheet = children.first(where: { axString($0, kAXRoleAttribute) == (kAXSheetRole as String) }) {
-                return sheet
-            }
-            if Date() > deadline {
-                XCTFail("AX sheet did not appear")
-                throw CancellationError()
-            }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-            try await Task.sleep(for: .milliseconds(10))
-        }
     }
 
     @MainActor
@@ -643,12 +558,78 @@ final class AgentQuotaTests: XCTestCase {
     }
 
     @MainActor
-    private func waitForAXButton(titled title: String, in root: AXUIElement, timeout: TimeInterval = 5) async throws -> AXUIElement {
+    private func waitForSheet(on window: NSWindow, timeout: TimeInterval = 5) async throws -> NSWindow {
         let deadline = Date().addingTimeInterval(timeout)
         while true {
-            if let button = findAXButton(titled: title, in: root) { return button }
+            if let sheet = window.attachedSheet { return sheet }
             if Date() > deadline {
-                XCTFail("Button “\(title)” did not appear; texts: \(axTexts(in: root))")
+                XCTFail("Expected alert sheet on window")
+                throw CancellationError()
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+/// Shared Accessibility helpers for driving hosted SwiftUI views in UI unit tests.
+@MainActor
+enum AXTestHelper {
+    static func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value
+    }
+
+    static func string(_ element: AXUIElement, _ name: String) -> String? {
+        attribute(element, name) as? String
+    }
+
+    static func walk(_ root: AXUIElement, visit: (AXUIElement) -> Bool) {
+        var stack: [AXUIElement] = [root]
+        var remaining = 500
+        while let current = stack.popLast(), remaining > 0 {
+            remaining -= 1
+            if visit(current) { return }
+            if let children = attribute(current, kAXChildrenAttribute) as? [AXUIElement] {
+                stack.append(contentsOf: children.reversed())
+            }
+        }
+    }
+
+    static func findButton(titled title: String, in root: AXUIElement) -> AXUIElement? {
+        var found: AXUIElement?
+        walk(root) { node in
+            guard string(node, kAXRoleAttribute) == (kAXButtonRole as String) else { return false }
+            if string(node, kAXTitleAttribute) == title || string(node, kAXDescriptionAttribute) == title {
+                found = node
+                return true
+            }
+            return false
+        }
+        return found
+    }
+
+    static func texts(in root: AXUIElement) -> [String] {
+        var result: [String] = []
+        walk(root) { node in
+            if let value = string(node, kAXValueAttribute), !value.isEmpty { result.append(value) }
+            if let title = string(node, kAXTitleAttribute), !title.isEmpty { result.append(title) }
+            return false
+        }
+        return result
+    }
+
+    static func waitForWindow(titled title: String, timeout: TimeInterval = 5) async throws -> AXUIElement {
+        let app = AXUIElementCreateApplication(getpid())
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement],
+               let match = windows.first(where: { string($0, kAXTitleAttribute) == title }) {
+                return match
+            }
+            if Date() > deadline {
+                XCTFail("AX window “\(title)” did not appear")
                 throw CancellationError()
             }
             RunLoop.main.run(until: Date().addingTimeInterval(0.02))
@@ -656,13 +637,28 @@ final class AgentQuotaTests: XCTestCase {
         }
     }
 
-    @MainActor
-    private func waitForSheet(on window: NSWindow, timeout: TimeInterval = 5) async throws -> NSWindow {
+    static func waitForSheet(in window: AXUIElement, timeout: TimeInterval = 5) async throws -> AXUIElement {
         let deadline = Date().addingTimeInterval(timeout)
         while true {
-            if let sheet = window.attachedSheet { return sheet }
+            if let children = attribute(window, kAXChildrenAttribute) as? [AXUIElement],
+               let sheet = children.first(where: { string($0, kAXRoleAttribute) == (kAXSheetRole as String) }) {
+                return sheet
+            }
             if Date() > deadline {
-                XCTFail("Expected alert sheet on window")
+                XCTFail("AX sheet did not appear")
+                throw CancellationError()
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    static func waitForButton(titled title: String, in root: AXUIElement, timeout: TimeInterval = 5) async throws -> AXUIElement {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let button = findButton(titled: title, in: root) { return button }
+            if Date() > deadline {
+                XCTFail("Button “\(title)” did not appear; texts: \(texts(in: root))")
                 throw CancellationError()
             }
             RunLoop.main.run(until: Date().addingTimeInterval(0.02))
