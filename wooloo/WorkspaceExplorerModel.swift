@@ -107,10 +107,10 @@ final class WorkspaceListingCache {
 
     final class Snapshot {
         let readStarted: ContinuousClock.Instant
-        let listing: WorkspaceFileListing
-        let filesTree: WorkspaceTree
-        let directories: Set<String>
-        let contents: [String: WorkspaceFolderContents]
+        var listing: WorkspaceFileListing
+        var filesTree: WorkspaceTree
+        var directories: Set<String>
+        var contents: [String: WorkspaceFolderContents]
 
         init(readStarted: ContinuousClock.Instant, listing: WorkspaceFileListing, filesTree: WorkspaceTree,
              directories: Set<String>, contents: [String: WorkspaceFolderContents]) {
@@ -153,8 +153,12 @@ final class WorkspaceExplorerModel: ObservableObject {
     @Published var draft: WorkspaceFileDraft?
     @Published var draftName = ""
     @Published var pendingDelete: WorkspaceFileTarget?
-    /// Bumped on every listing load so the Git bar refreshes with the explorer.
+    /// Changes only when the published listing changes.
     @Published private(set) var listingVersion = 0
+    /// Includes failed attempts so repository controls can retry independently of the tree.
+    @Published private(set) var refreshVersion = 0
+    private var displayedSnapshot: WorkspaceListingCache.Snapshot?
+    private var pendingReveal: WorkspaceActiveFile?
     /// What was read of expanded ignored or linked folders, by folder path, for the current listing.
     @Published private(set) var ignoredContents: [String: WorkspaceFolderContents] = [:]
     /// Bumped when `ignoredContents` changes, so the Files tree is rebuilt.
@@ -212,6 +216,8 @@ final class WorkspaceExplorerModel: ObservableObject {
         listingRequest += 1
         location = nil
         listing = nil
+        displayedSnapshot = nil
+        pendingReveal = nil
         listedIdentity = nil
         error = nil
         failedIdentity = nil
@@ -322,12 +328,13 @@ final class WorkspaceExplorerModel: ObservableObject {
             error = failure.localizedDescription
             failedIdentity = location.identity
             isLoading = false
-            listingVersion += 1
+            refreshVersion += 1
         }
         TerminalPipelineMetrics.spanShown("file-list", start: start, detail: location.isLocal ? "local" : "ssh")
     }
 
     private func publish(_ snapshot: WorkspaceListingCache.Snapshot, at location: WorkspaceFileLocation) {
+        displayedSnapshot = snapshot
         listing = snapshot.listing
         listedIdentity = location.identity
         error = nil
@@ -335,9 +342,11 @@ final class WorkspaceExplorerModel: ObservableObject {
         ignoredContents = snapshot.contents
         isLoading = false
         listingVersion += 1
+        refreshVersion += 1
         ignoredContentsVersion += 1
         treeCache.store(snapshot.filesTree, .files, listing: listingVersion, contents: ignoredContentsVersion,
                         directories: snapshot.directories)
+        if let pendingReveal { revealActiveFile(pendingReveal) }
     }
 
     // MARK: Synchronization
@@ -530,16 +539,30 @@ final class WorkspaceExplorerModel: ObservableObject {
             guard let results = await WorkspaceFiles.blocking(at: location, {
                 Optional(toRead.map { folder in (folder, Result { try WorkspaceFiles.folderContents(folder, at: location) }) })
             }) else { return }
-            guard self.location?.identity == location.identity, listingVersion == version else { return }
+            guard self.location?.identity == location.identity, listedIdentity == location.identity,
+                  listingVersion == version, let snapshot = displayedSnapshot, let listing = self.listing else { return }
+            var updated = false
             for (folder, result) in results {
                 switch result {
-                case .success(let contents): ignoredContents[folder] = contents
+                case .success(let contents):
+                    snapshot.contents[folder] = contents
+                    updated = true
                 case .failure(let failure):
                     tree.expanded.remove("\(location.identity)|files|" + folder)
                     operationError = "\(folder): \(failure.localizedDescription)"
                 }
             }
+            guard updated else { return }
+            // Windows sharing this read can expand different folders. Accumulate their results
+            // on the snapshot before preparing the tree that subsequent visits restore.
+            ignoredContents = snapshot.contents
             ignoredContentsVersion += 1
+            snapshot.listing.symbolicLinks.merge(listing.symbolicLinks) { current, _ in current }
+            self.listing = snapshot.listing
+            snapshot.directories = tree.createdDirectories[location.identity] ?? []
+            snapshot.filesTree = filesTree(snapshot.listing, location: location)
+            listingCache.store(snapshot, for: location.identity)
+            if let pendingReveal { revealActiveFile(pendingReveal) }
         }
     }
 
@@ -570,12 +593,13 @@ final class WorkspaceExplorerModel: ObservableObject {
     /// Selects the active editor's file and opens the folders above it, as Zed's auto-reveal
     /// does. A file the shown tree does not list, such as an ignored one, is left alone, as is
     /// the tree while an item is being named.
-    func revealActiveFile(_ file: WorkspaceActiveFile) {
-        guard let listing, listedIdentity == file.location.identity, draft == nil else { return }
+    func revealActiveFile(_ file: WorkspaceActiveFile?) {
+        pendingReveal = nil
+        guard let file, let listing, listedIdentity == file.location.identity, draft == nil else { return }
         let isChanged = { listing.changes.contains { $0.path == file.path } }
         let isListed = showsChanges ? isChanged() : (listing.files.contains(file.path) || ignoredContents.values.contains { $0.files.contains(file.path) })
             && (!modifiedOnly || isChanged())
-        guard isListed else { return }
+        guard isListed else { pendingReveal = file; return }
         tree.reveal(file.path, in: treeIdentity(file.location))
     }
 

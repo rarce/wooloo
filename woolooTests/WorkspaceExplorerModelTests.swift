@@ -509,8 +509,12 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         model = WorkspaceExplorerModel(listingCache: cache)
         checkRemoteSnapshot()
 
+        let treeVersion = model.listingVersion
+        let attempt = model.refreshVersion
         model.readListing = { _ in throw WorkspaceFileError.message("offline") }
         await load(remote)
+        XCTAssertEqual(model.listingVersion, treeVersion)
+        XCTAssertEqual(model.refreshVersion, attempt + 1)
         guard case .listing(let cached) = model.shown(for: remote) else { return XCTFail("Keep the last good read") }
         XCTAssertEqual(cached.files, ["ssh.txt"])
         XCTAssertNotNil(model.error)
@@ -598,7 +602,8 @@ final class WorkspaceExplorerModelTests: XCTestCase {
         XCTAssertNotNil(model.error)
         XCTAssertNil(model.listing)
         XCTAssertFalse(model.isLoading)
-        XCTAssertEqual(model.listingVersion, 1)
+        XCTAssertEqual(model.listingVersion, 0)
+        XCTAssertEqual(model.refreshVersion, 1)
     }
 
     func testNoLocationClearsTheListing() async {
@@ -677,6 +682,31 @@ final class WorkspaceExplorerModelTests: XCTestCase {
                      "Contents already read are kept")
         XCTAssertNil(model.toggleDirectory(files + "|src", path: "src", isExpanded: false, location: repo),
                      "A folder Git lists needs no read")
+    }
+
+    func testWarmVisitRestoresExpandedIgnoredFolderAndItsPreparedTree() async throws {
+        try sandbox.write([".gitignore": "build/\n", "build/out.o": "object"], in: "repo")
+        await load()
+        await model.toggleDirectory(files + "|build", path: "build", isExpanded: false, location: repo)?.value
+        await load(try sandbox.repository("other"))
+        XCTAssertNil(model.loadListing(at: repo, useCached: true))
+        XCTAssertEqual(model.ignoredContents["build"]?.files, ["build/out.o"])
+        let rows = model.visibleRows(try XCTUnwrap(model.listing), location: repo)
+        XCTAssertTrue(rows.contains { $0.node.path == "build/out.o" })
+    }
+
+    func testReconciliationRevealsMissingActiveFileOnlyOnce() async throws {
+        await load()
+        await load(try sandbox.repository("other"))
+        try sandbox.write(["added/active.txt": "new"], in: "repo")
+        XCTAssertNil(model.loadListing(at: repo, useCached: true))
+        model.revealActiveFile(WorkspaceActiveFile(location: repo, path: "added/active.txt"))
+        XCTAssertNil(selection)
+        await load()
+        XCTAssertEqual(selection, "added/active.txt")
+        model.tree.selected = files + "|a.txt"
+        await load()
+        XCTAssertEqual(selection, "a.txt")
     }
 
     // MARK: Name field

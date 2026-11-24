@@ -115,7 +115,7 @@ struct WorkspaceBrowserView: View {
         // Also once the Space's listing arrives, and when switching between Files and Changes.
         .onChange(of: ActiveFileReveal(file: activeFile, listed: model.listedIdentity, changes: model.showsChanges),
                   initial: true) { _, reveal in
-            if let file = reveal.file { model.revealActiveFile(file) }
+            model.revealActiveFile(reveal.file)
         }
         .alert("Operation failed", isPresented: Binding(
             get: { model.operationError != nil }, set: { if !$0 { model.operationError = nil } }
@@ -137,7 +137,7 @@ struct WorkspaceBrowserView: View {
     }
 
     private var repository: some View {
-        WorkspaceRepositoryView(location: location, refreshVersion: model.listingVersion,
+        WorkspaceRepositoryView(location: location, refreshVersion: model.refreshVersion,
                                 onChange: { loadListing() },
                                 onNewSpace: onNewSpace,
                                 onOpenCommitFile: onOpenCommitFile,
@@ -300,7 +300,7 @@ struct WorkspaceBrowserView: View {
 
             if let location, model.listing?.hasGit == true {
                 Divider()
-                WorkspaceGitBar(location: location, reloadToken: model.listingVersion,
+                WorkspaceGitBar(location: location, reloadToken: model.refreshVersion,
                                 changes: model.showsChanges ? model.listing?.changes ?? [] : nil,
                                 onChange: {
                                     loadListing()
