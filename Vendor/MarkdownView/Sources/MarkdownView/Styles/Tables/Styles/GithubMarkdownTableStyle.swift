@@ -60,7 +60,7 @@ fileprivate struct GithubMarkdownTable: View {
     }
     
     // wooloo patch: keep the custom cell-background path, but draw the built-in
-    // backgrounds and grid together, sharing one set of cell anchors per table.
+    // backgrounds and grid together, using cell bounds in table-local coordinates.
     var body: some View {
         if cellBackgroundStyle != nil {
             styledCells
@@ -71,39 +71,28 @@ fileprivate struct GithubMarkdownTable: View {
                     row
                 }
             }
-            .environment(\.markdownTableUsesCellAnchors, true)
+            .environment(\.markdownTableMeasuresCellBounds, true)
             .markdownTableCellPadding(.vertical, verticalSpacing)
             .markdownTableCellPadding(.horizontal, horizontalSpacing)
-            .backgroundPreferenceValue(MarkdownTableCellBoundsPreference.self) { anchors in
-                GeometryReader { geometry in
-                    let bounds = MarkdownTableDrawingBounds(anchors: anchors, geometry: geometry)
-                    Canvas { context, _ in
-                        for row in bounds.rows {
-                            let color = row.index > 0 && row.index.isMultiple(of: 2) ? alternativeRowColor : backgroundColor
-                            context.fill(Path(row.rect), with: .color(color))
-                        }
+            .backgroundPreferenceValue(MarkdownTableCellBoundsPreference.self) { rects in
+                Canvas { context, size in
+                    let bounds = MarkdownTableDrawingBounds(rects: rects, width: size.width)
+                    for row in bounds.rows {
+                        let color = row.index > 0 && row.index.isMultiple(of: 2) ? alternativeRowColor : backgroundColor
+                        context.fill(Path(row.rect), with: .color(color))
                     }
-                }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            }
-            .overlayPreferenceValue(MarkdownTableCellBoundsPreference.self) { anchors in
-                GeometryReader { geometry in
-                    let bounds = MarkdownTableDrawingBounds(anchors: anchors, geometry: geometry)
-                    Canvas { context, _ in
-                        var grid = Path()
-                        for rect in bounds.cells {
-                            // SwiftUI shapes align their layout bounds to display pixels.
-                            // Do the same before stroking in Canvas, especially after text wrapping.
-                            let left = (rect.minX * displayScale).rounded() / displayScale
-                            let top = (rect.minY * displayScale).rounded() / displayScale
-                            let right = (rect.maxX * displayScale).rounded() / displayScale
-                            let bottom = (rect.maxY * displayScale).rounded() / displayScale
-                            grid.addRect(CGRect(x: left, y: top, width: right - left, height: bottom - top)
-                                .insetBy(dx: 0.5, dy: 0.5))
-                        }
-                        context.stroke(grid, with: .color(borderColor.opacity(0.5)), lineWidth: 1)
+                    var grid = Path()
+                    for rect in bounds.cells {
+                        // SwiftUI shapes align their layout bounds to display pixels.
+                        // Do the same before stroking in Canvas, especially after text wrapping.
+                        let left = (rect.minX * displayScale).rounded() / displayScale
+                        let top = (rect.minY * displayScale).rounded() / displayScale
+                        let right = (rect.maxX * displayScale).rounded() / displayScale
+                        let bottom = (rect.maxY * displayScale).rounded() / displayScale
+                        grid.addRect(CGRect(x: left, y: top, width: right - left, height: bottom - top)
+                            .insetBy(dx: 0.5, dy: 0.5))
                     }
+                    context.stroke(grid, with: .color(borderColor.opacity(0.5)), lineWidth: 1)
                 }
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
@@ -140,24 +129,23 @@ fileprivate struct GithubMarkdownTable: View {
     }
 }
 
-// wooloo patch: anchor preferences carry layout coordinates, not derived style dictionaries.
-// Resolving them once per decoration avoids hundreds of geometry-dependent SwiftUI subgraphs.
-private struct MarkdownTableUsesCellAnchorsKey: EnvironmentKey {
+// Cell positions are relative to the table, so scrolling does not change the decoration input.
+private struct MarkdownTableMeasuresCellBoundsKey: EnvironmentKey {
     static let defaultValue = false
 }
 
 extension EnvironmentValues {
-    var markdownTableUsesCellAnchors: Bool {
-        get { self[MarkdownTableUsesCellAnchorsKey.self] }
-        set { self[MarkdownTableUsesCellAnchorsKey.self] = newValue }
+    var markdownTableMeasuresCellBounds: Bool {
+        get { self[MarkdownTableMeasuresCellBoundsKey.self] }
+        set { self[MarkdownTableMeasuresCellBoundsKey.self] = newValue }
     }
 }
 
 struct MarkdownTableCellBoundsPreference: PreferenceKey {
-    static var defaultValue: [MarkdownTableCellStyle.Position: Anchor<CGRect>] { [:] }
+    static var defaultValue: [MarkdownTableCellStyle.Position: CGRect] { [:] }
 
-    static func reduce(value: inout [MarkdownTableCellStyle.Position: Anchor<CGRect>],
-                       nextValue: () -> [MarkdownTableCellStyle.Position: Anchor<CGRect>]) {
+    static func reduce(value: inout [MarkdownTableCellStyle.Position: CGRect],
+                       nextValue: () -> [MarkdownTableCellStyle.Position: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { $1 })
     }
 }
@@ -166,8 +154,7 @@ private struct MarkdownTableDrawingBounds {
     var rows: [(index: Int, rect: CGRect)] = []
     var cells: [CGRect] = []
 
-    init(anchors: [MarkdownTableCellStyle.Position: Anchor<CGRect>], geometry: GeometryProxy) {
-        let rects = anchors.mapValues { geometry[$0] }
+    init(rects: [MarkdownTableCellStyle.Position: CGRect], width: CGFloat) {
         var columns: [Int: CGRect] = [:]
         var rowBounds: [Int: CGRect] = [:]
         for (position, rect) in rects {
@@ -187,7 +174,7 @@ private struct MarkdownTableDrawingBounds {
                 rowBounds[index]!.size.height = rowBounds[rowIndices[offset + 1]]!.minY - rowBounds[index]!.minY
             }
             let row = rowBounds[index]!
-            rows.append((index, CGRect(x: 0, y: row.minY, width: geometry.size.width, height: row.height)))
+            rows.append((index, CGRect(x: 0, y: row.minY, width: width, height: row.height)))
         }
         for position in rects.keys.sorted(by: { ($0.row, $0.column) < ($1.row, $1.column) }) {
             let column = columns[position.column]!

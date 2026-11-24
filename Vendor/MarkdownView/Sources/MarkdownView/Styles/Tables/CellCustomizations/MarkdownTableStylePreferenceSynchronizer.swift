@@ -12,7 +12,7 @@ struct MarkdownTableStylePreferenceSynchronizer: ViewModifier {
     var column: Int
     
     @Environment(\.markdownTableStyle) private var tableStyle
-    @Environment(\.markdownTableUsesCellAnchors) private var usesCellAnchors
+    @Environment(\.markdownTableMeasuresCellBounds) private var measuresCellBounds
     @Environment(\.markdownTableCellBackgroundStyle) private var cellBackgroundStyle
     @Environment(\.markdownTableCellBackgroundShape) private var cellBackgroundShape
     @Environment(\.markdownTableCellOverlayContent) private var overlayContent
@@ -20,12 +20,15 @@ struct MarkdownTableStylePreferenceSynchronizer: ViewModifier {
     @Environment(\.markdownTableRowBackgroundStyle) private var rowBackgroundStyle
     @Environment(\.markdownTableRowBackgroundShape) private var rowBackgroundShape
     
-    // wooloo patch: plain tables need no geometry; GitHub tables resolve their cell
-    // anchors together instead of running a GeometryReader and two style reductions per cell.
     func body(content: Content) -> some View {
-        if usesCellAnchors {
-            content.anchorPreference(key: MarkdownTableCellBoundsPreference.self, value: .bounds) {
-                [MarkdownTableCellStyle.Position(column: column, row: row): $0]
+        if measuresCellBounds {
+            content.background {
+                GeometryReader { proxy in
+                    Color.clear.preference(key: MarkdownTableCellBoundsPreference.self, value: [
+                        MarkdownTableCellStyle.Position(column: column, row: row):
+                            proxy.frame(in: .named(MarkdownTable.CoordinateSpaceName))
+                    ])
+                }
             }
         } else if cellBackgroundStyle != nil || overlayContent != nil || rowBackgroundStyle != nil
             || !(tableStyle is DefaultMarkdownTableStyle) {
