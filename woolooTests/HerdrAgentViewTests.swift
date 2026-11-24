@@ -198,9 +198,9 @@ final class HerdrAgentViewTests: XCTestCase {
         func receive(_ workspaces: [[String: Any]], revision: UInt64) throws {
             var snapshot = AgentViewFixture.snapshot([], revision: revision, label: nil)
             snapshot["workspaces"] = workspaces
-            let projection = try XCTUnwrap(decoder.receive(kind: "shell.snapshot.v1",
-                                                           data: AgentViewFixture.data(snapshot)))
-            store.receiveAgentProjection(projection)
+            let data = try AgentViewFixture.data(snapshot)
+            let projection = decoder.receive(kind: "shell.snapshot.v1", data: data)
+            store.receiveAgentProjection(try XCTUnwrap(projection))
         }
         var published = 0
         let subscription = store.$workspaceGitStatuses.dropFirst().sink { _ in published += 1 }

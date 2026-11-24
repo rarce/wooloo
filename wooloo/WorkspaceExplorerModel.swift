@@ -100,6 +100,43 @@ struct WorkspaceExplorerEffects {
     }
 }
 
+/// Successful reads shared by explorer windows for the lifetime of the app.
+@MainActor
+final class WorkspaceListingCache {
+    static let shared = WorkspaceListingCache()
+
+    final class Snapshot {
+        let readStarted: ContinuousClock.Instant
+        var listing: WorkspaceFileListing
+        var filesTree: WorkspaceTree
+        var directories: Set<String>
+        var contents: [String: WorkspaceFolderContents]
+
+        init(readStarted: ContinuousClock.Instant, listing: WorkspaceFileListing, filesTree: WorkspaceTree,
+             directories: Set<String>, contents: [String: WorkspaceFolderContents]) {
+            self.readStarted = readStarted
+            self.listing = listing
+            self.filesTree = filesTree
+            self.directories = directories
+            self.contents = contents
+        }
+    }
+
+    private let snapshots = NSCache<NSString, Snapshot>()
+
+    init() { snapshots.countLimit = 16 }
+
+    func snapshot(for identity: String) -> Snapshot? {
+        snapshots.object(forKey: identity as NSString)
+    }
+
+    func store(_ snapshot: Snapshot, for identity: String) {
+        // Windows can finish overlapping reads of the same Space in reverse order.
+        if let current = self.snapshot(for: identity), current.readStarted > snapshot.readStarted { return }
+        snapshots.setObject(snapshot, forKey: identity as NSString)
+    }
+}
+
 /// The explorer's listing, trees, name field, clipboard and the file and Git operations run
 /// from it. `WorkspaceBrowserView` renders it and keeps focus and windows to itself.
 @MainActor
@@ -116,8 +153,12 @@ final class WorkspaceExplorerModel: ObservableObject {
     @Published var draft: WorkspaceFileDraft?
     @Published var draftName = ""
     @Published var pendingDelete: WorkspaceFileTarget?
-    /// Bumped on every listing load so the Git bar refreshes with the explorer.
+    /// Changes only when the published listing changes.
     @Published private(set) var listingVersion = 0
+    /// Includes failed attempts so repository controls can retry independently of the tree.
+    @Published private(set) var refreshVersion = 0
+    private var displayedSnapshot: WorkspaceListingCache.Snapshot?
+    private var pendingReveal: WorkspaceActiveFile?
     /// What was read of expanded ignored or linked folders, by folder path, for the current listing.
     @Published private(set) var ignoredContents: [String: WorkspaceFolderContents] = [:]
     /// Bumped when `ignoredContents` changes, so the Files tree is rebuilt.
@@ -131,6 +172,12 @@ final class WorkspaceExplorerModel: ObservableObject {
     @Published private(set) var failedIdentity: String?
     /// The last operation started, with the reload that follows it, for tests to wait on.
     private(set) var lastOperation: Task<Void, Never>?
+    private let listingCache: WorkspaceListingCache
+
+    init(listingCache: WorkspaceListingCache? = nil) {
+        self.listingCache = listingCache ?? WorkspaceListingCache()
+    }
+
     private let treeCache = WorkspaceTreeCache()
     private var listingTask: Task<Void, Never>?
     private var listingWorkerToken: UUID?
@@ -169,6 +216,8 @@ final class WorkspaceExplorerModel: ObservableObject {
         listingRequest += 1
         location = nil
         listing = nil
+        displayedSnapshot = nil
+        pendingReveal = nil
         listedIdentity = nil
         error = nil
         failedIdentity = nil
@@ -187,21 +236,16 @@ final class WorkspaceExplorerModel: ObservableObject {
     /// What the explorer shows for `location`: its own listing, or why it could not be read, and a
     /// spinner otherwise, so another Space's tree or error never shows under its name.
     func shown(for location: WorkspaceFileLocation) -> Shown {
-        if let error, failedIdentity == location.identity { return .error(error) }
         if let listing, listedIdentity == location.identity { return .listing(listing) }
+        if let error, failedIdentity == location.identity { return .error(error) }
         return .loading
     }
 
-    /// Loads the files and changes of `location`. Reloading the location already shown (e.g. after a
-    /// save, a Git operation or a poll) keeps its tree, or the error its last load gave, instead of a
-    /// spinner; any other location shows a spinner until its own listing arrives.
+    /// Navigation can use a cached read immediately. The visible Space's watcher or SSH poll
+    /// reconciles it. Edits and explicit refreshes always request a new read.
     @discardableResult
-    func loadListing(at location: WorkspaceFileLocation?) -> Task<Void, Never>? {
-        // A superseded view task can enter after cancellation with its old (possibly nil) location.
+    func loadListing(at location: WorkspaceFileLocation?, useCached: Bool = false) -> Task<Void, Never>? {
         guard !Task.isCancelled else { return nil }
-        // By the listing shown, not the one last asked for: a refresh while a slow SSH Space loads
-        // asks for the same location again, but the tree shown is still the previous Space's.
-        let isReload = shown(forIdentity: location?.identity)
         if self.location?.identity != location?.identity {
             locationGeneration += 1
             // A filesystem call can remain blocked after cancellation. A new Space must not wait
@@ -211,10 +255,14 @@ final class WorkspaceExplorerModel: ObservableObject {
             listingWorkerToken = nil
         }
         self.location = location
+        guard let location else { clearListing(); isLoading = false; return nil }
+        if useCached, let snapshot = listingCache.snapshot(for: location.identity) {
+            publish(snapshot, at: location)
+            return nil
+        }
         listingRequest += 1
-        guard location != nil else { clearListing(); isLoading = false; return nil }
-        isLoading = !isReload
-        if failedIdentity != location?.identity { error = nil; failedIdentity = nil }
+        isLoading = !shown(forIdentity: location.identity)
+        if failedIdentity != location.identity { error = nil; failedIdentity = nil }
         // Requests for the same location share its worker, which performs a follow-up load.
         if let listingTask { return listingTask }
         let token = UUID()
@@ -226,7 +274,7 @@ final class WorkspaceExplorerModel: ObservableObject {
                     listingWorkerToken = nil
                 }
             }
-            while !Task.isCancelled, let location = self.location {
+            while !Task.isCancelled {
                 let request = listingRequest
                 let generation = locationGeneration
                 await readAndPublishListing(at: location, generation: generation)
@@ -239,6 +287,7 @@ final class WorkspaceExplorerModel: ObservableObject {
 
     private func readAndPublishListing(at location: WorkspaceFileLocation, generation: Int) async {
         let start = TerminalPipelineMetrics.now()
+        let readStarted = ContinuousClock.now
         let created = tree.createdDirectories[location.identity] ?? []
         let expanded = tree.expandedFolders(in: "\(location.identity)|files")
         let exists = { Self.folderExists($0, at: location) }
@@ -267,28 +316,37 @@ final class WorkspaceExplorerModel: ObservableObject {
             }
         }
         guard locationGeneration == generation, self.location?.identity == location.identity else { return }
-        var filesTree: (tree: WorkspaceTree, directories: Set<String>)?
+
         switch result {
         case .success(let (value, builtTree, kept, contents)):
-            listing = value
-            listedIdentity = location.identity
-            error = nil
-            failedIdentity = nil
-            ignoredContents = contents
-            tree.pruneCreated(location: location.identity, exists: exists)
-            filesTree = (builtTree, kept)
+            let snapshot = WorkspaceListingCache.Snapshot(readStarted: readStarted, listing: value, filesTree: builtTree,
+                                                         directories: kept, contents: contents)
+            listingCache.store(snapshot, for: location.identity)
+            tree.pruneCreated(location: location.identity) { !created.contains($0) || kept.contains($0) }
+            publish(snapshot, at: location)
         case .failure(let failure):
             error = failure.localizedDescription
             failedIdentity = location.identity
-        }
-        isLoading = false
-        listingVersion += 1
-        ignoredContentsVersion += 1
-        if let filesTree {
-            treeCache.store(filesTree.tree, .files, listing: listingVersion, contents: ignoredContentsVersion,
-                            directories: filesTree.directories)
+            isLoading = false
+            refreshVersion += 1
         }
         TerminalPipelineMetrics.spanShown("file-list", start: start, detail: location.isLocal ? "local" : "ssh")
+    }
+
+    private func publish(_ snapshot: WorkspaceListingCache.Snapshot, at location: WorkspaceFileLocation) {
+        displayedSnapshot = snapshot
+        listing = snapshot.listing
+        listedIdentity = location.identity
+        error = nil
+        failedIdentity = nil
+        ignoredContents = snapshot.contents
+        isLoading = false
+        listingVersion += 1
+        refreshVersion += 1
+        ignoredContentsVersion += 1
+        treeCache.store(snapshot.filesTree, .files, listing: listingVersion, contents: ignoredContentsVersion,
+                        directories: snapshot.directories)
+        if let pendingReveal { revealActiveFile(pendingReveal) }
     }
 
     // MARK: Synchronization
@@ -481,16 +539,30 @@ final class WorkspaceExplorerModel: ObservableObject {
             guard let results = await WorkspaceFiles.blocking(at: location, {
                 Optional(toRead.map { folder in (folder, Result { try WorkspaceFiles.folderContents(folder, at: location) }) })
             }) else { return }
-            guard self.location?.identity == location.identity, listingVersion == version else { return }
+            guard self.location?.identity == location.identity, listedIdentity == location.identity,
+                  listingVersion == version, let snapshot = displayedSnapshot, let listing = self.listing else { return }
+            var updated = false
             for (folder, result) in results {
                 switch result {
-                case .success(let contents): ignoredContents[folder] = contents
+                case .success(let contents):
+                    snapshot.contents[folder] = contents
+                    updated = true
                 case .failure(let failure):
                     tree.expanded.remove("\(location.identity)|files|" + folder)
                     operationError = "\(folder): \(failure.localizedDescription)"
                 }
             }
+            guard updated else { return }
+            // Windows sharing this read can expand different folders. Accumulate their results
+            // on the snapshot before preparing the tree that subsequent visits restore.
+            ignoredContents = snapshot.contents
             ignoredContentsVersion += 1
+            snapshot.listing.symbolicLinks.merge(listing.symbolicLinks) { current, _ in current }
+            self.listing = snapshot.listing
+            snapshot.directories = tree.createdDirectories[location.identity] ?? []
+            snapshot.filesTree = filesTree(snapshot.listing, location: location)
+            listingCache.store(snapshot, for: location.identity)
+            if let pendingReveal { revealActiveFile(pendingReveal) }
         }
     }
 
@@ -521,12 +593,13 @@ final class WorkspaceExplorerModel: ObservableObject {
     /// Selects the active editor's file and opens the folders above it, as Zed's auto-reveal
     /// does. A file the shown tree does not list, such as an ignored one, is left alone, as is
     /// the tree while an item is being named.
-    func revealActiveFile(_ file: WorkspaceActiveFile) {
-        guard let listing, listedIdentity == file.location.identity, draft == nil else { return }
+    func revealActiveFile(_ file: WorkspaceActiveFile?) {
+        pendingReveal = nil
+        guard let file, let listing, listedIdentity == file.location.identity, draft == nil else { return }
         let isChanged = { listing.changes.contains { $0.path == file.path } }
         let isListed = showsChanges ? isChanged() : (listing.files.contains(file.path) || ignoredContents.values.contains { $0.files.contains(file.path) })
             && (!modifiedOnly || isChanged())
-        guard isListed else { return }
+        guard isListed else { pendingReveal = file; return }
         tree.reveal(file.path, in: treeIdentity(file.location))
     }
 
