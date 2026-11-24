@@ -135,6 +135,7 @@ enum ListeningPortScanner {
         for listener in listeners {
             guard let owner = owners[listener.pid],
                   owner.session == session || (owner.session.isEmpty && session == "default"),
+                  !nonWebProcesses.contains(listener.process.lowercased()),
                   !isAgent(process: listener.process, command: owner.command) else { continue }
             let port = ListeningPort(port: listener.port, bind: listener.bind, pid: listener.pid, process: listener.process)
             if let existing = spaces[owner.space]?[listener.port], existing.bind.reach >= port.bind.reach { continue }
@@ -162,6 +163,9 @@ enum ListeningPortScanner {
             return (.address(host), port)
         }
     }
+
+    // Background services can inherit a pane's environment and outlive its dev server.
+    private static let nonWebProcesses: Set<String> = ["adb", "postgres", "cloud-sql-proxy"]
 
     /// Agent CLIs listen on loopback ports of their own (IDE and MCP bridges); those are not the
     /// Space's services. Claude Code's binary is named after its version, so the command decides.
@@ -201,10 +205,6 @@ final class ListeningPortsMonitor: ObservableObject {
     func start(_ target: Target) {
         if task != nil, target == self.target { return }
         stop()
-        if target != self.target {
-            scan = ListeningPortScan()
-            failure = nil
-        }
         self.target = target
         let worker = BlockingWorker(label: "dev.wooloo.listening-ports")
         task = Task { [weak self, interval, retryInterval] in
@@ -224,6 +224,9 @@ final class ListeningPortsMonitor: ObservableObject {
     func stop() {
         task?.cancel()
         task = nil
+        target = nil
+        if scan != ListeningPortScan() { scan = ListeningPortScan() }
+        if failure != nil { failure = nil }
     }
 
     func apply(_ result: Result<ListeningPortScan, Error>) {
@@ -235,7 +238,7 @@ final class ListeningPortsMonitor: ObservableObject {
                 PortForwards.shared.retain(machineID: machine.id, livePorts: next.machinePorts)
             }
         case .failure(let error):
-            // The last good ports stay on screen.
+            if scan != ListeningPortScan() { scan = ListeningPortScan() }
             if failure != error.localizedDescription { failure = error.localizedDescription }
         }
     }
