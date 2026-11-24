@@ -365,6 +365,29 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
                                                      expectedVersion: WorkspaceFiles.gitBlobHash(Data()), at: repo))
     }
 
+    func testReadClassifiesLargeBinaryFilesAsBinaryAndLargeTextAsTooLarge() throws {
+        let repo = try sandbox.repository("repo", files: ["a.txt": "a\n"])
+        var largePptx = Data([0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00])
+        largePptx.append(Data(repeating: 0x41, count: WorkspaceFiles.maximumFileBytes + 64))
+        try largePptx.write(to: URL(fileURLWithPath: repo.absolutePath("deck.pptx")))
+
+        // Place a 4-byte emoji right across the 8 KiB binary-probe boundary.
+        var largeUTF8 = Data(repeating: 0x61, count: WorkspaceFiles.binaryProbeBytes - 2)
+        largeUTF8.append(contentsOf: "😀".utf8)
+        largeUTF8.append(Data(repeating: 0x62, count: WorkspaceFiles.maximumFileBytes))
+        try largeUTF8.write(to: URL(fileURLWithPath: repo.absolutePath("large-utf8.txt")))
+
+        XCTAssertThrowsError(try WorkspaceFiles.read("deck.pptx", at: repo)) { error in
+            XCTAssertEqual(error as? WorkspaceFileError, .binary)
+        }
+        XCTAssertThrowsError(try WorkspaceFiles.read("large-utf8.txt", at: repo)) { error in
+            XCTAssertEqual(error as? WorkspaceFileError, .fileTooLarge)
+        }
+        XCTAssertFalse(WorkspaceFiles.isBinaryData(Data(largeUTF8.prefix(WorkspaceFiles.binaryProbeBytes)), truncated: true))
+        XCTAssertTrue(WorkspaceFiles.isBinaryData(Data([0xFF, 0xFE, 0x61]), truncated: true))
+        XCTAssertTrue(WorkspaceFiles.isBinaryData(Data([0x61, 0x00, 0x62]), truncated: false))
+    }
+
     // MARK: Diffs
 
     func testFileWithStagedAndUnstagedChangesHasThreeDiffs() throws {

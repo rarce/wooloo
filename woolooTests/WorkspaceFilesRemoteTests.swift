@@ -474,6 +474,23 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    func testRemoteReadClassifiesLargeBinaryFilesAsBinary() throws {
+        try sandbox.repository("repo")
+        var largePptx = Data([0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00])
+        largePptx.append(Data(repeating: 0x41, count: WorkspaceFiles.maximumFileBytes + 64))
+        try largePptx.write(to: URL(fileURLWithPath: sandbox.path("repo/slides.pptx")))
+        let largeText = Data(repeating: 0x78, count: WorkspaceFiles.maximumFileBytes + 64)
+        try largeText.write(to: URL(fileURLWithPath: sandbox.path("repo/large.txt")))
+
+        let location = remote("repo")
+        XCTAssertThrowsError(try WorkspaceFiles.read("slides.pptx", at: location)) { error in
+            XCTAssertEqual(error as? WorkspaceFileError, .binary)
+        }
+        XCTAssertThrowsError(try WorkspaceFiles.read("large.txt", at: location)) { error in
+            XCTAssertEqual(error as? WorkspaceFileError, .fileTooLarge)
+        }
+    }
+
     func testRemoteWalkWithoutGitMatchesTheLocalOne() throws {
         let depth = WorkspaceFiles.folderWalkMaximumDepth
         let chain = (1..<depth).map { "d\($0)" }.joined(separator: "/")
@@ -1597,6 +1614,42 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let result = try WorkspaceSearch.search(WorkspaceSearchOptions(query: "foo"), at: remote("repo"))
         XCTAssertEqual(result.files.map(\.path), ["src/a.swift"])
         XCTAssertEqual(result.matchCount, 1)
+    }
+
+    func testRemoteWorkspaceSymbolIndexerContainsSymlinksHandlesDashNamesAndReportsTruncation() async throws {
+        try sandbox.write(["outside.md": "# Outside Secret\n"], in: ".")
+        _ = try sandbox.repository("repo", files: [
+            "-dash.md": "# Dash Heading\n",
+            "App.swift": "struct RemoteApp {\n    func launch() {}\n}\n",
+            "big.md": "# Oversized\n" + String(repeating: "x", count: 400) + "\n"
+        ])
+        try FileManager.default.createSymbolicLink(
+            atPath: sandbox.path("repo/escape.md"),
+            withDestinationPath: sandbox.path("outside.md")
+        )
+        let location = remote("repo")
+
+        let listing = try await WorkspaceFiles.blocking(at: location) {
+            try WorkspaceSymbolIndexer.index(paths: ["-dash.md", "escape.md", "App.swift"], at: location)
+        }
+        XCTAssertFalse(listing.truncated)
+        let names = listing.symbols.map(\.symbol.symbol.name)
+        XCTAssertTrue(names.contains("Dash Heading"), "Dash-prefixed files must be read safely, got: \(names)")
+        XCTAssertTrue(names.contains("RemoteApp"), "Got: \(names)")
+        XCTAssertTrue(names.contains("launch"), "Got: \(names)")
+        XCTAssertFalse(names.contains("Outside Secret"), "Symlinks outside the Space must not be indexed")
+
+        let perFileTruncated = try await WorkspaceFiles.blocking(at: location) {
+            try WorkspaceSymbolIndexer.index(paths: ["big.md"], at: location, maximumFileBytes: 128)
+        }
+        XCTAssertTrue(perFileTruncated.symbols.isEmpty)
+        XCTAssertTrue(perFileTruncated.truncated)
+
+        let totalTruncated = try await WorkspaceFiles.blocking(at: location) {
+            try WorkspaceSymbolIndexer.index(paths: ["-dash.md", "App.swift"], at: location, maximumTotalBytes: 24)
+        }
+        XCTAssertTrue(totalTruncated.truncated)
+        XCTAssertEqual(totalTruncated.symbols.map(\.symbol.symbol.name), ["Dash Heading"])
     }
 }
 

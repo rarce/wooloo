@@ -9,9 +9,15 @@ import SwiftUI
 struct AgentQuotaSection: View {
     @Environment(\.controlActiveState) private var activeState
     @AppStorage("AgentQuotasCollapsed") private var collapsed = true
-    @StateObject private var activation = AgentQuotaActivation()
+    @StateObject private var activation: AgentQuotaActivation
 
     let machine: HerdrMachineProfile?
+
+    @MainActor
+    init(machine: HerdrMachineProfile?, activation: AgentQuotaActivation? = nil) {
+        self.machine = machine
+        _activation = StateObject(wrappedValue: activation ?? AgentQuotaActivation())
+    }
 
     private var windowActive: Bool { activeState != .inactive }
 

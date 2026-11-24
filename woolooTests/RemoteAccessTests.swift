@@ -1,3 +1,6 @@
+import AppKit
+import ApplicationServices
+import SwiftUI
 import XCTest
 @testable import wooloo
 
@@ -390,6 +393,61 @@ final class RemoteAccessTests: XCTestCase {
         XCTAssertEqual(model.state, .running(hostname: "fake-host.trycloudflare.com"), "The user confirmed passwords")
         found.value = .acceptsNoCredential(user: "me")
         try await waitFor { if case .failed = model.state { true } else { false } }
+    }
+
+    /// The Remote Access status view's Start, Cancel, Start Anyway and Stop buttons drive the
+    /// confirmation flow end to end.
+    func testConfirmationViewButtonsCancelAndStartAnyway() async throws {
+        let marker = directory.appendingPathComponent("ran-ui")
+        let passwords = RemoteAccessSSHCheck.acceptsPasswords(user: "me", methods: ["password"])
+        let model = makeModel(script: markedTunnel(marker), check: { passwords })
+        defer { model.stop() }
+
+        let host = NSHostingView(rootView: RemoteAccessStatusView(model: model)
+            .environment(\.woolooTheme, WoolooTheme.named(WoolooTheme.fallbackID)!)
+            .environment(\.woolooTypography, WoolooTypography())
+            .frame(width: 480, height: 180))
+        host.frame = NSRect(x: 0, y: 0, width: 480, height: 180)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "RemoteAccessConfirmTest-\(UUID().uuidString)"
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        let axWindow = try await AXTestHelper.waitForWindow(titled: window.title)
+        let startButton = try await AXTestHelper.waitForButton(titled: "Start", in: axWindow)
+        XCTAssertEqual(AXUIElementPerformAction(startButton, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .needsConfirmation(passwords) }
+
+        let cancelButton = try await AXTestHelper.waitForButton(titled: "Cancel", in: axWindow)
+        _ = try await AXTestHelper.waitForButton(titled: "Start Anyway", in: axWindow)
+        XCTAssertNil(AXTestHelper.findButton(titled: "Start", in: axWindow), "Start should be hidden while confirming")
+        let confirmationTexts = AXTestHelper.texts(in: axWindow)
+        XCTAssertTrue(confirmationTexts.contains { $0.contains("wooloo does not change sshd's sign-in methods") },
+                      "Expected confirmation warning, got: \(confirmationTexts)")
+
+        XCTAssertEqual(AXUIElementPerformAction(cancelButton, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .stopped }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "Cancel must not launch cloudflared")
+
+        let startAgain = try await AXTestHelper.waitForButton(titled: "Start", in: axWindow)
+        XCTAssertEqual(AXUIElementPerformAction(startAgain, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .needsConfirmation(passwords) }
+
+        let startAnyway = try await AXTestHelper.waitForButton(titled: "Start Anyway", in: axWindow)
+        XCTAssertEqual(AXUIElementPerformAction(startAnyway, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .running(hostname: "fake-host.trycloudflare.com") }
+        XCTAssertTrue(model.runsWithoutVerifiedKeys)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+
+        let stopButton = try await AXTestHelper.waitForButton(titled: "Stop", in: axWindow)
+        let runningTexts = AXTestHelper.texts(in: axWindow)
+        XCTAssertTrue(runningTexts.contains { $0.contains("without verified key-only SSH") },
+                      "Expected unverified warning in status, got: \(runningTexts)")
+
+        XCTAssertEqual(AXUIElementPerformAction(stopButton, kAXPressAction as CFString), .success)
+        try await waitFor { model.state == .stopped }
     }
 
     // MARK: Helpers

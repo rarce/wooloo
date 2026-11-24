@@ -642,6 +642,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                 documents[index].diskState = .current
                 documents[index].asksToOverwrite = false
                 documents[index].overwriteVersion = nil
+                documents[index].isBinary = false
             }
             switch result {
             case .success(.pdf(let content)):
@@ -691,7 +692,11 @@ final class WorkspaceDocumentStore: ObservableObject {
                 close(id, force: true)
                 NotificationCenter.default.post(name: WorkspaceFiles.folderOpenedAsFile, object: location.identity,
                                                 userInfo: ["path": path])
+            case .failure(WorkspaceFileError.binary) where kind == .file && !documents[index].isDirty:
+                documents[index].isBinary = true
+                documents[index].error = WorkspaceFileError.binary.localizedDescription
             case .failure(let failure):
+                documents[index].isBinary = false
                 documents[index].error = failure.localizedDescription
             }
         }

@@ -1298,4 +1298,83 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
         XCTAssertEqual(store.visibleDocuments.map(\.path), ["c.txt"])
         XCTAssertEqual(store.documents.filter { $0.space == "two" }.count, 1)
     }
+
+    func testOpeningBinaryFileMarksDocumentAsBinaryReadOnlyEvenWhenLarge() async throws {
+        var largePptx = Data([0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00])
+        largePptx.append(Data(repeating: 0x41, count: WorkspaceFiles.maximumFileBytes + 64))
+        try largePptx.write(to: URL(fileURLWithPath: repo.absolutePath("deck.pptx")))
+        let largeText = Data(repeating: 0x78, count: WorkspaceFiles.maximumFileBytes + 64)
+        try largeText.write(to: URL(fileURLWithPath: repo.absolutePath("large.txt")))
+
+        let openedPptx = await open("deck.pptx")
+        let pptx = try XCTUnwrap(openedPptx)
+        XCTAssertTrue(pptx.isBinary)
+        XCTAssertTrue(pptx.isReadOnly)
+        XCTAssertFalse(pptx.isEditable)
+        XCTAssertNil(pptx.version)
+
+        let openedText = await open("large.txt")
+        let text = try XCTUnwrap(openedText)
+        XCTAssertFalse(text.isBinary)
+        XCTAssertEqual(text.error, "File is too large")
+
+        // Replacing the binary file with UTF-8 text and reloading clears binary state.
+        try sandbox.write(["deck.pptx": "plain text now\n"], in: "repo")
+        store.load(pptx.id)
+        await wait("Reloading after replacing binary with text") { store.document(pptx.id)?.version != nil }
+        let reloaded = try XCTUnwrap(store.document(pptx.id))
+        XCTAssertFalse(reloaded.isBinary)
+        XCTAssertTrue(reloaded.isEditable)
+        XCTAssertEqual(reloaded.text, "plain text now\n")
+        XCTAssertNil(reloaded.error)
+    }
+
+    func testReloadingDirtyDocumentWhoseFileBecameBinaryPreservesUnsavedEdits() async throws {
+        let opened = await open("a.txt")
+        let document = try XCTUnwrap(opened)
+        edit("a.txt", "unsaved draft\n")
+        try Data([0x50, 0x4B, 0x03, 0x04, 0x00, 0xFF]).write(to: URL(fileURLWithPath: repo.absolutePath("a.txt")))
+
+        store.load(document.id)
+        await wait("Reloading dirty document against binary file on disk") {
+            store.document(document.id)?.error != nil
+        }
+
+        let updated = try XCTUnwrap(store.document(document.id))
+        XCTAssertFalse(updated.isBinary)
+        XCTAssertTrue(updated.isEditable)
+        XCTAssertTrue(updated.isDirty)
+        XCTAssertEqual(updated.text, "unsaved draft\n")
+        XCTAssertEqual(updated.error, WorkspaceFileError.binary.localizedDescription)
+        XCTAssertFalse(store.close(document.id), "Dirty buffer must still prompt before closing")
+    }
+
+    func testValidatedLocalFilePathRejectsEscapingSymlinkAndNonRegularFiles() throws {
+        let outsidePath = sandbox.path("outside.txt")
+        try Data("secret\n".utf8).write(to: URL(fileURLWithPath: outsidePath))
+        try FileManager.default.createSymbolicLink(atPath: repo.absolutePath("escape.txt"),
+                                                   withDestinationPath: outsidePath)
+        try FileManager.default.createDirectory(atPath: repo.absolutePath("subdir"),
+                                                withIntermediateDirectories: true)
+
+        let validDoc = WorkspaceDocument(location: repo, path: "a.txt", kind: .file)
+        XCTAssertEqual(WorkspaceDocumentView.validatedLocalFilePath(for: validDoc),
+                       URL(fileURLWithPath: repo.absolutePath("a.txt")).resolvingSymlinksInPath().path)
+
+        let symlinkDoc = WorkspaceDocument(location: repo, path: "escape.txt", kind: .file)
+        XCTAssertNil(WorkspaceDocumentView.validatedLocalFilePath(for: symlinkDoc))
+
+        let folderDoc = WorkspaceDocument(location: repo, path: "subdir", kind: .file)
+        XCTAssertNil(WorkspaceDocumentView.validatedLocalFilePath(for: folderDoc))
+
+        var untitledDoc = WorkspaceDocument(location: repo, path: "", kind: .file)
+        untitledDoc.untitledNumber = 1
+        XCTAssertNil(WorkspaceDocumentView.validatedLocalFilePath(for: untitledDoc))
+
+        let remoteLocation = WorkspaceFileLocation(machine: HerdrMachineProfile(id: "m", label: "box", target: "box",
+                                                                                session: "s", enabled: true),
+                                                   session: "s", workspaceID: "w", workspaceLabel: "repo", root: repo.root)
+        let remoteDoc = WorkspaceDocument(location: remoteLocation, path: "a.txt", kind: .file)
+        XCTAssertNil(WorkspaceDocumentView.validatedLocalFilePath(for: remoteDoc))
+    }
 }

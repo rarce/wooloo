@@ -77,6 +77,7 @@ private struct WoolooCommands: Commands {
         CommandGroup(replacing: .printItem) {
             item("quick_open")
             item("go_to_symbol")
+            item("go_to_workspace_symbol")
         }
 
         // Command-W closes the tab in the main panel rather than the window.
