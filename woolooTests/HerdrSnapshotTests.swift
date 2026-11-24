@@ -75,7 +75,7 @@ final class HerdrSnapshotTests: XCTestCase {
 
     /// Herdr's dots: finished agents keep a dot until seen (`done`), then show a ring (`idle`).
     func testAgentStatusMarksFollowHerdrDots() {
-        for status in ["working", "blocked", "done"] {
+        for status in ["working", "blocked", "error", "done"] {
             XCTAssertEqual(WoolooTheme.agentStatusMark(status), .dot, status)
         }
         XCTAssertEqual(WoolooTheme.agentStatusMark("idle"), .ring)

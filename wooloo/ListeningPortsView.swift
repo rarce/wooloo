@@ -90,22 +90,9 @@ private struct SpacePortTag: View {
             }
             if let machine {
                 Divider()
-                if state == nil || isFailed {
-                    Button("Forward Port to This Mac", systemImage: "arrow.left.arrow.right") {
-                        Task { _ = await PortForwards.shared.forward(port, on: machine) }
-                    }
-                } else {
-                    Button("Stop Forwarding", systemImage: "xmark.circle") {
-                        PortForwards.shared.stop(PortForwards.key(machine: machine, port: port))
-                    }
-                }
+                PortForwardActions(port: port, machine: machine)
             }
         }
-    }
-
-    private var isFailed: Bool {
-        if case .failed = state { return true }
-        return false
     }
 
     private var tooltip: String {
@@ -123,6 +110,29 @@ private struct SpacePortTag: View {
             return "Port \(port) on \(machine.label)\(process)\nForward failed: \(reason)\nClick to try again"
         case nil:
             return "Port \(port) on \(machine.label)\(process)\nNot forwarded · click to forward to this Mac and open"
+        }
+    }
+}
+
+struct PortForwardActions: View {
+    let port: ListeningPort
+    let machine: HerdrMachineProfile
+    @ObservedObject private var forwards = PortForwards.shared
+
+    var body: some View {
+        let key = PortForwards.key(machine: machine, port: port)
+        switch forwards.state(key) {
+        case .active(let local):
+            Button("Copy localhost:\(String(local))", systemImage: "doc.on.doc") {
+                AppActions.copy("localhost:\(local)")
+            }
+            Button("Stop Forwarding", systemImage: "xmark.circle") { forwards.stop(key) }
+        case .starting:
+            Button("Cancel Forwarding", systemImage: "xmark.circle") { forwards.stop(key) }
+        case .failed, nil:
+            Button("Forward Port to This Mac", systemImage: "arrow.left.arrow.right") {
+                Task { _ = await forwards.forward(port, on: machine) }
+            }
         }
     }
 }

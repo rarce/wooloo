@@ -44,6 +44,9 @@ struct ListeningPort: Hashable, Identifiable, Sendable {
     let process: String
 
     var id: Int { port }
+
+    private static let nonWebProcesses: Set<String> = ["adb", "postgres", "cloud-sql-proxy"]
+    var offersBrowserShortcut: Bool { !Self.nonWebProcesses.contains(process.lowercased()) }
 }
 
 /// What one scan of a machine found.
@@ -201,10 +204,6 @@ final class ListeningPortsMonitor: ObservableObject {
     func start(_ target: Target) {
         if task != nil, target == self.target { return }
         stop()
-        if target != self.target {
-            scan = ListeningPortScan()
-            failure = nil
-        }
         self.target = target
         let worker = BlockingWorker(label: "dev.wooloo.listening-ports")
         task = Task { [weak self, interval, retryInterval] in
@@ -224,6 +223,9 @@ final class ListeningPortsMonitor: ObservableObject {
     func stop() {
         task?.cancel()
         task = nil
+        target = nil
+        if scan != ListeningPortScan() { scan = ListeningPortScan() }
+        if failure != nil { failure = nil }
     }
 
     func apply(_ result: Result<ListeningPortScan, Error>) {
@@ -235,7 +237,7 @@ final class ListeningPortsMonitor: ObservableObject {
                 PortForwards.shared.retain(machineID: machine.id, livePorts: next.machinePorts)
             }
         case .failure(let error):
-            // The last good ports stay on screen.
+            if scan != ListeningPortScan() { scan = ListeningPortScan() }
             if failure != error.localizedDescription { failure = error.localizedDescription }
         }
     }

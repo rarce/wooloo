@@ -65,6 +65,16 @@ final class ListeningPortsTests: XCTestCase {
         XCTAssertFalse(ListeningPortScanner.isAgent(process: "node", command: "node server.js"))
     }
 
+    func testBackgroundServicesRemainAvailableForForwardingWithoutBrowserShortcuts() throws {
+        for process in ["postgres", "adb", "cloud-sql-proxy"] {
+            let scan = try ListeningPortScanner.parse("L|7|*:5432|\(process)\nE|7|w1|work|\(process)", session: "work")
+            let port = try XCTUnwrap(scan.spaces["w1"]?.first)
+            XCTAssertEqual(port.port, 5432)
+            XCTAssertFalse(port.offersBrowserShortcut)
+            XCTAssertEqual(scan.machinePorts, [5432])
+        }
+    }
+
     func testMissingToolsAreAnError() {
         XCTAssertThrowsError(try ListeningPortScanner.parse("N\n", session: "work"))
         XCTAssertEqual(try ListeningPortScanner.parse("", session: "work"), ListeningPortScan())
@@ -116,7 +126,7 @@ final class ListeningPortsTests: XCTestCase {
         listener.standardOutput = FileHandle.nullDevice
         listener.standardError = FileHandle.nullDevice
         try listener.run()
-        defer { listener.terminate() }
+        defer { if listener.isRunning { listener.terminate() } }
 
         var found: [ListeningPort] = []
         for _ in 0..<20 where found.isEmpty {
@@ -138,18 +148,27 @@ final class ListeningPortsTests: XCTestCase {
         let remote = try ListeningPortScanner.scan(machine: machine, session: "wooloo-ports-test")
         XCTAssertEqual(remote.spaces["w9"]?.map(\.port), [port])
         XCTAssertTrue(remote.machinePorts.contains(port))
+
+        listener.terminate()
+        listener.waitUntilExit()
+        let stopped = try ListeningPortScanner.scan(machine: nil, session: "wooloo-ports-test")
+        XCTAssertNil(stopped.spaces["w9"])
+
     }
 
     @MainActor
-    func testMonitorKeepsTheLastPortsWhenAScanFails() throws {
+    func testMonitorClearsUnverifiedPortsOnFailureAndStop() throws {
         let monitor = ListeningPortsMonitor()
         let scan = try ListeningPortScanner.parse(Self.ssOutput, session: "work")
         monitor.apply(.success(scan))
         monitor.apply(.failure(WorkspaceFileError.message("ssh failed")))
-        XCTAssertEqual(monitor.ports(inSpace: "w2").map(\.port), [3000, 5173, 8080])
+        XCTAssertTrue(monitor.ports(inSpace: "w2").isEmpty)
         XCTAssertEqual(monitor.failure, "ssh failed")
         monitor.apply(.success(scan))
         XCTAssertNil(monitor.failure)
+        XCTAssertEqual(monitor.ports(inSpace: "w2").map(\.port), [3000, 5173, 8080])
+        monitor.stop()
+        XCTAssertTrue(monitor.ports(inSpace: "w2").isEmpty)
     }
 
     // MARK: Forwards

@@ -581,6 +581,18 @@ struct HerdrDestinationSection: View {
     /// The connection's Spaces, or the last known ones while it is disconnected.
     private var spaces: [WoolooSpace] { store.displaySession?.spaces ?? [] }
 
+    private var workingSpaceIDs: Set<String> {
+        guard let session = store.session else { return [] }
+        var ids = Set(session.spaces.filter { $0.state == .working }.map(\.id))
+        ids.formUnion(session.agents.filter { $0.state == .working }.compactMap(\.spaceID))
+        return ids
+    }
+
+    @ViewBuilder private var hostActions: some View {
+        Button("Connections…", action: manage)
+        Button("Remove Host from This Window", systemImage: "xmark", action: remove)
+    }
+
     private func updatePorts(_ target: ListeningPortsMonitor.Target?) {
         if let target { ports.start(target) } else { ports.stop() }
     }
@@ -598,12 +610,17 @@ struct HerdrDestinationSection: View {
                     }
                     .buttonStyle(.plain)
                     .help(store.errorMessage ?? "Expand or collapse Spaces")
-                    let marks = spaces.reduce((requests: 0, done: 0)) { sum, space in
-                        let count = notifier.attentionCount(inWorkspace: space.id,
-                            session: store.displaySession, contextID: store.contextID)
-                        return (sum.requests + count.requests, sum.done + count.done)
+                    if collapsed {
+                        if store.isConnected, !workingSpaceIDs.isEmpty {
+                            SpaceWorkingIndicator()
+                        }
+                        let marks = spaces.reduce((requests: 0, done: 0)) { sum, space in
+                            let count = notifier.attentionCount(inWorkspace: space.id,
+                                session: store.displaySession, contextID: store.contextID)
+                            return (sum.requests + count.requests, sum.done + count.done)
+                        }
+                        HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                     }
-                    HerdrAttentionBadge(requests: marks.requests, done: marks.done)
                     Image(systemName: store.isConnected ? "circle.fill" : "exclamationmark.circle")
                         .font(.system(size: 7))
                         .foregroundStyle(store.isConnected ? theme.accent : theme.warning)
@@ -611,18 +628,13 @@ struct HerdrDestinationSection: View {
                     Button(action: create) { Image(systemName: "plus") }
                         .buttonStyle(.plain).disabled(!store.isConnected)
                         .help("New Space on \(store.machine?.label ?? "Local") · \(store.sessionName)")
-                    Menu {
-                        Button("Connections…", action: manage)
-                        Button("Remove from This Window", systemImage: "xmark", action: remove)
-                    } label: { Image(systemName: "ellipsis") }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("Connection actions")
                 }
                 .font(.system(size: typography.secondary, weight: .medium))
                 .padding(.vertical, 4)
+                .contextMenu { if spaces.isEmpty { hostActions } }
             }
-            if !collapsed {
+            if !collapsed || !grouped {
+                let working = workingSpaceIDs
                 if !store.isConnected {
                     Text(store.displaySession == nil ? "Connecting…" : "Disconnected · last known Spaces")
                         .font(.caption).foregroundStyle(.secondary)
@@ -632,10 +644,16 @@ struct HerdrDestinationSection: View {
                     }
                 }
                 ForEach(spaces) { space in
+                    let spacePorts = ports.ports(inSpace: space.id)
+                    let browserPorts = spacePorts.filter(\.offersBrowserShortcut)
                     HStack(spacing: 4) {
                         Button { select(space.id) } label: {
                             HStack(spacing: 7) {
-                                AgentStatusDot(state: space.state)
+                                if store.isConnected && working.contains(space.id) && space.state?.needsAttention != true {
+                                    SpaceWorkingIndicator()
+                                } else {
+                                    AgentStatusDot(state: space.state)
+                                }
                                 Text(space.label).lineLimit(1)
                                 Spacer(minLength: 0)
                                 if let git = store.workspaceGitStatuses[space.id] {
@@ -673,12 +691,27 @@ struct HerdrDestinationSection: View {
                                     Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.root) }
                                 }
                             }
+                            if let machine = store.machine {
+                                let tcpPorts = spacePorts.filter { !$0.offersBrowserShortcut }
+                                if !tcpPorts.isEmpty {
+                                    Menu("TCP Port Forwarding") {
+                                        ForEach(tcpPorts) { port in
+                                            Menu("\(port.process) · \(String(port.port))") {
+                                                PortForwardActions(port: port, machine: machine)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             Button("Close Space…", systemImage: "xmark", role: .destructive) { close(space) }.disabled(!store.isConnected)
+                            if grouped {
+                                Divider()
+                                hostActions
+                            }
                         }
                         // Beside the row's button rather than in it, so a tag's click is its own.
-                        let spacePorts = ports.ports(inSpace: space.id)
-                        if !spacePorts.isEmpty {
-                            SpacePortTags(ports: spacePorts, machine: store.machine)
+                        if !browserPorts.isEmpty {
+                            SpacePortTags(ports: browserPorts, machine: store.machine)
                         }
                     }
                     .font(.system(size: typography.emphasis, weight: .medium))
@@ -708,5 +741,23 @@ struct HerdrDestinationSection: View {
         .onDisappear { ports.stop() }
         .onChange(of: active) { _, active in if active { collapsed = false } }
         .onChange(of: store.selectedWorkspaceID) { _, _ in if active { collapsed = false } }
+    }
+}
+
+private struct SpaceWorkingIndicator: View {
+    @Environment(\.woolooTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var spinning = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.72)
+            .stroke(theme.agentStateColor(.working), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            .frame(width: 7, height: 7)
+            .rotationEffect(.degrees(spinning && !reduceMotion ? 360 : 0))
+            .animation(reduceMotion ? nil : .linear(duration: 0.9).repeatForever(autoreverses: false), value: spinning)
+            .onAppear { spinning = true }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Working")
     }
 }
