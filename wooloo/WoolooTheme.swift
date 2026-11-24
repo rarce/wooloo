@@ -181,13 +181,7 @@ extension WoolooTheme {
     /// Herdr agent states: working, blocked, done (finished, not yet seen), idle (seen).
     /// Colors follow Herdr's `status_color` (herdr src/client/shell.rs, v0.9.3).
     func agentStatus(_ status: String?) -> Color {
-        switch status {
-        case "working": return Self.color(herdr.yellow)
-        case "blocked": return Self.color(herdr.red)
-        case "done": return Self.color(herdr.teal)
-        case "idle": return Self.color(herdr.green)
-        default: return muted
-        }
+        agentStateColor(AgentState(status))
     }
 
     func agentStateColor(_ state: AgentState?) -> Color {
@@ -205,11 +199,7 @@ extension WoolooTheme {
     enum AgentStatusMark: Equatable { case dot, ring, faint }
 
     static func agentStatusMark(_ status: String?) -> AgentStatusMark {
-        switch status {
-        case "working", "blocked", "done": return .dot
-        case "idle": return .ring
-        default: return .faint
-        }
+        agentStateMark(AgentState(status))
     }
 
     static func agentStateMark(_ state: AgentState?) -> AgentStatusMark {
