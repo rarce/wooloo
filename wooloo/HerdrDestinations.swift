@@ -588,6 +588,11 @@ struct HerdrDestinationSection: View {
         return ids
     }
 
+    @ViewBuilder private var hostActions: some View {
+        Button("Connections…", action: manage)
+        Button("Remove Host from This Window", systemImage: "xmark", action: remove)
+    }
+
     private func updatePorts(_ target: ListeningPortsMonitor.Target?) {
         if let target { ports.start(target) } else { ports.stop() }
     }
@@ -626,6 +631,7 @@ struct HerdrDestinationSection: View {
                 }
                 .font(.system(size: typography.secondary, weight: .medium))
                 .padding(.vertical, 4)
+                .contextMenu { if spaces.isEmpty { hostActions } }
             }
             if !collapsed || !grouped {
                 let working = workingSpaceIDs
@@ -638,10 +644,12 @@ struct HerdrDestinationSection: View {
                     }
                 }
                 ForEach(spaces) { space in
+                    let spacePorts = ports.ports(inSpace: space.id)
+                    let browserPorts = spacePorts.filter(\.offersBrowserShortcut)
                     HStack(spacing: 4) {
                         Button { select(space.id) } label: {
                             HStack(spacing: 7) {
-                                if store.isConnected && working.contains(space.id) {
+                                if store.isConnected && working.contains(space.id) && space.state?.needsAttention != true {
                                     SpaceWorkingIndicator()
                                 } else {
                                     AgentStatusDot(state: space.state)
@@ -683,17 +691,27 @@ struct HerdrDestinationSection: View {
                                     Button("Reveal in Finder", systemImage: "folder") { AppActions.reveal(location.root) }
                                 }
                             }
+                            if let machine = store.machine {
+                                let tcpPorts = spacePorts.filter { !$0.offersBrowserShortcut }
+                                if !tcpPorts.isEmpty {
+                                    Menu("TCP Port Forwarding") {
+                                        ForEach(tcpPorts) { port in
+                                            Menu("\(port.process) · \(String(port.port))") {
+                                                PortForwardActions(port: port, machine: machine)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             Button("Close Space…", systemImage: "xmark", role: .destructive) { close(space) }.disabled(!store.isConnected)
                             if grouped {
                                 Divider()
-                                Button("Connections…", action: manage)
-                                Button("Remove Host from This Window", systemImage: "xmark", action: remove)
+                                hostActions
                             }
                         }
                         // Beside the row's button rather than in it, so a tag's click is its own.
-                        let spacePorts = ports.ports(inSpace: space.id)
-                        if !spacePorts.isEmpty {
-                            SpacePortTags(ports: spacePorts, machine: store.machine)
+                        if !browserPorts.isEmpty {
+                            SpacePortTags(ports: browserPorts, machine: store.machine)
                         }
                     }
                     .font(.system(size: typography.emphasis, weight: .medium))

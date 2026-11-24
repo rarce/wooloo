@@ -65,10 +65,12 @@ final class ListeningPortsTests: XCTestCase {
         XCTAssertFalse(ListeningPortScanner.isAgent(process: "node", command: "node server.js"))
     }
 
-    func testBackgroundServicesDoNotBecomeHTTPTags() throws {
+    func testBackgroundServicesRemainAvailableForForwardingWithoutBrowserShortcuts() throws {
         for process in ["postgres", "adb", "cloud-sql-proxy"] {
             let scan = try ListeningPortScanner.parse("L|7|*:5432|\(process)\nE|7|w1|work|\(process)", session: "work")
-            XCTAssertTrue(scan.spaces.isEmpty)
+            let port = try XCTUnwrap(scan.spaces["w1"]?.first)
+            XCTAssertEqual(port.port, 5432)
+            XCTAssertFalse(port.offersBrowserShortcut)
             XCTAssertEqual(scan.machinePorts, [5432])
         }
     }

@@ -193,7 +193,7 @@ extension WoolooTheme {
     func agentStateColor(_ state: AgentState?) -> Color {
         switch state {
         case .working?: return Self.color(herdr.yellow)
-        case .blocked?: return Self.color(herdr.red)
+        case .blocked?, .error?: return Self.color(herdr.red)
         case .done?: return Self.color(herdr.teal)
         case .idle?: return Self.color(herdr.green)
         default: return muted
@@ -214,7 +214,7 @@ extension WoolooTheme {
 
     static func agentStateMark(_ state: AgentState?) -> AgentStatusMark {
         switch state {
-        case .working?, .blocked?, .done?: return .dot
+        case .working?, .blocked?, .error?, .done?: return .dot
         case .idle?: return .ring
         default: return .faint
         }

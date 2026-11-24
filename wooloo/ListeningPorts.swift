@@ -44,6 +44,9 @@ struct ListeningPort: Hashable, Identifiable, Sendable {
     let process: String
 
     var id: Int { port }
+
+    private static let nonWebProcesses: Set<String> = ["adb", "postgres", "cloud-sql-proxy"]
+    var offersBrowserShortcut: Bool { !Self.nonWebProcesses.contains(process.lowercased()) }
 }
 
 /// What one scan of a machine found.
@@ -135,7 +138,6 @@ enum ListeningPortScanner {
         for listener in listeners {
             guard let owner = owners[listener.pid],
                   owner.session == session || (owner.session.isEmpty && session == "default"),
-                  !nonWebProcesses.contains(listener.process.lowercased()),
                   !isAgent(process: listener.process, command: owner.command) else { continue }
             let port = ListeningPort(port: listener.port, bind: listener.bind, pid: listener.pid, process: listener.process)
             if let existing = spaces[owner.space]?[listener.port], existing.bind.reach >= port.bind.reach { continue }
@@ -163,9 +165,6 @@ enum ListeningPortScanner {
             return (.address(host), port)
         }
     }
-
-    // Background services can inherit a pane's environment and outlive its dev server.
-    private static let nonWebProcesses: Set<String> = ["adb", "postgres", "cloud-sql-proxy"]
 
     /// Agent CLIs listen on loopback ports of their own (IDE and MCP bridges); those are not the
     /// Space's services. Claude Code's binary is named after its version, so the command decides.
