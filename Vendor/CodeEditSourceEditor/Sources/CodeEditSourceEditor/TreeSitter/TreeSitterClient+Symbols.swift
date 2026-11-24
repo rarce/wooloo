@@ -1,3 +1,4 @@
+import CodeEditLanguages
 import Foundation
 import SwiftTreeSitter
 
@@ -47,6 +48,17 @@ extension TreeSitterClient {
             let result = Self.collectSymbols(root: root, text: text, languageID: languageID)
             DispatchQueue.main.async { finish(result) }
         }, onCancel: { DispatchQueue.main.async { finish(nil) } })
+    }
+
+    /// Parses `source` once with a standalone parser and collects its symbols. Safe to call off
+    /// the main actor for workspace-wide symbol indexing.
+    public static func symbols(in source: String, language: CodeLanguage) -> [SourceSymbol] {
+        guard let tsLanguage = language.language else { return [] }
+        let parser = Parser()
+        guard (try? parser.setLanguage(tsLanguage)) != nil,
+              let tree = parser.parse(source),
+              let root = tree.rootNode else { return [] }
+        return collectSymbols(root: root, text: source as NSString, languageID: language.id.rawValue)
     }
 
     private static func collectSymbols(root: Node, text: NSString, languageID: String) -> [SourceSymbol] {

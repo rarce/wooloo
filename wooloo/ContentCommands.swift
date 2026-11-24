@@ -324,6 +324,17 @@ struct ContentCommands {
                                          current: document.path, symbols: window.symbols.currentSymbols(),
                                          symbolSource: QuickOpenModel.SymbolSource(document: document), query: "@")
             }
+        case .goToWorkspaceSymbol:
+            if window.quickOpen.isPresented, window.quickOpen.isWorkspaceSymbolSearch {
+                window.quickOpen.move(1)
+            } else if let explorerLocation, acceptsFileAction(at: explorerLocation) {
+                window.commandPalette.dismiss()
+                let current = focusedDocumentID.flatMap(documents.document)
+                window.quickOpen.present(at: explorerLocation, recents: documents.recentPaths(at: explorerLocation),
+                                         current: current?.location == explorerLocation ? current?.path : nil,
+                                         symbols: current == nil ? [] : window.symbols.currentSymbols(),
+                                         symbolSource: current.map { QuickOpenModel.SymbolSource(document: $0) }, query: "#")
+            }
         case .editor(let command):
             guard WoolooCommandItem.named(command.rawValue)?.isAvailable(availability) == true else { return }
             window.editor.perform(command)
@@ -429,6 +440,12 @@ struct ContentCommands {
         guard let location = quickOpen.location else { return nil }
         // Symbol search deliberately operates on an open document, including one outside the root.
         guard acceptsFileAction(at: location) else { quickOpen.dismiss(); return nil }
+        if let match = quickOpen.selectedWorkspaceSymbol {
+            quickOpen.dismiss(restoringFocus: false)
+            let reveal = WorkspaceDocumentReveal(line: match.item.symbol.line, range: nil)
+            documents.open(.file, path: match.item.path, at: location, reveal: reveal, focus: true)
+            return nil
+        }
         let query = QuickOpenQuery(quickOpen.query)
         let reveal = query.line.map { line in
             WorkspaceDocumentReveal(line: line, range: query.column.map { NSRange(location: max($0 - 1, 0), length: 0) })

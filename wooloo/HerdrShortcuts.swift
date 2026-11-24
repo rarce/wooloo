@@ -56,6 +56,8 @@ enum HerdrCommand: Equatable {
     case quickOpen
     /// Go to File on the symbols of the focused file (`@`); while it is open, the next symbol.
     case goToSymbol
+    /// Go to File on the symbols across the Space (`#`); while it is open, the next symbol.
+    case goToWorkspaceSymbol
     /// The command palette; while it is open, selects the next command.
     case commandPalette
     /// An action of the open file's editor, from the command palette.
@@ -101,6 +103,7 @@ enum HerdrCommand: Equatable {
         case "project_replace": self = .projectSearch(replace: true)
         case "quick_open": self = .quickOpen
         case "go_to_symbol": self = .goToSymbol
+        case "go_to_workspace_symbol": self = .goToWorkspaceSymbol
         case "command_palette": self = .commandPalette
         case "copy_pane_cwd": self = .copyPaneDirectory
         case "reveal_pane_cwd": self = .revealPaneDirectory
