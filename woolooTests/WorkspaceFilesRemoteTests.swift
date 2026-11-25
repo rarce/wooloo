@@ -83,6 +83,13 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return log.split(separator: "\u{1e}").map { $0.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init) }
     }
 
+    private func stopPollAtTeardown(_ poll: Task<Void, Never>) {
+        addTeardownBlock {
+            poll.cancel()
+            await poll.value
+        }
+    }
+
     /// A tab of an SSH Space follows its file without the explorer showing that Space: a clean
     /// tab reloads, and nothing is read while the app is inactive.
     @MainActor
@@ -99,7 +106,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         store.documents = [document]
         var active = false
         let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { active }) }
-        defer { poll.cancel() }
+        stopPollAtTeardown(poll)
         try sandbox.write(["notes.md": "second\n"], in: "other")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(store.documents[0].text, "first\n", "Inactive: nothing is read")
@@ -110,6 +117,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertFalse(store.documents[0].isDirty)
     }
 
+    @MainActor
     private func openTab(_ path: String, at location: WorkspaceFileLocation, space: String? = nil) async throws -> WorkspaceDocument {
         let contents = try await WorkspaceFiles.blocking(at: location) { try WorkspaceFiles.read(path, at: location) }
         var document = WorkspaceDocument(space: space, location: location, path: path, kind: .file)
@@ -134,10 +142,39 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             """], in: ".")
         try sandbox.sh("chmod 755 shims/cat; mv notes.md slow-read/notes.md")
         let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { true }) }
-        defer { poll.cancel() }
+        stopPollAtTeardown(poll)
         let deadline = Date().addingTimeInterval(5)
         while store.documents[0].text != "second\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(store.documents[0].text, "second\n")
+    }
+
+    @MainActor
+    func testCancellingRemotePollWaitsForTheInFlightCheckAndReload() async throws {
+        try sandbox.write(["notes.md": "first\n"], in: "cancel-poll")
+        let location = remote("cancel-poll")
+        let store = WorkspaceDocumentStore(persistence: nil)
+        store.documents = [try await openTab("notes.md", at: location)]
+        try sandbox.write(["notes.md": "second\n"], in: "cancel-poll")
+        let started = sandbox.path("check-started")
+        try sandbox.write(["shims/git": """
+            #!/bin/sh
+            /usr/bin/touch '\(started)'
+            /bin/sleep 0.4
+            exec /usr/bin/git "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/git; rm -f ssh.log")
+        let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { true }) }
+        stopPollAtTeardown(poll)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !FileManager.default.fileExists(atPath: started), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: started), "The disk check has started")
+        poll.cancel()
+        await poll.value
+
+        XCTAssertEqual(store.documents[0].text, "second\n", "The in-flight reload has finished")
+        XCTAssertEqual(try invocations().count, 2, "Only the in-flight check and its reload ran")
     }
 
     /// A machine that cannot be reached is tried again ever less often, not on every poll.
@@ -151,8 +188,10 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let poll = Task {
             await store.pollRemoteDisk(every: .milliseconds(50), maximumRetryDelay: .milliseconds(400), isActive: { true })
         }
+        stopPollAtTeardown(poll)
         try await Task.sleep(for: .milliseconds(1_000))
         poll.cancel()
+        await poll.value
         let attempts = try invocations().count
         XCTAssertGreaterThan(attempts, 1)
         XCTAssertLessThanOrEqual(attempts, 7, "About 18 without backing off")
@@ -173,7 +212,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let poll = Task {
             await store.pollRemoteDisk(every: .milliseconds(50), hiddenInterval: .seconds(60), isActive: { true })
         }
-        defer { poll.cancel() }
+        stopPollAtTeardown(poll)
         let deadline = Date().addingTimeInterval(5)
         while store.documents[0].text != "first\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(store.documents[0].text, "first\n", "Checked when the poll started")
