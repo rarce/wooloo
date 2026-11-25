@@ -193,21 +193,33 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             printf '%s\\n' "$*" >> '\(sandbox.path("gh.log"))'
             case "$1 $2" in
               'repo view') printf '%s' '{"nameWithOwner":"team/app","url":"https://github.com/team/app","hasIssuesEnabled":true}' ;;
-              'pr list') printf '%s' '[{"number":42,"title":"Remote PR","url":"https://github.com/team/app/pull/42","author":null,"isDraft":true}]' ;;
+              'pr list') printf '%s' '[{"number":42,"title":"Remote PR","url":"https://github.com/team/app/pull/42","author":null,"isDraft":true,"createdAt":"2026-10-01T12:00:00Z"}]' ;;
+              'pr view') printf '%s' '{"body":"Remote PR description","state":"OPEN"}' ;;
+              'issue view') printf '%s' '{"body":"","state":"CLOSED"}' ;;
               *) exit 11 ;;
             esac
             """], in: ".")
         try sandbox.sh("chmod 755 shims/gh")
         let location = remote("repo")
-        let items = try await WorkspaceFiles.blocking(at: location) {
+        let (items, pr, issue) = try await WorkspaceFiles.blocking(at: location) {
             let repository = try WorkspaceGitHub.repository(at: location)
-            return try WorkspaceGitHub.items(.prs, repository: repository, at: location)
+            let items = try WorkspaceGitHub.items(.prs, repository: repository, at: location)
+            let pr = try WorkspaceGitHub.detail(.prs, number: 42, repository: repository, at: location)
+            let issue = try WorkspaceGitHub.detail(.issues, number: 12, repository: repository, at: location)
+            return (items, pr, issue)
         }
         XCTAssertEqual(items.first?.title, "Remote PR")
         XCTAssertEqual(items.first?.isDraft, true)
+        XCTAssertEqual(items.first?.createdAt, ISO8601DateFormatter().date(from: "2026-10-01T12:00:00Z"))
+        XCTAssertEqual(pr.body, "Remote PR description")
+        XCTAssertEqual(pr.state, "OPEN")
+        XCTAssertTrue(issue.body.isEmpty)
+        XCTAssertEqual(issue.state, "CLOSED")
         let log = try String(contentsOfFile: sandbox.path("gh.log"), encoding: .utf8)
-        XCTAssertTrue(log.contains("--repo https://github.com/team/app"))
-        XCTAssertEqual(try invocations().count, 2, "Both repository detection and list loading must use SSH")
+        XCTAssertTrue(log.contains("pr view 42 --json body,state --repo https://github.com/team/app"))
+        XCTAssertTrue(log.contains("issue view 12 --json body,state --repo https://github.com/team/app"))
+        let repositoryCalls = try invocations().filter { $0.last?.contains(location.root) == true }
+        XCTAssertEqual(repositoryCalls.count, 4, "Repository detection, lists and details must all use SSH")
     }
 
     func testRemoteSyncResolvesURLRewritesOnTheRemoteHost() throws {

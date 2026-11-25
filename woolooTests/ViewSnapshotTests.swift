@@ -512,19 +512,20 @@ final class ViewSnapshotTests: XCTestCase {
     func testGitHubPanels() throws {
         let repo = WorkspaceFileLocation(machine: nil, session: "test", workspaceID: "github",
                                          workspaceLabel: "Wooloo", root: "/private/tmp/github-preview")
+        let createdAt = Date().addingTimeInterval(-7_200)
         for (tab, width) in [("issues", 244.0), ("prs", 200.0)] {
             let model = WorkspaceGitHubModel(loadRepository: { _ in
                 WorkspaceGitHubRepository(nameWithOwner: "rarce/wooloo", url: "https://github.com/rarce/wooloo", hasIssuesEnabled: true)
             }, loadItems: { _, kind, _ in
                 if kind == .issues {
                     return [
-                        WorkspaceGitHubItem(number: 142, title: "Improve SSH reconnection", url: "https://github.com/rarce/wooloo/issues/142", author: .init(login: "roberto")),
-                        WorkspaceGitHubItem(number: 138, title: "Keep file history close to Explorer", url: "https://github.com/rarce/wooloo/issues/138", author: .init(login: "ana"))
+                        WorkspaceGitHubItem(number: 142, title: "Improve SSH reconnection", url: "https://github.com/rarce/wooloo/issues/142", author: .init(login: "roberto"), createdAt: createdAt),
+                        WorkspaceGitHubItem(number: 138, title: "Keep file history close to Explorer", url: "https://github.com/rarce/wooloo/issues/138", author: .init(login: "ana"), createdAt: createdAt)
                     ]
                 }
                 return [
-                    WorkspaceGitHubItem(number: 143, title: "Refresh Explorer and GitHub navigation", url: "https://github.com/rarce/wooloo/pull/143", author: .init(login: "roberto"), isDraft: true),
-                    WorkspaceGitHubItem(number: 140, title: "Preserve terminal focus", url: "https://github.com/rarce/wooloo/pull/140", author: nil, isDraft: false)
+                    WorkspaceGitHubItem(number: 143, title: "Refresh Explorer and GitHub navigation", url: "https://github.com/rarce/wooloo/pull/143", author: .init(login: "roberto"), isDraft: true, createdAt: createdAt),
+                    WorkspaceGitHubItem(number: 140, title: "Preserve terminal focus", url: "https://github.com/rarce/wooloo/pull/140", author: nil, isDraft: false, createdAt: createdAt)
                 ]
             })
             let view = WorkspaceGitHubView(location: repo, isCollapsed: .constant(false), model: model, selectedTab: tab)

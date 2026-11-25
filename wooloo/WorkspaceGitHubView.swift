@@ -21,6 +21,7 @@ struct WorkspaceGitHubItem: Decodable, Identifiable, Equatable, Sendable {
     let url: String
     let author: Author?
     var isDraft: Bool?
+    var createdAt: Date?
     var id: Int { number }
 
     var browserURL: URL? {
@@ -29,12 +30,24 @@ struct WorkspaceGitHubItem: Decodable, Identifiable, Equatable, Sendable {
     }
 }
 
+struct WorkspaceGitHubDetail: Decodable, Sendable {
+    let body: String
+    let state: String
+}
+
 enum WorkspaceGitHubKind: String, CaseIterable, Sendable {
     case issues, prs
     var noun: String { self == .issues ? "issues" : "pull requests" }
+    var icon: String { self == .issues ? "circle.dotted" : "arrow.triangle.pull" }
+    private var subcommand: String { self == .issues ? "issue" : "pr" }
+
     var arguments: [String] {
-        let fields = "number,title,url,author" + (self == .prs ? ",isDraft" : "")
-        return [self == .issues ? "issue" : "pr", "list", "--state", "open", "--limit", "50", "--json", fields]
+        let fields = "number,title,url,author,createdAt" + (self == .prs ? ",isDraft" : "")
+        return [subcommand, "list", "--state", "open", "--limit", "50", "--json", fields]
+    }
+
+    func detailArguments(_ number: Int) -> [String] {
+        [subcommand, "view", String(number), "--json", "body,state"]
     }
 }
 
@@ -70,7 +83,16 @@ enum WorkspaceGitHub {
                       at location: WorkspaceFileLocation) throws -> [WorkspaceGitHubItem] {
         let data = try WorkspaceFiles.shell(command(kind.arguments + ["--repo", repository.url]),
                                            at: location, limit: 512_000)
-        return try JSONDecoder().decode([WorkspaceGitHubItem].self, from: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([WorkspaceGitHubItem].self, from: data)
+    }
+
+    static func detail(_ kind: WorkspaceGitHubKind, number: Int, repository: WorkspaceGitHubRepository,
+                       at location: WorkspaceFileLocation) throws -> WorkspaceGitHubDetail {
+        let data = try WorkspaceFiles.shell(command(kind.detailArguments(number) + ["--repo", repository.url]),
+                                           at: location, limit: 512_000)
+        return try JSONDecoder().decode(WorkspaceGitHubDetail.self, from: data)
     }
 
     static func message(for error: Error, machine: String) -> String {
@@ -176,6 +198,7 @@ struct WorkspaceGitHubView: View {
     @State var selectedTab = "issues"
     @State private var reload = 0
     @State private var appliedReload = 0
+    @State private var selectedItem: WorkspaceGitHubItem?
 
     private var kind: WorkspaceGitHubKind { WorkspaceGitHubKind(rawValue: selectedTab) ?? .issues }
     private var loadKey: String { "\(location.map(WorkspaceGitHubModel.contextKey) ?? "none")|\(selectedTab)|\(isCollapsed)|\(reload)" }
@@ -209,7 +232,7 @@ struct WorkspaceGitHubView: View {
                 Spacer(minLength: 0)
                 ForEach(WorkspaceGitHubKind.allCases, id: \.rawValue) { kind in
                     if let count = count(kind) {
-                        Label(count.formatted(), systemImage: kind == .issues ? "circle.dotted" : "arrow.triangle.pull")
+                        Label(count.formatted(), systemImage: kind.icon)
                             .font(.system(size: typography.caption))
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
@@ -231,20 +254,29 @@ struct WorkspaceGitHubView: View {
             .frame(height: typography.metric(35))
             if !isCollapsed {
                 Divider()
-                PanelTabStrip(tabs: tabs, selection: $selectedTab)
-                Divider()
-                if model.context == location.map(WorkspaceGitHubModel.contextKey), let repository = model.repository {
-                    Text(repository.nameWithOwner)
-                        .font(.system(size: typography.caption))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                        .padding(.horizontal, 11).padding(.vertical, 6)
-                        .help(repository.url)
+                if let selectedItem, let location, let repository = model.repository,
+                   model.context == WorkspaceGitHubModel.contextKey(location), model.kind == kind {
+                    WorkspaceGitHubDetailView(item: selectedItem, kind: kind, repository: repository,
+                                              location: location, reload: reload) { self.selectedItem = nil }
+                        .id(selectedItem.url)
+                } else {
+                    PanelTabStrip(tabs: tabs, selection: $selectedTab)
+                    Divider()
+                    if model.context == location.map(WorkspaceGitHubModel.contextKey), let repository = model.repository {
+                        Text(repository.nameWithOwner)
+                            .font(.system(size: typography.caption))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .help(repository.url)
+                    }
+                    content
                 }
-                content
             }
         }
         .background(theme.sidebarBackground)
+        .onChange(of: location.map(WorkspaceGitHubModel.contextKey)) { _, _ in selectedItem = nil }
+        .onChange(of: model.repository?.url) { _, _ in selectedItem = nil }
         .task(id: loadKey) {
             let forceRefresh = reload != appliedReload
             appliedReload = reload
@@ -298,16 +330,19 @@ struct WorkspaceGitHubView: View {
 
     private func row(_ item: WorkspaceGitHubItem) -> some View {
         Button {
-            if let url = item.browserURL { NSWorkspace.shared.open(url) }
+            if NSApp.currentEvent?.modifierFlags.contains(.command) == true, let url = item.browserURL {
+                NSWorkspace.shared.open(url)
+            } else {
+                selectedItem = item
+            }
         } label: {
             HStack(alignment: .top, spacing: 7) {
-                Image(systemName: kind == .issues ? "circle.dotted" : "arrow.triangle.pull")
+                Image(systemName: kind.icon)
                     .foregroundStyle(item.isDraft == true ? Color.secondary : theme.accent)
                     .frame(width: 15).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).font(.system(size: typography.body)).lineLimit(2)
-                    Text("#\(item.number)" + (item.author.map { " · \($0.login)" } ?? "") + (item.isDraft == true ? " · Draft" : ""))
-                        .font(.system(size: typography.caption)).foregroundStyle(.secondary).lineLimit(1)
+                    WorkspaceGitHubItemMetadata(item: item)
                 }
                 Spacer(minLength: 0)
             }
@@ -316,12 +351,117 @@ struct WorkspaceGitHubView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Open #\(item.number) in browser")
+        .help("View #\(item.number) · ⌘-click to open in browser")
         .contextMenu {
             Button("Open in Browser", systemImage: "arrow.up.right.square") {
                 if let url = item.browserURL { NSWorkspace.shared.open(url) }
             }
             Button("Copy URL", systemImage: "doc.on.doc") { AppActions.copy(item.url) }
+        }
+    }
+}
+
+private struct WorkspaceGitHubItemMetadata: View {
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
+    let item: WorkspaceGitHubItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Text("#\(item.number)")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(theme.accent)
+                if let author = item.author { Text(author.login).lineLimit(1) }
+                if item.isDraft == true { Text("Draft").fixedSize() }
+            }
+            if let date = item.createdAt {
+                Text(date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))
+                    .help(date.formatted(date: .abbreviated, time: .shortened))
+                    .accessibilityLabel(Text("Created \(date.formatted(.relative(presentation: .named)))"))
+            }
+        }
+        .font(.system(size: typography.caption))
+        .foregroundStyle(.secondary)
+    }
+}
+
+private struct WorkspaceGitHubDetailView: View {
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
+    let item: WorkspaceGitHubItem
+    let kind: WorkspaceGitHubKind
+    let repository: WorkspaceGitHubRepository
+    let location: WorkspaceFileLocation
+    let reload: Int
+    let onBack: () -> Void
+
+    @State private var result: Result<WorkspaceGitHubDetail, Error>?
+    @State private var retry = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Button(action: onBack) {
+                    Label(kind == .issues ? "Issues" : "Pull Requests", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(theme.accent)
+                Spacer()
+                if let url = item.browserURL {
+                    Button { NSWorkspace.shared.open(url) } label: {
+                        Image(systemName: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open in Browser")
+                    .accessibilityLabel("Open in Browser")
+                }
+            }
+            .font(.system(size: typography.body, weight: .medium))
+            .padding(11)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(item.title)
+                        .font(.system(size: typography.emphasis, weight: .semibold))
+                        .textSelection(.enabled)
+                    WorkspaceGitHubItemMetadata(item: item)
+                    Divider()
+                    switch result {
+                    case .success(let detail):
+                        Text(detail.state.capitalized)
+                            .font(.system(size: typography.caption, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        if detail.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("No description.").foregroundStyle(.secondary)
+                        } else {
+                            Text(detail.body)
+                                .textSelection(.enabled)
+                        }
+                    case .failure(let error):
+                        Text(WorkspaceGitHub.message(for: error, machine: location.machineLabel))
+                            .foregroundStyle(.secondary)
+                        Button("Retry") { retry += 1 }
+                            .buttonStyle(.link)
+                    case nil:
+                        ProgressView("Loading details…").controlSize(.small)
+                    }
+                }
+                .font(.system(size: typography.body))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(11)
+            }
+        }
+        .task(id: [reload, retry]) {
+            result = nil
+            do {
+                let detail = try await WorkspaceFiles.blocking(at: location) {
+                    try WorkspaceGitHub.detail(kind, number: item.number, repository: repository, at: location)
+                }
+                if !Task.isCancelled { result = .success(detail) }
+            } catch {
+                if !Task.isCancelled { result = .failure(error) }
+            }
         }
     }
 }
