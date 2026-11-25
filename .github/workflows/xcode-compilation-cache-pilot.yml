@@ -1,0 +1,123 @@
+name: Xcode compilation cache pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    name: Cold compilation cache
+    runs-on: macos-26
+    timeout-minutes: 25
+    outputs:
+      toolchain: ${{ steps.toolchain.outputs.identity }}
+      archive_id: ${{ steps.archive.outputs.artifact-id }}
+    steps:
+      - &checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - &toolchain
+        name: Identify Xcode 26 and runner
+        id: toolchain
+        run: |
+          xcode=$(printf '%s\n' /Applications/Xcode_26*.app | sort -V | tail -n 1)
+          test -d "$xcode"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          sdk=$(xcrun --sdk macosx --show-sdk-build-version)
+          build=$(xcodebuild -version | sed -n 's/^Build version //p')
+          test -n "$build"
+          printf 'Runner image %s %s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          identity="$(uname -m)-$build-$sdk-$xcode-$(pwd -P)"
+          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$identity"
+
+      - &packages
+        name: Restore Swift packages
+        uses: actions/cache/restore@v5
+        with:
+          path: build/DerivedData/SourcePackages
+          key: spm-slim-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('wooloo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'Vendor/**/Package.swift') }}
+
+      - &herdr
+        name: Restore Herdr release assets
+        uses: actions/cache/restore@v5
+        with:
+          path: build/herdr
+          key: herdr-${{ hashFiles('scripts/bundle-herdr.sh') }}
+
+      - &prepare
+        name: Prepare dependencies before timing
+        run: bash scripts/xcode-compilation-cache-pilot.sh prepare
+
+      - name: Measure clean build with empty native cache
+        run: bash scripts/xcode-compilation-cache-pilot.sh cold
+
+      - name: Pack the compiler cache
+        run: tar -czf build/xcode-compilation-cache-pilot/compiler-cache.tar.gz -C build/xcode-compilation-cache-pilot CAS
+
+      - name: Upload the compiler archive
+        id: archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: xcode-compiler-cache-${{ github.run_attempt }}
+          path: build/xcode-compilation-cache-pilot/compiler-cache.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload cold-build logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xcode-compilation-cache-cold
+          path: build/xcode-compilation-cache-pilot/*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  restore:
+    name: Same-runner control and restored compilation cache
+    needs: seed
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - *checkout
+      - *toolchain
+
+      - name: Verify architecture, toolchain and build paths match
+        env:
+          EXPECTED: ${{ needs.seed.outputs.toolchain }}
+          ACTUAL: ${{ steps.toolchain.outputs.identity }}
+        run: test "$EXPECTED" = "$ACTUAL"
+
+      - *packages
+      - *herdr
+      - *prepare
+
+      - name: Measure clean control
+        run: bash scripts/xcode-compilation-cache-pilot.sh control
+
+      - name: Download the compiler archive
+        uses: actions/download-artifact@v7
+        with:
+          artifact-ids: ${{ needs.seed.outputs.archive_id }}
+          path: build/xcode-compilation-cache-pilot
+
+      - name: Extract the compiler cache
+        run: tar -xpzf build/xcode-compilation-cache-pilot/compiler-cache.tar.gz -C build/xcode-compilation-cache-pilot
+
+      - name: Measure clean build with restored native cache
+        run: bash scripts/xcode-compilation-cache-pilot.sh warm
+
+      - name: Upload control and restored-build logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xcode-compilation-cache-control-and-restored
+          path: build/xcode-compilation-cache-pilot/*.log
+          if-no-files-found: warn
+          retention-days: 7

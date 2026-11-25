@@ -78,9 +78,11 @@ final class TerminalRenderingTests: XCTestCase {
 
         view.selectAll(nil)
         XCTAssertTrue(view.validateUserInterfaceItem(copyItem))
-        NSPasteboard.general.clearContents()
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        view.pasteboard = pasteboard
         view.copy(nil)
-        let copied = try XCTUnwrap(NSPasteboard.general.string(forType: .string))
+        let copied = try XCTUnwrap(pasteboard.string(forType: .string))
         XCTAssertFalse(copied.isEmpty)
     }
 

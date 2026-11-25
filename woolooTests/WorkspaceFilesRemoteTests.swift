@@ -23,7 +23,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             cd '\(sandbox.base)'
             exec /bin/sh -c "$command"
             """], in: ".")
-        try sandbox.sh("chmod 755 bin/ssh")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sandbox.path("bin/ssh"))
         WorkspaceFiles.sshExecutable = sandbox.path("bin/ssh")
     }
 
@@ -83,6 +83,13 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return log.split(separator: "\u{1e}").map { $0.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init) }
     }
 
+    private func stopPollAtTeardown(_ poll: Task<Void, Never>) {
+        addTeardownBlock {
+            poll.cancel()
+            await poll.value
+        }
+    }
+
     /// A tab of an SSH Space follows its file without the explorer showing that Space: a clean
     /// tab reloads, and nothing is read while the app is inactive.
     @MainActor
@@ -99,7 +106,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         store.documents = [document]
         var active = false
         let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { active }) }
-        defer { poll.cancel() }
+        stopPollAtTeardown(poll)
         try sandbox.write(["notes.md": "second\n"], in: "other")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(store.documents[0].text, "first\n", "Inactive: nothing is read")
@@ -110,6 +117,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertFalse(store.documents[0].isDirty)
     }
 
+    @MainActor
     private func openTab(_ path: String, at location: WorkspaceFileLocation, space: String? = nil) async throws -> WorkspaceDocument {
         let contents = try await WorkspaceFiles.blocking(at: location) { try WorkspaceFiles.read(path, at: location) }
         var document = WorkspaceDocument(space: space, location: location, path: path, kind: .file)
@@ -120,24 +128,76 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return document
     }
 
-    /// A reload slower than the poll is not started again, which would drop it, by every poll.
+    private func gateRemoteCommand(_ executable: String) throws -> (started: String, release: String) {
+        let command = URL(fileURLWithPath: executable).lastPathComponent
+        let started = sandbox.path("\(command)-started")
+        let release = sandbox.path("\(command)-release")
+        try sandbox.write(["shims/\(command)": """
+            #!/bin/sh
+            /usr/bin/touch '\(started)' || exit 1
+            attempts=0
+            while [ ! -e '\(release)' ]; do
+                [ "$attempts" -lt 500 ] || exit 1
+                attempts=$((attempts + 1))
+                /bin/sleep 0.02
+            done
+            exec '\(executable)' "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/\(command)")
+        return (started, release)
+    }
+
     @MainActor
-    func testARemoteReloadSlowerThanThePollFinishes() async throws {
-        try sandbox.write(["notes.md": "first\n"], in: "slow-read")
+    private func waitForRemotePoll(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// A slow reload completes while the poll continues checking other tabs at that location.
+    @MainActor
+    func testRemotePollKeepsCheckingOtherTabsDuringASlowReload() async throws {
+        try sandbox.write(["notes.md": "first\n", "other.md": "other\n"], in: "slow-read")
         let location = remote("slow-read")
         let store = WorkspaceDocumentStore(persistence: nil)
-        store.documents = [try await openTab("notes.md", at: location)]
-        try sandbox.write(["notes.md": "second\n", "shims/cat": """
-            #!/bin/sh
-            /bin/sleep 0.4
-            exec /bin/cat "$@"
-            """], in: ".")
-        try sandbox.sh("chmod 755 shims/cat; mv notes.md slow-read/notes.md")
+        store.documents = [try await openTab("notes.md", at: location), try await openTab("other.md", at: location)]
+        try sandbox.write(["notes.md": "second\n"], in: "slow-read")
+        let gate = try gateRemoteCommand("/bin/cat")
+        defer { _ = FileManager.default.createFile(atPath: gate.release, contents: nil) }
         let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { true }) }
-        defer { poll.cancel() }
-        let deadline = Date().addingTimeInterval(5)
-        while store.documents[0].text != "second\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        stopPollAtTeardown(poll)
+        try await waitForRemotePoll { FileManager.default.fileExists(atPath: gate.started) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gate.started), "The reload has started")
+        try sandbox.sh("rm other.md", in: "slow-read")
+        try await waitForRemotePoll { store.documents[1].isDeletedOnDisk }
+        XCTAssertTrue(store.documents[1].isDeletedOnDisk, "The poll detects the deletion during the reload")
+        XCTAssertEqual(store.documents[0].text, "first\n", "The reload is still blocked")
+        XCTAssertTrue(FileManager.default.createFile(atPath: gate.release, contents: nil))
+        try await waitForRemotePoll { store.documents[0].text == "second\n" }
         XCTAssertEqual(store.documents[0].text, "second\n")
+    }
+
+    @MainActor
+    func testCancellingRemotePollWaitsForTheInFlightCheckAndReload() async throws {
+        try sandbox.write(["notes.md": "first\n"], in: "cancel-poll")
+        let location = remote("cancel-poll")
+        let store = WorkspaceDocumentStore(persistence: nil)
+        store.documents = [try await openTab("notes.md", at: location)]
+        try sandbox.write(["notes.md": "second\n"], in: "cancel-poll")
+        let gate = try gateRemoteCommand("/usr/bin/git")
+        defer { _ = FileManager.default.createFile(atPath: gate.release, contents: nil) }
+        try sandbox.sh("rm -f ssh.log")
+        let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { true }) }
+        stopPollAtTeardown(poll)
+        try await waitForRemotePoll { FileManager.default.fileExists(atPath: gate.started) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gate.started), "The disk check has started")
+        poll.cancel()
+        XCTAssertTrue(FileManager.default.createFile(atPath: gate.release, contents: nil))
+        await poll.value
+
+        XCTAssertEqual(store.documents[0].text, "second\n", "The in-flight reload has finished")
+        XCTAssertEqual(try invocations().count, 2, "Only the in-flight check and its reload ran")
     }
 
     /// A machine that cannot be reached is tried again ever less often, not on every poll.
@@ -151,8 +211,10 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let poll = Task {
             await store.pollRemoteDisk(every: .milliseconds(50), maximumRetryDelay: .milliseconds(400), isActive: { true })
         }
+        stopPollAtTeardown(poll)
         try await Task.sleep(for: .milliseconds(1_000))
         poll.cancel()
+        await poll.value
         let attempts = try invocations().count
         XCTAssertGreaterThan(attempts, 1)
         XCTAssertLessThanOrEqual(attempts, 7, "About 18 without backing off")
@@ -173,7 +235,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let poll = Task {
             await store.pollRemoteDisk(every: .milliseconds(50), hiddenInterval: .seconds(60), isActive: { true })
         }
-        defer { poll.cancel() }
+        stopPollAtTeardown(poll)
         let deadline = Date().addingTimeInterval(5)
         while store.documents[0].text != "first\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(store.documents[0].text, "first\n", "Checked when the poll started")
@@ -511,6 +573,33 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    private func remoteWalkMatchingLocal(_ name: String, excludedRemoteFolderLinks: Set<String> = [],
+                                         file: StaticString = #filePath, line: UInt = #line) throws
+        -> (visible: QuickOpenListing, includingIgnored: QuickOpenListing, listing: WorkspaceFileListing) {
+        let remoteLocation = remote(name)
+        let localLocation = sandbox.location(name)
+        func expectedQuickOpen(includeIgnored: Bool) throws -> QuickOpenListing {
+            var listing = try WorkspaceFiles.quickOpenFiles(at: localLocation, includeIgnored: includeIgnored)
+            listing.files.removeAll { excludedRemoteFolderLinks.contains($0) }
+            listing.ignored.subtract(excludedRemoteFolderLinks)
+            return listing
+        }
+        let visible = try WorkspaceFiles.quickOpenFiles(at: remoteLocation)
+        XCTAssertEqual(visible, try expectedQuickOpen(includeIgnored: false), name, file: file, line: line)
+        let includingIgnored = try WorkspaceFiles.quickOpenFiles(at: remoteLocation, includeIgnored: true)
+        XCTAssertEqual(includingIgnored, try expectedQuickOpen(includeIgnored: true),
+                       "\(name), including ignored files", file: file, line: line)
+
+        WorkspaceFiles.forgetRecentResults()
+        let listing = try WorkspaceFiles.listing(at: remoteLocation)
+        let localListing = try WorkspaceFiles.listing(at: localLocation)
+        XCTAssertEqual(listing.files, localListing.files, name, file: file, line: line)
+        XCTAssertEqual(listing.ignored, localListing.ignored, name, file: file, line: line)
+        XCTAssertEqual(listing.symbolicLinks, localListing.symbolicLinks, name, file: file, line: line)
+        XCTAssertEqual(listing.partial, localListing.partial, name, file: file, line: line)
+        return (visible, includingIgnored, listing)
+    }
+
     func testRemoteWalkWithoutGitMatchesTheLocalOne() throws {
         let depth = WorkspaceFiles.folderWalkMaximumDepth
         let chain = (1..<depth).map { "d\($0)" }.joined(separator: "/")
@@ -520,38 +609,22 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         try sandbox.sh("ln -s d1 loose/alias")
         try sandbox.write(["c.txt": "x\n", "sub/d.txt": "x\n"], in: "small")
         try sandbox.sh("mkdir -p small/\(chain)/d\(depth) small/\(chain)/node_modules/x")
-        var wide = ["top.txt": "x\n"]
-        for index in 0..<300 { wide["w\(index)/f.txt"] = "x\n" }
-        try sandbox.write(wide, in: "wide")
+        var wideFiles = ["top.txt": "x\n"]
+        for index in 0..<300 { wideFiles["w\(index)/f.txt"] = "x\n" }
+        try sandbox.write(wideFiles, in: "wide")
 
-        for name in ["loose", "small", "wide"] {
-            for includeIgnored in [false, true] {
-                XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: remote(name), includeIgnored: includeIgnored),
-                               try WorkspaceFiles.quickOpenFiles(at: sandbox.location(name), includeIgnored: includeIgnored),
-                               "\(name), ignored: \(includeIgnored)")
-            }
-            WorkspaceFiles.forgetRecentResults()
-            let remoteListing = try WorkspaceFiles.listing(at: remote(name))
-            let localListing = try WorkspaceFiles.listing(at: sandbox.location(name))
-            XCTAssertEqual(remoteListing.files, localListing.files, name)
-            XCTAssertEqual(remoteListing.ignored, localListing.ignored, name)
-            XCTAssertEqual(remoteListing.symbolicLinks, localListing.symbolicLinks, name)
-            XCTAssertEqual(remoteListing.partial, localListing.partial, name)
-        }
-        let loose = try WorkspaceFiles.quickOpenFiles(at: remote("loose"), includeIgnored: true)
-        XCTAssertEqual(loose.files, ["a b.txt", "alias", "app/.build/out.o", "d1/b.txt", "\(chain)/last.txt",
-                                     "it's\nodd.txt", "node_modules/pkg/index.js"])
-        XCTAssertEqual(loose.ignored, ["app/.build/out.o", "node_modules/pkg/index.js"])
-        XCTAssertTrue(loose.partial)
-        XCTAssertFalse(try WorkspaceFiles.quickOpenFiles(at: remote("small")).partial,
-                       "Empty or skipped folders at the depth limit leave nothing unread")
-        XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: remote("wide")).files.count, 301,
-                       "A level read in several batches is read in full")
-        WorkspaceFiles.forgetRecentResults()
-        let listing = try WorkspaceFiles.listing(at: remote("loose"))
-        XCTAssertEqual(listing.ignored.directories, ["app/.build", "node_modules"])
-        XCTAssertEqual(listing.symbolicLinks["alias"], WorkspaceSymbolicLink(target: "d1", isDirectory: true))
-        XCTAssertTrue(listing.partial)
+        let loose = try remoteWalkMatchingLocal("loose", excludedRemoteFolderLinks: ["alias"])
+        let small = try remoteWalkMatchingLocal("small")
+        let wide = try remoteWalkMatchingLocal("wide")
+        XCTAssertEqual(loose.includingIgnored.files, ["a b.txt", "app/.build/out.o", "d1/b.txt", "\(chain)/last.txt",
+                                                     "it's\nodd.txt", "node_modules/pkg/index.js"])
+        XCTAssertEqual(loose.includingIgnored.ignored, ["app/.build/out.o", "node_modules/pkg/index.js"])
+        XCTAssertTrue(loose.includingIgnored.partial)
+        XCTAssertFalse(small.visible.partial, "Empty or skipped folders at the depth limit leave nothing unread")
+        XCTAssertEqual(wide.visible.files.count, 301, "A level read in several batches is read in full")
+        XCTAssertEqual(loose.listing.ignored.directories, ["app/.build", "node_modules"])
+        XCTAssertEqual(loose.listing.symbolicLinks["alias"], WorkspaceSymbolicLink(target: "d1", isDirectory: true))
+        XCTAssertTrue(loose.listing.partial)
     }
 
     /// A level stopped by the time limit ends the walk with what earlier levels found.
@@ -592,33 +665,19 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         try sandbox.write(["only.txt": "x\n", "\(chain)/.git/HEAD": "x\n", "\(chain)/node_modules/a.js": "x\n"],
                           in: "limit")
 
-        for name in ["rich", "limit"] {
-            for includeIgnored in [false, true] {
-                let local = try WorkspaceFiles.quickOpenFiles(at: sandbox.location(name), includeIgnored: includeIgnored)
-                XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: remote(name), includeIgnored: includeIgnored), local,
-                               "\(name), ignored: \(includeIgnored)")
-            }
-            WorkspaceFiles.forgetRecentResults()
-            let remoteListing = try WorkspaceFiles.listing(at: remote(name))
-            let localListing = try WorkspaceFiles.listing(at: sandbox.location(name))
-            XCTAssertEqual(remoteListing.files, localListing.files, name)
-            XCTAssertEqual(remoteListing.ignored, localListing.ignored, name)
-            XCTAssertEqual(remoteListing.symbolicLinks, localListing.symbolicLinks, name)
-            XCTAssertEqual(remoteListing.partial, localListing.partial, name)
-        }
-        let rich = try WorkspaceFiles.quickOpenFiles(at: remote("rich"))
-        XCTAssertEqual(rich.files, ["-dash.txt", ".hidden/inner.txt", "a/b/c.py", "alias", "back\\slash.txt", "broken",
-                                    "lib/__pycache__", "lib/node_modules", "lib/up", "naïve/über.txt", "new\nline/f.txt",
-                                    "quote\"s 'and' $vars.txt", "star*.txt", "sub/wooloo-partial",
-                                    "sub/wooloo-symbolic-links", "tab\tname.txt", "to-marker", "top.txt", "wooloo-partial"])
-        XCTAssertFalse(rich.partial, "Only skipped folders are at the depth limit")
-        XCTAssertEqual(try WorkspaceFiles.listing(at: remote("rich")).ignored.directories,
+        let rich = try remoteWalkMatchingLocal("rich", excludedRemoteFolderLinks: ["alias", "lib/__pycache__", "lib/up"])
+        let limit = try remoteWalkMatchingLocal("limit")
+        XCTAssertEqual(rich.visible.files, ["-dash.txt", ".hidden/inner.txt", "a/b/c.py", "back\\slash.txt", "broken",
+                                            "lib/node_modules", "naïve/über.txt", "new\nline/f.txt",
+                                            "quote\"s 'and' $vars.txt", "star*.txt", "sub/wooloo-partial",
+                                            "sub/wooloo-symbolic-links", "tab\tname.txt", "to-marker", "top.txt", "wooloo-partial"])
+        XCTAssertFalse(rich.visible.partial, "Only skipped folders are at the depth limit")
+        XCTAssertEqual(rich.listing.ignored.directories,
                        [".venv", "DerivedData", "a/b/__pycache__", "new\nline/node_modules"],
                        "A folder at the depth limit is not read")
-        XCTAssertEqual(try WorkspaceFiles.listing(at: remote("rich")).symbolicLinks["to-marker"]?.target, "wooloo-partial")
-        XCTAssertTrue(try WorkspaceFiles.quickOpenFiles(at: remote("rich"), includeIgnored: true).partial,
-                      "Read, the skipped folder at the depth limit has something unread")
-        XCTAssertFalse(try WorkspaceFiles.quickOpenFiles(at: remote("limit")).partial)
+        XCTAssertEqual(rich.listing.symbolicLinks["to-marker"]?.target, "wooloo-partial")
+        XCTAssertTrue(rich.includingIgnored.partial, "Read, the skipped folder at the depth limit has something unread")
+        XCTAssertFalse(limit.visible.partial)
     }
 
     /// Makes the `find` that matches `pattern` (a `case` pattern of its arguments) print `output`
@@ -692,7 +751,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                                                      label: "walk", limit: 1_000_000)
         XCTAssertEqual(WorkspaceFiles.folderWalkSections(output).records,
                        Array(WorkspaceFiles.folderWalkSections(output).records.prefix(WorkspaceFiles.folderWalkMaximumFileRecords))
-                           + ["wooloo-linked-folders", "wooloo-skipped", "wooloo-files"],
+                           + ["wooloo-skipped", "wooloo-files"],
                        "The remote stops printing files")
 
         for location in [remote("many"), sandbox.location("many")] {
@@ -707,7 +766,11 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
         // A cut walk still describes the links it lists, and no more than `maximumLinks` of all it finds.
         try sandbox.write(["f.txt": "x\n"], in: "linked")
-        try sandbox.sh("for i in $(seq 1 1500); do ln -s f.txt link-with-a-much-longer-name-to-fill-the-pipe-$i; done", in: "linked")
+        for index in 1...1_500 {
+            try FileManager.default.createSymbolicLink(
+                atPath: sandbox.path("linked/link-with-a-much-longer-name-to-fill-the-pipe-\(index)"),
+                withDestinationPath: "f.txt")
+        }
         // Its `find` of files waits after printing, so `head` has cut the walk before the next one.
         try sandbox.write(["shims/find": """
             #!/bin/sh
@@ -753,6 +816,14 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(Set(listing.ignored.directories), [".venv", "node_modules"])
     }
 
+    private func createSkippedFolders(_ indices: ClosedRange<Int>, in name: String) throws {
+        for index in indices {
+            try FileManager.default.createDirectory(atPath: sandbox.path("\(name)/p\(index)/node_modules"),
+                                                    withIntermediateDirectories: true)
+        }
+        WorkspaceFiles.forgetRecentResults()
+    }
+
     /// Over SSH, skipped folders are printed after the files, so many of them do not cut the walk
     /// before `maximumFiles` files. Past `folderWalkMaximumRecords` in all, the skipped folders
     /// are left out; every file was read, so the walk is not partial.
@@ -762,7 +833,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         WorkspaceFiles.maximumFiles = 5
         let files = ["a.txt", "b.txt", "c.txt", "z/y/d.txt", "z/y/e.txt"]
         try sandbox.write(Dictionary(uniqueKeysWithValues: files.map { ($0, "x\n") }), in: "skips")
-        try sandbox.sh("for i in $(seq 1 800); do mkdir -p p$i/node_modules; done", in: "skips")
+        try createSkippedFolders(1...800, in: "skips")
         for location in [remote("skips"), sandbox.location("skips")] {
             WorkspaceFiles.forgetRecentResults()
             let listing = try WorkspaceFiles.listing(at: location)
@@ -770,7 +841,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             XCTAssertEqual(listing.ignored.directories.count, 800, location.root)
             XCTAssertFalse(listing.truncated || listing.partial, location.root)
         }
-        try sandbox.sh("for i in $(seq 801 1200); do mkdir -p p$i/node_modules; done", in: "skips")
+        try createSkippedFolders(801...1_200, in: "skips")
         let quickOpen = try WorkspaceFiles.quickOpenFiles(at: remote("skips"))
         XCTAssertEqual(quickOpen.files, files, "The skipped folders do not cut the files")
         XCTAssertFalse(quickOpen.truncated)
@@ -812,9 +883,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return WorkspaceFiles.folderWalk(linkedScriptOutput: output)
     }
 
-    /// Past the links described in full, the walk still describes linked folders, without their
-    /// targets, so the explorer shows them as folders; they go before skipped folders when the
-    /// records run out, and are looked at only within the walk's time limit.
+    /// The explorer knows the kind of listed directory links beyond its link-target limit.
     func testRemoteWalkDescribesLinkedFoldersPastTheLinksItDescribesInFull() throws {
         let maximum = WorkspaceFiles.maximumFiles
         let budget = WorkspaceFiles.folderWalkBudget
@@ -824,7 +893,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
         try sandbox.write(["f.txt": "x\n", "sub/g.txt": "x\n"], in: "links")
         try sandbox.sh("for i in 1 2 3 4; do ln -s f.txt file$i; ln -s sub folder$i; done; ln -s missing broken", in: "links")
-        try sandbox.sh("for i in $(seq 1 1100); do mkdir -p p$i/node_modules; done", in: "links")
+        try createSkippedFolders(1...1_100, in: "links")
         WorkspaceFiles.maximumFiles = 20
         let walk = try linkedWalk("links", maximumLinks: 3)
         XCTAssertLessThan(walk.skippedFolders.count, 1_100, "The records ran out in the skipped folders")
@@ -840,13 +909,54 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                        "Only folders are described past the first three")
 
         WorkspaceFiles.folderWalkBudget = 0
-        XCTAssertEqual(try linkedWalk("links", maximumLinks: 3).symbolicLinks.count, 3,
-                       "Once the time is up, only the links described in full")
+        let rootOnly = try linkedWalk("links", maximumLinks: 3)
+        XCTAssertTrue(rootOnly.partial)
+        XCTAssertEqual(Set(rootOnly.symbolicLinks.filter(\.value.isDirectory).keys), Set(folders),
+                       "The level deadline still leaves time to classify the links already listed")
     }
 
-    /// A linked folder the walk listed as a file, as past its first `folderWalkMaximumLinks`
-    /// links, is told apart when opened: its tab closes, and the explorer shows it as a folder,
-    /// also in later listings.
+    func testRemoteWalkClassifiesLinkedFoldersBeyondTheExtraRecordBudget() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        defer { WorkspaceFiles.maximumFiles = maximum }
+        WorkspaceFiles.maximumFiles = 1_050
+        try sandbox.write(["sub/file": "x"], in: "many-links")
+        for index in 1...1_060 {
+            try FileManager.default.createSymbolicLink(atPath: sandbox.path("many-links/folder\(index)"),
+                                                       withDestinationPath: "sub")
+        }
+        let walk = try linkedWalk("many-links", maximumLinks: 0)
+        XCTAssertTrue(walk.truncated)
+        XCTAssertEqual(walk.files.count, 1_050)
+        XCTAssertEqual(Set(walk.symbolicLinks.filter(\.value.isDirectory).keys), Set(walk.files))
+    }
+
+    func testRemoteGoToFileLeavesOutLinkedFoldersAndKeepsLinkedFiles() throws {
+        try sandbox.write(["plain.txt": "x", "sub/nested.txt": "y", "node_modules/dependency.js": "z"], in: "quick-links")
+        try sandbox.sh("""
+            ln -s sub 'directory link'
+            ln -s plain.txt 'file link'
+            ln -s ../sub node_modules/folder
+            ln -s ../plain.txt node_modules/alias
+            """, in: "quick-links")
+        try sandbox.write(["shims/readlink": """
+            #!/bin/sh
+            : > '\(sandbox.path("readlink-called"))'
+            exec /usr/bin/readlink "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/readlink")
+
+        let location = remote("quick-links")
+        XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: location).files,
+                       ["file link", "plain.txt", "sub/nested.txt"])
+        let includingIgnored = try WorkspaceFiles.quickOpenFiles(at: location, includeIgnored: true)
+        XCTAssertEqual(includingIgnored.files,
+                       ["file link", "node_modules/alias", "node_modules/dependency.js", "plain.txt", "sub/nested.txt"])
+        XCTAssertEqual(includingIgnored.ignored, ["node_modules/alias", "node_modules/dependency.js"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("readlink-called")))
+    }
+
+    /// Opening an unclassified linked folder closes its file tab and shows it as a folder in
+    /// the explorer, including in later listings.
     @MainActor
     func testALinkedFolderOpenedAsAFileShowsAsAFolder() async throws {
         try sandbox.write(["f.txt": "x\n", "sub/g.txt": "x\n"], in: "undescribed")
@@ -875,21 +985,21 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(model.ignoredContents["folder"]?.files, ["folder/g.txt"], "Read again, as it is open")
     }
 
-    /// A link into a hung network mount stalls whatever follows it; the walk waits for its look at
-    /// links only `folderWalkLinkBudget` seconds, then ends with the files it found, so SSH
-    /// answers long before its timeout.
-    func testRemoteWalkDoesNotWaitForALinkThatHangs() throws {
+    /// The timeout returns the files and stops the worker and its interruptible children.
+    func testRemoteWalkStopsTheStalledLinkWorker() throws {
         let budget = WorkspaceFiles.folderWalkLinkBudget
         defer { WorkspaceFiles.folderWalkLinkBudget = budget }
         WorkspaceFiles.folderWalkLinkBudget = 1
         try sandbox.write(["f.txt": "x\n"], in: "hung")
         try sandbox.sh("ln -s f.txt fine; ln -s f.txt hung", in: "hung")
-        // `readlink` of the link named "hung" never returns, as in a hung mount.
+        // The readlink subprocess resists TERM and would produce a side effect if left running.
         let stalled = sandbox.path("stalled.pid")
-        defer { try? sandbox.sh("[ ! -s '\(stalled)' ] || kill $(cat '\(stalled)') 2>/dev/null; true") }
+        let completed = sandbox.path("stalled.completed")
         try sandbox.write(["shims/readlink": """
             #!/bin/sh
-            case "$1" in *hung) echo $$ > '\(stalled)'; exec sleep 30;; esac
+            case "$1" in
+                *hung) trap '' TERM; echo $$ > '\(stalled)'; sleep 2; : > '\(completed)';;
+            esac
             exec /usr/bin/readlink "$@"
             """], in: ".")
         try sandbox.sh("chmod 755 shims/readlink")
@@ -898,6 +1008,9 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 4, "The walk must not wait for the stalled link")
         XCTAssertEqual(Set(listing.files), ["f.txt", "fine", "hung"])
         XCTAssertTrue(listing.symbolicLinks["hung"]?.target.isEmpty ?? true, "The stalled link is not described")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stalled), "The worker reached the simulated stall")
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: completed), "The readlink subprocess was stopped")
     }
 
     /// The walk's `tr` runs in the C locale: in a UTF-8 one, BSD `tr` stops at a name that is not
@@ -946,6 +1059,44 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             XCTAssertTrue(try WorkspaceFiles.quickOpenFiles(at: remote("deep"), includeIgnored: includeIgnored).truncated)
             XCTAssertLessThan(Date().timeIntervalSince(started), 1.8, "Ignored: \(includeIgnored)")
         }
+    }
+
+    func testRemoteGoToFileDoesNotScanTheRootSeparatelyForLinks() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        defer { WorkspaceFiles.maximumFiles = maximum }
+        WorkspaceFiles.maximumFiles = 5
+        try sandbox.write(Dictionary(uniqueKeysWithValues: (0..<1_200).map { ("file-\($0).txt", "x") }), in: "capped")
+        let extraScan = sandbox.path("link-only-find")
+        try sandbox.write(["shims/find": """
+            #!/bin/sh
+            case " $* " in
+                *" -type f "*) exec /usr/bin/find "$@";;
+                *" -type l "*) : > '\(extraScan)'; exit 0;;
+            esac
+            exec /usr/bin/find "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/find")
+
+        let listing = try WorkspaceFiles.quickOpenFiles(at: remote("capped"))
+        XCTAssertTrue(listing.truncated)
+        XCTAssertEqual(listing.files.count, 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: extraScan))
+    }
+
+    func testRemoteGoToFileKeepsFilesWithCanonicallyEquivalentFolderLinkNames() {
+        // This can occur on a remote filesystem even when the Mac running the test
+        // cannot store both forms side by side.
+        let file = "node_modules/caf\u{E9}.txt"
+        let folder = "node_modules/cafe\u{301}.txt"
+        XCTAssertEqual(file, folder)
+        XCTAssertNotEqual(Data(file.utf8), Data(folder.utf8))
+
+        let output = Data("wooloo-link-kinds\0df\0./\(folder)\0./\(file)\0wooloo-end\0".utf8)
+        let walk = WorkspaceFiles.folderWalk(linkedScriptOutput: output, readingSkipped: true,
+                                             excludingLinkedFolders: true)
+
+        XCTAssertEqual(walk.files.map { Data($0.utf8) }, [Data(file.utf8)])
+        XCTAssertEqual(Set(walk.ignoredFiles.map { Data($0.utf8) }), [Data(file.utf8)])
     }
 
     func testRemoteWalkByteLimitKeepsCompleteFilesForExplorerAndQuickOpen() throws {
@@ -1002,6 +1153,19 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             let prefix = Data(("./valid\0./incomplete\0" + suffix).utf8)
             WorkspaceFiles.folderWalkMaximumBytes = prefix.count
             XCTAssertEqual(WorkspaceFiles.folderWalk(scriptOutput: prefix, readingSkipped: false).files, ["valid"])
+        }
+    }
+
+    func testLinkedFolderFlagsStayAlignedAcrossInvalidNamesAndTheByteCut() {
+        let previousLimit = WorkspaceFiles.folderWalkMaximumBytes
+        defer { WorkspaceFiles.folderWalkMaximumBytes = previousLimit }
+        let output = Data("wooloo-link-kinds\0fdfd\0./plain\0./invalid".utf8) + [0xFF]
+            + Data("\0./other\0./new\nline\0wooloo-end\0wooloo-skipped\0".utf8)
+        for count in 1...output.count {
+            WorkspaceFiles.folderWalkMaximumBytes = count
+            let walk = WorkspaceFiles.folderWalk(linkedScriptOutput: Data(output.prefix(count)))
+            let expected: Set<String> = walk.files.contains("new\nline") ? ["new\nline"] : []
+            XCTAssertEqual(Set(walk.symbolicLinks.keys), expected, "Cut at byte \(count)")
         }
     }
 

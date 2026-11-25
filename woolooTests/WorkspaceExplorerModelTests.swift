@@ -36,9 +36,9 @@ final class WorkspaceExplorerModelTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        model.stopMonitoring()
+        model?.stopMonitoring()
         if let savedTrash { WorkspaceFiles.trashItem = savedTrash }
-        sandbox.tearDown()
+        sandbox?.tearDown()
     }
 
     private var files: String { "\(repo.identity)|files" }

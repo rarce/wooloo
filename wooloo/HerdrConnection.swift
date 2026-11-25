@@ -570,8 +570,16 @@ final class HerdrStore: ObservableObject {
     static let defaultSessionName = "default"
     private static let lastSessionKey = "HerdrLastSession"
 
-    @Published private(set) var sessionName = UserDefaults.standard.string(forKey: lastSessionKey)
-        ?? defaultSessionName { didSet { sessionCache = nil; cachedSessionCache = nil } }
+    @Published private(set) var sessionName: String { didSet { sessionCache = nil; cachedSessionCache = nil } }
+
+    var lastLocalSessionName: String {
+        sessionDefaults.string(forKey: Self.lastSessionKey) ?? Self.defaultSessionName
+    }
+
+    func rememberLocalSession() {
+        sessionDefaults.set(sessionName, forKey: Self.lastSessionKey)
+    }
+
     private var eventTask: Task<Void, Never>?
     private var paneTask: Task<Void, Never>?
     private var surfaceTask: Task<Void, Never>?
@@ -658,9 +666,12 @@ final class HerdrStore: ObservableObject {
     private var publishRecorder: AnyCancellable?
 
     private let endpointTimeouts: HerdrEndpointTimeouts
+    let sessionDefaults: UserDefaults
 
-    init(endpointTimeouts: HerdrEndpointTimeouts = HerdrEndpointTimeouts()) {
+    init(endpointTimeouts: HerdrEndpointTimeouts = HerdrEndpointTimeouts(), sessionDefaults: UserDefaults = .standard) {
         self.endpointTimeouts = endpointTimeouts
+        self.sessionDefaults = sessionDefaults
+        sessionName = sessionDefaults.string(forKey: Self.lastSessionKey) ?? Self.defaultSessionName
         snapshotPublisher = publishedSnapshots.eraseToAnyPublisher()
         reloadAgentViewSettings()
         terminalFileLinks.context = { [weak self] paneID in
@@ -792,7 +803,7 @@ final class HerdrStore: ObservableObject {
         } else {
             coreError = nil
         }
-        if machine == nil && remember { UserDefaults.standard.set(trimmed, forKey: Self.lastSessionKey) }
+        if machine == nil && remember { rememberLocalSession() }
         snapshot = nil
         cachedSnapshot = nil
         paneText = [:]

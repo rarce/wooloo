@@ -132,17 +132,13 @@ final class ContentCommandsTests: XCTestCase {
 
     func testSessionPickerFromRemoteUsesTheLastLocalSession() {
         let previousSSH = WorkspaceFiles.sshExecutable
-        let previousSession = UserDefaults.standard.string(forKey: "HerdrLastSession")
-        defer {
-            WorkspaceFiles.sshExecutable = previousSSH
-            UserDefaults.standard.set(previousSession, forKey: "HerdrLastSession")
-        }
+        defer { WorkspaceFiles.sshExecutable = previousSSH }
         WorkspaceFiles.sshExecutable = "/usr/bin/false"
-        UserDefaults.standard.set("wooloo-ui-test", forKey: "HerdrLastSession")
+        sessionDefaults.set(sessionSuite, forKey: "HerdrLastSession")
         herdr.connect(to: HerdrMachineProfile(id: "remote", label: "Remote", target: "absent",
                                              session: "agents", enabled: true))
         commands.perform("switch_session")
-        XCTAssertEqual(window.requestedSessionName, "wooloo-ui-test")
+        XCTAssertEqual(window.requestedSessionName, sessionSuite)
         XCTAssertEqual(herdr.sessionName, "agents")
         XCTAssertTrue(window.showsSessionPicker)
     }
@@ -150,7 +146,8 @@ final class ContentCommandsTests: XCTestCase {
     private let state = State()
     private var root: URL!
     private var savedRoot: URL!
-    private var savedLastSession: String?
+    private let sessionSuite = "test-herdr-session-\(UUID().uuidString)"
+    private var sessionDefaults: UserDefaults!
     private var server: FakeHerdrServer!
     private var herdr: HerdrStore!
     private var sandbox: WorkspaceGitSandbox!
@@ -170,11 +167,10 @@ final class ContentCommandsTests: XCTestCase {
     override func setUp() async throws {
         // Short, so socket paths stay under the 104-byte limit.
         root = URL(fileURLWithPath: "/private/tmp/wooloo-tests/\(UUID().uuidString.prefix(8))")
-        savedLastSession = UserDefaults.standard.string(forKey: "HerdrLastSession")
-        UserDefaults.standard.set(HerdrStore.defaultSessionName, forKey: "HerdrLastSession")
+        sessionDefaults = try XCTUnwrap(UserDefaults(suiteName: sessionSuite))
         savedRoot = HerdrStore.sessionRoot
         HerdrStore.sessionRoot = root
-        herdr = HerdrStore()
+        herdr = HerdrStore(sessionDefaults: sessionDefaults)
         server = try FakeHerdrServer(path: herdr.socketPath) { [state] method, _ in
             state.lock.lock()
             defer { state.lock.unlock() }
@@ -201,7 +197,7 @@ final class ContentCommandsTests: XCTestCase {
         herdr.stop()
         server.stop()
         HerdrStore.sessionRoot = savedRoot
-        UserDefaults.standard.set(savedLastSession, forKey: "HerdrLastSession")
+        sessionDefaults?.removePersistentDomain(forName: sessionSuite)
         try? FileManager.default.removeItem(at: root)
         sandbox.tearDown()
     }
@@ -245,7 +241,7 @@ final class ContentCommandsTests: XCTestCase {
 
     func testPendingCloseAndRenameKeepOriginalDestinationWithCollidingIDs() async throws {
         await connect()
-        let other = HerdrStore()
+        let other = HerdrStore(sessionDefaults: sessionDefaults)
         other.setPresentationActive(false)
         let otherServer = try FakeHerdrServer(path: root.appendingPathComponent("sessions/other/herdr.sock").path) { [state] method, _ in
             method == "session.snapshot" ? state.snapshot() : ["result": [:]]
