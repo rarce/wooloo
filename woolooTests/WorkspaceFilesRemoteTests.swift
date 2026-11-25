@@ -999,6 +999,44 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
+    func testRemoteGoToFileDoesNotScanTheRootSeparatelyForLinks() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        defer { WorkspaceFiles.maximumFiles = maximum }
+        WorkspaceFiles.maximumFiles = 5
+        try sandbox.write(Dictionary(uniqueKeysWithValues: (0..<1_200).map { ("file-\($0).txt", "x") }), in: "capped")
+        let extraScan = sandbox.path("link-only-find")
+        try sandbox.write(["shims/find": """
+            #!/bin/sh
+            case " $* " in
+                *" -type f "*) exec /usr/bin/find "$@";;
+                *" -type l "*) : > '\(extraScan)'; exit 0;;
+            esac
+            exec /usr/bin/find "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/find")
+
+        let listing = try WorkspaceFiles.quickOpenFiles(at: remote("capped"))
+        XCTAssertTrue(listing.truncated)
+        XCTAssertEqual(listing.files.count, 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: extraScan))
+    }
+
+    func testRemoteGoToFileKeepsFilesWithCanonicallyEquivalentFolderLinkNames() {
+        // This can occur on a remote filesystem even when the Mac running the test
+        // cannot store both forms side by side.
+        let file = "node_modules/caf\u{E9}.txt"
+        let folder = "node_modules/cafe\u{301}.txt"
+        XCTAssertEqual(file, folder)
+        XCTAssertNotEqual(Data(file.utf8), Data(folder.utf8))
+
+        let output = Data("wooloo-link-kinds\0df\0./\(folder)\0./\(file)\0wooloo-end\0".utf8)
+        let walk = WorkspaceFiles.folderWalk(linkedScriptOutput: output, readingSkipped: true,
+                                             excludingLinkedFolders: true)
+
+        XCTAssertEqual(walk.files.map { Data($0.utf8) }, [Data(file.utf8)])
+        XCTAssertEqual(Set(walk.ignoredFiles.map { Data($0.utf8) }), [Data(file.utf8)])
+    }
+
     func testRemoteWalkByteLimitKeepsCompleteFilesForExplorerAndQuickOpen() throws {
         let limit = WorkspaceFiles.folderWalkMaximumBytes
         defer { WorkspaceFiles.folderWalkMaximumBytes = limit }

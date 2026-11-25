@@ -32,11 +32,9 @@ extension WorkspaceFiles {
     // Shared by the WorkspaceFiles implementation files.
     static func quickOpenFilesWithoutGit(at location: WorkspaceFileLocation,
                                                  includeIgnored: Bool) throws -> QuickOpenListing {
-        let walk = try folderWalk(at: location, readingSkipped: includeIgnored)
-        let linkedFolders = Set(walk.symbolicLinks.filter(\.value.isDirectory).keys)
-        let files = linkedFolders.isEmpty ? walk.files : walk.files.filter { !linkedFolders.contains($0) }
-        return QuickOpenListing(files: files, truncated: walk.truncated, partial: walk.partial,
-                                ignored: walk.ignoredFiles.subtracting(linkedFolders))
+        let walk = try folderWalk(at: location, readingSkipped: includeIgnored, excludingLinkedFolders: true)
+        return QuickOpenListing(files: walk.files, truncated: walk.truncated, partial: walk.partial,
+                                ignored: walk.ignoredFiles)
     }
 
     /// The explorer's listing of a folder outside a repository: skipped folders are listed like
@@ -54,13 +52,15 @@ extension WorkspaceFiles {
     /// files nearest the root, and stops after `folderWalkMaximumDepth` levels or once
     /// `folderWalkBudget` seconds have passed after the root.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
-    static func folderWalk(at location: WorkspaceFileLocation, readingSkipped: Bool) throws -> WorkspaceFolderWalk {
+    static func folderWalk(at location: WorkspaceFileLocation, readingSkipped: Bool,
+                           excludingLinkedFolders: Bool = false) throws -> WorkspaceFolderWalk {
         guard let machine = location.machine else {
             return finished(localFolderWalk(root: location.root, readingSkipped: readingSkipped), readingSkipped: readingSkipped)
         }
         let words = folderWalkWords(location, readingSkipped: readingSkipped, links: true, linkTargets: false)
         let data = try ssh(machine, words.map(quote).joined(separator: " "), limit: maximumListingBytes)
-        return folderWalk(linkedScriptOutput: data, readingSkipped: readingSkipped)
+        return folderWalk(linkedScriptOutput: data, readingSkipped: readingSkipped,
+                          excludingLinkedFolders: excludingLinkedFolders)
     }
 
     /// A walk from the output of `folderWalkScript` without links.
@@ -73,14 +73,25 @@ extension WorkspaceFiles {
     }
 
     /// A walk from the output of `folderWalkScript` with linked folder kinds and optional targets.
-    static func folderWalk(linkedScriptOutput data: Data, readingSkipped: Bool = false) -> WorkspaceFolderWalk {
+    static func folderWalk(linkedScriptOutput data: Data, readingSkipped: Bool = false,
+                           excludingLinkedFolders: Bool = false) -> WorkspaceFolderWalk {
         let output = boundedFolderWalkOutput(data)
         let sections = folderWalkSections(output.data)
-        var walk = finished(folderWalk(records: sections.records), readingSkipped: readingSkipped)
+        let excluded: Set<Data> = excludingLinkedFolders ? sections.linkedFolders : []
+        var walk = finished(folderWalk(records: sections.records), readingSkipped: readingSkipped,
+                            excluding: excluded)
         walk.truncated = walk.truncated || output.truncated
-        let listed = Set(walk.files)
-        walk.symbolicLinks = sections.linkedFolders.merging(parseSymbolicLinks(sections.linkMetadata)) { _, full in full }
-            .filter { listed.contains($0.key) }
+        if !excludingLinkedFolders, !sections.linkedFolders.isEmpty || !sections.linkMetadata.isEmpty {
+            let listed = Set(walk.files.map { Data($0.utf8) })
+            for bytes in sections.linkedFolders where listed.contains(bytes) {
+                if let path = String(bytes: bytes, encoding: .utf8) {
+                    walk.symbolicLinks[path] = WorkspaceSymbolicLink(target: "", isDirectory: true)
+                }
+            }
+            for (path, link) in parseSymbolicLinks(sections.linkMetadata) where listed.contains(Data(path.utf8)) {
+                walk.symbolicLinks[path] = link
+            }
+        }
         return walk
     }
 
@@ -212,13 +223,13 @@ extension WorkspaceFiles {
     /// The output of `folderWalkScript` with links: optional folder kind flags before the walk,
     /// and optional link metadata after its records.
     static func folderWalkSections(_ data: Data) -> (records: [String], linkMetadata: Data,
-                                                     linkedFolders: [String: WorkspaceSymbolicLink]) {
+                                                     linkedFolders: Set<Data>) {
         let kindMarker = Data("wooloo-link-kinds\0".utf8)
         var recordsStart = data.startIndex
         var kindFlags = Data()
         if data.starts(with: kindMarker) {
             let flagsStart = data.startIndex + kindMarker.count
-            guard let end = data[flagsStart...].firstIndex(of: 0) else { return ([], Data(), [:]) }
+            guard let end = data[flagsStart...].firstIndex(of: 0) else { return ([], Data(), []) }
             kindFlags = Data(data[flagsStart..<end])
             recordsStart = end + 1
         }
@@ -229,13 +240,13 @@ extension WorkspaceFiles {
 
         // Walk the raw path records before UTF-8 decoding so that an unrepresentable name
         // consumes its flag too. A flag never belongs to a skipped folder or a marker.
-        var linkedFolders: [String: WorkspaceSymbolicLink] = [:]
+        var linkedFolders: Set<Data> = []
         if !kindFlags.isEmpty {
             var index = kindFlags.startIndex
             for field in fields where !field.isEmpty {
                 guard index < kindFlags.endIndex, field.starts(with: [46, 47]) else { break }
-                if kindFlags[index] == 100, let path = String(bytes: field.dropFirst(2), encoding: .utf8) {
-                    linkedFolders[path] = WorkspaceSymbolicLink(target: "", isDirectory: true)
+                if kindFlags[index] == UInt8(ascii: "d") {
+                    linkedFolders.insert(Data(field.dropFirst(2)))
                 }
                 index += 1
             }
@@ -302,7 +313,7 @@ extension WorkspaceFiles {
             case "wooloo-files":
                 section = .done
             default:
-                let path = record.hasPrefix("./") ? String(record.dropFirst(2)) : record
+                let path = record.utf8.starts(with: [46, 47]) ? String(decoding: record.utf8.dropFirst(2), as: UTF8.self) : record
                 guard !path.isEmpty else { continue }
                 switch section {
                 case .files:
@@ -324,12 +335,16 @@ extension WorkspaceFiles {
     }
 
     /// Cuts a walk to `maximumFiles`, keeping the shallow files it found first, sorts it, and marks
-    /// the files read inside skipped folders as ignored.
-    static func finished(_ walk: WorkspaceFolderWalk, readingSkipped: Bool) -> WorkspaceFolderWalk {
+    /// the files read inside skipped folders as ignored. SSH folder links use their original
+    /// UTF-8 bytes since canonically equivalent names can be distinct on the remote filesystem.
+    static func finished(_ walk: WorkspaceFolderWalk, readingSkipped: Bool, excluding linkedFolders: Set<Data> = []) -> WorkspaceFolderWalk {
         var walk = walk
         if walk.files.count > maximumFiles {
             walk.files = Array(walk.files.prefix(maximumFiles))
             walk.truncated = true
+        }
+        if !linkedFolders.isEmpty {
+            walk.files.removeAll { linkedFolders.contains(Data($0.utf8)) }
         }
         walk.files.sort()
         walk.skippedFolders.sort()
@@ -375,6 +390,7 @@ extension WorkspaceFiles {
     /// marks "$t/cut", and the next `find` ends the walk there: a write into the pipe may not
     /// fail for a while, since `tr` buffers what it passes on. Files and skipped folders pass
     /// through a second `head`, which stops at `folderWalkMaximumRecords`.
+    /// Inspect links only among the paths retained by the bounded file pass.
     /// When the walk confirmed linked folders, it prefixes a `wooloo-link-kinds` field and a flag byte
     /// per inspected path. The flags stay aligned with the emitted paths even when many linked
     /// folders fit the file count or byte limit. The explorer also asks for the first
@@ -410,14 +426,7 @@ extension WorkspaceFiles {
         var batch = #"run_find() { if [ "$1" = - ]; then shift; elif [ -e "$t/cut" ]; then exit 255; fi; if [ "$d" -eq 1 ]; then "$@"; return 0; fi; "$@" & p=$!; echo "$p" > "$t/pid"; "#
             + #"[ -e "$t/late" ] && kill "$p" 2>/dev/null; wait "$p"; : > "$t/pid"; [ ! -e "$t/late" ] || exit 255; }; "#
             + #"if [ "$d" -gt 1 ] && [ -e "$t/late" ]; then exit 255; fi; "#
-        // Notice links before listing files so a cut walk still inspects the file paths it kept.
-        // The explorer collects candidates for detailed metadata at the same time.
         let swap = #"tr '\000\n' '\n\000'"#
-        if links {
-            let candidates = linkTargets ? max(1, maximumLinks) : 1
-            batch += "run_find " + entries + " -type l -print0 2>/dev/null | " + swap + " | head -n " + String(candidates)
-                + " | " + swap + #" >> "$t/links"; "#
-        }
         batch += "run_find " + entries + #" \( -type f -o -type l \) -print0 2>/dev/null; "#
         // Skipped folders are collected after the files, also once `head` has cut the walk, so a
         // walk cut at `maximumFiles` lists those of every folder it was reading when cut.
@@ -451,14 +460,16 @@ extension WorkspaceFiles {
             + "| " + swap + " | { head -n " + String(folderWalkMaximumFileRecords) + #"; : > "$t/cut"; }; "#
         var prefix = ""
         if links {
-            let folderKinds = #"for p do case "$p" in ./*) if [ -L "$p" ] && [ -d "$p" ]; then printf d; else printf f; fi;; esac; done"#
+            let recordLink = linkTargets && maximumLinks > 0 ? #"printf '%s\0' "$p" >> "$t/links"; "# : ""
+            let folderKinds = #"for p do case "$p" in ./*) kind=f; if [ -L "$p" ]; then "#
+                + recordLink + #"[ -d "$p" ] && kind=d; fi; printf '%s' "$kind";; esac; done"#
             let examine = swap + #" < "$t/files" | xargs -0 sh -c "# + quote(folderKinds) + " sh"
             let byteLimit = String(folderWalkMaximumBytes)
             // Spool only the prefix that could fit the SSH result. Put flags before the paths so
             // paths kept at the byte cutoff also keep any kind that was already determined.
             prefix = "{ " + records + "} | head -c " + byteLimit + #" > "$t/files"; "#
-                + #"if [ -s "$t/links" ]; then bounded "$t/link-kinds" "# + quote(examine)
-                + #"; if grep -q d "$t/link-kinds"; then printf 'wooloo-link-kinds\0'; cat "$t/link-kinds"; printf '\0'; fi; fi; "#
+                + #"bounded "$t/link-kinds" "# + quote(examine)
+                + #"; if grep -q d "$t/link-kinds"; then printf 'wooloo-link-kinds\0'; cat "$t/link-kinds"; printf '\0'; fi; "#
             records = #"cat "$t/files"; "#
         }
         var trailing = ""
