@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 25
     outputs:
       toolchain: ${{ steps.toolchain.outputs.identity }}
-      cache_key: ${{ steps.cache-key.outputs.key }}
+      archive_id: ${{ steps.archive.outputs.artifact-id }}
     steps:
       - &checkout
         uses: actions/checkout@v5
@@ -57,15 +57,18 @@ jobs:
       - name: Measure clean build with empty native cache
         run: bash scripts/xcode-compilation-cache-pilot.sh cold
 
-      - name: Name experiment compilation cache
-        id: cache-key
-        run: printf 'key=xcode-compilation-cache-pilot-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Pack the compiler cache
+        run: tar -czf build/xcode-compilation-cache-pilot/compiler-cache.tar.gz -C build/xcode-compilation-cache-pilot CAS
 
-      - name: Save experiment compilation cache
-        uses: actions/cache/save@v5
+      - name: Upload the compiler archive
+        id: archive
+        uses: actions/upload-artifact@v6
         with:
-          path: build/xcode-compilation-cache-pilot/CAS
-          key: ${{ steps.cache-key.outputs.key }}
+          name: xcode-compiler-cache-${{ github.run_attempt }}
+          path: build/xcode-compilation-cache-pilot/compiler-cache.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload cold-build logs
         if: always()
@@ -98,12 +101,14 @@ jobs:
       - name: Measure clean control
         run: bash scripts/xcode-compilation-cache-pilot.sh control
 
-      - name: Restore experiment compilation cache
-        uses: actions/cache/restore@v5
+      - name: Download the compiler archive
+        uses: actions/download-artifact@v7
         with:
-          path: build/xcode-compilation-cache-pilot/CAS
-          key: ${{ needs.seed.outputs.cache_key }}
-          fail-on-cache-miss: true
+          artifact-ids: ${{ needs.seed.outputs.archive_id }}
+          path: build/xcode-compilation-cache-pilot
+
+      - name: Extract the compiler cache
+        run: tar -xpzf build/xcode-compilation-cache-pilot/compiler-cache.tar.gz -C build/xcode-compilation-cache-pilot
 
       - name: Measure clean build with restored native cache
         run: bash scripts/xcode-compilation-cache-pilot.sh warm

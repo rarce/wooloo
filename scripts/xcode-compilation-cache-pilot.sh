@@ -77,19 +77,27 @@ if [ -d "$cas" ]; then
 fi
 {
     printf '### Xcode compilation cache · %s\n\n' "$phase"
-    printf '| Build + test (s) | Cache on disk (KiB) | Cache hit remarks | Cache miss remarks | Xcode status | Audit |\n'
-    printf '| ---: | ---: | ---: | ---: | ---: | --- |\n'
-    audit_result=skipped
+    printf '| Build + test (s) | Cache on disk (KiB) | Cache hit remarks | Cache miss remarks | Xcode status | Log checker | Fresh compilation |\n'
+    printf '| ---: | ---: | ---: | ---: | ---: | --- | --- |\n'
+    checker_result=skipped
+    fresh_result=unverified
     if [ "$status" -eq 0 ]; then
-        audit_result=passed
         if [ "$audit_status" -ne 0 ]; then
-            audit_result=failed
+            checker_result=failed
+        else
+            checker_result=passed
+            # A replay can produce SwiftCompile records for the migrated files.
+            # Treat restored builds as unverified without per-file replay evidence.
+            if [ "$phase" = control ] || { [ "$phase" = cold ] && [ "$hits" -eq 0 ] && [ "$misses" -gt 0 ]; }; then
+                fresh_result=verified
+            fi
         fi
     fi
-    printf '| %s | %s | %s | %s | %s | %s |\n' "$elapsed" "$cache_kib" "$hits" "$misses" "$status" "$audit_result"
+    printf '| %s | %s | %s | %s | %s | %s | %s |\n' \
+        "$elapsed" "$cache_kib" "$hits" "$misses" "$status" "$checker_result" "$fresh_result"
 } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 if [ "$audit_status" -ne 0 ]; then
-    printf '::warning::The concurrency audit failed on the %s sample. See its audit log.\n' "$phase"
+    printf '::warning::The concurrency log checker failed on the %s sample. See its audit log.\n' "$phase"
 fi
 exit "$status"
