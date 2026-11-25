@@ -222,8 +222,12 @@ struct WorkspaceSearchView: View {
                 .opacity(0)
                 .allowsHitTesting(false)
         }
-        .onAppear { focusedField = .query }
-        .onChange(of: model.focusRequest) { _, _ in focusedField = .query }
+        .onChange(of: model.focusRequest, initial: true) { _, _ in
+            // The shortcut can insert the field or switch panels. Let SwiftUI install it
+            // before moving focus away from the previous first responder.
+            focusedField = nil
+            DispatchQueue.main.async { focusedField = .query }
+        }
         .confirmationDialog("Replace all matches?", isPresented: $confirmsReplaceAll) {
             Button("Replace All", role: .destructive) {
                 if isExpectedContext, let replaceRevision { model.replaceAll(expectedRevision: replaceRevision) }
@@ -344,6 +348,7 @@ struct WorkspaceSearchView: View {
 
     private func field(_ prompt: String, text: Binding<String>, focus: Field) -> some View {
         TextField(prompt, text: text)
+            .focused($focusedField, equals: focus)
             .textFieldStyle(.plain)
             .font(typography.swiftUICodeFont)
             .padding(.horizontal, 8)
@@ -352,7 +357,6 @@ struct WorkspaceSearchView: View {
             .overlay(RoundedRectangle(cornerRadius: 5)
                 .stroke(focus == .query && model.error != nil ? theme.error.opacity(0.7)
                         : (focusedField == focus ? theme.accent.opacity(0.5) : Color.clear)))
-            .focused($focusedField, equals: focus)
     }
 
     private func toggle(_ label: String, help: String, isOn: Binding<Bool>, underline: Bool = false) -> some View {

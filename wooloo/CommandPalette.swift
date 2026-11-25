@@ -278,9 +278,9 @@ struct WoolooCommandItem: Identifiable, Equatable {
         .init("close_current_tab", "File", "Close Tab", KeyboardShortcut("w", modifiers: .command)),
         .init("project_search", "Edit", "Find in Project…", KeyboardShortcut("f", modifiers: [.command, .shift])),
         .init("project_replace", "Edit", "Replace in Project…", KeyboardShortcut("h", modifiers: [.command, .shift])),
-        .init("toggle_sidebar", "View", "Toggle Sidebar", KeyboardShortcut("s", modifiers: [.command, .control])),
+        .init("toggle_sidebar", "View", "Toggle Sidebar", KeyboardShortcut("b", modifiers: .command)),
         .init("toggle_files_sidebar", "View", "Toggle Files and Changes",
-              KeyboardShortcut("e", modifiers: [.command, .control])),
+              KeyboardShortcut("b", modifiers: [.command, .shift])),
         .init("refresh_files", "View", "Refresh Files and Repository", KeyboardShortcut("r", modifiers: .command)),
         // No key: VS Code's ⌥Z types Ω in the editor and the terminal.
         .init("toggle_wrap_lines", "View", "Toggle Line Wrapping"),

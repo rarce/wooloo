@@ -42,7 +42,8 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertEqual(WoolooCommandItem.named("project_search")?.shortcutLabel, "⇧⌘F")
         XCTAssertEqual(WoolooCommandItem.named("zoom")?.shortcutLabel, "⇧⌘↩")
         XCTAssertEqual(WoolooCommandItem.named("focus_pane_left")?.shortcutLabel, "⌥⌘←")
-        XCTAssertEqual(WoolooCommandItem.named("toggle_sidebar")?.shortcutLabel, "⌃⌘S")
+        XCTAssertEqual(WoolooCommandItem.named("toggle_sidebar")?.shortcutLabel, "⌘B")
+        XCTAssertEqual(WoolooCommandItem.named("toggle_files_sidebar")?.shortcutLabel, "⇧⌘B")
         XCTAssertNil(WoolooCommandItem.named("close_pane")?.shortcutLabel)
     }
 
