@@ -275,8 +275,7 @@ struct ContentCommands {
         case .previousContext: effects.previousContext()
         case .switchSession:
             window.showsSidebar = true
-            window.requestedSessionName = herdr.machine == nil ? herdr.sessionName
-                : UserDefaults.standard.string(forKey: "HerdrLastSession") ?? HerdrStore.defaultSessionName
+            window.requestedSessionName = herdr.machine == nil ? herdr.sessionName : herdr.lastLocalSessionName
             window.showsSessionPicker = true
         case .renameWorkspace:
             guard let workspace = herdr.selectedWorkspace else { return }

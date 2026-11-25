@@ -87,14 +87,20 @@ jobs:
             SWIFT_STRICT_CONCURRENCY=complete
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
           )
+          serial_status=0
+          parallel_status=0
           xcodebuild test "${test_args[@]}" \
             -parallel-testing-enabled NO -only-testing:"$remote_host_switch" \
             -resultBundlePath build/wooloo-serial.xcresult \
-            2>&1 | tee build/concurrency.log
+            2>&1 | tee build/concurrency.log || serial_status=$?
           xcodebuild test "${test_args[@]}" \
             -parallel-testing-enabled YES -parallel-testing-worker-count 2 -skip-testing:"$remote_host_switch" \
             -resultBundlePath build/wooloo.xcresult \
-            2>&1 | tee -a build/concurrency.log
+            2>&1 | tee -a build/concurrency.log || parallel_status=$?
+          if (( serial_status != 0 || parallel_status != 0 )); then
+            printf '::error::XCTest failed (serial: %s, parallel: %s)\n' "$serial_status" "$parallel_status"
+            exit 1
+          fi
 
       # The audit needs fresh compilation evidence for every migrated app source.
       - name: Audit migrated concurrency boundaries
