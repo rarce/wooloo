@@ -566,8 +566,8 @@ final class WorkspaceExplorerModel: ObservableObject {
         }
     }
 
-    /// A file of the listing that turned out to be a linked folder when it was opened, as one
-    /// the SSH walk did not describe (`folderWalkMaximumLinks`): it becomes a folder and opens.
+    /// A path the SSH walk left unclassified can turn out to be a linked folder. When opened,
+    /// it becomes a folder in the listing and its contents load.
     @discardableResult
     func showLinkedFolder(_ path: String, atLocation identity: String) -> Task<Void, Never>? {
         foundLinkedFolders[identity, default: []].insert(path)
