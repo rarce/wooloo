@@ -335,7 +335,6 @@ struct TerminalPaneView: NSViewRepresentable {
             view.terminalGrid = nil
             scrollView.backgroundColor = theme.terminalBackground
             view.textColor = theme.terminalForeground
-            view.insertionPointColor = WoolooTheme.nsColor(theme.cursor)
             view.selectedTextAttributes = [.backgroundColor: WoolooTheme.nsColor(theme.selectionBackground)]
             view.surfaceRevision = nil
         }
@@ -1236,8 +1235,11 @@ final class HerdrTerminalTextView: NSTextView {
     private var hoveredLink: TerminalLink?
     private var linkTrackingArea: NSTrackingArea?
 
-    /// Herdr's cursor is drawn in the grid; a caret at the end of the text would be a second one.
+    /// The grid draws the terminal cursor. AppKit can also install a separate blinking
+    /// insertion indicator even when shouldDrawInsertionPoint is false.
     override var shouldDrawInsertionPoint: Bool { false }
+
+    override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {}
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
