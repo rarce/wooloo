@@ -114,11 +114,12 @@ private struct AgentQuotaList: View {
                 .padding(.horizontal, 8)
         } else if collapsed {
             TimelineView(.periodic(from: .now, by: 60)) { context in
-                HStack(spacing: 10) {
-                    ForEach(AgentProvider.allCases) { provider in
-                        if let state = monitor.states[provider] {
-                            summary(provider, state: state, now: context.date)
-                        }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        summaries(now: context.date)
+                    }
+                    VStack(spacing: 2) {
+                        summaries(now: context.date)
                     }
                 }
                 .padding(.horizontal, 8)
@@ -137,6 +138,14 @@ private struct AgentQuotaList: View {
         }
     }
 
+    private func summaries(now: Date) -> some View {
+        ForEach(AgentProvider.allCases) { provider in
+            if let state = monitor.states[provider] {
+                summary(provider, state: state, now: now)
+            }
+        }
+    }
+
     /// The agent's most used window, which is the one that blocks it first.
     private func summary(_ provider: AgentProvider, state: AgentQuotaMonitor.State, now: Date) -> some View {
         let window = state.quota?.windows.max { $0.usedFraction(at: now) < $1.usedFraction(at: now) }
@@ -145,7 +154,8 @@ private struct AgentQuotaList: View {
                 .compactMap { $0 }.joined(separator: " ")
         }
         let host = monitor.machine.map { "on \($0.label)" }
-        return SidebarMiniMeter(label: provider.title, fraction: window?.usedFraction(at: now))
+        return SidebarMiniMeter(label: provider.title, fraction: window?.usedFraction(at: now),
+                                minimumBarWidth: typography.metric(12))
             .help([[provider.title, detail, host].compactMap { $0 }.joined(separator: " "), state.failure]
                 .compactMap { $0 }.joined(separator: " — "))
     }

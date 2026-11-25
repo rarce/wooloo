@@ -140,7 +140,8 @@ enum AgentQuotaParser {
             guard let name = group["name"] as? String, !name.isEmpty,
                   let buckets = group["buckets"] as? [[String: Any]] else { continue }
             for bucket in buckets {
-                guard let remaining = number(bucket["remaining_fraction"]), (0...1).contains(remaining),
+                guard bucket["disabled"] as? Bool != true,
+                      let remaining = number(bucket["remaining_fraction"]), (0...1).contains(remaining),
                       let window = bucket["window"] as? String, !window.isEmpty else { continue }
                 let id = "\(name):\(bucket["id"] as? String ?? window)"
                 guard seen.insert(id).inserted else { continue }
@@ -150,6 +151,21 @@ enum AgentQuotaParser {
             }
         }
         return windows
+    }
+
+    static func agyRequiresSignIn(_ output: String) -> Bool {
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let marker = line.range(of: "AGY_ERROR:"),
+                  let error = object(Data(line[marker.upperBound...].utf8)) else { continue }
+            let status = (error["status"] as? String)?.uppercased()
+            let code = number(error["error_code"])
+            if status == "UNAUTHENTICATED" || code == 401 { return true }
+            if status == "PERMISSION_DENIED" || status == "RESOURCE_EXHAUSTED" ||
+                code.map({ (400...599).contains($0) }) == true { return false }
+        }
+        let diagnostic = output.lowercased()
+        return ["authentication required", "not authenticated", "not logged in", "not signed in", "please sign in",
+                "unauthenticated"].contains(where: diagnostic.contains)
     }
 
     /// A `token_count` event of a Codex rollout log, whose `payload.rate_limits` uses
@@ -463,9 +479,7 @@ actor AgentQuotaReader {
             let windows = AgentQuotaParser.agyUsage(response)
             if !windows.isEmpty { return AgentQuota(windows: windows, capturedAt: now) }
         }
-        let diagnostic = output.lowercased()
-        if ["authentication required", "not logged in", "not signed in", "please sign in", "unauthenticated"]
-            .contains(where: diagnostic.contains) {
+        if AgentQuotaParser.agyRequiresSignIn(output) {
             // Older CLIs can open a browser when their sign-in expires.
             nextAgySignInCheck = now.addingTimeInterval(3600)
             throw quotaError(signInMessage)

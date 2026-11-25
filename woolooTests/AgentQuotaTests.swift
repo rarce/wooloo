@@ -235,7 +235,9 @@ final class AgentQuotaTests: XCTestCase {
                 {"id":"bad","window":"5h","remaining_fraction":true}]},
                 {"name":"Claude and GPT models","buckets":[
                 {"id":"weekly","window":"weekly","remaining_fraction":0},
-                {"window":"5h","remaining_fraction":1}]}]}}}
+                {"id":"disabled","window":"5h","remaining_fraction":1,"disabled":true}]},
+                {"name":"Other Models","buckets":[
+                {"window":"5h","remaining_fraction":1,"disabled":false}]}]}}}
                 EOF
                 """.write(to: cli, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
@@ -254,7 +256,7 @@ final class AgentQuotaTests: XCTestCase {
         let results = await reader.read(now: now)
         let quota = try XCTUnwrap(try results[.agy]?.get())
         XCTAssertEqual(quota.capturedAt, now)
-        XCTAssertEqual(quota.windows.map(\.group), ["Gemini Models", "Claude and GPT models", "Claude and GPT models"])
+        XCTAssertEqual(quota.windows.map(\.group), ["Gemini Models", "Claude and GPT models", "Other Models"])
         XCTAssertEqual(quota.windows.map(\.label), ["7D", "7D", "5H"])
         XCTAssertEqual(quota.windows.map(\.usedFraction), [0.75, 1, 0])
         XCTAssertEqual(quota.windows.first?.resetsAt, ISO8601DateFormatter().date(from: "2026-11-28T10:00:00Z"))
@@ -293,20 +295,34 @@ final class AgentQuotaTests: XCTestCase {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("wooloo-agy-\(UUID())")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        let marker = home.appendingPathComponent("requested")
-        let reader = AgentQuotaReader(probe: { _, _, _ in AgentQuotaFiles() }, agyProbe: { _, _ in
-            if FileManager.default.fileExists(atPath: marker.path) { return "agy_missing" }
-            try Data().write(to: marker)
-            return "Authentication required. Visit https://example.test/sign-in?code=private"
-        })
         let now = Date()
-        for elapsed in [0.0, 120] {
-            let result = await reader.read(now: now.addingTimeInterval(elapsed))[.agy]
-            guard case .failure(let error) = result else { return XCTFail("Expected a sign-in failure") }
-            XCTAssertEqual(error.localizedDescription, "Sign in to Antigravity by running agy")
+        let diagnostics = [
+            "Authentication required. Visit https://example.test/sign-in?code=private",
+            "Not authenticated.",
+            #"warning: AGY_ERROR: {"error_code":401,"code_kind":"http","short_error":"Invalid session"}"#,
+            #"AGY_ERROR: {"status":"UNAUTHENTICATED","short_error":"Invalid session"}"#,
+        ]
+        for (index, diagnostic) in diagnostics.enumerated() {
+            let marker = home.appendingPathComponent("requested-\(index)")
+            let reader = AgentQuotaReader(probe: { _, _, _ in AgentQuotaFiles() }, agyProbe: { _, _ in
+                if FileManager.default.fileExists(atPath: marker.path) { return "agy_missing" }
+                try Data().write(to: marker)
+                return diagnostic
+            })
+            for elapsed in [0.0, 120] {
+                let result = await reader.read(now: now.addingTimeInterval(elapsed))[.agy]
+                guard case .failure(let error) = result else { return XCTFail("Expected a sign-in failure for case \(index)") }
+                XCTAssertEqual(error.localizedDescription, "Sign in to Antigravity by running agy")
+            }
+            let retried = await reader.read(now: now.addingTimeInterval(3600))[.agy]
+            guard case .success(nil) = retried else { return XCTFail("Expected a CLI retry for case \(index)") }
         }
-        let retried = await reader.read(now: now.addingTimeInterval(3600))[.agy]
-        guard case .success(nil) = retried else { return XCTFail("Expected the CLI to be checked again") }
+    }
+
+    func testAgyDoesNotTreatAQuotaErrorAsASignInFailure() {
+        XCTAssertFalse(AgentQuotaParser.agyRequiresSignIn(
+            "Not authenticated.\n" + #"AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":429}"#
+        ))
     }
 
     func testJWTExpiry() {
@@ -379,6 +395,31 @@ final class AgentQuotaTests: XCTestCase {
         AgentQuotaMonitor.isPollingEnabled = false
         addTeardownBlock { await MainActor.run { AgentQuotaMonitor.isPollingEnabled = true } }
         return AgentQuotaActivation(defaults: defaults, monitorFor: monitors.monitor(for:))
+    }
+
+    @MainActor
+    func testCollapsedQuotaMetersStackAtDefaultSidebarWidth() {
+        let defaults = consentDefaults()
+        defaults.set(AgentQuotaConsent(machines: ["local"]).stored, forKey: AgentQuotaConsent.storageKey)
+        defaults.set(true, forKey: "AgentQuotasCollapsed")
+        let monitors = Monitors()
+        let monitor = monitors.monitor(for: nil)
+        let activation = makeActivation(defaults, monitors)
+        activation.show(machine: nil, windowActive: true)
+        let quota = AgentQuota(windows: [QuotaWindow(id: "weekly", label: "7D", usedFraction: 1, resetsAt: nil)],
+                               capturedAt: Date())
+        for provider in AgentProvider.allCases {
+            monitor.apply(provider, .success(quota))
+        }
+
+        func height(at width: CGFloat) -> CGFloat {
+            NSHostingView(rootView: AgentQuotaSection(machine: nil, activation: activation)
+                .defaultAppStorage(defaults)
+                .environment(\.woolooTypography, WoolooTypography())
+                .frame(width: width))
+                .fittingSize.height
+        }
+        XCTAssertGreaterThan(height(at: 206), height(at: 400) + WoolooTypography().metric(18))
     }
 
     /// The dialog says what is read where, where it is sent from and to, and that the endpoints
