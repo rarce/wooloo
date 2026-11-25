@@ -9,6 +9,28 @@ final class TerminalRenderingTests: XCTestCase {
     private static let snapshotDirectory = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().appendingPathComponent("Snapshots")
 
+    private final class KeyWindow: NSWindow {
+        override var isKeyWindow: Bool { true }
+    }
+
+    func testFocusedTerminalDoesNotCreateAnAppKitInsertionIndicator() {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        view.isEditable = true
+        let window = KeyWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = view
+        XCTAssertTrue(window.makeFirstResponder(view))
+
+        var model = SurfaceModel(width: 20, height: 4)
+        model.cursor = HerdrCursor(x: 8, y: 2, visible: true, shape: 0)
+        TerminalRenderHarness.show(model.surface, in: view)
+        view.updateInsertionPointStateAndRestartTimer(true)
+
+        XCTAssertFalse(view.subviews.contains { $0 is NSTextInsertionIndicator })
+        XCTAssertEqual(view.terminalGrid?.keys[2].cursorColumn, 8)
+    }
+
     func testScrollbarBlocksCoverTheFullRowHeight() {
         var model = SurfaceModel(width: 2, height: 2)
         model.cursor = nil
