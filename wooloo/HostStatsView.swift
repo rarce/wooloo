@@ -208,6 +208,7 @@ struct SidebarMiniMeter: View {
 
     let label: String
     let fraction: Double?
+    var minimumBarWidth: CGFloat? = nil
 
     private var percent: String { fraction.map { "\(Int(($0 * 100).rounded()))" } ?? "–" }
 
@@ -226,6 +227,7 @@ struct SidebarMiniMeter: View {
                         .frame(width: geometry.size.width * (fraction ?? 0))
                 }
             }
+            .frame(minWidth: minimumBarWidth, idealWidth: minimumBarWidth)
             .frame(height: 4)
             Text(percent)
                 .font(.system(size: typography.secondary, design: .monospaced))

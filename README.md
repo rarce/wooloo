@@ -28,7 +28,7 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 - Alerts when an agent finishes or needs input: Herdr's sounds, in-app toasts or system notifications, with unread marks until you look at the pane.
 - The connected host's CPU, memory, disk and uptime, local or over SSH.
 - `HTTP` tags on a Space for the TCP ports its processes listen on. Hover for the port; click to open it in the browser. On an SSH machine, a click first forwards the port to this Mac with `ssh -L`, and the tag turns green while forwarded. Forwards end when the port closes or wooloo quits.
-- Optional Claude Code and Codex plan usage in the sidebar (see [Agent quotas](#agent-quotas)).
+- Optional Claude Code, Codex and Antigravity plan usage in the sidebar (see [Agent quotas](#agent-quotas)).
 - A session picker for any Herdr session on the machine.
 - Preview, off by default: sessions of [herdr-core](https://herdr.dev/core), the server behind the official Herdr app, on this Mac or over SSH, next to the Herdr TUI. See [herdr-core sessions](docs/herdr-core-preview.md).
 - Mobile access to local sessions through a Cloudflare Tunnel or to remote servers over direct SSH, with public-key authorization (see [Remote access](#remote-access)).
@@ -71,13 +71,14 @@ wooloo is an independent project, not affiliated with or endorsed by Herdr, Anth
 
 > **Unofficial.** This section uses Claude Code's and Codex's own sign-ins against endpoints that Anthropic and OpenAI do not document for third-party apps. It is not endorsed by either company, may conflict with their terms, and can stop working at any time. Use it at your own risk.
 
-The QUOTAS section is off until you agree to a dialog that lists what it reads and where it sends it. The section's **Turn On Quotas…** button and its context menu open the same dialog; Cancel (or Escape) leaves it off, and nothing is read before you choose **Turn On**. Agreeing is per machine: agreeing for this Mac does not read an SSH machine's sign-ins when the explorer moves there, and an SSH machine whose target changes is asked about again. Copies that had QUOTAS on in 0.3.1 or earlier ask again once. Once on, every two minutes while a window is active, wooloo:
+The QUOTAS section stays off until you choose **Turn On** in the consent dialog. Open it with **Turn On Quotas…** in the section or its context menu. Consent applies to the selected machine. Wooloo asks again when an SSH target changes or when the consent text changes to cover a new provider. Once on, every two minutes while a window is active, wooloo:
 
 - reads Claude Code's sign-in from `~/.claude/.credentials.json`, or else from the Keychain item `Claude Code-credentials` (macOS asks you to allow wooloo the first time);
 - reads Codex's sign-in from `${CODEX_HOME:-~/.codex}/auth.json` and the rate limits in its newest session logs;
-- sends those tokens to the usage endpoints that Claude Code (`api.anthropic.com/api/oauth/usage`) and the Codex CLI (`chatgpt.com/backend-api/wham/usage`) use themselves.
+- sends those tokens to the usage endpoints that Claude Code (`api.anthropic.com/api/oauth/usage`) and the Codex CLI (`chatgpt.com/backend-api/wham/usage`) use themselves;
+- runs `agy /usage` in print mode on the selected machine if Antigravity CLI 1.1.11 or later is installed. The CLI uses its own sign-in to contact Google and returns usage and reset times by model group.
 
-When the explorer points at an SSH machine you agreed for, wooloo reads that machine's sign-ins (its files, or its Keychain through `security` if it is a Mac) instead of this Mac's, and the requests still leave from your Mac. wooloo keeps the tokens in memory only, never refreshes them, and never writes or logs them. **Turn Off Quotas** in the section's context menu turns it off on every machine.
+For an SSH machine, Wooloo reads Claude Code and Codex sign-ins from the remote account and sends their usage requests from this Mac. Wooloo keeps those tokens in memory only and never refreshes, writes or logs them. Antigravity makes its own request from the machine running `agy`. **Turn Off Quotas** in the section's context menu turns it off on every machine.
 
 While wooloo is signed ad hoc, macOS ties an "Always Allow" on Claude Code's Keychain item to one build, so it may ask again after each update.
 

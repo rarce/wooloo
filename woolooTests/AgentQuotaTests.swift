@@ -195,7 +195,7 @@ final class AgentQuotaTests: XCTestCase {
         // Each read that asks for the Keychain fails; the ones in between do not ask.
         let reader = AgentQuotaReader(probe: { _, keychain, _ in
             AgentQuotaFiles(claudeInstalled: true, claudeKeychainFailed: keychain)
-        })
+        }, agyProbe: { _, _ in "agy_missing" })
         func claudeError(at date: Date) async -> String? {
             guard case .failure(let error) = await reader.read(now: date)[.claude] else { return nil }
             return error.localizedDescription
@@ -205,9 +205,124 @@ final class AgentQuotaTests: XCTestCase {
         for minutes in [0.0, 1, 14] { errors.append(await claudeError(at: start.addingTimeInterval(minutes * 60))) }
         XCTAssertEqual(errors, Array(repeating: "Claude Code's Keychain item is not readable", count: 3))
 
-        let signedOut = AgentQuotaReader(probe: { _, _, _ in AgentQuotaFiles(claudeInstalled: true) })
+        let signedOut = AgentQuotaReader(probe: { _, _, _ in AgentQuotaFiles(claudeInstalled: true) },
+                                         agyProbe: { _, _ in "agy_missing" })
         guard case .failure(let error) = await signedOut.read()[.claude] else { return XCTFail("Expected a failure") }
         XCTAssertEqual(error.localizedDescription, "Not signed in to Claude Code")
+    }
+
+    func testAgyReadsQuotaFromTheInstalledCLIOnlyAfterCheckingItsVersion() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("wooloo-agy-\(UUID())")
+        let bin = home.appendingPathComponent(".local/bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let cli = bin.appendingPathComponent("agy")
+        func install(version: String) throws {
+            try """
+                #!/bin/sh
+                if [ "$1" = "--version" ]; then
+                  echo '\(version)'
+                  exit 0
+                fi
+                [ "$*" = "-p /usage --output-format json --print-timeout 20s" ] || exit 1
+                [ "$AGY_CLI_DISABLE_AUTO_UPDATE" = true ] || exit 1
+                touch "$HOME/usage-called"
+                echo "Antigravity diagnostic" >&2
+                tr -d '\\n' <<'EOF'
+                {"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[
+                {"name":"Gemini Models","buckets":[
+                {"id":"weekly","window":"weekly","remaining_fraction":0.25,"reset_time":"2026-11-28T10:00:00Z"},
+                {"id":"bad","window":"5h","remaining_fraction":true}]},
+                {"name":"Claude and GPT models","buckets":[
+                {"id":"weekly","window":"weekly","remaining_fraction":0},
+                {"id":"disabled","window":"5h","remaining_fraction":1,"disabled":true}]},
+                {"name":"Other Models","buckets":[
+                {"window":"5h","remaining_fraction":1,"disabled":false}]}]}}}
+                EOF
+                """.write(to: cli, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        }
+        let reader = AgentQuotaReader(environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"],
+                                      probe: { _, _, _ in AgentQuotaFiles() })
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        for version in ["1.0.99", "1.1.10", "1.1.11-rc.1"] {
+            try install(version: version)
+            let results = await reader.read(now: now)
+            guard case .failure(let error) = results[.agy] else { return XCTFail("Expected an unsupported CLI") }
+            XCTAssertTrue(error.localizedDescription.contains("1.1.11"))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("usage-called").path))
+        }
+        try install(version: "1.1.11")
+        let results = await reader.read(now: now)
+        let quota = try XCTUnwrap(try results[.agy]?.get())
+        XCTAssertEqual(quota.capturedAt, now)
+        XCTAssertEqual(quota.windows.map(\.group), ["Gemini Models", "Claude and GPT models", "Other Models"])
+        XCTAssertEqual(quota.windows.map(\.label), ["7D", "7D", "5H"])
+        XCTAssertEqual(quota.windows.map(\.usedFraction), [0.75, 1, 0])
+        XCTAssertEqual(quota.windows.first?.resetsAt, ISO8601DateFormatter().date(from: "2026-11-28T10:00:00Z"))
+        XCTAssertEqual(Set(quota.windows.map(\.id)).count, 3)
+
+        let ssh = home.appendingPathComponent("ssh")
+        try """
+            #!/bin/sh
+            for command; do :; done
+            HOME=\(WorkspaceFiles.quote(home.path)) PATH=/usr/bin:/bin exec /bin/sh -c "$command"
+            """.write(to: ssh, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ssh.path)
+        let originalSSH = WorkspaceFiles.sshExecutable
+        WorkspaceFiles.sshExecutable = ssh.path
+        defer { WorkspaceFiles.sshExecutable = originalSSH }
+        let machine = HerdrMachineProfile(id: "dev", label: "Dev", target: "dev.example.test",
+                                          session: "default", enabled: true)
+        let remoteReader = AgentQuotaReader(machine: machine, probe: { _, _, _ in AgentQuotaFiles() })
+        let remote = await remoteReader.read(now: now)
+        XCTAssertEqual(try remote[.agy]?.get(), quota)
+    }
+
+    func testAgyStopsPollingIfUsageRanAModelTurn() async throws {
+        let reader = AgentQuotaReader(probe: { _, _, _ in AgentQuotaFiles() }, agyProbe: { _, _ in
+            #"{"status":"SUCCESS","num_turns":1,"result":"model output"}"#
+        })
+        for expected in ["model prompt", "resume"] {
+            let results = await reader.read()
+            guard case .failure(let error) = results[.agy] else { return XCTFail("Expected a failure") }
+            XCTAssertTrue(error.localizedDescription.contains(expected))
+            XCTAssertNil(try results[.codex]?.get())
+        }
+    }
+
+    func testAgyWaitsToRetryAfterSignInFailure() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("wooloo-agy-\(UUID())")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let now = Date()
+        let diagnostics = [
+            "Authentication required. Visit https://example.test/sign-in?code=private",
+            "Not authenticated.",
+            #"warning: AGY_ERROR: {"error_code":401,"code_kind":"http","short_error":"Invalid session"}"#,
+            #"AGY_ERROR: {"status":"UNAUTHENTICATED","short_error":"Invalid session"}"#,
+        ]
+        for (index, diagnostic) in diagnostics.enumerated() {
+            let marker = home.appendingPathComponent("requested-\(index)")
+            let reader = AgentQuotaReader(probe: { _, _, _ in AgentQuotaFiles() }, agyProbe: { _, _ in
+                if FileManager.default.fileExists(atPath: marker.path) { return "agy_missing" }
+                try Data().write(to: marker)
+                return diagnostic
+            })
+            for elapsed in [0.0, 120] {
+                let result = await reader.read(now: now.addingTimeInterval(elapsed))[.agy]
+                guard case .failure(let error) = result else { return XCTFail("Expected a sign-in failure for case \(index)") }
+                XCTAssertEqual(error.localizedDescription, "Sign in to Antigravity by running agy")
+            }
+            let retried = await reader.read(now: now.addingTimeInterval(3600))[.agy]
+            guard case .success(nil) = retried else { return XCTFail("Expected a CLI retry for case \(index)") }
+        }
+    }
+
+    func testAgyDoesNotTreatAQuotaErrorAsASignInFailure() {
+        XCTAssertFalse(AgentQuotaParser.agyRequiresSignIn(
+            "Not authenticated.\n" + #"AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":429}"#
+        ))
     }
 
     func testJWTExpiry() {
@@ -282,20 +397,46 @@ final class AgentQuotaTests: XCTestCase {
         return AgentQuotaActivation(defaults: defaults, monitorFor: monitors.monitor(for:))
     }
 
+    @MainActor
+    func testCollapsedQuotaMetersStackAtDefaultSidebarWidth() {
+        let defaults = consentDefaults()
+        defaults.set(AgentQuotaConsent(machines: ["local"]).stored, forKey: AgentQuotaConsent.storageKey)
+        defaults.set(true, forKey: "AgentQuotasCollapsed")
+        let monitors = Monitors()
+        let monitor = monitors.monitor(for: nil)
+        let activation = makeActivation(defaults, monitors)
+        activation.show(machine: nil, windowActive: true)
+        let quota = AgentQuota(windows: [QuotaWindow(id: "weekly", label: "7D", usedFraction: 1, resetsAt: nil)],
+                               capturedAt: Date())
+        for provider in AgentProvider.allCases {
+            monitor.apply(provider, .success(quota))
+        }
+
+        func height(at width: CGFloat) -> CGFloat {
+            NSHostingView(rootView: AgentQuotaSection(machine: nil, activation: activation)
+                .defaultAppStorage(defaults)
+                .environment(\.woolooTypography, WoolooTypography())
+                .frame(width: width))
+                .fittingSize.height
+        }
+        XCTAssertGreaterThan(height(at: 206), height(at: 400) + WoolooTypography().metric(18))
+    }
+
     /// The dialog says what is read where, where it is sent from and to, and that the endpoints
     /// are unofficial.
     func testConsentExplainsWhatIsReadAndWhereItIsSent() {
         let local = AgentQuotaConsent.explanation(for: nil)
         for part in ["on this Mac", "~/.claude/.credentials.json", "Claude Code-credentials", "~/.codex/auth.json",
                      "$CODEX_HOME", "session logs", "api.anthropic.com", "chatgpt.com", "every two minutes",
-                     "unofficial", "change or stop working", "never refreshes, saves or logs"] {
+                     "unofficial", "change or stop working", "never refreshes, saves or logs", "agy /usage on this Mac",
+                     "contact Google"] {
             XCTAssertTrue(local.localizedCaseInsensitiveContains(part), "Missing “\(part)”")
         }
         XCTAssertFalse(local.contains("leave from this Mac"))
 
         let remote = AgentQuotaConsent.explanation(for: devMachine)
         for part in ["on Dev (dev.example.test), over SSH", "`security`", "The requests leave from this Mac",
-                     "unofficial"] {
+                     "unofficial", "agy /usage on Dev over SSH"] {
             XCTAssertTrue(remote.contains(part), "Missing “\(part)”")
         }
         XCTAssertEqual(AgentQuotaConsent.title(for: nil), "Turn on Quotas for this Mac?")
@@ -436,6 +577,7 @@ final class AgentQuotaTests: XCTestCase {
         XCTAssertFalse(consent.allows(nil))
         XCTAssertEqual(AgentQuotaConsent(stored: consent.stored), consent)
         XCTAssertEqual(AgentQuotaConsent(stored: #"{"machines":["local"],"version":0}"#), AgentQuotaConsent())
+        XCTAssertEqual(AgentQuotaConsent(stored: #"{"machines":["local"],"version":1}"#), AgentQuotaConsent())
         XCTAssertEqual(AgentQuotaConsent(stored: "not json"), AgentQuotaConsent())
         XCTAssertEqual(AgentQuotaConsent(stored: nil), AgentQuotaConsent())
     }
