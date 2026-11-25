@@ -211,6 +211,44 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual(resizes(), before, "A window in the background never sends its size")
     }
 
+    func testResizingABackgroundWindowWithASameSizeFocusedPeerDoesNotTakeTheTerminal() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.updateTerminalHost(theme: theme, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("first window attached") { store.surface?.paneIDs == ["t1"] }
+        let (backgroundServer, active) = try XCTUnwrap(attachedServer())
+        store.updateTerminalHost(theme: theme, focused: false)
+
+        let front = HerdrStore()
+        defer { front.stop() }
+        front.updateTerminalHost(theme: theme, focused: true)
+        front.connect(toCore: "wooloo-ui-test")
+        front.setPresentationActive(true)
+        await waitUntil("second window attached") { front.surface?.paneIDs == ["t1"] }
+        let initialAttaches = core.callsTo("terminal.attach")
+        XCTAssertEqual(initialAttaches.count, 2)
+        XCTAssertEqual(initialAttaches.first?.params["cols"] as? Int, initialAttaches.last?.params["cols"] as? Int)
+        XCTAssertEqual(initialAttaches.first?.params["rows"] as? Int, initialAttaches.last?.params["rows"] as? Int)
+        XCTAssertTrue(initialAttaches.allSatisfy { $0.params["observe"] == nil })
+
+        // Without a size event, resizing the background window must still leave the peer in charge.
+        store.resizeSurface(cols: 50, rows: 12, cellWidth: 8, cellHeight: 16)
+        await waitUntil("background window switched to watching") {
+            backgroundServer.recordedFrames().contains { $0.channel == active && $0.kind == .close }
+        }
+        XCTAssertEqual(core.callsTo("terminal.attach").last?.params["observe"] as? Bool, true)
+        XCTAssertFalse(backgroundServer.recordedFrames().contains { $0.channel == active && $0.kind == .resize })
+
+        front.updateTerminalHost(theme: theme, focused: false)
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("resized window takes ownership once focused") {
+            guard let attach = self.core.callsTo("terminal.attach").last else { return false }
+            return attach.params["observe"] == nil && attach.params["cols"] as? Int == 50
+                && attach.params["rows"] as? Int == 12
+        }
+    }
+
     func testRefusedActivationWaitsBeforeRetrying() async throws {
         let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
         store.updateTerminalHost(theme: theme, focused: false)

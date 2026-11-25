@@ -18,6 +18,25 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     private let backend: CoreSessionBackend
     private let lock = NSLock()
     private let wake = DispatchSemaphore(value: 0)
+    private static let focusedViewers = FocusedViewers()
+
+    /// Each window has its own backend and stream. Share only the active panes of focused
+    /// wooloo windows, so two windows on the same endpoint can tell that they share a pane
+    /// even when Core has no reason to emit a size event.
+    private final class FocusedViewers: @unchecked Sendable {
+        private let lock = NSLock()
+        private var windows: [ObjectIdentifier: (target: CoreTarget, terminals: Set<String>)] = [:]
+
+        func update(_ window: ObjectIdentifier, on target: CoreTarget, terminals: Set<String>) {
+            lock.withLock { windows[window] = terminals.isEmpty ? nil : (target, terminals) }
+        }
+
+        func hasPeer(of window: ObjectIdentifier, on target: CoreTarget, showing terminal: String) -> Bool {
+            lock.withLock {
+                windows.contains { $0.key != window && $0.value.target == target && $0.value.terminals.contains(terminal) }
+            }
+        }
+    }
     /// How often the tab's tree is read again while no event asks for it: a safety net for a
     /// lost event, since events already report every change.
     static let refreshInterval: TimeInterval = 30
@@ -80,7 +99,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         var rect: HerdrRect
         /// Watching only: Core keeps the size another viewer set, and takes no input from here.
         var observing = false
-        var retryActivationAfter: TimeInterval = 0
+        var retryModeChangeAfter: TimeInterval = 0
         /// A watching stream whose core sends no RESIZE frames: it takes the size from `size`
         /// events instead.
         var followsSizeEvents = false
@@ -127,7 +146,12 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         guard proceed else { connection.close(); return }
         defer {
             connection.close()
-            lock.withLock { self.connection = nil; attachments = [:]; tab = nil }
+            lock.withLock {
+                self.connection = nil
+                attachments = [:]
+                tab = nil
+                updateFocusedViewers()
+            }
         }
         try subscribe(on: connection)
         onReady()
@@ -147,6 +171,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
     func cancel() {
         let current = lock.withLock { () -> CoreConnection? in
             cancelled = true
+            updateFocusedViewers()
             return connection
         }
         current?.close()
@@ -171,6 +196,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             self.theme = colors
             if focused && windowFocused == false { reassertSize = true }
             windowFocused = focused
+            updateFocusedViewers()
             for attachment in attachments.values { Self.apply(colors, to: attachment.emulator) }
             dirty = true
         }
@@ -188,6 +214,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 wantedTab = tabID
                 focusedPane = paneID
                 needsTree = true
+                updateFocusedViewers()
             } else if let paneID, focusedPane != paneID {
                 focusedPane = paneID
                 dirty = true
@@ -431,6 +458,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             } else {
                 tab = nil
             }
+            updateFocusedViewers()
         }
     }
 
@@ -460,7 +488,12 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         let wanted = Set(placed.map(\.terminal))
         for (terminal, attachment) in current where !wanted.contains(terminal) {
             try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
-            lock.withLock { attachments[terminal] = nil; heldInput[terminal] = nil; dirty = true }
+            lock.withLock {
+                attachments[terminal] = nil
+                heldInput[terminal] = nil
+                updateFocusedViewers()
+                dirty = true
+            }
         }
         // A window that becomes active types and sizes its terminals again: attach afresh.
         let (focused, typedInto, reported) = lock.withLock { () -> (Bool, Set<String>, [String: (cols: Int, rows: Int)]) in
@@ -473,19 +506,18 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         func replace(_ terminal: String, _ attachment: Attachment, observe: Bool) throws {
             guard let rect = placed.first(where: { $0.terminal == terminal })?.rect else { return }
             try attach(terminal, rect: rect, cell: size, colors: colors, observe: observe, on: connection)
-            if lock.withLock({ attachments[terminal]?.channel != attachment.channel }) {
+            let replaced = lock.withLock {
+                guard attachments[terminal]?.channel == attachment.channel else { return true }
+                attachments[terminal]?.retryModeChangeAfter = ProcessInfo.processInfo.systemUptime + 2
+                return false
+            }
+            if replaced {
                 try? connection.send(CoreFrame(channel: attachment.channel, kind: .close, payload: Data()))
             }
         }
         for (terminal, attachment) in current where attachment.observing && (focused || typedInto.contains(terminal)) {
-            let now = ProcessInfo.processInfo.systemUptime
-            guard now >= attachment.retryActivationAfter else { continue }
+            guard ProcessInfo.processInfo.systemUptime >= attachment.retryModeChangeAfter else { continue }
             try replace(terminal, attachment, observe: false)
-            lock.withLock {
-                if attachments[terminal]?.channel == attachment.channel {
-                    attachments[terminal]?.retryActivationAfter = now + 2
-                }
-            }
         }
         // A background window's stream watches instead once Core reports that another viewer
         // resized the terminal: a stream that is not watching hears of no other size, and only
@@ -521,6 +553,16 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                     lock.withLock { attachments[terminal]?.rect = rect; dirty = true }
                     if reassert && !attachment.observing {
                         try? connection.send(CoreFrame.resize(cols: rect.width, rows: rect.height, channel: attachment.channel))
+                    }
+                    continue
+                }
+                // A same-size peer might never have emitted a size event. When it is a
+                // focused wooloo window already showing this terminal, a resize here would
+                // take its size. Keep the current grid if Core refuses the observer attach.
+                if lock.withLock({ windowFocused == false && heldInput[terminal] == nil &&
+                    Self.focusedViewers.hasPeer(of: ObjectIdentifier(self), on: backend.target, showing: terminal) }) {
+                    if ProcessInfo.processInfo.systemUptime >= attachment.retryModeChangeAfter {
+                        try replace(terminal, attachment, observe: true)
                     }
                     continue
                 }
@@ -634,6 +676,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 // Keys typed from now on wait behind the held ones.
                 attachments[terminal]?.draining = heldInput[terminal]?.isEmpty == false
             }
+            updateFocusedViewers()
             dirty = true
         }
         if !observe { sendHeldInput(terminal, channel: channel, on: connection) }
@@ -647,7 +690,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         }, onClose: { [weak self] in
             guard let self else { return }
             self.lock.withLock {
-                if self.attachments[terminal]?.channel == channel { self.attachments[terminal] = nil }
+                if self.attachments[terminal]?.channel == channel {
+                    self.attachments[terminal] = nil
+                    self.updateFocusedViewers()
+                }
                 self.needsTree = true
             }
             self.wake.signal()
@@ -751,6 +797,18 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             try? connection.send(CoreFrame(channel: channel, kind: .focus, payload: Data([focused ? 1 : 0])))
             try? connection.send(CoreFrame(channel: channel, kind: .facts, payload: payload))
         }
+    }
+
+    /// Called under `lock`. Only published attachments of the selected tab count; a focus
+    /// report during a tab switch must not claim panes of the previous tab.
+    private func updateFocusedViewers() {
+        let terminals: Set<String>
+        if !cancelled, windowFocused == true, let tab, tab.id == wantedTab {
+            terminals = Set(tab.root.terminals.filter { attachments[$0]?.observing == false })
+        } else {
+            terminals = []
+        }
+        Self.focusedViewers.update(ObjectIdentifier(self), on: backend.target, terminals: terminals)
     }
 
     private static func apply(_ colors: (foreground: TerminalRGB, background: TerminalRGB, cursor: TerminalRGB,
