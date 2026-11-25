@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 25
     outputs:
       toolchain: ${{ steps.toolchain.outputs.identity }}
+      cache_key: ${{ steps.cache-key.outputs.key }}
     steps:
       - &checkout
         uses: actions/checkout@v5
@@ -56,11 +57,15 @@ jobs:
       - name: Measure clean build with empty native cache
         run: bash scripts/xcode-compilation-cache-pilot.sh cold
 
+      - name: Name experiment compilation cache
+        id: cache-key
+        run: printf 'key=xcode-compilation-cache-pilot-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - name: Save experiment compilation cache
         uses: actions/cache/save@v5
         with:
           path: build/xcode-compilation-cache-pilot/CAS
-          key: xcode-compilation-cache-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ steps.cache-key.outputs.key }}
 
       - name: Upload cold-build logs
         if: always()
@@ -97,7 +102,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: build/xcode-compilation-cache-pilot/CAS
-          key: xcode-compilation-cache-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ needs.seed.outputs.cache_key }}
           fail-on-cache-miss: true
 
       - name: Measure clean build with restored native cache

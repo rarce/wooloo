@@ -54,7 +54,7 @@ SECONDS=0
 elapsed=$SECONDS
 audit_status=0
 if [ "$status" -eq 0 ]; then
-    python3 scripts/concurrency_audit.py "$pilot/$phase.log" \
+    python3 scripts/concurrency_audit.py "$pilot/$phase.log" 2>&1 \
         | tee "$pilot/$phase-audit.log" || audit_status=$?
 fi
 
