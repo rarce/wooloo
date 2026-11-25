@@ -529,6 +529,7 @@ final class ViewSnapshotTests: XCTestCase {
                 ]
             })
             let view = WorkspaceGitHubView(location: repo, isCollapsed: .constant(false), model: model, selectedTab: tab)
+                .environment(\.locale, Locale(identifier: "en_US"))
             try assertSnapshot(render(view, size: NSSize(width: width, height: 340), settle: 3) {
                 model.items != nil && !model.isLoading
             }, named: "github-\(tab)")

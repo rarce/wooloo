@@ -31,8 +31,18 @@ struct WorkspaceGitHubItem: Decodable, Identifiable, Equatable, Sendable {
 }
 
 struct WorkspaceGitHubDetail: Decodable, Sendable {
+    let item: WorkspaceGitHubItem
     let body: String
     let state: String
+
+    private enum CodingKeys: String, CodingKey { case body, state }
+
+    init(from decoder: Decoder) throws {
+        item = try WorkspaceGitHubItem(from: decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        body = try container.decode(String.self, forKey: .body)
+        state = try container.decode(String.self, forKey: .state)
+    }
 }
 
 enum WorkspaceGitHubKind: String, CaseIterable, Sendable {
@@ -41,13 +51,16 @@ enum WorkspaceGitHubKind: String, CaseIterable, Sendable {
     var icon: String { self == .issues ? "circle.dotted" : "arrow.triangle.pull" }
     private var subcommand: String { self == .issues ? "issue" : "pr" }
 
+    private var itemFields: String {
+        "number,title,url,author,createdAt" + (self == .prs ? ",isDraft" : "")
+    }
+
     var arguments: [String] {
-        let fields = "number,title,url,author,createdAt" + (self == .prs ? ",isDraft" : "")
-        return [subcommand, "list", "--state", "open", "--limit", "50", "--json", fields]
+        [subcommand, "list", "--state", "open", "--limit", "50", "--json", itemFields]
     }
 
     func detailArguments(_ number: Int) -> [String] {
-        [subcommand, "view", String(number), "--json", "body,state"]
+        [subcommand, "view", String(number), "--json", itemFields + ",body,state"]
     }
 }
 
@@ -83,16 +96,20 @@ enum WorkspaceGitHub {
                       at location: WorkspaceFileLocation) throws -> [WorkspaceGitHubItem] {
         let data = try WorkspaceFiles.shell(command(kind.arguments + ["--repo", repository.url]),
                                            at: location, limit: 512_000)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode([WorkspaceGitHubItem].self, from: data)
+        return try itemDecoder.decode([WorkspaceGitHubItem].self, from: data)
     }
 
     static func detail(_ kind: WorkspaceGitHubKind, number: Int, repository: WorkspaceGitHubRepository,
                        at location: WorkspaceFileLocation) throws -> WorkspaceGitHubDetail {
         let data = try WorkspaceFiles.shell(command(kind.detailArguments(number) + ["--repo", repository.url]),
                                            at: location, limit: 512_000)
-        return try JSONDecoder().decode(WorkspaceGitHubDetail.self, from: data)
+        return try itemDecoder.decode(WorkspaceGitHubDetail.self, from: data)
+    }
+
+    private static var itemDecoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 
     static func message(for error: Error, machine: String) -> String {
@@ -254,24 +271,21 @@ struct WorkspaceGitHubView: View {
             .frame(height: typography.metric(35))
             if !isCollapsed {
                 Divider()
-                if let selectedItem, let location, let repository = model.repository,
-                   model.context == WorkspaceGitHubModel.contextKey(location), model.kind == kind {
-                    WorkspaceGitHubDetailView(item: selectedItem, kind: kind, repository: repository,
-                                              location: location, reload: reload) { self.selectedItem = nil }
-                        .id(selectedItem.url)
-                } else {
-                    PanelTabStrip(tabs: tabs, selection: $selectedTab)
-                    Divider()
-                    if model.context == location.map(WorkspaceGitHubModel.contextKey), let repository = model.repository {
-                        Text(repository.nameWithOwner)
-                            .font(.system(size: typography.caption))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle)
-                            .padding(.horizontal, 11).padding(.vertical, 6)
-                            .help(repository.url)
+                let showsDetail = selectedItem != nil
+                // Keep the list laid out so Back returns to its current scroll position.
+                list
+                    .opacity(showsDetail ? 0 : 1)
+                    .allowsHitTesting(!showsDetail)
+                    .accessibilityHidden(showsDetail)
+                    .disabled(showsDetail)
+                    .overlay {
+                        if let selectedItem, let location, let repository = model.repository,
+                           model.context == WorkspaceGitHubModel.contextKey(location), model.kind == kind {
+                            WorkspaceGitHubDetailView(item: selectedItem, kind: kind, repository: repository,
+                                                      location: location, reload: reload) { self.selectedItem = nil }
+                                .id(selectedItem.url)
+                        }
                     }
-                    content
-                }
             }
         }
         .background(theme.sidebarBackground)
@@ -281,6 +295,22 @@ struct WorkspaceGitHubView: View {
             let forceRefresh = reload != appliedReload
             appliedReload = reload
             await model.load(location, kind: kind, refresh: forceRefresh, includeItems: !isCollapsed)
+        }
+    }
+
+    private var list: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            PanelTabStrip(tabs: tabs, selection: $selectedTab)
+            Divider()
+            if model.context == location.map(WorkspaceGitHubModel.contextKey), let repository = model.repository {
+                Text(repository.nameWithOwner)
+                    .font(.system(size: typography.caption))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .padding(.horizontal, 11).padding(.vertical, 6)
+                    .help(repository.url)
+            }
+            content
         }
     }
 
@@ -362,6 +392,7 @@ struct WorkspaceGitHubView: View {
 }
 
 private struct WorkspaceGitHubItemMetadata: View {
+    @Environment(\.locale) private var locale
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     let item: WorkspaceGitHubItem
@@ -376,9 +407,9 @@ private struct WorkspaceGitHubItemMetadata: View {
                 if item.isDraft == true { Text("Draft").fixedSize() }
             }
             if let date = item.createdAt {
-                Text(date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))
-                    .help(date.formatted(date: .abbreviated, time: .shortened))
-                    .accessibilityLabel(Text("Created \(date.formatted(.relative(presentation: .named)))"))
+                Text(date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated).locale(locale)))
+                    .help(date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)))
+                    .accessibilityLabel(Text("Created \(date.formatted(.relative(presentation: .named).locale(locale)))"))
             }
         }
         .font(.system(size: typography.caption))
@@ -399,6 +430,11 @@ private struct WorkspaceGitHubDetailView: View {
     @State private var result: Result<WorkspaceGitHubDetail, Error>?
     @State private var retry = 0
 
+    private var displayedItem: WorkspaceGitHubItem {
+        if case .success(let detail) = result { return detail.item }
+        return item
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -408,7 +444,7 @@ private struct WorkspaceGitHubDetailView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(theme.accent)
                 Spacer()
-                if let url = item.browserURL {
+                if let url = displayedItem.browserURL {
                     Button { NSWorkspace.shared.open(url) } label: {
                         Image(systemName: "arrow.up.right.square")
                     }
@@ -422,10 +458,10 @@ private struct WorkspaceGitHubDetailView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(item.title)
+                    Text(displayedItem.title)
                         .font(.system(size: typography.emphasis, weight: .semibold))
                         .textSelection(.enabled)
-                    WorkspaceGitHubItemMetadata(item: item)
+                    WorkspaceGitHubItemMetadata(item: displayedItem)
                     Divider()
                     switch result {
                     case .success(let detail):
