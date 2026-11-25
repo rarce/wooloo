@@ -1,8 +1,7 @@
 name: Xcode compilation cache pilot
 
 on:
-  push:
-    branches: [ci/xcode-compilation-cache]
+  workflow_dispatch:
 
 permissions:
   contents: read
