@@ -584,13 +584,14 @@ final class WorkspaceDocumentStore: ObservableObject {
     }
 
     /// Reads a document's file, diff or commit diff from disk or over SSH.
-    func load(_ id: String) {
-        guard let initialIndex = documents.firstIndex(where: { $0.id == id }) else { return }
+    @discardableResult
+    func load(_ id: String) -> (request: UUID, task: Task<Void, Never>)? {
+        guard let initialIndex = documents.firstIndex(where: { $0.id == id }) else { return nil }
         guard permitsBackgroundAccess(documents[initialIndex].location) else {
             if documents[initialIndex].version == nil && !documents[initialIndex].isUntitled {
                 deferredInitialLoads.insert(documents[initialIndex].backupID)
             }
-            return
+            return nil
         }
         let resuming = deferredInitialLoads.remove(documents[initialIndex].backupID) != nil
         if resuming {
@@ -607,7 +608,7 @@ final class WorkspaceDocumentStore: ObservableObject {
         let isPDF = document.isPDF
         let isImage = document.isImage
         let start = TerminalPipelineMetrics.now()
-        Task {
+        let task = Task {
             defer {
                 TerminalPipelineMetrics.spanShown("open-\(kind)", start: start, detail: location.isLocal ? "local" : "ssh")
             }
@@ -700,6 +701,7 @@ final class WorkspaceDocumentStore: ObservableObject {
                 documents[index].error = failure.localizedDescription
             }
         }
+        return (request, task)
     }
 
     /// Saves a file with unsaved edits, or recreates one deleted on disk. A file changed on disk
@@ -809,7 +811,10 @@ final class WorkspaceDocumentStore: ObservableObject {
               case .changed(let current) = documents[index].diskState else { return }
         documents[index].asksToOverwrite = false
         documents[index].overwriteVersion = nil
-        guard documents[index].isDirty else { return load(id) }
+        guard documents[index].isDirty else {
+            load(id)
+            return
+        }
         documents[index].version = current
         documents[index].diskState = .current
     }
@@ -878,6 +883,7 @@ final class WorkspaceDocumentStore: ObservableObject {
 
     private var diskChecks: [String: Task<Void, Never>] = [:]
     private var queuedDiskChecks: Set<String> = []
+    private typealias RecordReload = (UUID, Task<Void, Never>) -> Void
     /// Reads started by `load` and not finished: a check meanwhile must not start another, which
     /// would supersede it, so that a read slower than the poll would never finish.
     private var loadsInFlight: Set<UUID> = []
@@ -926,38 +932,54 @@ final class WorkspaceDocumentStore: ObservableObject {
     /// log, is not read again every few seconds. A location still being checked, as on a slow
     /// machine, or checked otherwise within the last two intervals is skipped; one whose checks keep
     /// failing is tried again after a delay that doubles, up to `maximumRetryDelay`.
+    /// On cancellation, waits for the checks and reloads this poll started before returning.
     func pollRemoteDisk(every interval: Duration = .seconds(3), hiddenInterval: Duration = .seconds(30),
                         maximumRetryDelay: Duration = .seconds(60),
                         isActive: @escaping @MainActor () -> Bool) async {
         var polled: [String: ContinuousClock.Instant] = [:]
+        var checks: [String: Task<Void, Never>] = [:]
+        var reloads: [UUID: Task<Void, Never>] = [:]
         while !Task.isCancelled {
-            do { try await Task.sleep(for: interval) } catch { return }
+            do { try await Task.sleep(for: interval) } catch { break }
+            checks = checks.filter { diskChecks[$0.key] != nil }
+            reloads = reloads.filter { loadsInFlight.contains($0.key) }
             guard isActive() else { continue }
             let now = ContinuousClock.now
             let remote = documents.filter { Self.followsDisk($0) && !$0.location.isLocal }
             let shown = Set(remote.filter { $0.space == space }.map(\.location.identity))
             for identity in Set(remote.map(\.location.identity)) where diskChecks[identity] == nil {
+                if Task.isCancelled { break }
                 // The explorer's poll of its Space checks it after every reload, which takes a while.
                 if let checked = checkedElsewhere[identity], now - checked < interval * 2 { continue }
                 if !shown.contains(identity), let last = polled[identity], now - last < hiddenInterval { continue }
                 if let retry = unreachable[identity]?.retry, now < retry { continue }
                 polled[identity] = now
-                _ = checkDisk(location: identity, retryDelay: { failures in
+                checks[identity] = checkDisk(location: identity, retryDelay: { failures in
                     min(interval * (1 << min(failures - 1, 16)), maximumRetryDelay)
+                }, recordReload: { request, task in
+                    reloads[request] = task
                 })
             }
         }
+        for check in checks.values { await check.value }
+        // Checks can start reloads while draining. Keep them separate so a slow read does
+        // not prevent another tab at the same location from being checked.
+        for reload in reloads.values { await reload.value }
     }
 
     private func checkDisk(location identity: String,
-                           retryDelay: @escaping (Int) -> Duration = { _ in .zero }) -> Task<Void, Never> {
+                           retryDelay: @escaping (Int) -> Duration = { _ in .zero },
+                           recordReload: RecordReload? = nil) -> Task<Void, Never> {
         guard let location = documents.first(where: { $0.location.identity == identity })?.location,
               permitsBackgroundAccess(location) else { return Task {} }
         queuedDiskChecks.insert(identity)
         if let running = diskChecks[identity] { return running }
         let task = Task { [weak self] in
+            var onReload = recordReload
             while let self, self.queuedDiskChecks.remove(identity) != nil {
-                await self.compareWithDisk(at: identity, retryDelay: retryDelay)
+                await self.compareWithDisk(at: identity, retryDelay: retryDelay, recordReload: onReload)
+                // Requests queued during the first check have their own callers.
+                onReload = nil
             }
             self?.diskChecks[identity] = nil
         }
@@ -971,7 +993,7 @@ final class WorkspaceDocumentStore: ObservableObject {
             && !document.isLoading && !document.isSaving
     }
 
-    private func compareWithDisk(at identity: String, retryDelay: (Int) -> Duration) async {
+    private func compareWithDisk(at identity: String, retryDelay: (Int) -> Duration, recordReload: RecordReload?) async {
         let checked = documents.filter { Self.followsDisk($0) && $0.location.identity == identity }
         guard let location = checked.first?.location, permitsBackgroundAccess(location) else { return }
         let paths = checked.map(\.path)
@@ -1010,8 +1032,10 @@ final class WorkspaceDocumentStore: ObservableObject {
                 if !marked { documents[index].diskState = .changed(version: current) }
                 // Also once edits are undone. A reload that failed is not retried until the file
                 // changes again.
-                if !documents[index].isDirty && !(marked && documents[index].error != nil)
-                    && !loadsInFlight.contains(documents[index].loadRequest) { load(document.id) }
+                if !documents[index].isDirty && !(marked && documents[index].error != nil),
+                   !loadsInFlight.contains(documents[index].loadRequest), let reload = load(document.id) {
+                    recordReload?(reload.request, reload.task)
+                }
             case .missing:
                 if documents[index].diskState != .deleted { documents[index].diskState = .deleted }
             }
