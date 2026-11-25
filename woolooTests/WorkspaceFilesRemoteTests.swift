@@ -83,6 +83,13 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return log.split(separator: "\u{1e}").map { $0.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init) }
     }
 
+    private func stopPollAtTeardown(_ poll: Task<Void, Never>) {
+        addTeardownBlock {
+            poll.cancel()
+            await poll.value
+        }
+    }
+
     /// A tab of an SSH Space follows its file without the explorer showing that Space: a clean
     /// tab reloads, and nothing is read while the app is inactive.
     @MainActor
@@ -99,7 +106,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         store.documents = [document]
         var active = false
         let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { active }) }
-        defer { poll.cancel() }
+        stopPollAtTeardown(poll)
         try sandbox.write(["notes.md": "second\n"], in: "other")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(store.documents[0].text, "first\n", "Inactive: nothing is read")
@@ -110,6 +117,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertFalse(store.documents[0].isDirty)
     }
 
+    @MainActor
     private func openTab(_ path: String, at location: WorkspaceFileLocation, space: String? = nil) async throws -> WorkspaceDocument {
         let contents = try await WorkspaceFiles.blocking(at: location) { try WorkspaceFiles.read(path, at: location) }
         var document = WorkspaceDocument(space: space, location: location, path: path, kind: .file)
@@ -120,24 +128,76 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return document
     }
 
-    /// A reload slower than the poll is not started again, which would drop it, by every poll.
+    private func gateRemoteCommand(_ executable: String) throws -> (started: String, release: String) {
+        let command = URL(fileURLWithPath: executable).lastPathComponent
+        let started = sandbox.path("\(command)-started")
+        let release = sandbox.path("\(command)-release")
+        try sandbox.write(["shims/\(command)": """
+            #!/bin/sh
+            /usr/bin/touch '\(started)' || exit 1
+            attempts=0
+            while [ ! -e '\(release)' ]; do
+                [ "$attempts" -lt 500 ] || exit 1
+                attempts=$((attempts + 1))
+                /bin/sleep 0.02
+            done
+            exec '\(executable)' "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/\(command)")
+        return (started, release)
+    }
+
     @MainActor
-    func testARemoteReloadSlowerThanThePollFinishes() async throws {
-        try sandbox.write(["notes.md": "first\n"], in: "slow-read")
+    private func waitForRemotePoll(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// A slow reload completes while the poll continues checking other tabs at that location.
+    @MainActor
+    func testRemotePollKeepsCheckingOtherTabsDuringASlowReload() async throws {
+        try sandbox.write(["notes.md": "first\n", "other.md": "other\n"], in: "slow-read")
         let location = remote("slow-read")
         let store = WorkspaceDocumentStore(persistence: nil)
-        store.documents = [try await openTab("notes.md", at: location)]
-        try sandbox.write(["notes.md": "second\n", "shims/cat": """
-            #!/bin/sh
-            /bin/sleep 0.4
-            exec /bin/cat "$@"
-            """], in: ".")
-        try sandbox.sh("chmod 755 shims/cat; mv notes.md slow-read/notes.md")
+        store.documents = [try await openTab("notes.md", at: location), try await openTab("other.md", at: location)]
+        try sandbox.write(["notes.md": "second\n"], in: "slow-read")
+        let gate = try gateRemoteCommand("/bin/cat")
+        defer { _ = FileManager.default.createFile(atPath: gate.release, contents: nil) }
         let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { true }) }
-        defer { poll.cancel() }
-        let deadline = Date().addingTimeInterval(5)
-        while store.documents[0].text != "second\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        stopPollAtTeardown(poll)
+        try await waitForRemotePoll { FileManager.default.fileExists(atPath: gate.started) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gate.started), "The reload has started")
+        try sandbox.sh("rm other.md", in: "slow-read")
+        try await waitForRemotePoll { store.documents[1].isDeletedOnDisk }
+        XCTAssertTrue(store.documents[1].isDeletedOnDisk, "The poll detects the deletion during the reload")
+        XCTAssertEqual(store.documents[0].text, "first\n", "The reload is still blocked")
+        XCTAssertTrue(FileManager.default.createFile(atPath: gate.release, contents: nil))
+        try await waitForRemotePoll { store.documents[0].text == "second\n" }
         XCTAssertEqual(store.documents[0].text, "second\n")
+    }
+
+    @MainActor
+    func testCancellingRemotePollWaitsForTheInFlightCheckAndReload() async throws {
+        try sandbox.write(["notes.md": "first\n"], in: "cancel-poll")
+        let location = remote("cancel-poll")
+        let store = WorkspaceDocumentStore(persistence: nil)
+        store.documents = [try await openTab("notes.md", at: location)]
+        try sandbox.write(["notes.md": "second\n"], in: "cancel-poll")
+        let gate = try gateRemoteCommand("/usr/bin/git")
+        defer { _ = FileManager.default.createFile(atPath: gate.release, contents: nil) }
+        try sandbox.sh("rm -f ssh.log")
+        let poll = Task { await store.pollRemoteDisk(every: .milliseconds(50), isActive: { true }) }
+        stopPollAtTeardown(poll)
+        try await waitForRemotePoll { FileManager.default.fileExists(atPath: gate.started) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gate.started), "The disk check has started")
+        poll.cancel()
+        XCTAssertTrue(FileManager.default.createFile(atPath: gate.release, contents: nil))
+        await poll.value
+
+        XCTAssertEqual(store.documents[0].text, "second\n", "The in-flight reload has finished")
+        XCTAssertEqual(try invocations().count, 2, "Only the in-flight check and its reload ran")
     }
 
     /// A machine that cannot be reached is tried again ever less often, not on every poll.
@@ -151,8 +211,10 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let poll = Task {
             await store.pollRemoteDisk(every: .milliseconds(50), maximumRetryDelay: .milliseconds(400), isActive: { true })
         }
+        stopPollAtTeardown(poll)
         try await Task.sleep(for: .milliseconds(1_000))
         poll.cancel()
+        await poll.value
         let attempts = try invocations().count
         XCTAssertGreaterThan(attempts, 1)
         XCTAssertLessThanOrEqual(attempts, 7, "About 18 without backing off")
@@ -173,7 +235,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let poll = Task {
             await store.pollRemoteDisk(every: .milliseconds(50), hiddenInterval: .seconds(60), isActive: { true })
         }
-        defer { poll.cancel() }
+        stopPollAtTeardown(poll)
         let deadline = Date().addingTimeInterval(5)
         while store.documents[0].text != "first\n", Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(store.documents[0].text, "first\n", "Checked when the poll started")
