@@ -211,6 +211,107 @@ final class HerdrStoreCoreTests: XCTestCase {
         XCTAssertEqual(resizes(), before, "A window in the background never sends its size")
     }
 
+    func testResizingABackgroundWindowWithASameSizeFocusedPeerDoesNotTakeTheTerminal() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.updateTerminalHost(theme: theme, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("first window attached") { store.surface?.paneIDs == ["t1"] }
+        let (backgroundServer, active) = try XCTUnwrap(attachedServer())
+        store.updateTerminalHost(theme: theme, focused: false)
+
+        let front = HerdrStore()
+        defer { front.stop() }
+        front.updateTerminalHost(theme: theme, focused: true)
+        front.connect(toCore: "wooloo-ui-test")
+        front.setPresentationActive(true)
+        await waitUntil("second window attached") { front.surface?.paneIDs == ["t1"] }
+        let initialAttaches = core.callsTo("terminal.attach")
+        XCTAssertEqual(initialAttaches.count, 2)
+        XCTAssertEqual(initialAttaches.first?.params["cols"] as? Int, initialAttaches.last?.params["cols"] as? Int)
+        XCTAssertEqual(initialAttaches.first?.params["rows"] as? Int, initialAttaches.last?.params["rows"] as? Int)
+        XCTAssertTrue(initialAttaches.allSatisfy { $0.params["observe"] == nil })
+
+        // Without a size event, resizing the background window must still leave the peer in charge.
+        store.resizeSurface(cols: 50, rows: 12, cellWidth: 8, cellHeight: 16)
+        await waitUntil("background window switched to watching") {
+            backgroundServer.recordedFrames().contains { $0.channel == active && $0.kind == .close }
+        }
+        XCTAssertEqual(core.callsTo("terminal.attach").last?.params["observe"] as? Bool, true)
+        XCTAssertFalse(backgroundServer.recordedFrames().contains { $0.channel == active && $0.kind == .resize })
+
+        front.updateTerminalHost(theme: theme, focused: false)
+        store.updateTerminalHost(theme: theme, focused: true)
+        await waitUntil("resized window takes ownership once focused") {
+            guard let attach = self.core.callsTo("terminal.attach").last else { return false }
+            return attach.params["observe"] == nil && attach.params["cols"] as? Int == 50
+                && attach.params["rows"] as? Int == 12
+        }
+    }
+
+    func testFocusReturningDuringDemotionKeepsTheActiveStream() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.updateTerminalHost(theme: theme, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("active stream drawn") { store.surface?.paneIDs == ["t1"] }
+        let (server, active) = try XCTUnwrap(attachedServer())
+
+        store.updateTerminalHost(theme: theme, focused: false)
+        core.update { _ = $0.heldReplies.insert("terminal.attach") }
+        server.emit(type: "size", terminal: "t1", data: ["cols": 50, "rows": 12])
+        await waitUntil("observer reply pending") { core.callsTo("terminal.attach").count == 2 }
+        let observer = try XCTUnwrap(core.lock.withLock { server.attachChannels.last })
+        XCTAssertNotEqual(observer, active)
+        XCTAssertEqual(core.callsTo("terminal.attach").last?.params["observe"] as? Bool, true)
+
+        store.updateTerminalHost(theme: theme, focused: true)
+        core.update { _ = $0.heldReplies.remove("terminal.attach") }
+        server.releaseReplies()
+        await waitUntil("observer discarded") {
+            server.recordedFrames().contains { $0.channel == observer && $0.kind == .close }
+        }
+        store.sendText("still active", to: "t1")
+        await waitUntil("input reaches the original stream") {
+            server.recordedFrames().contains { $0.channel == active && $0.kind == .data
+                && $0.payload == Data("still active".utf8) }
+        }
+        XCTAssertFalse(server.recordedFrames().contains { $0.channel == active && $0.kind == .close })
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 2)
+    }
+
+    func testSizeEventsRespectBackoffAfterARefusedResizeDemotion() async throws {
+        let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
+        store.updateTerminalHost(theme: theme, focused: true)
+        store.connect(toCore: "wooloo-ui-test")
+        store.setPresentationActive(true)
+        await waitUntil("first window attached") { store.surface?.paneIDs == ["t1"] }
+        let (server, active) = try XCTUnwrap(attachedServer())
+        store.updateTerminalHost(theme: theme, focused: false)
+
+        let front = HerdrStore()
+        defer { front.stop() }
+        front.updateTerminalHost(theme: theme, focused: true)
+        front.connect(toCore: "wooloo-ui-test")
+        front.setPresentationActive(true)
+        await waitUntil("focused peer attached") { front.surface?.paneIDs == ["t1"] }
+
+        core.update { $0.overrides["terminal.attach"] = { _ in nil } }
+        store.resizeSurface(cols: 50, rows: 12, cellWidth: 8, cellHeight: 16)
+        await waitUntil("resize-triggered observer attach refused") { core.callsTo("terminal.attach").count == 3 }
+        for cols in 90...94 {
+            server.emit(type: "size", terminal: "t1", data: ["cols": cols, "rows": 20])
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(core.callsTo("terminal.attach").count, 3)
+        XCTAssertFalse(server.recordedFrames().contains { $0.channel == active && $0.kind == .resize })
+
+        core.update { $0.overrides["terminal.attach"] = nil }
+        await waitUntil("demotion succeeds after backoff") {
+            server.recordedFrames().contains { $0.channel == active && $0.kind == .close }
+        }
+    }
+
     func testRefusedActivationWaitsBeforeRetrying() async throws {
         let theme = WoolooTheme.named(WoolooTheme.fallbackID)!
         store.updateTerminalHost(theme: theme, focused: false)
