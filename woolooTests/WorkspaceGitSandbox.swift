@@ -38,15 +38,16 @@ final class WorkspaceGitSandbox {
     func sh(_ script: String, in name: String? = nil) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "set -e\n" + script]
-        process.currentDirectoryURL = URL(fileURLWithPath: name.map(path) ?? base)
+        let directory = name.map(path) ?? base
+        // Enter the fixture in the child shell so the runner's working directory stays independent.
+        process.arguments = ["-c", "set -e\ncd \"$1\"\nshift\n" + script, "/bin/sh", directory]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
         let data = try process.runAndWait()
         let text = String(decoding: data, as: UTF8.self)
         guard process.terminationStatus == 0 else {
-            throw WorkspaceFileError.message("Script failed (\(process.terminationStatus)): \(text)")
+            throw WorkspaceFileError.message("Script failed (\(process.terminationStatus)) in \(directory): \(text)")
         }
         // Changes made here bypass WorkspaceFiles, so shared loads must not hide them.
         WorkspaceFiles.forgetRecentResults()

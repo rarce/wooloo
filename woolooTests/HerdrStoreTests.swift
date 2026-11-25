@@ -462,6 +462,7 @@ final class HerdrStoreTests: XCTestCase {
             state.workspaces[0]["active_tab_id"] = "w1:t2"
         }
         await connect()
+        XCTAssertNil(store.tabSpaceMoveRefusal("w1:t2", to: nil), "Refusal for \(store.contextID)|w1")
         XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: nil))
         await waitUntil("new space") { !store.spaceMoveInFlight }
         XCTAssertEqual(store.snapshot?.workspaces.map(\.workspaceID), ["w9"])
@@ -643,6 +644,7 @@ final class HerdrStoreTests: XCTestCase {
         weak var closed = owner
         owner = nil
         XCTAssertNil(closed)
+        XCTAssertNil(store.tabSpaceMoveRefusal("w1:t2", to: nil), "Refusal for \(store.contextID)|w1")
         XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: nil), "The asynchronous preflight must discover the disk-only buffer")
         await waitUntil("move refused") { !store.spaceMoveInFlight }
         XCTAssertFalse(server.requests.contains { $0.method == "pane.move" })

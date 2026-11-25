@@ -18,6 +18,7 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        store = nil
         sandbox.tearDown()
     }
 
@@ -533,22 +534,26 @@ final class WorkspaceDocumentStoreTests: XCTestCase {
     }
 
     func testDirtyDocumentsSurviveSwitchingHostsWithTheSameSpaceID() async throws {
-        store.showSpace("default|w1")
+        // The process-wide registry identifies documents by their session and Space.
+        let session = UUID().uuidString
+        let localSpace = "\(session)|w1"
+        let remoteSpace = "ssh:remote|\(session)|w1"
+        store.showSpace(localSpace)
         _ = await open("a.txt")
         edit("a.txt", "unsaved local\n")
         let localID = store.activeID
         store.showSpace(nil) // The newly selected host has not connected yet.
-        store.showSpace("ssh:remote|default|w1")
+        store.showSpace(remoteSpace)
         XCTAssertTrue(store.visibleDocuments.isEmpty)
         _ = await open("b.txt")
         edit("b.txt", "unsaved remote\n")
         let remoteID = store.activeID
         store.showSpace(nil)
-        store.showSpace("default|w1")
+        store.showSpace(localSpace)
         XCTAssertEqual(store.activeID, localID)
         XCTAssertEqual(store.visibleDocuments.map(\.text), ["unsaved local\n"])
         XCTAssertTrue(store.visibleDocuments.allSatisfy(\.isDirty))
-        store.showSpace("ssh:remote|default|w1")
+        store.showSpace(remoteSpace)
         XCTAssertEqual(store.activeID, remoteID)
         XCTAssertEqual(store.visibleDocuments.map(\.text), ["unsaved remote\n"])
         XCTAssertTrue(store.visibleDocuments.allSatisfy(\.isDirty))
