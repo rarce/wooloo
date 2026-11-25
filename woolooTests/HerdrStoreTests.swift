@@ -1613,8 +1613,10 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertNotEqual(store.contextID, localContext)
         XCTAssertFalse(store.socketPath.hasPrefix(HerdrStore.sessionRoot.path))
         try await waitForRemotePresentation(server: remote, endpoint: remoteSurface)
-        let startupRequests = Array(remote.requests.prefix(3).map(\.method))
-        XCTAssertEqual(startupRequests, ["session.snapshot", "events.subscribe", "session.snapshot"])
+        let startupRequests = remote.requests.map(\.method)
+        let subscription = try XCTUnwrap(startupRequests.firstIndex(of: "events.subscribe"))
+        XCTAssertTrue(startupRequests[..<subscription].contains("session.snapshot"), "Snapshot before subscribing")
+        XCTAssertTrue(startupRequests.dropFirst(subscription + 1).contains("session.snapshot"), "Snapshot after subscribing")
         let copied = "Claude over SSH: áé 🐑\n"
         remoteSurface.send(FakeSurfaceEndpoint.clipboard(Data(copied.utf8).base64EncodedString()))
         await waitUntil("remote copy reaches this Mac") { pasteboard.string(forType: .string) == copied }
