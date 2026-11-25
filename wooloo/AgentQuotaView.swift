@@ -1,11 +1,7 @@
 import SwiftUI
 
-/// The sidebar's QUOTAS section: how much of the Claude Code and Codex subscription limits have
-/// been used, and when each window resets. They are read on the machine the explorer points at,
-/// since that is where the agents run and are signed in. Collapsed, it shows each agent's most
-/// used window. It reads them only while its window is active, and only for a machine the user
-/// agreed to in the consent dialog, since it reads the agents' sign-ins and sends their tokens
-/// to Anthropic and OpenAI; the button and the context menu both open that dialog.
+/// Shows usage and reset times for agents on the explorer's machine. Polls while the window is
+/// active and that machine has quota consent. Collapsed, it shows each agent's most used window.
 struct AgentQuotaSection: View {
     @Environment(\.controlActiveState) private var activeState
     @AppStorage("AgentQuotasCollapsed") private var collapsed = true
@@ -24,7 +20,7 @@ struct AgentQuotaSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             SidebarSectionToggle(title: "QUOTAS", systemImage: "chart.bar.xaxis",
-                                 help: "Claude and Codex Quotas", collapsed: $collapsed)
+                                 help: "Claude, Codex and Antigravity Quotas", collapsed: $collapsed)
             if activation.consent.allows(machine) {
                 AgentQuotaList(monitor: activation.acquired ?? AgentQuotaMonitor.shared(for: machine),
                                collapsed: collapsed)
@@ -73,9 +69,8 @@ private struct AgentQuotaOptIn: View {
                 .padding(.horizontal, 8)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Shows how much of your Claude Code and Codex plans you have used. It reads their sign-ins "
-                     + place + " and sends the tokens to Anthropic's and OpenAI's unofficial usage endpoints, "
-                     + "which can change at any time.")
+                Text("Shows usage for Claude Code, Codex and Antigravity "
+                     + place + ". Review how each quota is read before turning it on.")
                     .font(.system(size: typography.secondary))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -111,7 +106,7 @@ private struct AgentQuotaList: View {
 
     @ViewBuilder private var details: some View {
         if monitor.states.isEmpty {
-            Text(monitor.loaded ? "No Claude Code or Codex sign-in on \(monitor.machine?.label ?? "this Mac")"
+            Text(monitor.loaded ? "No agent quotas available on \(monitor.machine?.label ?? "this Mac")"
                                 : "Reading…")
                 .font(.system(size: typography.secondary))
                 .foregroundStyle(.tertiary)
@@ -145,7 +140,10 @@ private struct AgentQuotaList: View {
     /// The agent's most used window, which is the one that blocks it first.
     private func summary(_ provider: AgentProvider, state: AgentQuotaMonitor.State, now: Date) -> some View {
         let window = state.quota?.windows.max { $0.usedFraction(at: now) < $1.usedFraction(at: now) }
-        let detail = window.map { "\($0.label) \(value($0.usedFraction(at: now), resetsAt: $0.resetsAt, now: now))" }
+        let detail = window.map { window in
+            [window.group, window.label, value(window.usedFraction(at: now), resetsAt: window.resetsAt, now: now)]
+                .compactMap { $0 }.joined(separator: " ")
+        }
         let host = monitor.machine.map { "on \($0.label)" }
         return SidebarMiniMeter(label: provider.title, fraction: window?.usedFraction(at: now))
             .help([[provider.title, detail, host].compactMap { $0 }.joined(separator: " "), state.failure]
@@ -179,7 +177,13 @@ private struct AgentQuotaList: View {
             .help(state.failure ?? (state.quota?.fromLog == true ? "Read from Codex's latest session log" : ""))
 
             if let quota = state.quota {
-                ForEach(quota.windows) { window in
+                ForEach(Array(quota.windows.enumerated()), id: \.element.id) { index, window in
+                    if let group = window.group, index == 0 || quota.windows[index - 1].group != group {
+                        Text(group)
+                            .font(.system(size: typography.secondary))
+                            .foregroundStyle(.secondary)
+                            .accessibilityAddTraits(.isHeader)
+                    }
                     let used = window.usedFraction(at: now)
                     SidebarMeter(label: window.label, fraction: used,
                                  value: value(used, resetsAt: window.resetsAt, now: now), labelWidth: 64)

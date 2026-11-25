@@ -4,10 +4,16 @@ import Security
 
 /// A coding agent whose subscription limits the sidebar shows.
 enum AgentProvider: String, CaseIterable, Identifiable {
-    case claude, codex
+    case claude, codex, agy
 
     var id: String { rawValue }
-    var title: String { self == .claude ? "Claude" : "Codex" }
+    var title: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex: "Codex"
+        case .agy: "Antigravity"
+        }
+    }
 }
 
 /// One usage limit of a subscription, for example Claude's five-hour session.
@@ -17,6 +23,7 @@ struct QuotaWindow: Equatable, Identifiable {
     let label: String
     let usedFraction: Double
     let resetsAt: Date?
+    var group: String? = nil
 
     /// The share used at `now`: a window whose reset has passed starts again from zero.
     func usedFraction(at now: Date) -> Double {
@@ -119,6 +126,30 @@ enum AgentQuotaParser {
                                     id: "codex-\(name.lowercased())")
         }
         return (windows, json["plan_type"] as? String)
+    }
+
+    /// The native `agy /usage` response reports the remaining share in each model pool.
+    static func agyUsage(_ response: [String: Any]) -> [QuotaWindow] {
+        guard response["status"] as? String == "SUCCESS",
+              let command = response["command"] as? [String: Any], command["name"] as? String == "usage",
+              let data = command["data"] as? [String: Any],
+              let groups = data["groups"] as? [[String: Any]] else { return [] }
+        var seen: Set<String> = []
+        var windows: [QuotaWindow] = []
+        for group in groups {
+            guard let name = group["name"] as? String, !name.isEmpty,
+                  let buckets = group["buckets"] as? [[String: Any]] else { continue }
+            for bucket in buckets {
+                guard let remaining = number(bucket["remaining_fraction"]), (0...1).contains(remaining),
+                      let window = bucket["window"] as? String, !window.isEmpty else { continue }
+                let id = "\(name):\(bucket["id"] as? String ?? window)"
+                guard seen.insert(id).inserted else { continue }
+                let label = window == "weekly" ? "7D" : window.uppercased()
+                windows.append(QuotaWindow(id: id, label: label, usedFraction: 1 - remaining,
+                                           resetsAt: isoDate(bucket["reset_time"]), group: name))
+            }
+        }
+        return windows
     }
 
     /// A `token_count` event of a Codex rollout log, whose `payload.rate_limits` uses
@@ -298,7 +329,56 @@ enum AgentQuotaKeychain {
     }
 }
 
-/// Reads the quotas of one machine's Claude Code and Codex sign-ins. It only reads their
+enum AgyQuotaProbe {
+    // Before 1.1.11, print mode can send /usage to the model as a normal prompt.
+    // Run outside the Space's working directory so project commands do not shadow it.
+    static let script = #"""
+        cd / || exit 1
+        export AGY_CLI_DISABLE_AUTO_UPDATE=true
+        PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin"
+        export PATH
+        agy=$(command -v agy)
+        if [ ! -f "$agy" ] || [ ! -x "$agy" ]; then
+          printf 'agy_missing\n'
+          exit 0
+        fi
+        version=$("$agy" --version 2>/dev/null) || version=
+        if ! printf '%s\n' "$version" | awk -F. '
+          NR == 1 && /^v?[0-9]+\.[0-9]+\.[0-9]+([+][0-9A-Za-z.-]+)?$/ {
+            sub(/[+].*$/, "")
+            sub(/^v/, "", $1)
+            supported = $1 + 0 > 1 || ($1 + 0 == 1 && ($2 > 1 || ($2 == 1 && $3 >= 11)))
+          }
+          END { exit !(NR == 1 && supported) }
+        '; then
+          printf 'agy_unsupported\n'
+          exit 0
+        fi
+        exec "$agy" -p /usage --output-format json --print-timeout 20s </dev/null 2>&1
+        """#
+
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func read(machine: HerdrMachineProfile?, environment: [String: String]) throws -> String {
+        do {
+            let data = if let machine {
+                try WorkspaceFiles.ssh(machine, "exec /bin/sh -c \(WorkspaceFiles.quote(script))",
+                                       limit: 256_000, timeout: 30, label: "agy-quotas")
+            } else {
+                try WorkspaceFiles.run("/bin/sh", ["-c", script], environment: environment,
+                                       limit: 256_000, timeout: 30, label: "agy-quotas")
+            }
+            return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch WorkspaceFileError.message(let output) {
+            // WorkspaceFiles uses stdout for a failed command with no stderr. Keep the CLI's
+            // diagnostic private and let the reader map it to a fixed message.
+            return output
+        } catch {
+            throw WorkspaceFileError.message("Could not read Antigravity usage")
+        }
+    }
+}
+
+/// Reads the quotas of one machine's coding agents. For Claude Code and Codex it only reads their
 /// credentials and never refreshes them: a refresh rotates the refresh token and would sign the
 /// agent out, so an expired token waits until the agent itself renews it.
 actor AgentQuotaReader {
@@ -312,20 +392,33 @@ actor AgentQuotaReader {
     /// Whether the last Keychain read failed. The reads skipped while the next one waits cannot
     /// tell, and would otherwise report a signed-in Claude Code as not signed in.
     private var claudeKeychainUnreadable = false
+    private var nextAgySignInCheck = Date.distantPast
+    private var agyRanModelTurn = false
     private let probe: @Sendable (HerdrMachineProfile?, Bool, [String: String]) throws -> AgentQuotaFiles
+    private let agyProbe: @Sendable (HerdrMachineProfile?, [String: String]) throws -> String
 
     private static let session = URLSession(configuration: .ephemeral)
 
     init(machine: HerdrMachineProfile? = nil, environment: [String: String] = [:],
          probe: @escaping @Sendable (HerdrMachineProfile?, Bool, [String: String]) throws -> AgentQuotaFiles
-             = { try AgentQuotaProbe.read(machine: $0, keychain: $1, environment: $2) }) {
+             = { try AgentQuotaProbe.read(machine: $0, keychain: $1, environment: $2) },
+         agyProbe: @escaping @Sendable (HerdrMachineProfile?, [String: String]) throws -> String
+             = { try AgyQuotaProbe.read(machine: $0, environment: $1) }) {
         self.machine = machine
         self.environment = environment
         self.probe = probe
+        self.agyProbe = agyProbe
     }
 
     /// A nil quota means the agent is not set up on the machine.
     func read(now: Date = Date()) async -> [AgentProvider: Result<AgentQuota?, Error>] {
+        async let agy = Self.outcome { try await self.agy(now: now) }
+        var results = await readClaudeAndCodex(now: now)
+        results[.agy] = await agy
+        return results
+    }
+
+    private func readClaudeAndCodex(now: Date) async -> [AgentProvider: Result<AgentQuota?, Error>] {
         let needsCredential = claudeCredential.map { $0.isExpired(at: now) || $0.token == rejectedClaudeToken } ?? true
         let keychain = needsCredential && now >= nextKeychainRead
         if keychain { nextKeychainRead = now.addingTimeInterval(5 * 60) }
@@ -342,6 +435,42 @@ actor AgentQuotaReader {
         async let claude = Self.outcome { try await self.claude(files, now: now) }
         async let codex = Self.outcome { try await self.codex(files, now: now) }
         return [.claude: await claude, .codex: await codex]
+    }
+
+    private func agy(now: Date) async throws -> AgentQuota? {
+        guard !agyRanModelTurn else {
+            throw quotaError("Update agy and restart wooloo to resume Antigravity quota checks")
+        }
+        let signInMessage = "Sign in to Antigravity by running agy"
+        guard now >= nextAgySignInCheck else { throw quotaError(signInMessage) }
+        let output = try await WorkspaceFiles.blocking(on: machine) { [machine, environment, agyProbe] in
+            try agyProbe(machine, environment)
+        }
+        switch output {
+        case "agy_missing": return nil
+        case "agy_unsupported": throw quotaError("Antigravity quota requires agy 1.1.11 or later")
+        default: break
+        }
+        // Some agy versions print diagnostics alongside the JSON response.
+        let responses = ([output[...]] + output.split(whereSeparator: \.isNewline)).compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }
+        for response in responses {
+            if let turns = response["num_turns"] as? Int, turns > 0 {
+                agyRanModelTurn = true
+                throw quotaError("agy treated /usage as a model prompt. Update agy and restart wooloo")
+            }
+            let windows = AgentQuotaParser.agyUsage(response)
+            if !windows.isEmpty { return AgentQuota(windows: windows, capturedAt: now) }
+        }
+        let diagnostic = output.lowercased()
+        if ["authentication required", "not logged in", "not signed in", "please sign in", "unauthenticated"]
+            .contains(where: diagnostic.contains) {
+            // Older CLIs can open a browser when their sign-in expires.
+            nextAgySignInCheck = now.addingTimeInterval(3600)
+            throw quotaError(signInMessage)
+        }
+        throw quotaError("Could not read Antigravity usage")
     }
 
     private static func outcome(_ body: @Sendable () async throws -> AgentQuota?) async -> Result<AgentQuota?, Error> {
@@ -513,7 +642,7 @@ final class AgentQuotaMonitor: ObservableObject {
 struct AgentQuotaConsent: Equatable {
     /// Raised when what QUOTAS reads, or where it sends it, changes, so an agreement given to an
     /// older explanation is asked for again.
-    static let version = 1
+    static let version = 2
     static let storageKey = "AgentQuotasConsent"
     /// The single switch of 0.3.1 and earlier, whose context menu turned QUOTAS on without the
     /// explanation. It is ignored and removed, so everyone is asked once more.
@@ -559,24 +688,26 @@ struct AgentQuotaConsent: Equatable {
         machine.map { "Turn on Quotas for “\($0.label)”?" } ?? "Turn on Quotas for this Mac?"
     }
 
-    /// What turning QUOTAS on reads and sends, as `AgentQuotaProbe` and `AgentQuotaReader` do it.
+    /// What turning QUOTAS on reads and sends.
     static func explanation(for machine: HerdrMachineProfile?) -> String {
         let place = machine.map { "on \($0.label) (\($0.target)), over SSH" } ?? "on this Mac"
         let keychain = machine == nil
             ? "or else its Keychain item “Claude Code-credentials” (macOS asks you to allow wooloo)"
             : "or else, if that machine is a Mac, its Keychain item “Claude Code-credentials” through `security`"
-        let origin = machine.map { " The requests leave from this Mac, not from \($0.label)." } ?? ""
+        let origin = machine == nil ? "" : " The requests leave from this Mac."
+        let agyPlace = machine.map { "on \($0.label) over SSH" } ?? "on this Mac"
         return """
-            To show how much of your Claude Code and Codex plans you have used, wooloo reads \(place):
-            • Claude Code's sign-in, from ~/.claude/.credentials.json \(keychain);
+            For Claude Code and Codex, wooloo reads \(place):
+            • Claude Code's sign-in, from ~/.claude/.credentials.json \(keychain)
             • Codex's sign-in, from ~/.codex/auth.json (or $CODEX_HOME), and the rate limits in its newest session logs.
 
             Every two minutes while a wooloo window is active, it sends those tokens to api.anthropic.com and chatgpt.com.\(origin) \
-            These are the usage endpoints Claude Code and Codex use themselves. They are unofficial: not documented for other apps, \
-            not endorsed by Anthropic or OpenAI, possibly against their terms, and they can change or stop working at any time.
+            These unofficial usage endpoints can change or stop working at any time. Anthropic and OpenAI may restrict third-party use.
 
-            wooloo keeps the tokens in memory only. It never refreshes, saves or logs them. Nothing is read until you choose Turn On, \
-            and Turn Off Quotas in the section's context menu stops it.
+            For Antigravity, wooloo runs agy /usage \(agyPlace). The CLI uses its own sign-in to contact Google and returns the quota.
+
+            wooloo keeps Claude Code and Codex tokens in memory only and never refreshes, saves or logs them. \
+            Turn On starts quota checks, and Turn Off Quotas in the section's context menu stops them.
             """
     }
 }

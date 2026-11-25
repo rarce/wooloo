@@ -18,6 +18,7 @@ wooloo runs on your Mac and acts on your behalf, so these are the areas where a 
 - **Commands.** wooloo runs `git`, `herdr` and shell scripts locally, and over SSH on machines saved in Herdr. A file name, branch, commit message or search query that gets executed instead of used as data is a vulnerability.
 - **Files.** Reading and saving are limited to the selected Space. A path, symlink or race that reads or writes outside it is a vulnerability.
 - **Agent sign-ins.** QUOTAS reads Claude Code's and Codex's tokens only for a machine the user agreed to in its consent dialog, and sends them only to Anthropic's and OpenAI's usage endpoints. A token that is read before that agreement, written to disk, logged, shown in the interface or sent anywhere else is a vulnerability.
+- **Antigravity quotas.** QUOTAS runs `agy /usage` on the machine covered by the user's consent. The CLI authenticates with Google and returns quota data. Wooloo reads that quota data and uses fixed messages for CLI errors.
 - **Remote Access.** The tunnel publishes this Mac's SSH server. A tunnel that starts without the user's action, without the sign-in check described in the README, or without the confirmation that check asks for, or a tunnel token that leaves the Keychain other than through `cloudflared`'s environment, is a vulnerability. Weak SSH settings on the Mac itself are not: wooloo reports them but does not change them.
 - **Herdr sockets.** wooloo talks to Herdr over Unix sockets in `~/.config/herdr`. It trusts that local server.
 
