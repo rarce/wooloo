@@ -43,18 +43,18 @@ final class HerdrStoreTests: XCTestCase {
     private let state = State()
     private var root: URL!
     private var savedRoot: URL!
-    private var savedLastSession: String?
+    private let sessionSuite = "test-herdr-session-\(UUID().uuidString)"
+    private var sessionDefaults: UserDefaults!
     private var server: FakeHerdrServer!
     private var store: HerdrStore!
 
     override func setUp() async throws {
         // Short, so socket paths stay under the 104-byte limit.
         root = URL(fileURLWithPath: "/private/tmp/wooloo-tests/\(UUID().uuidString.prefix(8))")
-        savedLastSession = UserDefaults.standard.string(forKey: "HerdrLastSession")
-        UserDefaults.standard.set(HerdrStore.defaultSessionName, forKey: "HerdrLastSession")
+        sessionDefaults = try XCTUnwrap(UserDefaults(suiteName: sessionSuite))
         savedRoot = HerdrStore.sessionRoot
         HerdrStore.sessionRoot = root
-        store = HerdrStore()
+        store = HerdrStore(sessionDefaults: sessionDefaults)
         server = try FakeHerdrServer(path: store.socketPath) { [state] method, params in
             if method == "pane.send_input", let gate = state.lock.withLock({ state.inputGate }) { gate.wait() }
             if method == "workspace.create", let gate = state.lock.withLock({ state.createGate }) { gate.wait() }
@@ -185,7 +185,7 @@ final class HerdrStoreTests: XCTestCase {
         store.stop()
         server.stop()
         HerdrStore.sessionRoot = savedRoot
-        UserDefaults.standard.set(savedLastSession, forKey: "HerdrLastSession")
+        sessionDefaults?.removePersistentDomain(forName: sessionSuite)
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -462,6 +462,7 @@ final class HerdrStoreTests: XCTestCase {
             state.workspaces[0]["active_tab_id"] = "w1:t2"
         }
         await connect()
+        XCTAssertNil(store.tabSpaceMoveRefusal("w1:t2", to: nil), "Refusal for \(store.contextID)|w1")
         XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: nil))
         await waitUntil("new space") { !store.spaceMoveInFlight }
         XCTAssertEqual(store.snapshot?.workspaces.map(\.workspaceID), ["w9"])
@@ -643,6 +644,7 @@ final class HerdrStoreTests: XCTestCase {
         weak var closed = owner
         owner = nil
         XCTAssertNil(closed)
+        XCTAssertNil(store.tabSpaceMoveRefusal("w1:t2", to: nil), "Refusal for \(store.contextID)|w1")
         XCTAssertTrue(store.moveTab("w1:t2", toWorkspace: nil), "The asynchronous preflight must discover the disk-only buffer")
         await waitUntil("move refused") { !store.spaceMoveInFlight }
         XCTAssertFalse(server.requests.contains { $0.method == "pane.move" })
@@ -820,8 +822,8 @@ final class HerdrStoreTests: XCTestCase {
     /// Switching session resets the selection, remembers the name and connects to the new socket.
     func testConnectingToAnotherSessionStartsOver() async throws {
         let key = "HerdrLastSession"
-        let saved = UserDefaults.standard.string(forKey: key)
-        defer { UserDefaults.standard.set(saved, forKey: key) }
+        let saved = sessionDefaults.string(forKey: key)
+        defer { sessionDefaults.set(saved, forKey: key) }
         await connect()
         let other = try FakeHerdrServer(path: root.appendingPathComponent("sessions/other/herdr.sock").path) { [state] method, _ in
             state.lock.lock()
@@ -833,7 +835,7 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(store.sessionName, "other")
         XCTAssertNil(store.snapshot)
         XCTAssertNil(store.selectedPaneID)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: key), "other")
+        XCTAssertEqual(sessionDefaults.string(forKey: key), "other")
         await waitUntil("connected to other") { store.isConnected }
         XCTAssertTrue(other.requests.contains { $0.method == "session.snapshot" })
     }
@@ -1317,7 +1319,7 @@ final class HerdrStoreTests: XCTestCase {
     }
 
     func testStalledSurfaceClearsProjectionFallsBackAndRestoresLatestFocusAndSize() async throws {
-        store = HerdrStore(endpointTimeouts: HerdrEndpointTimeouts(frame: .milliseconds(400)))
+        store = HerdrStore(endpointTimeouts: HerdrEndpointTimeouts(frame: .milliseconds(400)), sessionDefaults: sessionDefaults)
         var snapshot = AgentViewFixture.snapshot([AgentViewFixture.agent("w1:p1")])
         snapshot["workspaces"] = [["workspace_id": "w1", "git_ahead_behind": [2, 1]]]
         let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath,
@@ -1371,7 +1373,7 @@ final class HerdrStoreTests: XCTestCase {
     }
 
     func testWelcomeStallUsesRetryLoopWithoutRestartingTheStore() async throws {
-        store = HerdrStore(endpointTimeouts: HerdrEndpointTimeouts(handshake: .milliseconds(300)))
+        store = HerdrStore(endpointTimeouts: HerdrEndpointTimeouts(handshake: .milliseconds(300)), sessionDefaults: sessionDefaults)
         let endpoint = try FakeSurfaceEndpoint(path: store.clientSocketPath, afterHello: [],
                                                sendsWelcome: false, sendsSnapshot: false)
         defer { endpoint.stop() }
@@ -1395,7 +1397,7 @@ final class HerdrStoreTests: XCTestCase {
         store.sendPaste(String(repeating: "x", count: 8 * 1024 * 1024), to: "w1:p1")
         try? await Task.sleep(nanoseconds: 100_000_000)
         let previousSession = store.sessionName
-        defer { UserDefaults.standard.set(previousSession, forKey: "HerdrLastSession") }
+        defer { sessionDefaults.set(previousSession, forKey: "HerdrLastSession") }
         let nextSession = "recovery-" + UUID().uuidString.prefix(8)
         let nextPath = root.appendingPathComponent("sessions/\(nextSession)/herdr.sock").path
         let nextServer = try FakeHerdrServer(path: nextPath) { method, _ in
@@ -1752,11 +1754,15 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertEqual(server.requests.filter { $0.method == "events.subscribe" }.count, 1)
     }
 
+    private func makeDestinations(notifier: HerdrNotifier? = nil, pool: HerdrMetadataPool? = nil) -> HerdrDestinations {
+        HerdrDestinations(store: HerdrStore(sessionDefaults: sessionDefaults), notifier: notifier, pool: pool)
+    }
+
     func testRemovingDestinationReleasesOnlyThisWindowsSharedLease() async throws {
         let notifier = HerdrNotifier()
         let pool = HerdrMetadataPool(notifier: notifier)
         let first = HerdrDestinations(store: store, notifier: notifier, pool: pool)
-        let second = HerdrDestinations(notifier: notifier, pool: pool)
+        let second = makeDestinations(notifier: notifier, pool: pool)
         first.start()
         second.start()
         defer { first.stop(); second.stop(); notifier.reset() }
@@ -1799,7 +1805,7 @@ final class HerdrStoreTests: XCTestCase {
         first.goBack()
         XCTAssertTrue(first.active === closed)
         first.stop()
-        let second = HerdrDestinations(notifier: notifier)
+        let second = makeDestinations(notifier: notifier)
         XCTAssertEqual(second.restoreWindow(key, defaults: defaults), key)
         defer { second.stop(); notifier.reset() }
         XCTAssertFalse(second.isActiveDestinationOpen)
@@ -1818,10 +1824,10 @@ final class HerdrStoreTests: XCTestCase {
             let suite = "connections-\(UUID().uuidString)"
             let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
             defer { defaults.removePersistentDomain(forName: suite) }
-            let first = HerdrDestinations()
+            let first = makeDestinations()
             let firstKey = first.restoreWindow("", defaults: defaults)
             first.configureInitialSession("first")
-            let second = HerdrDestinations()
+            let second = makeDestinations()
             let secondKey = second.restoreWindow("", defaults: defaults)
             second.configureInitialSession("second")
             XCTAssertNotEqual(firstKey, secondKey)
@@ -1829,7 +1835,7 @@ final class HerdrStoreTests: XCTestCase {
             let other = closesFirstCreatedLast ? second : first
             other.stop()
             lastClosed.stop()
-            let reopened = HerdrDestinations()
+            let reopened = makeDestinations()
             let restoredKey = reopened.restoreWindow("", defaults: defaults)
             defer { reopened.stop() }
             XCTAssertEqual(restoredKey, closesFirstCreatedLast ? firstKey : secondKey)
@@ -1839,7 +1845,7 @@ final class HerdrStoreTests: XCTestCase {
             let data = try XCTUnwrap(defaults.data(forKey: "HerdrConnectionsWindow.\(restoredKey)"))
             let saved = try JSONDecoder().decode(HerdrConnectionWindowState.self, from: data)
             XCTAssertEqual(saved.opened.map(\.session), ["newer"], "Repeated cleanup must not overwrite the reopened window's state")
-            let additional = HerdrDestinations()
+            let additional = makeDestinations()
             XCTAssertNotEqual(additional.restoreWindow("", defaults: defaults), restoredKey,
                               "Repeated cleanup must not release the reopened window's claim")
             additional.stop()
@@ -1854,14 +1860,14 @@ final class HerdrStoreTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let notifier = HerdrNotifier()
         defer { notifier.reset() }
-        let first = HerdrDestinations(notifier: notifier)
+        let first = makeDestinations(notifier: notifier)
         first.restoreWindow("", defaults: defaults)
         first.configureInitialSession("front-session")
         first.start()
         defer { first.stop() }
         first.becameFrontmost()
 
-        let second = HerdrDestinations(notifier: notifier)
+        let second = makeDestinations(notifier: notifier)
         second.becameFrontmost()  // A window not yet running does not count.
         second.restoreWindow("", defaults: defaults)
         defer { second.stop() }
@@ -1870,7 +1876,7 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertFalse(second.active === first.active, "Each window has its own store")
 
         first.stop()
-        let third = HerdrDestinations(notifier: notifier)
+        let third = makeDestinations(notifier: notifier)
         third.restoreWindow("", defaults: defaults)
         defer { third.stop() }
         XCTAssertNotEqual(third.active.sessionName, "front-session", "No window in front: the usual default")
@@ -1913,7 +1919,7 @@ final class HerdrStoreTests: XCTestCase {
         let key = UUID().uuidString
         defaults.set(try JSONEncoder().encode(record), forKey: "HerdrConnectionsWindow.\(key)")
         let notifier = HerdrNotifier()
-        let destinations = HerdrDestinations(notifier: notifier)
+        let destinations = makeDestinations(notifier: notifier)
         destinations.restoreWindow(key, defaults: defaults)
         XCTAssertEqual(destinations.active.machine, machine)
         XCTAssertFalse(destinations.active.destinationEnabled)
@@ -1943,7 +1949,7 @@ final class HerdrStoreTests: XCTestCase {
         let notifier = HerdrNotifier()
         let pool = HerdrMetadataPool(notifier: notifier)
         pool.profiles.send([machine])
-        let destinations = HerdrDestinations(notifier: notifier, pool: pool)
+        let destinations = makeDestinations(notifier: notifier, pool: pool)
         destinations.restoreWindow(key, defaults: defaults)
         destinations.start()
         defer { destinations.stop(); notifier.reset() }
@@ -2051,7 +2057,7 @@ final class HerdrStoreTests: XCTestCase {
         let notifier = HerdrNotifier()
         let pool = HerdrMetadataPool(notifier: notifier)
         let first = HerdrDestinations(store: store, notifier: notifier, pool: pool)
-        let second = HerdrDestinations(notifier: notifier, pool: pool)
+        let second = makeDestinations(notifier: notifier, pool: pool)
         first.start()
         second.start()
         defer { first.stop(); second.stop(); notifier.reset() }
@@ -2160,7 +2166,7 @@ final class HerdrStoreTests: XCTestCase {
         let remoteServer = try FakeHerdrServer { [state] method, _ in
             method == "session.snapshot" ? state.snapshot() : ["result": [:]]
         }
-        let remote = HerdrStore()
+        let remote = HerdrStore(sessionDefaults: sessionDefaults)
         remote.setPresentationActive(false)
         defer { remote.stop(); remoteServer.stop(); WorkspaceFiles.sshExecutable = originalSSH }
         WorkspaceFiles.sshExecutable = try fakeSSH(api: remoteServer.path, client: "/private/tmp/no-client")

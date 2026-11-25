@@ -191,7 +191,7 @@ final class HerdrDestinations: ObservableObject {
     }
 
     private func makeStore(_ descriptor: HerdrWindowConnection) -> HerdrStore {
-        let store = HerdrStore()
+        let store = HerdrStore(sessionDefaults: active.sessionDefaults)
         store.requiresSurfaceForInput = true
         store.setPresentationActive(false)
         if descriptor.backendKind == .core {
@@ -420,7 +420,7 @@ final class HerdrDestinations: ObservableObject {
         }
         if store.machine == nil, store.backendKind == .tui {
             lastLocal = store
-            UserDefaults.standard.set(store.sessionName, forKey: "HerdrLastSession")
+            store.rememberLocalSession()
         }
         if let workspaceID { store.select(workspaceID: workspaceID) }
         store.setPresentationActive(true)
