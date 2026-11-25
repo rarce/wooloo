@@ -49,22 +49,28 @@ final class FakeHerdrServer {
 
     /// Writes one JSON line to every event subscription.
     func emit(_ object: [String: Any]) {
-        lock.lock()
-        let targets = subscribers
-        lock.unlock()
-        for fd in targets { write(object, to: fd) }
+        for fd in duplicateSubscribers() {
+            defer { close(fd) }
+            write(object, to: fd)
+        }
     }
 
     /// Models Herdr's events_lost contract: report the gap and close the subscription.
     func loseEvents() {
-        let targets = lock.withLock { subscribers.compactMap { fd -> Int32? in
-            let copy = dup(fd)
-            return copy >= 0 ? copy : nil
-        } }
-        for fd in targets {
+        for fd in duplicateSubscribers() {
+            defer { close(fd) }
             write(["error": ["code": "events_lost", "message": "subscriber fell behind"]], to: fd)
             shutdown(fd, SHUT_RDWR)
-            close(fd)
+        }
+    }
+
+    private func duplicateSubscribers() -> [Int32] {
+        // A disconnect can close a subscriber and let another pipe reuse its descriptor.
+        lock.withLock {
+            subscribers.compactMap { fd -> Int32? in
+                let copy = fcntl(fd, F_DUPFD_CLOEXEC, 0)
+                return copy >= 0 ? copy : nil
+            }
         }
     }
 
