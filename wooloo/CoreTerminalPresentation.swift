@@ -505,6 +505,12 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         /// sent on the new stream, never dropped for want of an attachment.
         func replace(_ terminal: String, _ attachment: Attachment, observe: Bool) throws {
             guard let rect = placed.first(where: { $0.terminal == terminal })?.rect else { return }
+            let canReplace = lock.withLock {
+                guard let live = attachments[terminal], live.channel == attachment.channel,
+                      ProcessInfo.processInfo.systemUptime >= live.retryModeChangeAfter else { return false }
+                return !observe || (windowFocused == false && heldInput[terminal] == nil)
+            }
+            guard canReplace else { return }
             try attach(terminal, rect: rect, cell: size, colors: colors, observe: observe, on: connection)
             let replaced = lock.withLock {
                 guard attachments[terminal]?.channel == attachment.channel else { return true }
@@ -516,7 +522,6 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             }
         }
         for (terminal, attachment) in current where attachment.observing && (focused || typedInto.contains(terminal)) {
-            guard ProcessInfo.processInfo.systemUptime >= attachment.retryModeChangeAfter else { continue }
             try replace(terminal, attachment, observe: false)
         }
         // A background window's stream watches instead once Core reports that another viewer
@@ -561,9 +566,7 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
                 // take its size. Keep the current grid if Core refuses the observer attach.
                 if lock.withLock({ windowFocused == false && heldInput[terminal] == nil &&
                     Self.focusedViewers.hasPeer(of: ObjectIdentifier(self), on: backend.target, showing: terminal) }) {
-                    if ProcessInfo.processInfo.systemUptime >= attachment.retryModeChangeAfter {
-                        try replace(terminal, attachment, observe: true)
-                    }
+                    try replace(terminal, attachment, observe: true)
                     continue
                 }
                 lock.withLock {
@@ -658,8 +661,10 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
         }
         // Without RESIZE frames confirmed by both sides, an observer follows `size` events.
         let followsSizeEvents = observe && !(offersResizes && result.resizeNotifications == true)
-        lock.withLock {
+        let installed = lock.withLock {
             let previous = attachments[terminal]
+            // Focus may return while an observer attach is in flight. Keep the active stream.
+            if observe, windowFocused == true, previous?.observing == false { return false }
             let swallowsClick = previous?.swallowsClick ?? false
             if !observe, let previous, previous.observing {
                 // Both streams represent the same running program. The replay may arrive
@@ -678,6 +683,11 @@ final class CoreTerminalPresentation: TerminalPresentation, @unchecked Sendable 
             }
             updateFocusedViewers()
             dirty = true
+            return true
+        }
+        guard installed else {
+            connection.discard(channel: channel)
+            return
         }
         if !observe { sendHeldInput(terminal, channel: channel, on: connection) }
         connection.route(channel: channel, onData: { [weak self] data in
