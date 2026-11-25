@@ -20,8 +20,8 @@ Measure every change with `scripts/terminal-bench.sh` and `scripts/terminal-e2e.
 ## Go to File and command palette
 
 - [x] Symbol search across the Space (⇧⌘T, or `#` in Go to File; ⌘T stays New Tab) via `WorkspaceSymbolIndexer`; ⇧⌘O and `@` search only the focused file's outline symbols.
-- [ ] Over SSH, a linked folder the walk did not describe (past its first 55,000 links, once its files fill `folderWalkMaximumRecords`, or once the time is up) shows as a file until it is opened, from the explorer or Go to File: its tab then closes and the explorer shows it as a folder (`WorkspaceFiles.folderOpenedAsFile`). Describing every listed link would cost about 1.5 s more on one CPU for 200,000 links, and 200,000 linked folders with 90-character names would print about 38 MB, past the 32 MB output limit.
-- [ ] The SSH walk stops waiting for a look at links stalled in a hung network mount after `folderWalkLinkBudget`, but the stalled `readlink` or `[ -d ]` stays on the remote machine until the mount answers.
+- [x] For SSH walks outside Git, classify linked folders among the paths already listed. One flag per path keeps the result bounded without repeating path names. The explorer shows confirmed directories as folders, and Go to File omits them. Opening an unclassified path still checks its type.
+- [x] On a link inspection timeout, stop the worker and its children when the remote host supports process groups for jobs. An uninterruptible filesystem call may remain on the host until the kernel can deliver the pending signal.
 
 ## herdr-core terminals
 

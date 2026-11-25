@@ -511,14 +511,21 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         }
     }
 
-    private func remoteWalkMatchingLocal(_ name: String, file: StaticString = #filePath, line: UInt = #line) throws
+    private func remoteWalkMatchingLocal(_ name: String, excludedRemoteFolderLinks: Set<String> = [],
+                                         file: StaticString = #filePath, line: UInt = #line) throws
         -> (visible: QuickOpenListing, includingIgnored: QuickOpenListing, listing: WorkspaceFileListing) {
         let remoteLocation = remote(name)
         let localLocation = sandbox.location(name)
+        func expectedQuickOpen(includeIgnored: Bool) throws -> QuickOpenListing {
+            var listing = try WorkspaceFiles.quickOpenFiles(at: localLocation, includeIgnored: includeIgnored)
+            listing.files.removeAll { excludedRemoteFolderLinks.contains($0) }
+            listing.ignored.subtract(excludedRemoteFolderLinks)
+            return listing
+        }
         let visible = try WorkspaceFiles.quickOpenFiles(at: remoteLocation)
-        XCTAssertEqual(visible, try WorkspaceFiles.quickOpenFiles(at: localLocation), name, file: file, line: line)
+        XCTAssertEqual(visible, try expectedQuickOpen(includeIgnored: false), name, file: file, line: line)
         let includingIgnored = try WorkspaceFiles.quickOpenFiles(at: remoteLocation, includeIgnored: true)
-        XCTAssertEqual(includingIgnored, try WorkspaceFiles.quickOpenFiles(at: localLocation, includeIgnored: true),
+        XCTAssertEqual(includingIgnored, try expectedQuickOpen(includeIgnored: true),
                        "\(name), including ignored files", file: file, line: line)
 
         WorkspaceFiles.forgetRecentResults()
@@ -544,10 +551,10 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         for index in 0..<300 { wideFiles["w\(index)/f.txt"] = "x\n" }
         try sandbox.write(wideFiles, in: "wide")
 
-        let loose = try remoteWalkMatchingLocal("loose")
+        let loose = try remoteWalkMatchingLocal("loose", excludedRemoteFolderLinks: ["alias"])
         let small = try remoteWalkMatchingLocal("small")
         let wide = try remoteWalkMatchingLocal("wide")
-        XCTAssertEqual(loose.includingIgnored.files, ["a b.txt", "alias", "app/.build/out.o", "d1/b.txt", "\(chain)/last.txt",
+        XCTAssertEqual(loose.includingIgnored.files, ["a b.txt", "app/.build/out.o", "d1/b.txt", "\(chain)/last.txt",
                                                      "it's\nodd.txt", "node_modules/pkg/index.js"])
         XCTAssertEqual(loose.includingIgnored.ignored, ["app/.build/out.o", "node_modules/pkg/index.js"])
         XCTAssertTrue(loose.includingIgnored.partial)
@@ -596,10 +603,10 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         try sandbox.write(["only.txt": "x\n", "\(chain)/.git/HEAD": "x\n", "\(chain)/node_modules/a.js": "x\n"],
                           in: "limit")
 
-        let rich = try remoteWalkMatchingLocal("rich")
+        let rich = try remoteWalkMatchingLocal("rich", excludedRemoteFolderLinks: ["alias", "lib/__pycache__", "lib/up"])
         let limit = try remoteWalkMatchingLocal("limit")
-        XCTAssertEqual(rich.visible.files, ["-dash.txt", ".hidden/inner.txt", "a/b/c.py", "alias", "back\\slash.txt", "broken",
-                                            "lib/__pycache__", "lib/node_modules", "lib/up", "naïve/über.txt", "new\nline/f.txt",
+        XCTAssertEqual(rich.visible.files, ["-dash.txt", ".hidden/inner.txt", "a/b/c.py", "back\\slash.txt", "broken",
+                                            "lib/node_modules", "naïve/über.txt", "new\nline/f.txt",
                                             "quote\"s 'and' $vars.txt", "star*.txt", "sub/wooloo-partial",
                                             "sub/wooloo-symbolic-links", "tab\tname.txt", "to-marker", "top.txt", "wooloo-partial"])
         XCTAssertFalse(rich.visible.partial, "Only skipped folders are at the depth limit")
@@ -682,7 +689,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                                                      label: "walk", limit: 1_000_000)
         XCTAssertEqual(WorkspaceFiles.folderWalkSections(output).records,
                        Array(WorkspaceFiles.folderWalkSections(output).records.prefix(WorkspaceFiles.folderWalkMaximumFileRecords))
-                           + ["wooloo-linked-folders", "wooloo-skipped", "wooloo-files"],
+                           + ["wooloo-skipped", "wooloo-files"],
                        "The remote stops printing files")
 
         for location in [remote("many"), sandbox.location("many")] {
@@ -814,9 +821,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         return WorkspaceFiles.folderWalk(linkedScriptOutput: output)
     }
 
-    /// Past the links described in full, the walk still describes linked folders, without their
-    /// targets, so the explorer shows them as folders; they go before skipped folders when the
-    /// records run out, and are looked at only within the walk's time limit.
+    /// The explorer knows the kind of listed directory links beyond its link-target limit.
     func testRemoteWalkDescribesLinkedFoldersPastTheLinksItDescribesInFull() throws {
         let maximum = WorkspaceFiles.maximumFiles
         let budget = WorkspaceFiles.folderWalkBudget
@@ -842,13 +847,54 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                        "Only folders are described past the first three")
 
         WorkspaceFiles.folderWalkBudget = 0
-        XCTAssertEqual(try linkedWalk("links", maximumLinks: 3).symbolicLinks.count, 3,
-                       "Once the time is up, only the links described in full")
+        let rootOnly = try linkedWalk("links", maximumLinks: 3)
+        XCTAssertTrue(rootOnly.partial)
+        XCTAssertEqual(Set(rootOnly.symbolicLinks.filter(\.value.isDirectory).keys), Set(folders),
+                       "The level deadline still leaves time to classify the links already listed")
     }
 
-    /// A linked folder the walk listed as a file, as past its first `folderWalkMaximumLinks`
-    /// links, is told apart when opened: its tab closes, and the explorer shows it as a folder,
-    /// also in later listings.
+    func testRemoteWalkClassifiesLinkedFoldersBeyondTheExtraRecordBudget() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        defer { WorkspaceFiles.maximumFiles = maximum }
+        WorkspaceFiles.maximumFiles = 1_050
+        try sandbox.write(["sub/file": "x"], in: "many-links")
+        for index in 1...1_060 {
+            try FileManager.default.createSymbolicLink(atPath: sandbox.path("many-links/folder\(index)"),
+                                                       withDestinationPath: "sub")
+        }
+        let walk = try linkedWalk("many-links", maximumLinks: 0)
+        XCTAssertTrue(walk.truncated)
+        XCTAssertEqual(walk.files.count, 1_050)
+        XCTAssertEqual(Set(walk.symbolicLinks.filter(\.value.isDirectory).keys), Set(walk.files))
+    }
+
+    func testRemoteGoToFileLeavesOutLinkedFoldersAndKeepsLinkedFiles() throws {
+        try sandbox.write(["plain.txt": "x", "sub/nested.txt": "y", "node_modules/dependency.js": "z"], in: "quick-links")
+        try sandbox.sh("""
+            ln -s sub 'directory link'
+            ln -s plain.txt 'file link'
+            ln -s ../sub node_modules/folder
+            ln -s ../plain.txt node_modules/alias
+            """, in: "quick-links")
+        try sandbox.write(["shims/readlink": """
+            #!/bin/sh
+            : > '\(sandbox.path("readlink-called"))'
+            exec /usr/bin/readlink "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/readlink")
+
+        let location = remote("quick-links")
+        XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: location).files,
+                       ["file link", "plain.txt", "sub/nested.txt"])
+        let includingIgnored = try WorkspaceFiles.quickOpenFiles(at: location, includeIgnored: true)
+        XCTAssertEqual(includingIgnored.files,
+                       ["file link", "node_modules/alias", "node_modules/dependency.js", "plain.txt", "sub/nested.txt"])
+        XCTAssertEqual(includingIgnored.ignored, ["node_modules/alias", "node_modules/dependency.js"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("readlink-called")))
+    }
+
+    /// Opening an unclassified linked folder closes its file tab and shows it as a folder in
+    /// the explorer, including in later listings.
     @MainActor
     func testALinkedFolderOpenedAsAFileShowsAsAFolder() async throws {
         try sandbox.write(["f.txt": "x\n", "sub/g.txt": "x\n"], in: "undescribed")
@@ -877,21 +923,21 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(model.ignoredContents["folder"]?.files, ["folder/g.txt"], "Read again, as it is open")
     }
 
-    /// A link into a hung network mount stalls whatever follows it; the walk waits for its look at
-    /// links only `folderWalkLinkBudget` seconds, then ends with the files it found, so SSH
-    /// answers long before its timeout.
-    func testRemoteWalkDoesNotWaitForALinkThatHangs() throws {
+    /// The timeout returns the files and stops the worker and its interruptible children.
+    func testRemoteWalkStopsTheStalledLinkWorker() throws {
         let budget = WorkspaceFiles.folderWalkLinkBudget
         defer { WorkspaceFiles.folderWalkLinkBudget = budget }
         WorkspaceFiles.folderWalkLinkBudget = 1
         try sandbox.write(["f.txt": "x\n"], in: "hung")
         try sandbox.sh("ln -s f.txt fine; ln -s f.txt hung", in: "hung")
-        // `readlink` of the link named "hung" never returns, as in a hung mount.
+        // The readlink subprocess resists TERM and would produce a side effect if left running.
         let stalled = sandbox.path("stalled.pid")
-        defer { try? sandbox.sh("[ ! -s '\(stalled)' ] || kill $(cat '\(stalled)') 2>/dev/null; true") }
+        let completed = sandbox.path("stalled.completed")
         try sandbox.write(["shims/readlink": """
             #!/bin/sh
-            case "$1" in *hung) echo $$ > '\(stalled)'; exec sleep 30;; esac
+            case "$1" in
+                *hung) trap '' TERM; echo $$ > '\(stalled)'; sleep 2; : > '\(completed)';;
+            esac
             exec /usr/bin/readlink "$@"
             """], in: ".")
         try sandbox.sh("chmod 755 shims/readlink")
@@ -900,6 +946,9 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 4, "The walk must not wait for the stalled link")
         XCTAssertEqual(Set(listing.files), ["f.txt", "fine", "hung"])
         XCTAssertTrue(listing.symbolicLinks["hung"]?.target.isEmpty ?? true, "The stalled link is not described")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stalled), "The worker reached the simulated stall")
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: completed), "The readlink subprocess was stopped")
     }
 
     /// The walk's `tr` runs in the C locale: in a UTF-8 one, BSD `tr` stops at a name that is not
@@ -948,6 +997,44 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             XCTAssertTrue(try WorkspaceFiles.quickOpenFiles(at: remote("deep"), includeIgnored: includeIgnored).truncated)
             XCTAssertLessThan(Date().timeIntervalSince(started), 1.8, "Ignored: \(includeIgnored)")
         }
+    }
+
+    func testRemoteGoToFileDoesNotScanTheRootSeparatelyForLinks() throws {
+        let maximum = WorkspaceFiles.maximumFiles
+        defer { WorkspaceFiles.maximumFiles = maximum }
+        WorkspaceFiles.maximumFiles = 5
+        try sandbox.write(Dictionary(uniqueKeysWithValues: (0..<1_200).map { ("file-\($0).txt", "x") }), in: "capped")
+        let extraScan = sandbox.path("link-only-find")
+        try sandbox.write(["shims/find": """
+            #!/bin/sh
+            case " $* " in
+                *" -type f "*) exec /usr/bin/find "$@";;
+                *" -type l "*) : > '\(extraScan)'; exit 0;;
+            esac
+            exec /usr/bin/find "$@"
+            """], in: ".")
+        try sandbox.sh("chmod 755 shims/find")
+
+        let listing = try WorkspaceFiles.quickOpenFiles(at: remote("capped"))
+        XCTAssertTrue(listing.truncated)
+        XCTAssertEqual(listing.files.count, 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: extraScan))
+    }
+
+    func testRemoteGoToFileKeepsFilesWithCanonicallyEquivalentFolderLinkNames() {
+        // This can occur on a remote filesystem even when the Mac running the test
+        // cannot store both forms side by side.
+        let file = "node_modules/caf\u{E9}.txt"
+        let folder = "node_modules/cafe\u{301}.txt"
+        XCTAssertEqual(file, folder)
+        XCTAssertNotEqual(Data(file.utf8), Data(folder.utf8))
+
+        let output = Data("wooloo-link-kinds\0df\0./\(folder)\0./\(file)\0wooloo-end\0".utf8)
+        let walk = WorkspaceFiles.folderWalk(linkedScriptOutput: output, readingSkipped: true,
+                                             excludingLinkedFolders: true)
+
+        XCTAssertEqual(walk.files.map { Data($0.utf8) }, [Data(file.utf8)])
+        XCTAssertEqual(Set(walk.ignoredFiles.map { Data($0.utf8) }), [Data(file.utf8)])
     }
 
     func testRemoteWalkByteLimitKeepsCompleteFilesForExplorerAndQuickOpen() throws {
@@ -1004,6 +1091,19 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             let prefix = Data(("./valid\0./incomplete\0" + suffix).utf8)
             WorkspaceFiles.folderWalkMaximumBytes = prefix.count
             XCTAssertEqual(WorkspaceFiles.folderWalk(scriptOutput: prefix, readingSkipped: false).files, ["valid"])
+        }
+    }
+
+    func testLinkedFolderFlagsStayAlignedAcrossInvalidNamesAndTheByteCut() {
+        let previousLimit = WorkspaceFiles.folderWalkMaximumBytes
+        defer { WorkspaceFiles.folderWalkMaximumBytes = previousLimit }
+        let output = Data("wooloo-link-kinds\0fdfd\0./plain\0./invalid".utf8) + [0xFF]
+            + Data("\0./other\0./new\nline\0wooloo-end\0wooloo-skipped\0".utf8)
+        for count in 1...output.count {
+            WorkspaceFiles.folderWalkMaximumBytes = count
+            let walk = WorkspaceFiles.folderWalk(linkedScriptOutput: Data(output.prefix(count)))
+            let expected: Set<String> = walk.files.contains("new\nline") ? ["new\nline"] : []
+            XCTAssertEqual(Set(walk.symbolicLinks.keys), expected, "Cut at byte \(count)")
         }
     }
 
