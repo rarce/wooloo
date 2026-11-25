@@ -1509,18 +1509,17 @@ final class HerdrStoreTests: XCTestCase {
 
     /// Model SSH's duplex stdio without touching saved hosts or requiring a local sshd.
     /// The real bridge owns its UNIX listeners, Process, cancellation and both protocols.
-    private func fakeSSH(api: String, client: String, connectionDelay: TimeInterval = 0) throws -> String {
+    private func fakeSSH(api: String, client: String) throws -> String {
         let binaryDirectory = root.appendingPathComponent("remote-bin")
         try FileManager.default.createDirectory(at: binaryDirectory, withIntermediateDirectories: true)
         let path = binaryDirectory.appendingPathComponent("herdr").path
         let script = """
         #!/usr/bin/python3
-        import os, sys, socket, select, time
+        import os, sys, socket, select
         assert sys.argv[1:3] == ['--session', 'agents'], sys.argv
         if '--check' in sys.argv:
             print('herdr-api-bridge-v1')
             sys.exit(0)
-        time.sleep(\(connectionDelay))
         command = sys.argv[3]
         path = \(String(reflecting: api)) if 'remote-api-bridge' in command else \(String(reflecting: client))
         sock = socket.socket(socket.AF_UNIX)
@@ -1553,19 +1552,22 @@ final class HerdrStoreTests: XCTestCase {
         return sshPath
     }
 
-    /// Unlike a local connection, remote startup opens three sequential SSH channels before
-    /// publishing its authoritative snapshot. Fail at this prerequisite instead of cascading into
-    /// unrelated routing assertions; the request log distinguishes progress from a broken bridge.
-    private func waitForRemoteSpace(_ label: String, server: FakeHerdrServer,
-                                    file: StaticString = #filePath, line: UInt = #line) async throws {
+    /// Wait for both SSH protocols before exercising routing. A timeout here identifies the
+    /// channel that failed and avoids cascading failures in clipboard and input assertions.
+    private func waitForRemotePresentation(server: FakeHerdrServer, endpoint: FakeSurfaceEndpoint,
+                                           file: StaticString = #filePath, line: UInt = #line) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
-        while !store.isConnected || store.snapshot?.workspaces.first?.label != label {
+        while !store.isConnected || store.snapshot?.workspaces.first?.label != "remote project"
+            || store.surface?.width != 7 || store.agentViewState?.agents.count != 1 {
             guard ContinuousClock.now < deadline else {
-                XCTFail("Remote bootstrap timed out: expected \(label), "
+                XCTFail("Remote presentation timed out: "
                         + "snapshot=\(store.snapshot?.workspaces.first?.label ?? "nil"), "
+                        + "surface width=\(String(describing: store.surface?.width)), "
+                        + "agent count=\(String(describing: store.agentViewState?.agents.count)), "
                         + "error=\(store.errorMessage ?? "nil"), "
                         + "surfaceError=\(store.surfaceError ?? "nil"), "
-                        + "API requests=\(server.requests.map(\.method))", file: file, line: line)
+                        + "API requests=\(server.requests.map(\.method)), "
+                        + "client frames=\(endpoint.received.count)", file: file, line: line)
                 throw CocoaError(.userCancelled)
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1600,9 +1602,7 @@ final class HerdrStoreTests: XCTestCase {
                 String(decoding: try AgentViewFixture.data(AgentViewFixture.snapshot(remoteAgents)), as: UTF8.self)),
                 SurfaceModel(width: 7, height: 2).surfaceFrame()])
         defer { remoteSurface.stop() }
-        // Startup needs three sequential API channels (snapshot, subscription, authoritative
-        // snapshot). A 1.1 s delay per channel exposes the old single-local-request wait budget.
-        WorkspaceFiles.sshExecutable = try fakeSSH(api: remote.path, client: client, connectionDelay: 1.1)
+        WorkspaceFiles.sshExecutable = try fakeSSH(api: remote.path, client: client)
         await connect()
         XCTAssertEqual(store.snapshot?.workspaces.first?.label, "project")
         let localContext = store.contextID
@@ -1612,9 +1612,9 @@ final class HerdrStoreTests: XCTestCase {
         XCTAssertNil(store.surface)
         XCTAssertNotEqual(store.contextID, localContext)
         XCTAssertFalse(store.socketPath.hasPrefix(HerdrStore.sessionRoot.path))
-        try await waitForRemoteSpace("remote project", server: remote)
-        await waitUntil("remote terminal attached") { store.surface?.width == 7 }
-        await waitUntil("remote agents attached") { store.agentViewState?.agents.count == 1 }
+        try await waitForRemotePresentation(server: remote, endpoint: remoteSurface)
+        let startupRequests = Array(remote.requests.prefix(3).map(\.method))
+        XCTAssertEqual(startupRequests, ["session.snapshot", "events.subscribe", "session.snapshot"])
         let copied = "Claude over SSH: áé 🐑\n"
         remoteSurface.send(FakeSurfaceEndpoint.clipboard(Data(copied.utf8).base64EncodedString()))
         await waitUntil("remote copy reaches this Mac") { pasteboard.string(forType: .string) == copied }
