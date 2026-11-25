@@ -43,6 +43,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Select Xcode 26
         run: |
@@ -50,11 +52,13 @@ jobs:
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
-      - name: Cache Swift packages
-        uses: actions/cache@v5
+      # Release uses the same key. The compacted repository contains the locked revision.
+      - name: Restore Swift packages
+        id: swift-packages
+        uses: actions/cache/restore@v5
         with:
           path: build/DerivedData/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('wooloo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          key: spm-slim-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('wooloo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'Vendor/**/Package.swift') }}
 
       # CI runs the fast suite: pixel snapshots are compared locally only, since their
       # rendering depends on the macOS version and fonts.
@@ -74,6 +78,7 @@ jobs:
           xcodebuild test \
             -project wooloo.xcodeproj -scheme wooloo -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath build/DerivedData \
+            -disableAutomaticPackageResolution -skipPackageUpdates -showBuildTimingSummary \
             -resultBundlePath build/wooloo.xcresult \
             -skip-testing:woolooTests/ViewSnapshotTests \
             -skip-testing:woolooTests/TerminalRenderingTests/testSnapshotsMatch \
@@ -82,10 +87,23 @@ jobs:
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
             2>&1 | tee build/concurrency.log
 
-      # Only package sources are cached: every migrated app source must compile in this log.
+      # The audit needs fresh compilation evidence for every migrated app source.
       - name: Audit migrated concurrency boundaries
         if: always() && !cancelled()
         run: python3 scripts/concurrency_audit.py build/concurrency.log
+
+      - name: Compact Swift package cache
+        id: compact-swift-packages
+        if: steps.swift-packages.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: sh scripts/compact-swift-package-cache.sh build/DerivedData/SourcePackages
+
+      - name: Save Swift packages
+        if: steps.compact-swift-packages.outcome == 'success'
+        uses: actions/cache/save@v5
+        with:
+          path: build/DerivedData/SourcePackages
+          key: ${{ steps.swift-packages.outputs.cache-primary-key }}
 
       - name: Upload compiler log
         if: always()

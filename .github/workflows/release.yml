@@ -66,14 +66,14 @@ jobs:
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
-      - name: Cache Swift packages
-        uses: actions/cache@v5
+      - name: Restore Swift packages
+        uses: actions/cache/restore@v5
         with:
           path: build/DerivedData/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('wooloo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          key: spm-slim-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('wooloo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'Vendor/**/Package.swift') }}
 
-      - name: Cache Herdr release assets
-        uses: actions/cache@v5
+      - name: Restore Herdr release assets
+        uses: actions/cache/restore@v5
         with:
           path: build/herdr
           key: herdr-${{ hashFiles('scripts/bundle-herdr.sh') }}
@@ -83,6 +83,7 @@ jobs:
           xcodebuild build \
             -project wooloo.xcodeproj -scheme wooloo -configuration Release \
             -destination 'generic/platform=macOS' -derivedDataPath build/DerivedData \
+            -disableAutomaticPackageResolution -skipPackageUpdates -showBuildTimingSummary \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
 
       # Sparkle reads the architectures from the archive and would hide the update from Intel Macs.
@@ -118,6 +119,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: wooloo-archive
+          compression-level: 0
           path: |
             build/release/wooloo-${{ env.VERSION }}.zip
             build/release/wooloo-${{ env.VERSION }}.dSYM.zip
@@ -145,12 +147,6 @@ jobs:
         with:
           name: wooloo-archive
           path: build/release
-
-      - name: Cache Sparkle's tools
-        uses: actions/cache@v5
-        with:
-          path: build/sparkle
-          key: sparkle-${{ hashFiles('scripts/release-appcast.sh') }}
 
       # docs/releases/vX.Y.Z.md when written by hand, otherwise GitHub's notes since the last release.
       # The Keychain note goes into the update dialog too, since updating is what triggers it.
