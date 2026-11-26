@@ -1,5 +1,8 @@
 import AppKit
+import Markdown
+import MarkdownView
 import SwiftUI
+import struct SwiftUI.Text
 
 struct WorkspaceGitHubRepository: Decodable, Equatable, Sendable {
     let nameWithOwner: String
@@ -417,7 +420,7 @@ private struct WorkspaceGitHubItemMetadata: View {
     }
 }
 
-private struct WorkspaceGitHubDetailView: View {
+struct WorkspaceGitHubDetailView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     let item: WorkspaceGitHubItem
@@ -471,8 +474,7 @@ private struct WorkspaceGitHubDetailView: View {
                         if detail.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Text("No description.").foregroundStyle(.secondary)
                         } else {
-                            Text(detail.body)
-                                .textSelection(.enabled)
+                            WorkspaceGitHubBody(markdown: detail.body, itemURL: detail.item.browserURL)
                         }
                     case .failure(let error):
                         Text(WorkspaceGitHub.message(for: error, machine: location.machineLabel))
@@ -499,5 +501,64 @@ private struct WorkspaceGitHubDetailView: View {
                 if !Task.isCancelled { result = .failure(error) }
             }
         }
+    }
+}
+
+private struct WorkspaceGitHubBody: View {
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
+    let markdown: String
+    let itemURL: URL?
+
+    var body: some View {
+        MarkdownReader(markdown) { parsed in
+            var discussion = parsed
+            var rewriter = GitHubDiscussionMarkdown()
+            discussion.document = Markdown.Document(parsed.document.children.compactMap { rewriter.visit($0) as? BlockMarkup })
+            return MarkdownView(discussion)
+        }
+        .markdownLazyBlocks()
+        .markdownFontGroup(MarkdownDocumentFonts(size: typography.body))
+        .markdownElementRenderer(.image(GitHubDiscussionImage(), urlScheme: "https"))
+        .markdownElementRenderer(.image(GitHubDiscussionImage(), urlScheme: "http"))
+        .foregroundStyle(theme.text)
+        .tint(theme.accent, for: .link)
+        .textSelection(.enabled)
+        .environment(\.openURL, OpenURLAction { url in
+            guard let target = URL(string: url.relativeString, relativeTo: itemURL)?.absoluteURL,
+                  ["http", "https"].contains(target.scheme?.lowercased()), target.host != nil else { return .discarded }
+            return .systemAction(target)
+        })
+    }
+}
+
+/// Decode remote attachments as images; the document preview can also embed SVG in WebKit.
+private struct GitHubDiscussionImage: MarkdownImageRenderer {
+    func makeBody(configuration: Configuration) -> some View {
+        let label = configuration.alternativeText ?? "Image"
+        AsyncImage(url: configuration.url) { phase in
+            if let image = phase.image {
+                image.resizable().scaledToFit().accessibilityLabel(label)
+            } else {
+                Text(verbatim: label).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Discussion bodies preserve single line breaks. Keep remote HTML out of the document
+/// preview's WebKit renderer, and omit the comments used as authoring hints in issue templates.
+private struct GitHubDiscussionMarkdown: MarkupRewriter {
+    func visitSoftBreak(_ softBreak: SoftBreak) -> Markup? { LineBreak() }
+
+    func visitInlineHTML(_ html: InlineHTML) -> Markup? {
+        if html.rawHTML.hasPrefix("<!--") { return nil }
+        if ["<br>", "<br/>", "<br />"].contains(html.rawHTML.lowercased()) { return LineBreak() }
+        return Markdown.Text(html.rawHTML)
+    }
+
+    func visitHTMLBlock(_ html: HTMLBlock) -> Markup? {
+        if html.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<!--") { return nil }
+        return Paragraph(Markdown.Text(html.rawHTML))
     }
 }

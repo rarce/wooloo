@@ -473,7 +473,7 @@ extension WoolooTheme {
 
 /// GitHub's README type scale: semibold headings at 2, 1.5, 1.25, 1, 0.875 and 0.85 em,
 /// and code at 85 % of the body size.
-private struct MarkdownDocumentFonts: MarkdownFontGroup {
+struct MarkdownDocumentFonts: MarkdownFontGroup {
     /// The body text size in points.
     let size: CGFloat
 
