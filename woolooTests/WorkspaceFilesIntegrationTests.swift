@@ -146,9 +146,9 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         try sandbox.write(["edit.txt": "one\nthree\nfour\n", untracked: "one\ntwo", "binary": "\0binary"], in: "repo/sub")
 
         let location = sandbox.location("repo/sub")
-        let changes = [untracked, "binary"].map {
-            WorkspaceFileChange(path: $0, indexStatus: "?", worktreeStatus: "?", originalPath: nil)
-        }
+        let changes = try WorkspaceFiles.listing(at: location).changes
+        XCTAssertEqual(Set(changes.map(\.path)), ["binary", "edit.txt", "new.txt", "remove.txt", untracked])
+        XCTAssertEqual(changes.first { $0.path == "new.txt" }?.originalPath, "old.txt")
         let counts = try WorkspaceFiles.changeLineCounts(at: location, changes: changes)
         XCTAssertEqual(counts, [
             "edit.txt": WorkspaceLineCounts(additions: 2, deletions: 1),
@@ -168,6 +168,45 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: location, changes: changes), [
             "after.txt": WorkspaceLineCounts(additions: 3, deletions: 2)
         ])
+    }
+
+    func testChangesInSubdirectoryOpenRenamedDiffAndExcludeOutsidePaths() throws {
+        let folder = "space \nroot"
+        let edited = "modified \nname.txt"
+        let untracked = "untracked \nname.txt"
+        try sandbox.repository("repo", files: [
+            folder + "/before.txt": "first\nsecond\n",
+            folder + "/" + edited: "old\n",
+            folder + "/moved out.txt": "leave\n",
+            "moved in.txt": "arrive\n",
+            "outside.txt": "outside\n"
+        ])
+        let prefix = WorkspaceFiles.quote(folder)
+        try sandbox.sh("""
+            git mv \(prefix)/before.txt \(prefix)/after.txt &&
+            git mv \(prefix)/'moved out.txt' 'outside move.txt' &&
+            git mv 'moved in.txt' \(prefix)/'moved in.txt'
+            """, in: "repo")
+        try sandbox.write(["outside.txt": "edited outside\n"], in: "repo")
+        try sandbox.write(["after.txt": "three\nfour\nfive\n", edited: "changed\n", untracked: "new\n"],
+                          in: "repo/" + folder)
+
+        let location = sandbox.location("repo/" + folder)
+        let changes = try WorkspaceFiles.listing(at: location).changes
+        XCTAssertEqual(Set(changes.map(\.path)), ["after.txt", edited, untracked, "moved in.txt", "moved out.txt"])
+        let rename = try XCTUnwrap(changes.first { $0.path == "after.txt" })
+        XCTAssertEqual(rename.originalPath, "before.txt")
+        XCTAssertTrue(changes.filter { $0.path.hasPrefix("moved ") }.allSatisfy { $0.originalPath == nil })
+        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: location, changes: changes), [
+            "after.txt": WorkspaceLineCounts(additions: 3, deletions: 2),
+            edited: WorkspaceLineCounts(additions: 1, deletions: 1),
+            untracked: WorkspaceLineCounts(additions: 1, deletions: 0),
+            "moved in.txt": WorkspaceLineCounts(additions: 1, deletions: 0),
+            "moved out.txt": WorkspaceLineCounts(additions: 0, deletions: 1)
+        ])
+        let patch = try XCTUnwrap(WorkspaceFiles.diff(rename.path, at: location)[.all])
+        XCTAssertTrue(patch.contains("+three\n+four\n+five"), patch)
+        XCTAssertEqual(try WorkspaceFiles.quickOpenFiles(at: location).changes[edited], .modified)
     }
 
     func testChangeLineCountsBeforeTheFirstCommitUseTheWorkingFile() throws {
@@ -332,6 +371,40 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
 
         XCTAssertThrowsError(try WorkspaceFiles.stage("../outside", at: repo))
         XCTAssertThrowsError(try WorkspaceFiles.stage("/etc", at: repo))
+    }
+
+    func testChangesActionsTreatSpaceRelativeFilenamesAsLiteral() throws {
+        let path = "notes[1].txt"
+        let sibling = "notes1.txt"
+        let added = "notes[12].txt"
+        try sandbox.repository("repo", files: ["sub/" + path: "original\n", "sub/" + sibling: "sibling original\n"])
+        try sandbox.write([path: "selected edit\n", sibling: "sibling edit\n", added: "added contents\n"], in: "repo/sub")
+        let location = sandbox.location("repo/sub")
+
+        let patch = try XCTUnwrap(WorkspaceFiles.diff(path, at: location)[.all])
+        XCTAssertTrue(patch.contains("+selected edit"), patch)
+        XCTAssertFalse(patch.contains("sibling edit"), patch)
+
+        try WorkspaceFiles.stage(path, at: location)
+        XCTAssertEqual(try changes(location), [path: "M ", sibling: " M", added: "??"])
+        try WorkspaceFiles.stage(sibling, at: location)
+        try WorkspaceFiles.unstage(path, at: location)
+        XCTAssertEqual(try changes(location), [path: " M", sibling: "M ", added: "??"])
+
+        let trackedChange = try XCTUnwrap(WorkspaceFiles.listing(at: location).changes.first { $0.path == path })
+        try WorkspaceFiles.discard(trackedChange, at: location)
+        XCTAssertEqual(try sandbox.read(path, in: "repo/sub"), "original\n")
+
+        let addedPatch = try XCTUnwrap(WorkspaceFiles.diff(added, at: location)[.all])
+        XCTAssertTrue(addedPatch.contains("+added contents"), addedPatch)
+        XCTAssertFalse(addedPatch.contains("sibling edit"), addedPatch)
+        try WorkspaceFiles.stage(added, at: location)
+        let addedChange = try XCTUnwrap(WorkspaceFiles.listing(at: location).changes.first { $0.path == added })
+        try WorkspaceFiles.discard(addedChange, at: location)
+
+        XCTAssertThrowsError(try sandbox.read(added, in: "repo/sub"))
+        XCTAssertEqual(try sandbox.read(sibling, in: "repo/sub"), "sibling edit\n")
+        XCTAssertEqual(try changes(location), [sibling: "M "])
     }
 
     func testDiscardRestoresHeadAndDeletesNewFiles() throws {

@@ -21,6 +21,13 @@ final class WorkspaceGitParsingTests: XCTestCase {
         XCTAssertNil(changes[0].originalPath)
     }
 
+    func testStatusDropsOutsideRenamePathsAndKeepsRecordBoundaries() {
+        let status = "R  sibling/out.txt\0sub/moved.txt\0R  sub/in.txt\0sibling/in.txt\0?? sub/next.txt\0"
+        let changes = WorkspaceFiles.parseStatus(data(status), gitPrefix: data("sub/\n"))
+        XCTAssertEqual(changes.map(\.path), ["in.txt", "next.txt"])
+        XCTAssertNil(changes.first?.originalPath)
+    }
+
     func testStatusKindsAndStageStates() {
         func change(_ status: String) -> WorkspaceFileChange {
             let characters = Array(status)
