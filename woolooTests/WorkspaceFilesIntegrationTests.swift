@@ -373,6 +373,40 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try WorkspaceFiles.stage("/etc", at: repo))
     }
 
+    func testChangesActionsTreatSpaceRelativeFilenamesAsLiteral() throws {
+        let path = "notes[1].txt"
+        let sibling = "notes1.txt"
+        let added = "notes[12].txt"
+        try sandbox.repository("repo", files: ["sub/" + path: "original\n", "sub/" + sibling: "sibling original\n"])
+        try sandbox.write([path: "selected edit\n", sibling: "sibling edit\n", added: "added contents\n"], in: "repo/sub")
+        let location = sandbox.location("repo/sub")
+
+        let patch = try XCTUnwrap(WorkspaceFiles.diff(path, at: location)[.all])
+        XCTAssertTrue(patch.contains("+selected edit"), patch)
+        XCTAssertFalse(patch.contains("sibling edit"), patch)
+
+        try WorkspaceFiles.stage(path, at: location)
+        XCTAssertEqual(try changes(location), [path: "M ", sibling: " M", added: "??"])
+        try WorkspaceFiles.stage(sibling, at: location)
+        try WorkspaceFiles.unstage(path, at: location)
+        XCTAssertEqual(try changes(location), [path: " M", sibling: "M ", added: "??"])
+
+        let trackedChange = try XCTUnwrap(WorkspaceFiles.listing(at: location).changes.first { $0.path == path })
+        try WorkspaceFiles.discard(trackedChange, at: location)
+        XCTAssertEqual(try sandbox.read(path, in: "repo/sub"), "original\n")
+
+        let addedPatch = try XCTUnwrap(WorkspaceFiles.diff(added, at: location)[.all])
+        XCTAssertTrue(addedPatch.contains("+added contents"), addedPatch)
+        XCTAssertFalse(addedPatch.contains("sibling edit"), addedPatch)
+        try WorkspaceFiles.stage(added, at: location)
+        let addedChange = try XCTUnwrap(WorkspaceFiles.listing(at: location).changes.first { $0.path == added })
+        try WorkspaceFiles.discard(addedChange, at: location)
+
+        XCTAssertThrowsError(try sandbox.read(added, in: "repo/sub"))
+        XCTAssertEqual(try sandbox.read(sibling, in: "repo/sub"), "sibling edit\n")
+        XCTAssertEqual(try changes(location), [sibling: "M "])
+    }
+
     func testDiscardRestoresHeadAndDeletesNewFiles() throws {
         let repo = try sandbox.repository("repo", files: ["a.txt": "a\n", "b.txt": "b\n", "old.txt": "o\n", "gone.txt": "g\n"])
         try sandbox.sh("echo x >> a.txt && git add a.txt && echo y >> a.txt && echo new > new.txt && echo added > added.txt"

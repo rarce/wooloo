@@ -171,10 +171,10 @@ extension WorkspaceFiles {
     /// `.unstaged` are added when the file has both kinds of changes.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func diff(_ path: String, at location: WorkspaceFileLocation) throws -> [WorkspaceDiffScope: String] {
-        try validateRelativePath(path)
+        let target = try literalPathspec(path)
         let options = ["--no-ext-diff", "--no-textconv", "--"]
         func patch(_ args: [String]) throws -> String {
-            String(data: try git(location, ["diff"] + args + options + [path], limit: maximumDiffBytes), encoding: .utf8) ?? ""
+            String(data: try git(location, ["diff"] + args + options + [target], limit: maximumDiffBytes), encoding: .utf8) ?? ""
         }
         let staged = try patch(["--cached"])
         let unstaged = try patch([])
@@ -185,7 +185,7 @@ extension WorkspaceFiles {
             return [.all: try patch([base]), .staged: staged, .unstaged: unstaged]
         }
         if !staged.isEmpty || !unstaged.isEmpty { return [.all: staged + unstaged] }
-        if (try? git(location, ["ls-files", "--error-unmatch", "--", path], limit: 1_000)) == nil,
+        if (try? git(location, ["ls-files", "--error-unmatch", "--", target], limit: 1_000)) == nil,
            let file = try? read(path, at: location) {
             return [.all: untrackedPatch(file.text, path: path)]
         }
@@ -699,14 +699,16 @@ extension WorkspaceFiles {
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func stage(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
-        _ = try git(location, ["add", "--", try pathspec(path)], limit: 20_000)
+        let target = path.isEmpty ? "." : try literalPathspec(path)
+        _ = try git(location, ["add", "--", target], limit: 20_000)
     }
 
     /// Unstages a file or folder; an empty path unstages everything under the Space root.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
     static func unstage(_ path: String, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
-        _ = try git(location, ["restore", "--staged", "--", try pathspec(path)], limit: 20_000)
+        let target = path.isEmpty ? "." : try literalPathspec(path)
+        _ = try git(location, ["restore", "--staged", "--", target], limit: 20_000)
     }
 
     /// Discards a file's staged and unstaged changes, as Zed's Discard Changes does: a path in
@@ -716,12 +718,12 @@ extension WorkspaceFiles {
     static func discard(_ change: WorkspaceFileChange, at location: WorkspaceFileLocation) throws {
         defer { forgetRecentResults() }
         let paths = [change.path] + (change.originalPath.map { [$0] } ?? [])
-        for path in paths { try validateRelativePath(path) }
-        for path in paths {
+        let targets = try paths.map(literalPathspec)
+        for (path, target) in zip(paths, targets) {
             if (try? git(location, ["cat-file", "-e", "HEAD:./\(path)"], limit: 1_000)) != nil {
-                _ = try git(location, ["restore", "--source=HEAD", "--staged", "--worktree", "--", path], limit: 20_000)
+                _ = try git(location, ["restore", "--source=HEAD", "--staged", "--worktree", "--", target], limit: 20_000)
             } else {
-                _ = try git(location, ["rm", "--cached", "--force", "--quiet", "--ignore-unmatch", "--", path], limit: 20_000)
+                _ = try git(location, ["rm", "--cached", "--force", "--quiet", "--ignore-unmatch", "--", target], limit: 20_000)
                 _ = try shell("p=\(quote("./" + path)); " + refuseOutside("p") + "rm -f \"$p\"", at: location, limit: 4_000)
             }
         }
@@ -734,10 +736,9 @@ extension WorkspaceFiles {
         return parseLog(try git(location, ["log", "-n", "100", "--follow", "--format=\(logFormat)", "--", path], limit: 400_000))
     }
 
-    private static func pathspec(_ path: String) throws -> String {
-        if path.isEmpty { return "." }
+    private static func literalPathspec(_ path: String) throws -> String {
         try validateRelativePath(path)
-        return path
+        return ":(literal)./" + path
     }
 
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
