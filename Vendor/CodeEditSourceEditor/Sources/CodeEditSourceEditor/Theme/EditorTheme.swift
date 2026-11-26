@@ -16,6 +16,7 @@ public struct EditorTheme {
     public var background: NSColor
     public var lineHighlight: NSColor
     public var selection: NSColor
+    public var inactiveSelection: NSColor?
     public var keywords: NSColor
     public var commands: NSColor
     public var types: NSColor
@@ -43,7 +44,8 @@ public struct EditorTheme {
         numbers: NSColor,
         strings: NSColor,
         characters: NSColor,
-        comments: NSColor
+        comments: NSColor,
+        inactiveSelection: NSColor? = nil
     ) {
         self.text = text
         self.insertionPoint = insertionPoint
@@ -51,6 +53,7 @@ public struct EditorTheme {
         self.background = background
         self.lineHighlight = lineHighlight
         self.selection = selection
+        self.inactiveSelection = inactiveSelection
         self.keywords = keywords
         self.commands = commands
         self.types = types
@@ -96,6 +99,7 @@ extension EditorTheme: Equatable {
         lhs.background == rhs.background &&
         lhs.lineHighlight == rhs.lineHighlight &&
         lhs.selection == rhs.selection &&
+        lhs.inactiveSelection == rhs.inactiveSelection &&
         lhs.keywords == rhs.keywords &&
         lhs.commands == rhs.commands &&
         lhs.types == rhs.types &&

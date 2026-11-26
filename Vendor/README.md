@@ -16,13 +16,14 @@ Their source files are unchanged except for these changes in CodeEditSourceEdito
 - Tabs stop every `tabWidth` spaces: `attributesFor` includes the paragraph style upstream builds but never applies, and `applyParagraphStyle()` rebuilds it and sets it on the text when the view loads and when the font or tab width changes. Upstream draws tabs at AppKit's default 28 pt stops.
 - Markdown capture names map to document colors and bold/italic fonts. The `markdown_inline` injection alias loads inline syntax, and disjoint highlight runs preserve heading styles beneath inline captures and nested emphasis.
 - `TreeSitterClient.querySymbols` returns immutable UTF-16 symbol snapshots from the existing incremental tree under its executor. Revision checks reject outdated trees; the app shares the result between Outline and breadcrumbs without an additional parser or language server.
+- Theme changes update the selection, current-line highlight, gutter, typing attributes and background in place. Source themes can supply a dedicated inactive selection color.
 - `StyledRangeStore.coalesceRunAfter` checks that a following run exists before reading it, preventing a crash when deleting the final character of highlighted text without a trailing newline.
 
 For editor performance, CodeEditTextView's vertical scroll anchors use row-tree geometry instead of
 Core Text caret offsets, which can scan every cluster of a multi-megabyte unwrapped row during
 initial wrapping. Cursor/reveal layout requests reuse current fragments and the tree's aggregate
-height; text/attribute invalidation and width changes still rebuild them. The wrapping algorithm,
-glyph shaping and horizontal caret lookup are unchanged.
+height. Text or attribute invalidation and width changes still rebuild them. Wrapping and glyph
+shaping retain the upstream algorithms.
 
 And in CodeEditTextView, for multiple cursors (`wooloo/EditorMultiCursor.swift` adds the commands):
 
@@ -37,6 +38,7 @@ And in CodeEditTextView, for line wrapping:
 
 - Edits in the hidden prefix of the top logical line map one document anchor through the whole replacement batch. Undo and redo defer layout, caret geometry and final notifications until the whole group is applied. Visible-row typing keeps the inserted text in view; replacing the anchored character cancels preservation, and scrolling cancels an edit anchor waiting for layout. Edits only in earlier logical lines retain the existing viewport behavior.
 
+- Home and End target physical line bounds. Command–Left and Command–Right use visual rows, handle the line's actual terminator and retain the correct caret edge at soft wraps. Keyboard selection reveal accounts for the width of the floating gutter.
 - `TextLayoutManager.layoutLine` returns the whole line's height, as upstream does since 0.10.0, while still placing views only for the rows inside the layout rect; a line that stays visible gets views for its rows as they scroll in (`placeFragmentViews`). It returned the height of the rows it placed, so a wrapped line starting above the rect got part of its height; the pass then moved the scroll position by the difference, which laid out again from inside the same line, until the stack overflowed. Upstream places every row instead, which for a 2 MB minified line means tens of thousands of views.
 - `scrollSelectionToVisible()` scrolls on each pass of its loop rather than once after it, as upstream does since 0.11.3, so a far selection lands on screen although the wrapped lines scrolled past grow taller than estimated. It stops after 20 passes; upstream has no limit.
 - `TextLayoutManager.layoutLines` keeps the row at the top when lines rewrap to another width (a resize, a sidebar, Markdown's split view, the width settling after a restore) or wrapping is turned on or off: at the start of the pass that rewraps (or the first pass after the toggle) it notes the character at the top and how far into its row the view starts, and after the pass scrolls back to it, again while the lines that come into view move it, at most 20 times (`keepTop(_:)`); the anchor is not kept beyond that pass. The same character is kept across further widths while it is still at the top and the text is not edited or replaced, so going to another width and back does not drift to the start of a row. Upstream left the top wherever the rewrapped lines above it pushed it.

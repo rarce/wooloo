@@ -29,6 +29,7 @@ extension TextViewController {
     /// Style the text view.
     package func styleTextView() {
         textView.selectionManager.selectionBackgroundColor = theme.selection
+        textView.selectionManager.inactiveSelectionBackgroundColor = theme.inactiveSelection
         textView.selectionManager.selectedLineBackgroundColor = getThemeBackground()
         textView.selectionManager.highlightSelectedLine = isEditable
         textView.selectionManager.insertionPointColor = theme.insertionPoint

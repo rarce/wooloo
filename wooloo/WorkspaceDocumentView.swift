@@ -277,7 +277,7 @@ struct WorkspaceDocumentView: View {
         EditorSyntax.named(document.syntaxOverride) ?? detectedSyntax
     }
 
-    private var editorTheme: EditorTheme { theme.editorTheme }
+    private var editorTheme: EditorTheme { theme.sourceEditorTheme }
 
     /// A Markdown preview searches its rendered text; the source and split views search the source.
     private var findTarget: DocumentFindModel.Target {

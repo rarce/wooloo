@@ -38,8 +38,9 @@ package extension TextSelectionManager {
             return extendSelectionWord(string: string, from: offset, delta: delta)
         case .line:
             return extendSelectionLine(string: string, from: offset, delta: delta)
-        case .visualLine:
-            return extendSelectionVisualLine(string: string, from: offset, delta: delta)
+        case .lineBoundary, .visualLine:
+            let target = horizontalLineBoundary(from: offset, forward: delta > 0, visual: destination == .visualLine)
+            return NSRange(start: min(offset, target.offset), end: max(offset, target.offset))
         case .document:
             if delta > 0 {
                 return NSRange(start: offset, end: string.length)
@@ -125,43 +126,40 @@ package extension TextSelectionManager {
         return rangeToDelete
     }
 
-    /// Extends the selection by one visual line in the direction specified (eg one line fragment).
-    ///
-    /// If extending backwards, this method will return the beginning of the leading non-whitespace characters
-    /// in the line. If the offset is located in the leading whitespace it will return the real line beginning.
-    /// For Example
-    /// ```
-    /// ^ = offset, ^--^ = returned range
-    /// Line:
-    ///      Loren Ipsum
-    ///            ^
-    /// Extend 1st Call:
-    ///      Loren Ipsum
-    ///      ^-----^
-    /// Extend 2nd Call:
-    ///      Loren Ipsum
-    /// ^----^
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - string: The reference string to use.
-    ///   - offset: The location to start extending the selection from.
-    ///   - delta: The direction the selection should be extended. `1` for forwards, `-1` for backwards.
-    /// - Returns: The range of the extended selection.
-    private func extendSelectionVisualLine(string: NSString, from offset: Int, delta: Int) -> NSRange {
-        guard let line = layoutManager?.textLineForOffset(offset),
-              let lineFragment = line.data.typesetter.lineFragments.getLine(atOffset: offset - line.range.location)
-        else {
-            return NSRange(location: offset, length: 0)
+    /// Resolves a physical or visual line boundary, preserving the trailing edge at a soft wrap.
+    func horizontalLineBoundary(
+        from offset: Int, forward: Bool, visual: Bool, affinity: TextSelection.VisualCaret? = nil
+    ) -> (offset: Int, caret: TextSelection.VisualCaret?) {
+        guard let layoutManager, let line = layoutManager.textLineForOffset(offset),
+              let string = textStorage?.string as NSString?, !line.range.isEmpty else {
+            return (offset, nil)
         }
-        let lineBound = delta > 0
-        ? line.range.location + min(
-            lineFragment.range.max,
-            line.range.max - line.range.location - (layoutManager?.detectedLineEnding.length ?? 1)
-        )
-        : line.range.location + lineFragment.range.location
+        let end = LineEnding.contentEnd(of: line.range, in: string)
+        guard visual else { return (forward ? end : line.range.location, nil) }
 
-        return _extendSelectionLine(string: string, lineBound: lineBound, offset: offset, delta: delta)
+        if line.data.lineFragments.isEmpty {
+            _ = layoutManager.rectForOffset(offset)
+        }
+        let lastUnit = line.range.max - 1
+        let lookup = if let affinity, affinity.edge == .trailing, affinity.anchorOffset == offset - 1 {
+            affinity.anchorOffset
+        } else {
+            min(offset, lastUnit)
+        }
+        guard let fragment = line.data.lineFragments.getLine(atOffset: lookup - line.range.location) else {
+            return (offset, nil)
+        }
+
+        if forward {
+            let fragmentEnd = line.range.location + fragment.range.max
+            let target = min(fragmentEnd, end)
+            // Keep the insertion point on this row when the same offset starts the next row.
+            return (target, fragmentEnd < end ? .init(anchorOffset: target - 1, edge: .trailing) : nil)
+        }
+
+        let start = line.range.location + fragment.range.location
+        let range = _extendSelectionLine(string: string, lineBound: start, offset: offset, delta: -1)
+        return (range.location, nil)
     }
 
     /// Extends the selection by one real line in the direction specified.

@@ -250,6 +250,88 @@ extension WoolooTheme {
             comments: Self.nsColor(herdr.overlay0)
         )
     }
+
+    /// Source uses selection colors independent of the terminal and diff palettes.
+    var sourceEditorTheme: EditorTheme {
+        Self.sourceEditorThemes[id] ?? makeSourceEditorTheme()
+    }
+
+    private static let sourceEditorThemes = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0.makeSourceEditorTheme()) })
+
+    private func makeSourceEditorTheme() -> EditorTheme {
+        var theme = editorTheme
+        let opacity = theme.lineHighlight.alphaComponent
+        let baseLuminance = EditorContrast.luminance(theme.background)
+        // Bound the translucent row color under both linear and sRGB compositing.
+        let rowLuminance = isDark
+            ? baseLuminance * (1 - opacity) + EditorContrast.luminance(theme.lineHighlight) * opacity
+            : EditorContrast.luminance(EditorContrast.mix(theme.background, theme.lineHighlight, amount: opacity))
+        let surface = isDark ? max(baseLuminance, rowLuminance) : min(baseLuminance, rowLuminance)
+        let tint = Self.nsColor(herdr.accent)
+        let foregroundLimit = Self.nsColor(isDark ? 0xFFFFFF : 0x000000)
+
+        func selection(contrast: Double) -> NSColor {
+            let target = isDark ? (surface + 0.05) * contrast - 0.05 : (surface + 0.05) / contrast - 0.05
+            return EditorContrast.adjust(tint, toward: EditorContrast.luminance(tint) > target
+                                         ? Self.nsColor(0x000000) : Self.nsColor(0xFFFFFF), to: target)
+        }
+
+        theme.selection = selection(contrast: 1.45)
+        theme.inactiveSelection = selection(contrast: 1.25)
+        // The focused fill is closest to the text in luminance. Passing on this fill also
+        // covers the unfocused fill, current line and editor background.
+        let focused = EditorContrast.luminance(theme.selection)
+        let minimumTextContrast = 4.5
+        let threshold = isDark
+            ? (focused + 0.05) * minimumTextContrast - 0.05
+            : (focused + 0.05) / minimumTextContrast - 0.05
+        let textColors: [WritableKeyPath<EditorTheme, NSColor>] = [
+            \.text, \.keywords, \.commands, \.types, \.attributes, \.variables, \.values,
+            \.numbers, \.strings, \.characters, \.comments
+        ]
+        for keyPath in textColors {
+            let color = theme[keyPath: keyPath]
+            let luminance = EditorContrast.luminance(color)
+            if isDark ? luminance < threshold : luminance > threshold {
+                theme[keyPath: keyPath] = EditorContrast.adjust(color, toward: foregroundLimit, to: threshold)
+            }
+        }
+        return theme
+    }
+}
+
+private enum EditorContrast {
+    static func luminance(_ color: NSColor) -> Double {
+        func linear(_ value: Double) -> Double {
+            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(color.redComponent)
+             + 0.7152 * linear(color.greenComponent)
+             + 0.0722 * linear(color.blueComponent)
+    }
+
+    static func mix(_ first: NSColor, _ second: NSColor, amount: Double) -> NSColor {
+        NSColor(srgbRed: first.redComponent + (second.redComponent - first.redComponent) * amount,
+                green: first.greenComponent + (second.greenComponent - first.greenComponent) * amount,
+                blue: first.blueComponent + (second.blueComponent - first.blueComponent) * amount, alpha: 1)
+    }
+
+    /// Finds the first blend that reaches the requested luminance in the requested direction.
+    static func adjust(_ color: NSColor, toward endpoint: NSColor, to luminanceTarget: Double) -> NSColor {
+        let lightening = luminance(color) < luminanceTarget
+        var low = 0.0
+        var high = 1.0
+        for _ in 0..<16 {
+            let mid = (low + high) / 2
+            let value = luminance(mix(color, endpoint, amount: mid))
+            if lightening ? value < luminanceTarget : value > luminanceTarget {
+                low = mid
+            } else {
+                high = mid
+            }
+        }
+        return mix(color, endpoint, amount: high)
+    }
 }
 
 // MARK: - Store

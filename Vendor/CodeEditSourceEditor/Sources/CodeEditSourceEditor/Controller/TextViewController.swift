@@ -62,7 +62,11 @@ public class TextViewController: NSViewController {
                 attributesFor(nil),
                 range: NSRange(location: 0, length: textView.textStorage.length)
             )
-            textView.selectionManager.selectedLineBackgroundColor = theme.selection
+            // wooloo patch: refresh view colors and typing attributes when the theme changes.
+            styleTextView()
+            styleScrollView()
+            styleGutterView()
+            textView.needsDisplay = true
             highlighter?.invalidate()
         }
     }

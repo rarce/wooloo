@@ -21,20 +21,26 @@ extension TextSelectionManager {
                     && textSelection.range.location <= range.max) {
                 textSelection.range.location = range.location + replacementLength
                 textSelection.range.length = 0
+                textSelection.pivot = textSelection.range.location
             } else if textSelection.range.location >= range.max {
                 textSelection.range.location = max(0, textSelection.range.location + delta)
+                if let pivot = textSelection.pivot {
+                    textSelection.pivot = pivot + delta
+                }
             }
         }
 
-        // Clean up duplicate selection ranges
-        var allRanges: Set<NSRange> = []
-        for (idx, selection) in self.textSelections.enumerated().reversed() {
-            if allRanges.contains(selection.range) {
-                self.textSelections.remove(at: idx)
-            } else {
-                allRanges.insert(selection.range)
-            }
-        }
+        removeDuplicateSelections()
+    }
+
+    func removeDuplicateSelections() {
+        guard textSelections.count > 1 else { return }
+        var ranges: Set<NSRange> = []
+        textSelections = textSelections.reversed().filter { selection in
+            if ranges.insert(selection.range).inserted { return true }
+            selection.view?.removeFromSuperview()
+            return false
+        }.reversed()
     }
 
     func notifyAfterEdit() {

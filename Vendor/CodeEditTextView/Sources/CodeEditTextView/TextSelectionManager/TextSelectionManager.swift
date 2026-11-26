@@ -32,6 +32,7 @@ public class TextSelectionManager: NSObject {
     public var highlightSelectedLine: Bool = true
     public var selectedLineBackgroundColor: NSColor = NSColor.selectedTextBackgroundColor.withSystemEffect(.disabled)
     public var selectionBackgroundColor: NSColor = NSColor.selectedTextBackgroundColor
+    public var inactiveSelectionBackgroundColor: NSColor?
     public var useSystemCursor: Bool = false {
         didSet {
             updateSelectionViews()
@@ -130,8 +131,20 @@ public class TextSelectionManager: NSObject {
 
     /// Resolve a chosen visual edge in the current layout. Ordinary selections retain the default caret affinity.
     public func caretRect(for selection: TextSelection) -> CGRect? {
+        caretRect(at: selection.range.location, affinity: selection.isCursor ? selection.visualCaret : nil)
+    }
+
+    func activeOffset(for selection: TextSelection) -> Int {
+        selection.pivot == selection.range.location ? selection.range.max : selection.range.location
+    }
+
+    func activeCaretRect(for selection: TextSelection) -> CGRect? {
+        caretRect(at: activeOffset(for: selection), affinity: selection.visualCaret)
+    }
+
+    private func caretRect(at offset: Int, affinity: TextSelection.VisualCaret?) -> CGRect? {
         guard let layoutManager else { return nil }
-        if selection.range.isEmpty, let caret = selection.visualCaret, let textStorage,
+        if let caret = affinity, let textStorage,
            caret.anchorOffset >= 0, caret.anchorOffset < textStorage.length {
             // Lay out the anchor's row first, then reread its position because layout may change row heights.
             _ = layoutManager.rectForOffset(caret.anchorOffset)
@@ -143,13 +156,13 @@ public class TextSelectionManager: NSObject {
                }) {
                 let leading = caret.edge == .leading
                 let boundary = line.range.location + (leading ? cluster.range.location : cluster.range.max)
-                if boundary == selection.range.location {
+                if boundary == offset {
                     return CGRect(x: layoutManager.edgeInsets.left + (leading ? cluster.leadingX : cluster.trailingX),
                                   y: line.yPos + fragment.yPos, width: 0, height: fragment.height)
                 }
             }
         }
-        return layoutManager.rectForOffset(selection.range.location)
+        return layoutManager.rectForOffset(offset)
     }
 
     /// Update all selection cursors. Placing them in the correct position for each text selection and reseting the
@@ -319,7 +332,7 @@ public class TextSelectionManager: NSObject {
 
         let fillColor = (textView?.isFirstResponder ?? false)
         ? selectionBackgroundColor.cgColor
-        : selectionBackgroundColor.grayscale.cgColor
+        : (inactiveSelectionBackgroundColor ?? selectionBackgroundColor.grayscale).cgColor
 
         context.setFillColor(fillColor)
 

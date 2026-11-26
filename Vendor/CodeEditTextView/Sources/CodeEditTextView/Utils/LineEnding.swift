@@ -23,6 +23,21 @@ public enum LineEnding: String, CaseIterable {
         self = lineEnding
     }
 
+    /// Returns the end of the contents for a physical line from Foundation’s line storage.
+    static func contentEnd(of range: NSRange, in string: NSString) -> Int {
+        guard !range.isEmpty else { return range.location }
+        let last = string.character(at: range.max - 1)
+        if last == 0x0A, range.length >= 2, string.character(at: range.max - 2) == 0x0D {
+            return range.max - 2
+        }
+        switch last {
+        case 0x0A, 0x0D, 0x85, 0x2028, 0x2029:
+            return range.max - 1
+        default:
+            return range.max
+        }
+    }
+
     /// Attempts to detect the line ending from a line storage.
     /// - Parameter lineStorage: The line storage to enumerate.
     /// - Returns: A line ending. Defaults to `.lf` if none could be found.
