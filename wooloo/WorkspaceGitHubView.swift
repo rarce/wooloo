@@ -1,5 +1,8 @@
 import AppKit
+import Markdown
+import MarkdownView
 import SwiftUI
+import struct SwiftUI.Text
 
 struct WorkspaceGitHubRepository: Decodable, Equatable, Sendable {
     let nameWithOwner: String
@@ -366,19 +369,9 @@ struct WorkspaceGitHubView: View {
                 selectedItem = item
             }
         } label: {
-            HStack(alignment: .top, spacing: 7) {
-                Image(systemName: kind.icon)
-                    .foregroundStyle(item.isDraft == true ? Color.secondary : theme.accent)
-                    .frame(width: 15).padding(.top, 2)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title).font(.system(size: typography.body)).lineLimit(2)
-                    WorkspaceGitHubItemMetadata(item: item)
-                }
-                Spacer(minLength: 0)
+            WorkspaceRevisionSummary(title: item.title) {
+                WorkspaceGitHubItemMetadata(item: item)
             }
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("View #\(item.number) · ⌘-click to open in browser")
@@ -393,31 +386,17 @@ struct WorkspaceGitHubView: View {
 
 private struct WorkspaceGitHubItemMetadata: View {
     @Environment(\.locale) private var locale
-    @Environment(\.woolooTypography) private var typography
-    @Environment(\.woolooTheme) private var theme
     let item: WorkspaceGitHubItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-                Text("#\(item.number)")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(theme.accent)
-                if let author = item.author { Text(author.login).lineLimit(1) }
-                if item.isDraft == true { Text("Draft").fixedSize() }
-            }
-            if let date = item.createdAt {
-                Text(date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated).locale(locale)))
-                    .help(date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)))
-                    .accessibilityLabel(Text("Created \(date.formatted(.relative(presentation: .named).locale(locale)))"))
-            }
-        }
-        .font(.system(size: typography.caption))
-        .foregroundStyle(.secondary)
+        WorkspaceRevisionMetadata(reference: "#\(item.number)", author: item.author?.login,
+                                  relativeDate: item.createdAt?.formatted(.relative(presentation: .named, unitsStyle: .abbreviated).locale(locale)),
+                                  absoluteDate: item.createdAt?.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)),
+                                  isDraft: item.isDraft == true)
     }
 }
 
-private struct WorkspaceGitHubDetailView: View {
+struct WorkspaceGitHubDetailView: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     let item: WorkspaceGitHubItem
@@ -471,8 +450,7 @@ private struct WorkspaceGitHubDetailView: View {
                         if detail.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Text("No description.").foregroundStyle(.secondary)
                         } else {
-                            Text(detail.body)
-                                .textSelection(.enabled)
+                            WorkspaceGitHubBody(markdown: detail.body, itemURL: detail.item.browserURL)
                         }
                     case .failure(let error):
                         Text(WorkspaceGitHub.message(for: error, machine: location.machineLabel))
@@ -499,5 +477,119 @@ private struct WorkspaceGitHubDetailView: View {
                 if !Task.isCancelled { result = .failure(error) }
             }
         }
+    }
+}
+
+private struct WorkspaceGitHubBody: View {
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
+    let markdown: String
+    let itemURL: URL?
+
+    var body: some View {
+        MarkdownReader(markdown) { parsed in
+            var discussion = parsed
+            var rewriter = GitHubDiscussionMarkdown(itemURL: itemURL)
+            discussion.document = rewriter.rewrite(parsed.document)
+            return MarkdownView(discussion)
+        }
+        .markdownLazyBlocks()
+        .markdownFontGroup(MarkdownDocumentFonts(size: typography.body))
+        .markdownElementRenderer(.image(GitHubDiscussionImage(), urlScheme: "https"))
+        .markdownElementRenderer(.image(GitHubDiscussionImage(), urlScheme: "http"))
+        .foregroundStyle(theme.text)
+        .tint(theme.accent, for: .link)
+        .textSelection(.enabled)
+        .environment(\.openURL, OpenURLAction { url in
+            guard let target = URL(string: url.relativeString, relativeTo: itemURL)?.absoluteURL,
+                  ["http", "https"].contains(target.scheme?.lowercased()), target.host != nil else { return .discarded }
+            return .systemAction(target)
+        })
+    }
+}
+
+private struct GitHubDiscussionImage: MarkdownImageRenderer {
+    func makeBody(configuration: Configuration) -> some View {
+        GitHubDiscussionAttachment(url: configuration.url, alternativeText: configuration.alternativeText)
+    }
+}
+
+/// Opening a discussion never contacts attachment hosts. A reader can load each image explicitly.
+private struct GitHubDiscussionAttachment: View {
+    let url: URL
+    let alternativeText: String?
+    @State private var requestedURL: URL?
+
+    var body: some View {
+        if requestedURL == url {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit().accessibilityLabel(alternativeText ?? "Image")
+                case .empty:
+                    ProgressView("Loading image…").controlSize(.small)
+                default:
+                    Text("Couldn’t load image.").foregroundStyle(.secondary)
+                }
+            }
+        } else if let host = url.host {
+            VStack(alignment: .leading, spacing: 3) {
+                if let alternativeText {
+                    Text(verbatim: alternativeText).foregroundStyle(.secondary)
+                }
+                Button {
+                    requestedURL = url
+                } label: {
+                    Label("Load image from \(host)", systemImage: "photo")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .buttonStyle(.link)
+                .help("Load image from \(host)")
+            }
+        }
+    }
+}
+
+/// Discussion bodies preserve single line breaks. Keep remote HTML out of the document
+/// preview's WebKit renderer, and omit the comments used as authoring hints in issue templates.
+struct GitHubDiscussionMarkdown: MarkupRewriter {
+    let itemURL: URL?
+
+    mutating func rewrite(_ document: Markdown.Document) -> Markdown.Document {
+        Markdown.Document(document.children.compactMap { visit($0) as? BlockMarkup })
+    }
+
+    func visitSoftBreak(_ softBreak: SoftBreak) -> Markup? { LineBreak() }
+
+    func visitImage(_ image: Markdown.Image) -> Markup? {
+        var image = image
+        image.source = image.source.flatMap { source in
+            guard let url = URL(string: source, relativeTo: itemURL)?.absoluteURL,
+                  var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+                  let host = components.host, !host.isEmpty,
+                  components.user == nil, components.password == nil else { return nil }
+            components.scheme = scheme
+            return components.url?.absoluteString
+        }
+        return image
+    }
+
+    func visitInlineHTML(_ html: InlineHTML) -> Markup? {
+        if html.rawHTML.hasPrefix("<!--") { return nil }
+        if ["<br>", "<br/>", "<br />"].contains(html.rawHTML.lowercased()) { return LineBreak() }
+        return Markdown.Text(html.rawHTML)
+    }
+
+    mutating func visitHTMLBlock(_ html: HTMLBlock) -> Markup? {
+        var suffix = html.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard suffix.hasPrefix("<!--") else { return Paragraph(Markdown.Text(html.rawHTML)) }
+        repeat {
+            guard let end = suffix.range(of: "-->") else { return nil }
+            suffix = suffix[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        } while suffix.hasPrefix("<!--")
+        // CommonMark keeps the rest of the closing line in the HTML block.
+        return Markdown.Document(parsing: suffix).child(at: 0).flatMap { visit($0) }
     }
 }

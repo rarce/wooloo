@@ -28,10 +28,11 @@ final class IntegratedWindowChromeTests: XCTestCase {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { views(type, in: $0) }
     }
 
-    private func mouseEvent(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) throws -> NSEvent {
+    private func mouseEvent(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow,
+                            clickCount: Int = 1) throws -> NSEvent {
         try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
                                         windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                                        clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                                        clickCount: clickCount, pressure: type == .leftMouseDown ? 1 : 0))
     }
 
     private func settle(_ window: NSWindow) async throws {
@@ -39,6 +40,25 @@ final class IntegratedWindowChromeTests: XCTestCase {
             window.contentView?.layoutSubtreeIfNeeded()
             try await Task.sleep(for: .milliseconds(20))
         }
+    }
+
+    func testEmptyTabRegionUsesItsDoubleClickAction() async throws {
+        var newTabs = 0
+        let host = NSHostingView(rootView: WindowDragRegion(onDoubleClick: { newTabs += 1 }))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 100),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = host
+        try await settle(window)
+
+        let region = try XCTUnwrap(views(WindowDragView.self, in: host).first)
+        let point = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+        let frame = window.frame
+        region.mouseDown(with: try mouseEvent(.leftMouseDown, at: point, in: window, clickCount: 2))
+
+        XCTAssertEqual(newTabs, 1)
+        XCTAssertEqual(window.frame, frame)
     }
 
     func testNativeTitlebarDraggingIsDisabledBeforeTheFirstClickForAllTabGroups() async throws {

@@ -543,6 +543,54 @@ final class ViewSnapshotTests: XCTestCase {
         try skipIfRecorded()
     }
 
+    func testGitHubIssueDetailRendersMarkdown() throws {
+        let sandbox = try WorkspaceGitSandbox()
+        let previousSSH = WorkspaceFiles.sshExecutable
+        defer { WorkspaceFiles.sshExecutable = previousSSH; sandbox.tearDown() }
+        let repository = WorkspaceGitHubRepository(nameWithOwner: "team/app", url: "https://github.com/team/app",
+                                                    hasIssuesEnabled: true)
+        let item = WorkspaceGitHubItem(number: 7, title: "Update the setup guide", url: repository.url + "/issues/7",
+                                       author: .init(login: "ana"))
+        let markdown = """
+            <!-- Template instructions --> ## Steps to reproduce
+
+            1. Open **Settings**.
+            2. Select the [setup guide](https://example.org/guide).
+
+            ![Setup preview](../blob/main/docs/setup.png?raw=true)
+
+            - [x] Confirm the current version
+            - [ ] Update the example
+
+            ```sh
+            wooloo --version
+            ```
+
+            | Platform | Status |
+            | --- | --- |
+            | macOS | Verified |
+            """
+        let json = try JSONSerialization.data(withJSONObject: ["number": item.number, "title": item.title,
+            "url": item.url, "author": ["login": "ana"], "state": "OPEN", "body": markdown])
+        try sandbox.write(["issue.json": String(decoding: json, as: UTF8.self), "ssh": """
+            #!/bin/sh
+            cat \(WorkspaceFiles.quote(sandbox.path("issue.json")))
+            touch \(WorkspaceFiles.quote(sandbox.path("ready")))
+            """], in: ".")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sandbox.path("ssh"))
+        WorkspaceFiles.sshExecutable = sandbox.path("ssh")
+        let machine = HerdrMachineProfile(id: "test", label: "Test", target: "test.example",
+                                          session: "wooloo-ui-test", enabled: true)
+        let location = WorkspaceFileLocation(machine: machine, session: machine.session, workspaceID: "repo",
+                                             workspaceLabel: "Test", root: "/repo")
+        let detail = WorkspaceGitHubDetailView(item: item, kind: .issues, repository: repository,
+                                               location: location, reload: 0, onBack: {})
+        try assertSnapshot(render(detail, size: NSSize(width: 300, height: 520), settle: 3) {
+            FileManager.default.fileExists(atPath: sandbox.path("ready"))
+        }, named: "github-issue-detail")
+        try skipIfRecorded()
+    }
+
     /// A committed repository with a few Swift sources and a README, at a fixed path, for the
     /// search results and the document editor.
     private func snapshotSources() throws -> (sandbox: WorkspaceGitSandbox, location: WorkspaceFileLocation) {
