@@ -164,26 +164,10 @@ struct WorkspaceRepositoryView: View {
     }
 
     private func commitSummary(_ commit: WorkspaceCommit) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(commit.subject)
-                .font(.system(size: typography.body))
-                .lineLimit(2)
-            HStack(spacing: 5) {
-                Text(commit.shortHash).foregroundStyle(theme.accent)
-                Text("·")
-                Text(commit.author).lineLimit(1)
-                Spacer(minLength: 0)
-                Text(commit.relativeDate)
-                    .lineLimit(1)
-                    .help(commit.absoluteDate)
-            }
-            .font(.system(size: typography.caption))
-            .foregroundStyle(.secondary)
+        WorkspaceRevisionSummary(title: commit.subject) {
+            WorkspaceRevisionMetadata(reference: commit.shortHash, author: commit.author,
+                                      relativeDate: commit.relativeDate, absoluteDate: commit.absoluteDate)
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -227,7 +211,8 @@ struct WorkspaceRepositoryView: View {
                     Text(commitFiles.count == 1 ? "1 file" : "\(commitFiles.count) files")
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
-                    lineCounts(added, removed)
+                    WorkspaceLineCountLabel(additions: added, deletions: removed)
+                        .font(.system(size: typography.secondary, design: .monospaced))
                 }
                 .font(.system(size: typography.secondary))
                 .padding(.horizontal, 11)
@@ -270,7 +255,8 @@ struct WorkspaceRepositoryView: View {
                 }
                 Spacer(minLength: 4)
                 if let additions = file.additions, let deletions = file.deletions {
-                    lineCounts(additions, deletions)
+                    WorkspaceLineCountLabel(additions: additions, deletions: deletions)
+                        .font(.system(size: typography.secondary, design: .monospaced))
                 } else {
                     Text("binary").font(.system(size: typography.caption)).foregroundStyle(.tertiary)
                 }
@@ -287,14 +273,6 @@ struct WorkspaceRepositoryView: View {
         .contextMenu {
             Button("Copy Path", systemImage: "doc.on.doc") { AppActions.copy(file.path) }
         }
-    }
-
-    private func lineCounts(_ additions: Int, _ deletions: Int) -> some View {
-        HStack(spacing: 4) {
-            Text("+\(additions)").foregroundStyle(theme.diffAdded)
-            Text("−\(deletions)").foregroundStyle(theme.diffRemoved)
-        }
-        .font(.system(size: typography.secondary, design: .monospaced))
     }
 
     private func commitFileKind(_ status: Character) -> WorkspaceFileChange.Kind {
@@ -420,6 +398,67 @@ struct WorkspaceRepositoryView: View {
         addRequest = AddWorktreeRequest.suggested(for: listing, from: preferred)
     }
 
+}
+
+struct WorkspaceRevisionSummary<Metadata: View>: View {
+    @Environment(\.woolooTypography) private var typography
+    let title: String
+    @ViewBuilder let metadata: () -> Metadata
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: typography.body)).lineLimit(2)
+            metadata()
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+}
+
+struct WorkspaceLineCountLabel: View {
+    @Environment(\.woolooTheme) private var theme
+    let additions: Int
+    let deletions: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("+\(additions)").foregroundStyle(theme.diffAdded)
+            Text("−\(deletions)").foregroundStyle(theme.diffRemoved)
+        }
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Added lines \(additions), removed lines \(deletions)")
+    }
+}
+
+struct WorkspaceRevisionMetadata: View {
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
+    let reference: String
+    let author: String?
+    let relativeDate: String?
+    let absoluteDate: String?
+    var isDraft = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(reference).foregroundStyle(theme.accent).fixedSize()
+            if let author, !author.isEmpty {
+                Text("·").accessibilityHidden(true)
+                Text(author).lineLimit(1)
+            }
+            if isDraft { Text("Draft").fixedSize() }
+            Spacer(minLength: 0)
+            if let relativeDate {
+                Text(relativeDate).lineLimit(1).fixedSize()
+                    .help(absoluteDate ?? relativeDate)
+            }
+        }
+        .font(.system(size: typography.caption))
+        .foregroundStyle(.secondary)
+    }
 }
 
 /// The repository panel's listing, a selected commit's files, and worktree and branch operations.

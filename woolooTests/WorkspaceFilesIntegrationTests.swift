@@ -61,6 +61,35 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(listing.changes[0].stageState, .partial)
     }
 
+    func testChangeLineCountsAreRelativeAndIncludeNetEditsRenamesAndUntrackedText() throws {
+        try sandbox.repository("repo", files: ["outside.txt": "outside\n", "sub/edit.txt": "one\ntwo\n",
+                                                "sub/old.txt": "move\n", "sub/remove.txt": "delete\n"])
+        try sandbox.sh("echo changed >> outside.txt && git mv sub/old.txt sub/new.txt && rm sub/remove.txt", in: "repo")
+        try sandbox.write(["edit.txt": "staged\ntwo\n"], in: "repo/sub")
+        try sandbox.sh("git add edit.txt", in: "repo/sub")
+        let untracked = "quote'\t\nname.txt"
+        try sandbox.write(["edit.txt": "one\nthree\nfour\n", untracked: "one\ntwo", "binary": "\0binary"], in: "repo/sub")
+
+        let location = sandbox.location("repo/sub")
+        let counts = try WorkspaceFiles.changeLineCounts(at: location, untracked: [untracked, "binary"])
+        XCTAssertEqual(counts, [
+            "edit.txt": WorkspaceLineCounts(additions: 2, deletions: 1),
+            "new.txt": WorkspaceLineCounts(additions: 0, deletions: 0),
+            "remove.txt": WorkspaceLineCounts(additions: 0, deletions: 1),
+            untracked: WorkspaceLineCounts(additions: 2, deletions: 0)
+        ])
+    }
+
+    func testChangeLineCountsBeforeTheFirstCommitUseTheWorkingFile() throws {
+        try sandbox.sh("git init -q fresh")
+        try sandbox.write(["a.txt": "staged\n"], in: "fresh")
+        try sandbox.sh("git add a.txt", in: "fresh")
+        try sandbox.write(["a.txt": "current\nsecond\n"], in: "fresh")
+
+        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: sandbox.location("fresh"), untracked: []),
+                       ["a.txt": WorkspaceLineCounts(additions: 2, deletions: 0)])
+    }
+
     func testListingShowsIgnoredFilesAndIgnoredFoldersWithoutTheirContents() throws {
         let repo = try sandbox.repository("repo", files: [".gitignore": "*.log\nnode_modules/\n", "a/y.txt": "y\n"])
         try sandbox.write(["a/x.log": "x", "b/z.log": "z", "node_modules/pkg/index.js": "i", "node_modules/.bin/tool": "t",

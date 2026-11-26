@@ -366,19 +366,9 @@ struct WorkspaceGitHubView: View {
                 selectedItem = item
             }
         } label: {
-            HStack(alignment: .top, spacing: 7) {
-                Image(systemName: kind.icon)
-                    .foregroundStyle(item.isDraft == true ? Color.secondary : theme.accent)
-                    .frame(width: 15).padding(.top, 2)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title).font(.system(size: typography.body)).lineLimit(2)
-                    WorkspaceGitHubItemMetadata(item: item)
-                }
-                Spacer(minLength: 0)
+            WorkspaceRevisionSummary(title: item.title) {
+                WorkspaceGitHubItemMetadata(item: item)
             }
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("View #\(item.number) · ⌘-click to open in browser")
@@ -393,27 +383,13 @@ struct WorkspaceGitHubView: View {
 
 private struct WorkspaceGitHubItemMetadata: View {
     @Environment(\.locale) private var locale
-    @Environment(\.woolooTypography) private var typography
-    @Environment(\.woolooTheme) private var theme
     let item: WorkspaceGitHubItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-                Text("#\(item.number)")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(theme.accent)
-                if let author = item.author { Text(author.login).lineLimit(1) }
-                if item.isDraft == true { Text("Draft").fixedSize() }
-            }
-            if let date = item.createdAt {
-                Text(date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated).locale(locale)))
-                    .help(date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)))
-                    .accessibilityLabel(Text("Created \(date.formatted(.relative(presentation: .named).locale(locale)))"))
-            }
-        }
-        .font(.system(size: typography.caption))
-        .foregroundStyle(.secondary)
+        WorkspaceRevisionMetadata(reference: "#\(item.number)", author: item.author?.login,
+                                  relativeDate: item.createdAt?.formatted(.relative(presentation: .named, unitsStyle: .abbreviated).locale(locale)),
+                                  absoluteDate: item.createdAt?.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)),
+                                  isDraft: item.isDraft == true)
     }
 }
 

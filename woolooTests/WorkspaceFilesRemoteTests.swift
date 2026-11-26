@@ -37,6 +37,19 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                               workspaceLabel: name, root: sandbox.path(name))
     }
 
+    func testChangeLineCountsIncludeUntrackedPathsThroughSSH() throws {
+        try sandbox.repository("repo", files: ["a.txt": "before\n"])
+        let untracked = "it's\nnew.txt"
+        try sandbox.write(["a.txt": "after\n", untracked: "one\ntwo", "new.md": "one\n"], in: "repo")
+
+        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: remote("repo"), untracked: [untracked, "new.md"]), [
+            "a.txt": WorkspaceLineCounts(additions: 1, deletions: 1),
+            untracked: WorkspaceLineCounts(additions: 2, deletions: 0),
+            "new.md": WorkspaceLineCounts(additions: 1, deletions: 0)
+        ])
+        XCTAssertEqual(try invocations().count, 2, "Untracked files share a remote batch")
+    }
+
     func testChangingSSHTargetWithTheSameProfileIDDoesNotReuseRepositoryCache() throws {
         _ = try sandbox.repository("repo", files: ["a.txt": "original\n"])
         let first = remote("repo")

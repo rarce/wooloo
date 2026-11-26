@@ -286,8 +286,7 @@ struct ContentCommands {
             window.closeTarget = .workspace(workspace.id, workspace.label)
         case .renameTab:
             guard let tab = tabs.first(where: { $0.id == herdr.selectedTabID }) else { return }
-            window.renameText = tab.label
-            window.renameTarget = .tab(tab.id)
+            requestRenameTab(tab)
         case .closeTab:
             guard let tab = tabs.first(where: { $0.id == herdr.selectedTabID }) else { return }
             requestCloseTab(tab)
@@ -572,6 +571,11 @@ struct ContentCommands {
 
     /// The last terminal is a decision about the Space. Keep its live agent/session intact
     /// until the user confirms, so cancelling cannot restart or resume a different session.
+    func requestRenameTab(_ tab: WoolooTab) {
+        window.renameText = tab.label
+        window.renameTarget = .tab(tab.id)
+    }
+
     func requestCloseTab(_ tab: WoolooTab) {
         guard let session = herdr.session,
               session.tabs.contains(where: { $0.id == tab.id }) else { return }

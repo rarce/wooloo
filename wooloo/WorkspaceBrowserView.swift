@@ -39,6 +39,7 @@ struct WorkspaceBrowserView: View {
     @StateObject private var repositoryModel = WorkspaceRepositoryModel()
     @StateObject private var githubModel = WorkspaceGitHubModel()
     @State private var selectedHistoryCommit: WorkspaceCommit?
+    @State private var loadedLineCounts: (key: ChangeCountsKey, counts: [String: WorkspaceLineCounts])?
     /// A file whose history Explorer shows.
     @State private var historyPath: String?
     /// Changes waiting for confirmation before they are discarded.
@@ -146,9 +147,24 @@ struct WorkspaceBrowserView: View {
                                 selectedTab: explorerTab == "branches" ? 1 : 0, selectedCommit: $selectedHistoryCommit)
     }
 
+    private var changeCountsKey: ChangeCountsKey? {
+        guard explorerTab == "changes", let location, model.listedIdentity == location.identity,
+              let listing = model.listing, !listing.changes.isEmpty else { return nil }
+        return ChangeCountsKey(identity: location.identity, version: model.listingVersion)
+    }
+
     private var explorer: some View {
         let location = location
         let shown = location.map { model.shown(for: $0) }
+        let countsKey = changeCountsKey
+        let lineCounts = loadedLineCounts?.key == countsKey ? loadedLineCounts?.counts ?? [:] : [:]
+        let tabs = PanelTab.explorer.map { tab in
+            var tab = tab
+            if tab.id == "changes", case .listing(let listing) = shown, listing.hasGit {
+                tab.count = listing.changes.count
+            }
+            return tab
+        }
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("EXPLORER")
@@ -182,7 +198,7 @@ struct WorkspaceBrowserView: View {
             .frame(height: typography.metric(35))
             Divider()
 
-            PanelTabStrip(tabs: PanelTab.explorer, selection: $explorerTab)
+            PanelTabStrip(tabs: tabs, selection: $explorerTab)
             Divider()
 
             if explorerTab == "history" || explorerTab == "branches" {
@@ -238,7 +254,8 @@ struct WorkspaceBrowserView: View {
                                                     change: changesByPath[row.node.path],
                                                     directoryKind: directoryKinds[row.node.path],
                                                     stageState: listing.hasGit ? stageStates[row.node.path] : nil,
-                                                    hasGit: listing.hasGit)
+                                                    hasGit: listing.hasGit,
+                                                    lineCounts: lineCounts[row.node.path])
                                             .id(row.node.path)
                                         }
                                         if row.node.isDirectory, draftFolder == row.node.path { draftRow(depth: row.depth + 1) }
@@ -311,6 +328,15 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
+        .task(id: countsKey) {
+            guard let countsKey, let location, case .listing(let listing) = shown else { return }
+            let untracked = listing.changes.filter { $0.kind == .untracked }.map(\.path)
+            let counts = (try? await WorkspaceFiles.blocking(at: location) {
+                try WorkspaceFiles.changeLineCounts(at: location, untracked: untracked)
+            }) ?? [:]
+            guard !Task.isCancelled, changeCountsKey == countsKey else { return }
+            loadedLineCounts = (countsKey, counts)
+        }
         .confirmationDialog(model.pendingDelete.map { target in
                                 let items = target.paths.count > 1 ? "\(target.paths.count) items"
                                                                    : "“" + (target.path as NSString).lastPathComponent + "”"
@@ -502,7 +528,8 @@ struct WorkspaceBrowserView: View {
     private func treeRow(_ row: WorkspaceTreeRow, location: WorkspaceFileLocation,
                          change: WorkspaceFileChange?,
                          directoryKind: WorkspaceFileChange.Kind?,
-                         stageState: WorkspaceFileChange.StageState?, hasGit: Bool) -> some View {
+                         stageState: WorkspaceFileChange.StageState?, hasGit: Bool,
+                         lineCounts: WorkspaceLineCounts? = nil) -> some View {
         let node = row.node
         let kind = node.isDirectory ? directoryKind : change?.kind
         let isIgnored = !model.showsChanges && model.listing?.ignored.contains(node.path) == true
@@ -547,6 +574,10 @@ struct WorkspaceBrowserView: View {
                     .foregroundStyle(kind.map(statusColor) ?? (isIgnored ? Color.secondary : Color.primary))
                 Spacer(minLength: 0)
                 if let change, !node.isDirectory {
+                    if let lineCounts, change.kind != .conflicted {
+                        WorkspaceLineCountLabel(additions: lineCounts.additions, deletions: lineCounts.deletions)
+                            .font(.system(size: typography.caption, design: .monospaced))
+                    }
                     Text(change.statusLabel)
                         .font(.system(size: typography.caption, weight: .semibold))
                         .foregroundStyle(statusColor(change.kind))
@@ -1234,6 +1265,11 @@ private struct ActiveFileReveal: Equatable {
     let file: WorkspaceActiveFile?
     let listed: String?
     let changes: Bool
+}
+
+private struct ChangeCountsKey: Equatable {
+    let identity: String
+    let version: Int
 }
 
 /// The window a view is in, for telling apart key events of other windows.

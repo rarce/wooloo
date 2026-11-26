@@ -5,13 +5,19 @@ import SwiftUI
 struct AgentQuotaSection: View {
     @Environment(\.controlActiveState) private var activeState
     @AppStorage("AgentQuotasCollapsed") private var collapsed = true
+    @AppStorage("AgentQuotasInSelectedSpaceOnly") private var spaceOnly = false
     @StateObject private var activation: AgentQuotaActivation
+    @Environment(\.woolooTypography) private var typography
+    @Environment(\.woolooTheme) private var theme
 
     let machine: HerdrMachineProfile?
+    let spaceProviders: Set<AgentProvider>
 
     @MainActor
-    init(machine: HerdrMachineProfile?, activation: AgentQuotaActivation? = nil) {
+    init(machine: HerdrMachineProfile?, spaceProviders: Set<AgentProvider> = [],
+         activation: AgentQuotaActivation? = nil) {
         self.machine = machine
+        self.spaceProviders = spaceProviders
         _activation = StateObject(wrappedValue: activation ?? AgentQuotaActivation())
     }
 
@@ -19,11 +25,27 @@ struct AgentQuotaSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            SidebarSectionToggle(title: "QUOTAS", systemImage: "chart.bar.xaxis",
-                                 help: "Claude, Codex and Antigravity Quotas", collapsed: $collapsed)
+            HStack(spacing: 2) {
+                SidebarSectionToggle(title: "QUOTAS", systemImage: "chart.bar.xaxis",
+                                     help: "Claude, Codex and Antigravity Quotas", collapsed: $collapsed)
+                if activation.consent.allows(machine) {
+                    Button { spaceOnly.toggle() } label: {
+                        Image(systemName: spaceOnly ? "line.3.horizontal.decrease.circle.fill"
+                                                   : "line.3.horizontal.decrease.circle")
+                            .font(.system(size: typography.secondary))
+                            .foregroundStyle(spaceOnly ? theme.accent : .secondary)
+                            .frame(width: 23, height: typography.metric(22))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(spaceOnly ? "Show All Quotas" : "Show Quotas for Agents in This Space")
+                    .accessibilityLabel("Quotas for Agents in This Space")
+                    .accessibilityAddTraits(spaceOnly ? .isSelected : [])
+                }
+            }
             if activation.consent.allows(machine) {
                 AgentQuotaList(monitor: activation.acquired ?? AgentQuotaMonitor.shared(for: machine),
-                               collapsed: collapsed)
+                               collapsed: collapsed, spaceProviders: spaceOnly ? spaceProviders : nil)
             } else {
                 AgentQuotaOptIn(machine: machine, collapsed: collapsed, enable: activation.requestEnable)
             }
@@ -86,7 +108,13 @@ private struct AgentQuotaList: View {
     @Environment(\.woolooTypography) private var typography
     @Environment(\.woolooTheme) private var theme
     @ObservedObject var monitor: AgentQuotaMonitor
+    @State private var collapsedProviders: Set<AgentProvider> = []
     let collapsed: Bool
+    let spaceProviders: Set<AgentProvider>?
+
+    private var providers: [AgentProvider] {
+        AgentProvider.allCases.filter { spaceProviders?.contains($0) ?? true }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -105,9 +133,11 @@ private struct AgentQuotaList: View {
     }
 
     @ViewBuilder private var details: some View {
-        if monitor.states.isEmpty {
-            Text(monitor.loaded ? "No agent quotas available on \(monitor.machine?.label ?? "this Mac")"
-                                : "Reading…")
+        if providers.isEmpty || providers.allSatisfy({ monitor.states[$0] == nil }) {
+            Text(providers.isEmpty ? "No agents with quota support in this Space"
+                 : !monitor.loaded ? "Reading…"
+                 : spaceProviders != nil ? "No agent quotas available in this Space"
+                 : "No agent quotas available on \(monitor.machine?.label ?? "this Mac")")
                 .font(.system(size: typography.secondary))
                 .foregroundStyle(.tertiary)
                 .lineLimit(collapsed ? 1 : 2)
@@ -128,7 +158,7 @@ private struct AgentQuotaList: View {
             // Once a minute, for the reset countdowns and the age of old readings.
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 VStack(alignment: .leading, spacing: 7) {
-                    ForEach(AgentProvider.allCases) { provider in
+                    ForEach(providers) { provider in
                         if let state = monitor.states[provider] {
                             providerView(provider, state: state, now: context.date)
                         }
@@ -139,7 +169,7 @@ private struct AgentQuotaList: View {
     }
 
     private func summaries(now: Date) -> some View {
-        ForEach(AgentProvider.allCases) { provider in
+        ForEach(providers) { provider in
             if let state = monitor.states[provider] {
                 summary(provider, state: state, now: now)
             }
@@ -161,32 +191,50 @@ private struct AgentQuotaList: View {
     }
 
     private func providerView(_ provider: AgentProvider, state: AgentQuotaMonitor.State, now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(state.failure == nil ? theme.success : state.quota == nil ? theme.error : theme.warning)
-                    .frame(width: 6, height: 6)
-                Text(provider.title)
-                    .font(.system(size: typography.body, weight: .medium))
-                if let plan = state.quota?.plan {
-                    Text(plan)
-                        .font(.system(size: typography.secondary))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+        let isCollapsed = collapsedProviders.contains(provider)
+        return VStack(alignment: .leading, spacing: 5) {
+            Button {
+                if isCollapsed { collapsedProviders.remove(provider) }
+                else { collapsedProviders.insert(provider) }
+            } label: {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(state.failure == nil ? theme.success : state.quota == nil ? theme.error : theme.warning)
+                        .frame(width: 6, height: 6)
+                    if isCollapsed {
+                        summary(provider, state: state, now: now)
+                    } else {
+                        Text(provider.title)
+                            .font(.system(size: typography.body, weight: .medium))
+                        if let plan = state.quota?.plan {
+                            Text(plan)
+                                .font(.system(size: typography.secondary))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        if let quota = state.quota, state.failure != nil || quota.fromLog,
+                           now.timeIntervalSince(quota.capturedAt) >= 60 {
+                            Text("\(HostStats.uptimeText(now.timeIntervalSince(quota.capturedAt))) ago")
+                                .font(.system(size: typography.secondary, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: typography.caption, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
-                Spacer(minLength: 0)
-                if let quota = state.quota, state.failure != nil || quota.fromLog,
-                   now.timeIntervalSince(quota.capturedAt) >= 60 {
-                    Text("\(HostStats.uptimeText(now.timeIntervalSince(quota.capturedAt))) ago")
-                        .font(.system(size: typography.secondary, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
+                .frame(minHeight: typography.metric(20))
+                .contentShape(Rectangle())
             }
-            .frame(minHeight: typography.metric(20))
-            .help(state.failure ?? (state.quota?.fromLog == true ? "Read from Codex's latest session log" : ""))
+            .buttonStyle(.plain)
+            .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
+            .help(state.failure ?? (state.quota?.fromLog == true ? "Read from Codex's latest session log"
+                                                                : isCollapsed ? "Show quota details" : "Hide quota details"))
 
-            if let quota = state.quota {
+            if !isCollapsed, let quota = state.quota {
                 ForEach(Array(quota.windows.enumerated()), id: \.element.id) { index, window in
                     if let group = window.group, index == 0 || quota.windows[index - 1].group != group {
                         Text(group)
@@ -198,7 +246,7 @@ private struct AgentQuotaList: View {
                     SidebarMeter(label: window.label, fraction: used,
                                  value: value(used, resetsAt: window.resetsAt, now: now), labelWidth: 64)
                 }
-            } else if let failure = state.failure {
+            } else if !isCollapsed, let failure = state.failure {
                 Text(failure)
                     .font(.system(size: typography.secondary))
                     .foregroundStyle(.tertiary)

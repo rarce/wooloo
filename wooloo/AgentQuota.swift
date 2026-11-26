@@ -6,6 +6,10 @@ import Security
 enum AgentProvider: String, CaseIterable, Identifiable {
     case claude, codex, agy
 
+    init?(agentKind: String) {
+        self.init(rawValue: agentKind == "antigravity" ? "agy" : agentKind)
+    }
+
     var id: String { rawValue }
     var title: String {
         switch self {

@@ -93,6 +93,62 @@ extension WorkspaceFiles {
         return (tracked.sorted(), untracked.subtracting(tracked).sorted())
     }
 
+    /// Net changes against HEAD, plus text files that Git lists as untracked. Read only when
+    /// Changes is visible so Files and background status refreshes stay lightweight.
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func changeLineCounts(at location: WorkspaceFileLocation, untracked: [String]) throws -> [String: WorkspaceLineCounts] {
+        let limit = 4_000_000
+        let options = ["diff", "--no-ext-diff", "--no-textconv", "--relative", "--ignore-submodules=all", "-M", "--numstat", "-z"]
+        let trackedData: Data
+        do {
+            trackedData = try git(location, options + ["HEAD", "--"], limit: limit)
+        } catch {
+            if (try? git(location, ["rev-parse", "--verify", "HEAD"], limit: 1_000)) != nil { throw error }
+            let emptyTree = String(decoding: try git(location, ["hash-object", "-t", "tree", "/dev/null"], limit: 1_000),
+                                   as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            trackedData = try git(location, options + [emptyTree, "--"], limit: limit)
+        }
+        var counts = parseNumstat(trackedData)
+
+        // Each no-index diff compares one file with /dev/null. Batch the paths for SSH and
+        // keep each command short enough for the shell and the local process argument limit.
+        let gitCommand = location.isLocal ? localGit.map(quote) ?? "git" : "git"
+        var batches: [GitSection] = []
+        var paths: [String] = []
+        var size = 0
+        func appendBatch() {
+            guard !paths.isEmpty else { return }
+            let script = "set -- " + paths.joined(separator: " ") + "\n" + #"""
+            for path do
+                if [ -L "$path" ] || [ -f "$path" ]; then
+                    \#(gitCommand) diff --no-index --no-ext-diff --no-textconv --numstat -z -- /dev/null "$path" 2>/dev/null
+                fi
+            done
+            exit 0
+            """#
+            batches.append(GitSection([], limit: limit, script: script))
+            paths.removeAll(keepingCapacity: true)
+            size = 0
+        }
+        for path in untracked where !path.hasSuffix("/") && (try? validateRelativePath(path)) != nil {
+            let argument = quote("./" + path)
+            let bytes = argument.utf8.count + 1
+            if size + bytes > 16_000 { appendBatch() }
+            paths.append(argument)
+            size += bytes
+        }
+        appendBatch()
+        if !batches.isEmpty, let results = try? gitBatch(location, batches) {
+            for result in results {
+                guard case .success(let data) = result else { continue }
+                for (path, count) in parseNumstat(data) where path.hasPrefix("./") {
+                    counts[String(path.dropFirst(2))] = count
+                }
+            }
+        }
+        return counts
+    }
+
     /// A changed file's patches. `.all` compares HEAD with the working tree; `.staged` and
     /// `.unstaged` are added when the file has both kinds of changes.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
@@ -508,9 +564,19 @@ extension WorkspaceFiles {
             }
         }
 
-        // numstat -z: "added\tdeleted\tpath" or, for renames, "added\tdeleted\t" followed by old and new paths.
-        var counts: [String: (Int?, Int?)] = [:]
-        var stats = nulStrings(numstatData)[...]
+        let counts = parseNumstat(numstatData)
+        return files.map { file in
+            let count = counts[file.path]
+            return WorkspaceCommitFile(path: file.path, originalPath: file.originalPath, status: file.status,
+                                       additions: count?.additions, deletions: count?.deletions)
+        }
+    }
+
+    // numstat -z: "added\tdeleted\tpath" or "added\tdeleted\t" followed by old and new paths.
+    // Binary records use hyphens in place of numbers.
+    private static func parseNumstat(_ data: Data) -> [String: WorkspaceLineCounts] {
+        var counts: [String: WorkspaceLineCounts] = [:]
+        var stats = nulStrings(data)[...]
         while let record = stats.popFirst() {
             let parts = record.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
             guard parts.count == 3 else { continue }
@@ -520,13 +586,11 @@ extension WorkspaceFiles {
                 guard let destination = stats.popFirst() else { break }
                 path = destination
             }
-            counts[path] = (Int(parts[0]), Int(parts[1]))
+            if let additions = Int(parts[0]), let deletions = Int(parts[1]) {
+                counts[path] = WorkspaceLineCounts(additions: additions, deletions: deletions)
+            }
         }
-        return files.map { file in
-            let count = counts[file.path]
-            return WorkspaceCommitFile(path: file.path, originalPath: file.originalPath, status: file.status,
-                                       additions: count?.0, deletions: count?.1)
-        }
+        return counts
     }
 
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
