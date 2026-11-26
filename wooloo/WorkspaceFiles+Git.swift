@@ -23,12 +23,16 @@ extension WorkspaceFiles {
         return listing
     }
 
+    private static let changeStatus = GitSection(
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
+    private static let worktreePrefix = GitSection(["rev-parse", "--show-prefix"], limit: 8_000)
+
     /// The Git commands of a listing; SSH adds link metadata within the same batch.
     private static let listingGitSections = [
         GitSection(["ls-files", "--cached", "--others", "--exclude-standard", "-t", "-z", "--", "."], limit: maximumListingBytes),
         GitSection(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."],
                    limit: maximumListingBytes),
-        GitSection(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000),
+        changeStatus, worktreePrefix,
     ]
     private static let listingSections = listingGitSections
         + [GitSection([], limit: maximumListingBytes, script: symbolicLinkListingScript)]
@@ -48,10 +52,11 @@ extension WorkspaceFiles {
         let ignoredFiles = ignored.files.sorted()
         let files = (tracked + untracked + ignoredFiles).prefix(maximumFiles).sorted()
         let visible = Set(files).union(ignored.directories)
-        return WorkspaceFileListing(files: files, changes: parseStatus(try outputs[2].get()), hasGit: true,
+        let changes = parseStatus(try outputs[2].get(), gitPrefix: try outputs[3].get())
+        return WorkspaceFileListing(files: files, changes: changes, hasGit: true,
                                     totalFiles: tracked.count + untracked.count + ignoredFiles.count, ignored: ignored,
                                     nestedRepositories: Set(nested.map { String($0.dropLast()) }.filter { !$0.isEmpty }),
-                                    symbolicLinks: outputs.count > 3 ? parseSymbolicLinks(try outputs[3].get()).filter { visible.contains($0.key) } : [:])
+                                    symbolicLinks: outputs.count > 4 ? parseSymbolicLinks(try outputs[4].get()).filter { visible.contains($0.key) } : [:])
     }
 
     /// The files Go to File searches: tracked and untracked ones, and with `includeIgnored` those
@@ -75,8 +80,9 @@ extension WorkspaceFiles {
             ignored = Set(ignoredFiles)
             files += ignoredFiles
         }
-        let status = try git(location, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], limit: 4_000_000)
-        let changes = Dictionary(parseStatus(status).map { ($0.path, $0.kind) }, uniquingKeysWith: { first, _ in first })
+        let status = try gitBatch(location, [changeStatus, worktreePrefix])
+        let entries = parseStatus(try status[0].get(), gitPrefix: try status[1].get())
+        let changes = Dictionary(entries.map { ($0.path, $0.kind) }, uniquingKeysWith: { first, _ in first })
         return QuickOpenListing(files: Array(files.prefix(maximumFiles)), truncated: files.count > maximumFiles,
                                 changes: changes, ignored: ignored)
     }
@@ -1131,20 +1137,26 @@ extension WorkspaceFiles {
         }
     }()
 
-    static func parseStatus(_ data: Data) -> [WorkspaceFileChange] {
-        let records = nulStrings(data)
+    static func parseStatus(_ data: Data, gitPrefix: Data = Data()) -> [WorkspaceFileChange] {
+        // Porcelain v1 paths start at the repository root. Remove only the terminating LF
+        // from rev-parse --show-prefix and match the remaining prefix byte for byte.
+        let prefix = gitPrefix.dropLast()
+        func spacePath(_ path: Data.SubSequence) -> String? {
+            guard path.count > prefix.count, path.starts(with: prefix) else { return nil }
+            return String(data: path.dropFirst(prefix.count), encoding: .utf8)
+        }
+
+        var records = data.split(separator: 0).makeIterator()
         var changes: [WorkspaceFileChange] = []
-        var index = 0
-        while index < records.count {
-            let record = records[index]
-            index += 1
+        while let record = records.next() {
             guard record.count >= 4 else { continue }
-            let status = Array(record.prefix(2))
-            let path = String(record.dropFirst(3))
+            let status = Array(String(decoding: record.prefix(2), as: UTF8.self))
+            guard status.count == 2 else { continue }
             var original: String?
             if status.contains("R") || status.contains("C") {
-                if index < records.count { original = records[index]; index += 1 }
+                original = records.next().flatMap(spacePath)
             }
+            guard let path = spacePath(record.dropFirst(3)) else { continue }
             changes.append(WorkspaceFileChange(path: path, indexStatus: status[0],
                                                worktreeStatus: status[1], originalPath: original))
             if changes.count >= maximumEntries { break }

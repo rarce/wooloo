@@ -63,6 +63,35 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         XCTAssertEqual(try invocations().count - before, 2, "Untracked files share a remote batch")
     }
 
+    func testChangesInSubdirectoryUseSpaceRelativePathsThroughSSH() throws {
+        let folder = "source folder"
+        let edited = "modified \nname.txt"
+        let untracked = "untracked \nname.txt"
+        try sandbox.repository("repo", files: [
+            folder + "/before.txt": "old\nlines\n",
+            folder + "/" + edited: "before\n",
+            "outside.txt": "outside\n"
+        ])
+        try sandbox.sh("git mv 'source folder/before.txt' 'source folder/after.txt'", in: "repo")
+        try sandbox.write(["outside.txt": "edited outside\n"], in: "repo")
+        try sandbox.write(["after.txt": "three\nfour\nfive\n", edited: "after\n", untracked: "new\n"],
+                          in: "repo/" + folder)
+
+        let location = remote("repo/" + folder)
+        let changes = try WorkspaceFiles.listing(at: location).changes
+        XCTAssertEqual(try invocations().count, 1)
+        XCTAssertEqual(Set(changes.map(\.path)), ["after.txt", edited, untracked])
+        let rename = try XCTUnwrap(changes.first { $0.path == "after.txt" })
+        XCTAssertEqual(rename.originalPath, "before.txt")
+        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: location, changes: changes), [
+            "after.txt": WorkspaceLineCounts(additions: 3, deletions: 2),
+            edited: WorkspaceLineCounts(additions: 1, deletions: 1),
+            untracked: WorkspaceLineCounts(additions: 1, deletions: 0)
+        ])
+        let patch = try XCTUnwrap(WorkspaceFiles.diff(rename.path, at: location)[.all])
+        XCTAssertTrue(patch.contains("+three\n+four\n+five"), patch)
+    }
+
     func testChangeLineCountsStreamAnOversizedSSHBatch() throws {
         try sandbox.repository("repo", files: ["tracked.txt": "before\n"])
         let paths = (0..<180).map { "file-\($0)-" + String(repeating: "'", count: 200) }
@@ -1497,7 +1526,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
             _ = try WorkspaceFiles.listing(at: remote("repo"))
         }
         XCTAssertEqual(again.count, 1)
-        XCTAssertEqual(try invocations().last?.last?.contains("rev-parse"), false, "The listing skips the root check")
+        XCTAssertEqual(try invocations().last?.last?.contains("--show-toplevel"), false, "The listing skips the root check")
 
         // Forgetting, as Git operations and an explicit refresh do, makes the next load read again.
         WorkspaceFiles.forgetRecentResults()
@@ -1558,7 +1587,7 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
     func testLocalRefreshChecksTheRootOnce() throws {
         try busyRepository()
         let (_, processes) = try WorkspaceProcessLog.collect { try refresh(sandbox.location("repo")) }
-        XCTAssertEqual(processes.filter { $0.label == "git rev-parse" }.count, 1)
+        XCTAssertEqual(processes.filter { $0.label == "git rev-parse" }.count, 2, "One root check and one Space prefix lookup")
         XCTAssertEqual(processes.filter { $0.label == "git status" }.count, 2, "The listing's and the Git bar's")
     }
 
