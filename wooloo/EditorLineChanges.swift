@@ -37,6 +37,30 @@ enum EditorLineChanges {
     static func hunks(from base: String, to text: String) -> [GutterView.LineChange] {
         let old = base.split(separator: "\n", omittingEmptySubsequences: false)
         let new = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let edits = lineEdits(from: old, to: new)
+        let (prefix, removed, inserted) = (edits.prefix, edits.removed, edits.inserted)
+        var result: [GutterView.LineChange] = []
+        var i = 0, j = 0
+        while i < removed.count || j < inserted.count {
+            let start = j
+            var removedCount = 0, insertedCount = 0
+            while (i < removed.count && removed[i]) || (j < inserted.count && inserted[j]) {
+                if i < removed.count && removed[i] { i += 1; removedCount += 1 } else { j += 1; insertedCount += 1 }
+            }
+            if removedCount == 0 && insertedCount == 0 {
+                i += 1; j += 1
+                continue
+            }
+            let kind: GutterView.LineChange.Kind = insertedCount == 0 ? .deleted : (removedCount == 0 ? .added : .modified)
+            result.append(.init(line: prefix + start, count: insertedCount, kind: kind, isStaged: false))
+        }
+        return result
+    }
+
+    /// Matches the unchanged prefix and suffix, then finds additions and removals in the middle.
+    /// When the middle exceeds the diff budget, its lines are left unmatched.
+    static func lineEdits(from old: [Substring], to new: [Substring])
+        -> (prefix: Int, suffix: Int, removed: [Bool], inserted: [Bool], isExact: Bool) {
         var prefix = 0
         while prefix < old.count, prefix < new.count, old[prefix] == new[prefix] { prefix += 1 }
         var suffix = 0
@@ -44,7 +68,6 @@ enum EditorLineChanges {
               old[old.count - 1 - suffix] == new[new.count - 1 - suffix] { suffix += 1 }
         let oldMiddle = old[prefix..<(old.count - suffix)]
         let newMiddle = new[prefix..<(new.count - suffix)]
-        if oldMiddle.isEmpty && newMiddle.isEmpty { return [] }
 
         // Compare numbered lines instead of strings.
         var numbers: [Substring: Int32] = [:]
@@ -57,24 +80,9 @@ enum EditorLineChanges {
         let a = oldMiddle.map(number), b = newMiddle.map(number)
         var removed = [Bool](repeating: true, count: a.count)
         var inserted = [Bool](repeating: true, count: b.count)
-        _ = shortestEdit(a, b, maximumCost: maximumEditDistance, removed: &removed, inserted: &inserted)
-
-        var result: [GutterView.LineChange] = []
-        var i = 0, j = 0
-        while i < a.count || j < b.count {
-            let start = j
-            var removedCount = 0, insertedCount = 0
-            while (i < a.count && removed[i]) || (j < b.count && inserted[j]) {
-                if i < a.count && removed[i] { i += 1; removedCount += 1 } else { j += 1; insertedCount += 1 }
-            }
-            if removedCount == 0 && insertedCount == 0 {
-                i += 1; j += 1
-                continue
-            }
-            let kind: GutterView.LineChange.Kind = insertedCount == 0 ? .deleted : (removedCount == 0 ? .added : .modified)
-            result.append(.init(line: prefix + start, count: insertedCount, kind: kind, isStaged: false))
-        }
-        return result
+        let isExact = a.isEmpty || b.isEmpty
+            || shortestEdit(a, b, maximumCost: maximumEditDistance, removed: &removed, inserted: &inserted)
+        return (prefix, suffix, removed, inserted, isExact)
     }
 
     /// Myers' O(ND) diff. Clears `removed` and `inserted` for the lines it keeps, and returns false

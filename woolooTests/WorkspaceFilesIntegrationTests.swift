@@ -46,6 +46,81 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("forbidden")))
     }
 
+    func testBlameMapsCommittedLinesAroundStagedDiskAndUnsavedEdits() throws {
+        let name = "blame repo"
+        let path = "source folder/notes.txt"
+        _ = try sandbox.repository(name, files: [path: "first\r\n\r\nold\r\nlast"])
+        try sandbox.write([path: "first\r\n\r\nsecond\r\nlast"], in: name)
+        try sandbox.sh("git add -A && git -c user.name='Second Author' commit -q -m 'Change the third line'", in: name)
+        try sandbox.write([path: "staged\r\nfirst\r\n\r\nsecond\r\nlast"], in: name)
+        try sandbox.sh("git add -A", in: name)
+        try sandbox.write([path: "staged\r\nfirst\r\n\r\nsecond\r\ndisk"], in: name)
+
+        let nested = sandbox.location(name + "/source folder")
+        let blame = try XCTUnwrap(WorkspaceFiles.gitBlame("notes.txt", at: nested))
+        XCTAssertEqual(blame.text, ["first\r\n", "\r\n", "second\r\n", "last"])
+        XCTAssertEqual(blame.commits.map(\.author), ["Test Author", "Test Author", "Second Author", "Test Author"])
+        let buffer = "staged\r\nfirst\r\n\r\nunsaved\r\nsecond\r\ndisk\r\n"
+        let labels = blame.lines(matching: buffer).map { line in
+            switch line {
+            case .committed(let commit): return commit.subject
+            case .uncommitted: return "uncommitted"
+            case nil: return "hidden"
+            }
+        }
+        XCTAssertEqual(labels, ["uncommitted", "Initial", "Initial", "uncommitted", "Change the third line", "uncommitted"])
+        XCTAssertNil(WorkspaceFiles.gitBlame("../notes.txt", at: nested))
+    }
+
+    func testBlameMapsUnicodeSeparatorsToEditorRows() throws {
+        let original = "first\u{2028}second\u{2029}third\nold\n"
+        let current = "first\u{2028}second\u{2029}third\nfourth\n"
+        let repo = try sandbox.repository("blame", files: ["file.txt": original])
+        try sandbox.write(["file.txt": current], in: "blame")
+        try sandbox.sh("git -c user.name='Second Author' commit -qam 'Change the last line'", in: "blame")
+
+        let blame = try XCTUnwrap(WorkspaceFiles.gitBlame("file.txt", at: repo))
+        XCTAssertEqual(blame.text, ["first\u{2028}", "second\u{2029}", "third\n", "fourth\n"])
+        let authors = blame.lines(matching: current).map { line -> String? in
+            guard case .committed(let commit)? = line else { return nil }
+            return commit.author
+        }
+        XCTAssertEqual(authors, ["Test Author", "Test Author", "Test Author", "Second Author"])
+    }
+
+    func testBlameTreatsAddingAndRemovingTheFinalNewlineAsAnEdit() throws {
+        let repo = try sandbox.repository("blame", files: ["with.txt": "first\nlast\n", "without.txt": "first\nlast"])
+        for (path, edit) in [("with.txt", "first\nlast"), ("without.txt", "first\nlast\n")] {
+            let blame = try XCTUnwrap(WorkspaceFiles.gitBlame(path, at: repo))
+            let lines = blame.lines(matching: edit)
+            XCTAssertEqual(lines.count, 2)
+            guard case .committed? = lines.first ?? nil, case .uncommitted? = lines.last ?? nil else {
+                XCTFail("Only the last line should be marked uncommitted for \(path)")
+                continue
+            }
+        }
+    }
+
+    func testBlameLoadsManyLinesFromTheSameCommit() throws {
+        let source = String(repeating: "x\n", count: 70_000)
+        let repo = try sandbox.repository("blame", files: ["short-lines.txt": source])
+        let blame = try XCTUnwrap(WorkspaceFiles.gitBlame("short-lines.txt", at: repo))
+        XCTAssertEqual(blame.text.count, 70_000)
+        XCTAssertEqual(blame.commits.count, 70_000)
+        XCTAssertEqual(blame.commits.last?.subject, "Initial")
+    }
+
+    func testBlameDistinguishesAnIndexedAdditionFromAnUntrackedFile() throws {
+        let repo = try sandbox.repository("blame")
+        try sandbox.write(["new [file].txt": "staged\n", "untracked.txt": "untracked\n"], in: "blame")
+        try sandbox.sh("git add -- 'new [file].txt'", in: "blame")
+        let added = try XCTUnwrap(WorkspaceFiles.gitBlame("new [file].txt", at: repo))
+        guard case .uncommitted? = added.lines(matching: "staged\n").first ?? nil else {
+            return XCTFail("An indexed addition should be shown as uncommitted")
+        }
+        XCTAssertNil(WorkspaceFiles.gitBlame("untracked.txt", at: repo))
+    }
+
     // MARK: Listing
 
     func testListingShowsTrackedAndUntrackedFilesWithTheirChanges() throws {

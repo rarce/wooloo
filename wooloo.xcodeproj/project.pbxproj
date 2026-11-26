@@ -92,6 +92,7 @@
 		A10000000000000000000056 /* WoolooTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000057 /* WoolooTypography.swift */; };
 		A10000000000000000000058 /* WorkspaceDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000059 /* WorkspaceDiffView.swift */; };
 		A100000000000000000000E0 /* EditorLineChanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000E1 /* EditorLineChanges.swift */; };
+		A10000000000000000000410 /* EditorGitBlame.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000411 /* EditorGitBlame.swift */; };
 		F31000000000000000000001 /* EditorDocumentMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = F31000000000000000000002 /* EditorDocumentMetadata.swift */; };
 		A100000000000000000000F0 /* EditorMultiCursor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000000000000000000F1 /* EditorMultiCursor.swift */; };
 		A1000000000000000000005A /* DocumentFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005B /* DocumentFind.swift */; };
@@ -295,6 +296,7 @@
 		A10000000000000000000057 /* WoolooTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoolooTypography.swift; sourceTree = "<group>"; };
 		A10000000000000000000059 /* WorkspaceDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiffView.swift; sourceTree = "<group>"; };
 		A100000000000000000000E1 /* EditorLineChanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorLineChanges.swift; sourceTree = "<group>"; };
+		A10000000000000000000411 /* EditorGitBlame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorGitBlame.swift; sourceTree = "<group>"; };
 		F31000000000000000000002 /* EditorDocumentMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorDocumentMetadata.swift; sourceTree = "<group>"; };
 		A100000000000000000000F1 /* EditorMultiCursor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorMultiCursor.swift; sourceTree = "<group>"; };
 		A1000000000000000000005B /* DocumentFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentFind.swift; sourceTree = "<group>"; };
@@ -490,6 +492,7 @@
 				B63000000000000000000002 /* WorkspaceDiskComparisonView.swift */,
 				A1000000000000000000005B /* DocumentFind.swift */,
 				A100000000000000000000E1 /* EditorLineChanges.swift */,
+				A10000000000000000000411 /* EditorGitBlame.swift */,
 				F31000000000000000000002 /* EditorDocumentMetadata.swift */,
 				A100000000000000000000F1 /* EditorMultiCursor.swift */,
 				A10000000000000000000043 /* WorkspaceSearch.swift */,
@@ -825,6 +828,7 @@
 				B63000000000000000000001 /* WorkspaceDiskComparisonView.swift in Sources */,
 				A1000000000000000000005A /* DocumentFind.swift in Sources */,
 				A100000000000000000000E0 /* EditorLineChanges.swift in Sources */,
+				A10000000000000000000410 /* EditorGitBlame.swift in Sources */,
 				F31000000000000000000001 /* EditorDocumentMetadata.swift in Sources */,
 				A100000000000000000000F0 /* EditorMultiCursor.swift in Sources */,
 				A10000000000000000000042 /* WorkspaceSearch.swift in Sources */,

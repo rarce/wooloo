@@ -37,6 +37,17 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
                               workspaceLabel: name, root: sandbox.path(name))
     }
 
+    func testBlameUsesTheRemoteRepositoryAndPassesThePathLiterally() throws {
+        let name = "blame repo"
+        let path = "dir/a quote's [name].txt"
+        try sandbox.repository(name, files: [path: "remote\n"])
+        let blame = try XCTUnwrap(WorkspaceFiles.gitBlame(path, at: remote(name)))
+        XCTAssertEqual(blame.text, ["remote\n"])
+        XCTAssertEqual(try invocations().count, 1)
+        XCTAssertEqual(blame.commits.first?.subject, "Initial")
+        XCTAssertEqual(blame.commits.first?.id.count, 40)
+    }
+
     func testChangeLineCountsIncludeUntrackedPathsThroughSSH() throws {
         try sandbox.repository("repo", files: ["a.txt": "before\n"])
         let untracked = "it's\nnew.txt"
