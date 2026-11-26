@@ -71,12 +71,27 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         try sandbox.write(["edit.txt": "one\nthree\nfour\n", untracked: "one\ntwo", "binary": "\0binary"], in: "repo/sub")
 
         let location = sandbox.location("repo/sub")
-        let counts = try WorkspaceFiles.changeLineCounts(at: location, untracked: [untracked, "binary"])
+        let changes = [untracked, "binary"].map {
+            WorkspaceFileChange(path: $0, indexStatus: "?", worktreeStatus: "?", originalPath: nil)
+        }
+        let counts = try WorkspaceFiles.changeLineCounts(at: location, changes: changes)
         XCTAssertEqual(counts, [
             "edit.txt": WorkspaceLineCounts(additions: 2, deletions: 1),
             "new.txt": WorkspaceLineCounts(additions: 0, deletions: 0),
             "remove.txt": WorkspaceLineCounts(additions: 0, deletions: 1),
             untracked: WorkspaceLineCounts(additions: 2, deletions: 0)
+        ])
+    }
+
+    func testChangeLineCountsIncludeDeletionsFromTheSourceOfARewrittenRename() throws {
+        let location = try sandbox.repository("repo", files: ["before.txt": "first\nsecond\n"])
+        try sandbox.sh("git mv before.txt after.txt", in: "repo")
+        try sandbox.write(["after.txt": "three\nfour\nfive\n"], in: "repo")
+
+        let changes = try WorkspaceFiles.listing(at: location).changes
+        XCTAssertEqual(changes.first?.originalPath, "before.txt")
+        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: location, changes: changes), [
+            "after.txt": WorkspaceLineCounts(additions: 3, deletions: 2)
         ])
     }
 
@@ -86,7 +101,9 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         try sandbox.sh("git add a.txt", in: "fresh")
         try sandbox.write(["a.txt": "current\nsecond\n"], in: "fresh")
 
-        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: sandbox.location("fresh"), untracked: []),
+        let location = sandbox.location("fresh")
+        let changes = try WorkspaceFiles.listing(at: location).changes
+        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: location, changes: changes),
                        ["a.txt": WorkspaceLineCounts(additions: 2, deletions: 0)])
     }
 

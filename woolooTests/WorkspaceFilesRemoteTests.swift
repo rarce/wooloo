@@ -42,12 +42,31 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let untracked = "it's\nnew.txt"
         try sandbox.write(["a.txt": "after\n", untracked: "one\ntwo", "new.md": "one\n"], in: "repo")
 
-        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: remote("repo"), untracked: [untracked, "new.md"]), [
+        let changes = try WorkspaceFiles.listing(at: remote("repo")).changes
+        let before = try invocations().count
+        XCTAssertEqual(try WorkspaceFiles.changeLineCounts(at: remote("repo"), changes: changes), [
             "a.txt": WorkspaceLineCounts(additions: 1, deletions: 1),
             untracked: WorkspaceLineCounts(additions: 2, deletions: 0),
             "new.md": WorkspaceLineCounts(additions: 1, deletions: 0)
         ])
-        XCTAssertEqual(try invocations().count, 2, "Untracked files share a remote batch")
+        XCTAssertEqual(try invocations().count - before, 2, "Untracked files share a remote batch")
+    }
+
+    func testChangeLineCountsStreamAnOversizedSSHBatch() throws {
+        try sandbox.repository("repo", files: ["tracked.txt": "before\n"])
+        let paths = (0..<180).map { "file-\($0)-" + String(repeating: "'", count: 200) }
+        try sandbox.write(Dictionary(uniqueKeysWithValues: paths.map { ($0, "line\n") }), in: "repo")
+
+        let location = remote("repo")
+        let changes = try WorkspaceFiles.listing(at: location).changes
+        let before = try invocations().count
+        let counts = try WorkspaceFiles.changeLineCounts(at: location, changes: changes)
+        XCTAssertEqual(counts, Dictionary(uniqueKeysWithValues: paths.map {
+            ($0, WorkspaceLineCounts(additions: 1, deletions: 0))
+        }))
+        let calls = try invocations()
+        XCTAssertEqual(calls.count - before, 2)
+        XCTAssertEqual(calls.last?.last, "sh -s")
     }
 
     func testChangingSSHTargetWithTheSameProfileIDDoesNotReuseRepositoryCache() throws {

@@ -39,7 +39,7 @@ struct WorkspaceBrowserView: View {
     @StateObject private var repositoryModel = WorkspaceRepositoryModel()
     @StateObject private var githubModel = WorkspaceGitHubModel()
     @State private var selectedHistoryCommit: WorkspaceCommit?
-    @State private var loadedLineCounts: (key: ChangeCountsKey, counts: [String: WorkspaceLineCounts])?
+    @State private var loadedLineCounts: (identity: String, counts: [String: WorkspaceLineCounts])?
     /// A file whose history Explorer shows.
     @State private var historyPath: String?
     /// Changes waiting for confirmation before they are discarded.
@@ -147,21 +147,36 @@ struct WorkspaceBrowserView: View {
                                 selectedTab: explorerTab == "branches" ? 1 : 0, selectedCommit: $selectedHistoryCommit)
     }
 
-    private var changeCountsKey: ChangeCountsKey? {
-        guard explorerTab == "changes", let location, model.listedIdentity == location.identity,
-              let listing = model.listing, !listing.changes.isEmpty else { return nil }
-        return ChangeCountsKey(identity: location.identity, version: model.listingVersion)
+    private func loadChangeCounts(at location: WorkspaceFileLocation) async {
+        // Keep the latest refresh request while a calculation is running. Polls must
+        // neither cancel that calculation nor queue up work for every intermediate listing.
+        let (versions, continuation) = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let subscription = model.$listingVersion.sink { continuation.yield($0) }
+        defer {
+            subscription.cancel()
+            continuation.finish()
+        }
+        for await _ in versions {
+            guard !Task.isCancelled else { break }
+            guard model.listedIdentity == location.identity,
+                  let changes = model.listing?.changes, !changes.isEmpty else { continue }
+            let counts = try? await WorkspaceFiles.blocking(at: location) {
+                try WorkspaceFiles.changeLineCounts(at: location, changes: changes)
+            }
+            guard !Task.isCancelled, model.listedIdentity == location.identity else { break }
+            if let counts { loadedLineCounts = (location.identity, counts) }
+        }
     }
 
     private var explorer: some View {
         let location = location
         let shown = location.map { model.shown(for: $0) }
-        let countsKey = changeCountsKey
-        let lineCounts = loadedLineCounts?.key == countsKey ? loadedLineCounts?.counts ?? [:] : [:]
+        let countsIdentity = explorerTab == "changes" ? location?.identity : nil
+        let lineCounts = loadedLineCounts?.identity == countsIdentity ? loadedLineCounts?.counts ?? [:] : [:]
         let tabs = PanelTab.explorer.map { tab in
             var tab = tab
             if tab.id == "changes", case .listing(let listing) = shown, listing.hasGit {
-                tab.count = listing.changes.count
+                tab.count = Set(listing.changes.map(\.path)).count
             }
             return tab
         }
@@ -328,14 +343,9 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
-        .task(id: countsKey) {
-            guard let countsKey, let location, case .listing(let listing) = shown else { return }
-            let untracked = listing.changes.filter { $0.kind == .untracked }.map(\.path)
-            let counts = (try? await WorkspaceFiles.blocking(at: location) {
-                try WorkspaceFiles.changeLineCounts(at: location, untracked: untracked)
-            }) ?? [:]
-            guard !Task.isCancelled, changeCountsKey == countsKey else { return }
-            loadedLineCounts = (countsKey, counts)
+        .task(id: countsIdentity) {
+            guard countsIdentity != nil, let location else { return }
+            await loadChangeCounts(at: location)
         }
         .confirmationDialog(model.pendingDelete.map { target in
                                 let items = target.paths.count > 1 ? "\(target.paths.count) items"
@@ -1265,11 +1275,6 @@ private struct ActiveFileReveal: Equatable {
     let file: WorkspaceActiveFile?
     let listed: String?
     let changes: Bool
-}
-
-private struct ChangeCountsKey: Equatable {
-    let identity: String
-    let version: Int
 }
 
 /// The window a view is in, for telling apart key events of other windows.

@@ -96,7 +96,8 @@ extension WorkspaceFiles {
     /// Net changes against HEAD, plus text files that Git lists as untracked. Read only when
     /// Changes is visible so Files and background status refreshes stay lightweight.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
-    static func changeLineCounts(at location: WorkspaceFileLocation, untracked: [String]) throws -> [String: WorkspaceLineCounts] {
+    static func changeLineCounts(at location: WorkspaceFileLocation,
+                                 changes: [WorkspaceFileChange]) throws -> [String: WorkspaceLineCounts] {
         let limit = 4_000_000
         let options = ["diff", "--no-ext-diff", "--no-textconv", "--relative", "--ignore-submodules=all", "-M", "--numstat", "-z"]
         let trackedData: Data
@@ -109,6 +110,15 @@ extension WorkspaceFiles {
             trackedData = try git(location, options + [emptyTree, "--"], limit: limit)
         }
         var counts = parseNumstat(trackedData)
+        // Status can see the rename in the index even if edits in the working tree
+        // make the diff against HEAD report a separate addition and deletion.
+        for change in changes where change.indexStatus == "R" || change.worktreeStatus == "R" {
+            guard let source = change.originalPath, let removed = counts[source],
+                  removed.additions == 0, removed.deletions > 0,
+                  let added = counts[change.path], added.deletions == 0 else { continue }
+            counts.removeValue(forKey: source)
+            counts[change.path] = WorkspaceLineCounts(additions: added.additions, deletions: removed.deletions)
+        }
 
         // Each no-index diff compares one file with /dev/null. Batch the paths for SSH and
         // keep each command short enough for the shell and the local process argument limit.
@@ -130,7 +140,9 @@ extension WorkspaceFiles {
             paths.removeAll(keepingCapacity: true)
             size = 0
         }
-        for path in untracked where !path.hasSuffix("/") && (try? validateRelativePath(path)) != nil {
+        for change in changes where change.kind == .untracked {
+            let path = change.path
+            guard !path.hasSuffix("/"), (try? validateRelativePath(path)) != nil else { continue }
             let argument = quote("./" + path)
             let bytes = argument.utf8.count + 1
             if size + bytes > 16_000 { appendBatch() }
@@ -970,7 +982,12 @@ extension WorkspaceFiles {
                 ?? (["env", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "git", "-C", location.root] + section.args), gate: section.gate)
         }
         let limit = sections.reduce(1_000) { $0 + $1.limit + 100 } + (otherwise.map { $0.limit + 100 } ?? 0)
-        let output = try ssh(machine, "sh -c " + quote(remoteBatchScript(commands, otherwise: otherwise?.words)),
+        let script = remoteBatchScript(commands, otherwise: otherwise?.words)
+        let command = "sh -c " + quote(script)
+        // The login shell receives the whole quoted command as one argument. Leave
+        // headroom below Linux's 128 KiB per-argument limit by streaming large scripts.
+        let useStdin = command.utf8.count > 64 * 1024
+        let output = try ssh(machine, useStdin ? "sh -s" : command, input: useStdin ? Data(script.utf8) : nil,
                              limit: limit, timeout: timeout * Double(max(1, sections.count)), label: "git batch")
         let parsed = try parseBatchOutput(output)
         let incomplete = WorkspaceFileError.message("Remote command output is incomplete")
