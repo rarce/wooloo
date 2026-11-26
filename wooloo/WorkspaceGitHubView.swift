@@ -513,8 +513,8 @@ private struct WorkspaceGitHubBody: View {
     var body: some View {
         MarkdownReader(markdown) { parsed in
             var discussion = parsed
-            var rewriter = GitHubDiscussionMarkdown()
-            discussion.document = Markdown.Document(parsed.document.children.compactMap { rewriter.visit($0) as? BlockMarkup })
+            var rewriter = GitHubDiscussionMarkdown(itemURL: itemURL)
+            discussion.document = rewriter.rewrite(parsed.document)
             return MarkdownView(discussion)
         }
         .markdownLazyBlocks()
@@ -532,15 +532,44 @@ private struct WorkspaceGitHubBody: View {
     }
 }
 
-/// Decode remote attachments as images; the document preview can also embed SVG in WebKit.
 private struct GitHubDiscussionImage: MarkdownImageRenderer {
     func makeBody(configuration: Configuration) -> some View {
-        let label = configuration.alternativeText ?? "Image"
-        AsyncImage(url: configuration.url) { phase in
-            if let image = phase.image {
-                image.resizable().scaledToFit().accessibilityLabel(label)
-            } else {
-                Text(verbatim: label).foregroundStyle(.secondary)
+        GitHubDiscussionAttachment(url: configuration.url, alternativeText: configuration.alternativeText)
+    }
+}
+
+/// Opening a discussion never contacts attachment hosts. A reader can load each image explicitly.
+private struct GitHubDiscussionAttachment: View {
+    let url: URL
+    let alternativeText: String?
+    @State private var requestedURL: URL?
+
+    var body: some View {
+        if requestedURL == url {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit().accessibilityLabel(alternativeText ?? "Image")
+                case .empty:
+                    ProgressView("Loading image…").controlSize(.small)
+                default:
+                    Text("Couldn’t load image.").foregroundStyle(.secondary)
+                }
+            }
+        } else if let host = url.host {
+            VStack(alignment: .leading, spacing: 3) {
+                if let alternativeText {
+                    Text(verbatim: alternativeText).foregroundStyle(.secondary)
+                }
+                Button {
+                    requestedURL = url
+                } label: {
+                    Label("Load image from \(host)", systemImage: "photo")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .buttonStyle(.link)
+                .help("Load image from \(host)")
             }
         }
     }
@@ -548,8 +577,28 @@ private struct GitHubDiscussionImage: MarkdownImageRenderer {
 
 /// Discussion bodies preserve single line breaks. Keep remote HTML out of the document
 /// preview's WebKit renderer, and omit the comments used as authoring hints in issue templates.
-private struct GitHubDiscussionMarkdown: MarkupRewriter {
+struct GitHubDiscussionMarkdown: MarkupRewriter {
+    let itemURL: URL?
+
+    mutating func rewrite(_ document: Markdown.Document) -> Markdown.Document {
+        Markdown.Document(document.children.compactMap { visit($0) as? BlockMarkup })
+    }
+
     func visitSoftBreak(_ softBreak: SoftBreak) -> Markup? { LineBreak() }
+
+    func visitImage(_ image: Markdown.Image) -> Markup? {
+        var image = image
+        image.source = image.source.flatMap { source in
+            guard let url = URL(string: source, relativeTo: itemURL)?.absoluteURL,
+                  var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+                  let host = components.host, !host.isEmpty,
+                  components.user == nil, components.password == nil else { return nil }
+            components.scheme = scheme
+            return components.url?.absoluteString
+        }
+        return image
+    }
 
     func visitInlineHTML(_ html: InlineHTML) -> Markup? {
         if html.rawHTML.hasPrefix("<!--") { return nil }
@@ -557,8 +606,14 @@ private struct GitHubDiscussionMarkdown: MarkupRewriter {
         return Markdown.Text(html.rawHTML)
     }
 
-    func visitHTMLBlock(_ html: HTMLBlock) -> Markup? {
-        if html.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<!--") { return nil }
-        return Paragraph(Markdown.Text(html.rawHTML))
+    mutating func visitHTMLBlock(_ html: HTMLBlock) -> Markup? {
+        var suffix = html.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard suffix.hasPrefix("<!--") else { return Paragraph(Markdown.Text(html.rawHTML)) }
+        repeat {
+            guard let end = suffix.range(of: "-->") else { return nil }
+            suffix = suffix[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        } while suffix.hasPrefix("<!--")
+        // CommonMark keeps the rest of the closing line in the HTML block.
+        return Markdown.Document(parsing: suffix).child(at: 0).flatMap { visit($0) }
     }
 }

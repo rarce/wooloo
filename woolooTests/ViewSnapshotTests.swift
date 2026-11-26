@@ -546,11 +546,12 @@ final class ViewSnapshotTests: XCTestCase {
         let item = WorkspaceGitHubItem(number: 7, title: "Update the setup guide", url: repository.url + "/issues/7",
                                        author: .init(login: "ana"))
         let markdown = """
-            <!-- Template instructions -->
-            ## Steps to reproduce
+            <!-- Template instructions --> ## Steps to reproduce
 
             1. Open **Settings**.
             2. Select the [setup guide](https://example.org/guide).
+
+            ![Setup preview](../blob/main/docs/setup.png?raw=true)
 
             - [x] Confirm the current version
             - [ ] Update the example

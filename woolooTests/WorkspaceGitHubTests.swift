@@ -1,3 +1,4 @@
+import Markdown
 import SwiftUI
 import XCTest
 @testable import wooloo
@@ -28,6 +29,54 @@ private actor GitHubReadFixture {
 
 @MainActor
 final class WorkspaceGitHubTests: XCTestCase {
+    func testDiscussionMarkdownPreservesFormattedTextAfterComments() throws {
+        let markdown = """
+            <!-- template
+            instructions --> <!-- extra --> Keep **this**.
+
+            Before <!-- inline -->after.
+
+            `<!-- literal -->`
+            """
+        var rewriter = GitHubDiscussionMarkdown(itemURL: nil)
+        let blocks = Array(rewriter.rewrite(Markdown.Document(parsing: markdown)).children)
+        XCTAssertEqual(blocks.count, 3)
+        let first = try XCTUnwrap(blocks.first as? Paragraph)
+        XCTAssertEqual(first.plainText, "Keep this.")
+        XCTAssertTrue(first.children.contains { $0 is Strong })
+        XCTAssertEqual((blocks.dropFirst().first as? Paragraph)?.plainText, "Before after.")
+        XCTAssertEqual((blocks.last as? Paragraph)?.plainText, "`<!-- literal -->`")
+    }
+
+    func testDiscussionMarkdownResolvesRelativeImagesFromIssuesAndPullRequests() {
+        let document = Markdown.Document(parsing: """
+            ![Setup](../blob/main/docs/setup.png?raw=true "Guide")
+
+            ![External](HTTPS://example.org/demo.png)
+            """)
+        for page in ["issues", "pull"] {
+            var rewriter = GitHubDiscussionMarkdown(itemURL: URL(string: "https://github.com/team/app/\(page)/7"))
+            let images = rewriter.rewrite(document).children.compactMap { $0.child(at: 0) as? Markdown.Image }
+            XCTAssertEqual(images.map(\.source), [
+                "https://github.com/team/app/blob/main/docs/setup.png?raw=true",
+                "https://example.org/demo.png"
+            ])
+            XCTAssertEqual(images.first?.title, "Guide")
+        }
+    }
+
+    func testDiscussionMarkdownLeavesOnlyAltTextForUnsupportedImages() {
+        let document = Markdown.Document(parsing: """
+            ![Local](file:///private/tmp/demo.png)
+
+            ![Credentials](https://name@example.org/demo.png)
+            """)
+        var rewriter = GitHubDiscussionMarkdown(itemURL: nil)
+        let images = rewriter.rewrite(document).children.compactMap { $0.child(at: 0) as? Markdown.Image }
+        XCTAssertEqual(images.map(\.plainText), ["Local", "Credentials"])
+        XCTAssertTrue(images.allSatisfy { $0.source == nil })
+    }
+
     private func location(_ root: String = "/repo", machine: HerdrMachineProfile? = nil) -> WorkspaceFileLocation {
         WorkspaceFileLocation(machine: machine, session: "test", workspaceID: "w1", workspaceLabel: "Test", root: root)
     }
