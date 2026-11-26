@@ -10,6 +10,7 @@ public extension TextSelectionManager {
         case character
         case word
         case line
+        case lineBoundary
         case visualLine
         case page
         case document

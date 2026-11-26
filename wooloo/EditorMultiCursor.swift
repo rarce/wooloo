@@ -1109,7 +1109,7 @@ final class EditorMultiCursorCoordinator: TextViewCoordinator {
             else { return nil }
             return textView.selectionManager.caretRect(for: newest)
         }) { rect in
-            textView.scrollToVisible(rect.insetBy(dx: -20, dy: -rect.height))
+            textView.scrollCaretToVisible(rect, verticalPadding: rect.height)
         }
     }
 

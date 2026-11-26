@@ -54,6 +54,7 @@ extension TextSelectionManager {
                 selection.range.location = selection.range.max
             }
             selection.range.length = 0
+            selection.pivot = selection.range.location
             return
         }
 
@@ -63,11 +64,36 @@ extension TextSelectionManager {
         }
 
         // Find where to modify the selection from.
-        let startLocation = findSelectionStartLocation(
-            selection,
-            direction: direction,
-            modifySelection: modifySelection
-        )
+        let startLocation = if destination == .lineBoundary, selection.pivot != nil {
+            activeOffset(for: selection)
+        } else {
+            findSelectionStartLocation(selection, direction: direction, modifySelection: modifySelection)
+        }
+
+        let affinity = startLocation == activeOffset(for: selection) ? selection.visualCaret : nil
+        let target: (offset: Int, caret: TextSelection.VisualCaret?)?
+        if (destination == .lineBoundary || destination == .visualLine),
+           direction == .forward || direction == .backward {
+            target = horizontalLineBoundary(
+                from: startLocation, forward: direction == .forward, visual: destination == .visualLine, affinity: affinity
+            )
+        } else if affinity != nil, destination == .character, direction == .up || direction == .down,
+                  let origin = activeCaretRect(for: selection) {
+            target = verticalTarget(from: origin, up: direction == .up, suggestedX: selection.suggestedXPos)
+        } else {
+            target = nil
+        }
+
+        if let target {
+            let anchor = modifySelection ? selection.pivot ?? startLocation : target.offset
+            selection.range = NSRange(location: min(anchor, target.offset), length: abs(anchor - target.offset))
+            selection.pivot = anchor
+            selection.visualCaret = target.caret
+            if direction != .up && direction != .down {
+                selection.suggestedXPos = activeCaretRect(for: selection)?.origin.x
+            }
+            return
+        }
 
         let range = rangeOfSelection(
             from: startLocation,

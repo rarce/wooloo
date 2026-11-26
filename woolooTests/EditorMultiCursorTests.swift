@@ -1370,6 +1370,223 @@ final class EditorMultiCursorTests: XCTestCase {
         return rows
     }
 
+    // MARK: - Keyboard navigation and selection appearance
+
+    func testHorizontalKeysKeepTheActiveEndOutsideTheFloatingGutter() throws {
+        let text = String(repeating: "0123456789", count: 15)
+        let spy = ControllerSpy()
+        let (_, view) = try makeEditor(text: text, width: 300, spy: spy)
+        try settle()
+        let scroll = try XCTUnwrap(view.enclosingScrollView)
+        let gutter = try XCTUnwrap(spy.controller?.gutterView)
+        let gutterEnd = gutter.convert(gutter.bounds, to: nil).maxX
+
+        func verifyVisible(_ offset: Int, line: UInt = #line) throws {
+            let rect = try XCTUnwrap(view.layoutManager.rectForOffset(offset), line: line)
+            let x = view.convert(rect.origin, to: nil).x
+            XCTAssertGreaterThanOrEqual(x, gutterEnd - 0.5, line: line)
+            XCTAssertLessThan(x, scroll.contentView.convert(scroll.contentView.bounds, to: nil).maxX, line: line)
+        }
+
+        view.selectionManager.setSelectedRange(range(95))
+        view.scrollSelectionToVisible()
+        let origin = scroll.documentVisibleRect.origin.x
+        XCTAssertGreaterThan(origin, 0)
+        for offset in (0..<95).reversed() {
+            view.keyDown(with: navigationKey(NSLeftArrowFunctionKey, code: kVK_LeftArrow))
+            try verifyVisible(offset)
+        }
+        XCTAssertEqual(selectedRanges(view), [range(0)])
+        XCTAssertEqual(scroll.documentVisibleRect.origin.x, 0, accuracy: 0.5)
+
+        for offset in 1...text.utf16.count {
+            view.keyDown(with: navigationKey(NSRightArrowFunctionKey, code: kVK_RightArrow, flags: .shift))
+            try verifyVisible(offset)
+        }
+        XCTAssertEqual(selectedRanges(view), [range(0, text.utf16.count)])
+        view.keyDown(with: navigationKey(NSLeftArrowFunctionKey, code: kVK_LeftArrow, flags: .command))
+        XCTAssertEqual(selectedRanges(view), [range(0)])
+        try verifyVisible(0)
+    }
+
+    func testHorizontalRevealUsesTheInsertionEdgeOfAnRTLGlyph() throws {
+        let text = String(repeating: "0", count: 120) + " אבג"
+        let (_, view) = try makeEditor(text: text, width: 300)
+        try settle()
+        let rect = try XCTUnwrap(view.layoutManager.rectForOffset(121))
+        XCTAssertLessThan(rect.size.width, 0)
+        view.scrollCaretToVisible(rect)
+        let clip = try XCTUnwrap(view.enclosingScrollView?.documentVisibleRect)
+        XCTAssertLessThan(rect.origin.x, clip.maxX)
+    }
+
+    func testHomeAndEndMoveEveryCursorToPhysicalLineBoundsAndExtendFromItsAnchor() throws {
+        let text = "  abc\r\n\tdef\n    🧑🏽‍💻"
+        let (_, view) = try makeEditor(text: text, wrapLines: true)
+        func press(_ keyCode: Int, _ flags: NSEvent.ModifierFlags = []) {
+            view.keyDown(with: navigationKey(keyCode == kVK_Home ? NSHomeFunctionKey : NSEndFunctionKey,
+                                             code: keyCode, flags: flags))
+        }
+
+        view.selectionManager.setSelectedRanges([range(3), range(9)])
+        press(kVK_Home, [.function, .numericPad])
+        XCTAssertEqual(selectedRanges(view), [range(0), range(7)])
+        press(kVK_End)
+        XCTAssertEqual(selectedRanges(view), [range(5), range(11)])
+        press(kVK_End)
+        XCTAssertEqual(selectedRanges(view), [range(5), range(11)])
+
+        view.selectionManager.setSelectedRange(range(9))
+        press(kVK_End, .shift)
+        XCTAssertEqual(selectedRanges(view), [range(9, 2)])
+        press(kVK_Home, .shift)
+        XCTAssertEqual(selectedRanges(view), [range(7, 2)])
+        press(kVK_End, .shift)
+        XCTAssertEqual(selectedRanges(view), [range(9, 2)])
+        view.keyDown(with: navigationKey(NSRightArrowFunctionKey, code: kVK_RightArrow))
+        press(kVK_Home, .shift)
+        XCTAssertEqual(selectedRanges(view), [range(7, 4)], "the collapsed caret is the new anchor")
+
+        view.selectionManager.setSelectedRange(range(14))
+        press(kVK_End)
+        press(kVK_End)
+        XCTAssertEqual(selectedRanges(view), [range(text.utf16.count)])
+        view.keyDown(with: navigationKey(NSUpArrowFunctionKey, code: kVK_UpArrow, flags: .command))
+        XCTAssertEqual(selectedRanges(view), [range(0)])
+        view.keyDown(with: navigationKey(NSDownArrowFunctionKey, code: kVK_DownArrow, flags: .command))
+        XCTAssertEqual(selectedRanges(view), [range(text.utf16.count)])
+    }
+
+    func testCommandArrowsHandleSmartIndentAndRealLineEndings() throws {
+        let text = "  abc\r\nxyz\n🧑🏽‍💻"
+        let (_, view) = try makeEditor(text: text)
+        let left = navigationKey(NSLeftArrowFunctionKey, code: kVK_LeftArrow, flags: .command)
+        let right = navigationKey(NSRightArrowFunctionKey, code: kVK_RightArrow, flags: .command)
+        view.selectionManager.setSelectedRange(range(4))
+        view.keyDown(with: left)
+        XCTAssertEqual(selectedRanges(view), [range(2)])
+        view.keyDown(with: left)
+        XCTAssertEqual(selectedRanges(view), [range(0)])
+        for (position, end) in [(4, 5), (8, 10), (11, text.utf16.count)] {
+            view.selectionManager.setSelectedRange(range(position))
+            view.keyDown(with: right)
+            XCTAssertEqual(selectedRanges(view), [range(end)])
+            view.keyDown(with: right)
+            XCTAssertEqual(selectedRanges(view), [range(end)])
+        }
+
+        view.setText(text + "\n")
+        view.selectionManager.setSelectedRange(range(text.utf16.count + 1))
+        view.keyDown(with: right)
+        XCTAssertEqual(selectedRanges(view), [range(text.utf16.count + 1)])
+    }
+
+    func testLineEndStopsBeforeUnicodeSeparators() throws {
+        let text = "a\u{85}b\u{2028}c\u{2029}d"
+        let (_, view) = try makeEditor(text: text)
+        XCTAssertEqual(view.layoutManager.lineCount, 4)
+        for position in [0, 2, 4] {
+            for key in [navigationKey(NSEndFunctionKey, code: kVK_End),
+                        navigationKey(NSRightArrowFunctionKey, code: kVK_RightArrow, flags: .command)] {
+                view.selectionManager.setSelectedRange(range(position))
+                view.keyDown(with: key)
+                XCTAssertEqual(selectedRanges(view), [range(position + 1)])
+            }
+        }
+    }
+
+    func testCommandRightStaysOnTheTrailingEdgeOfAWrappedRowUntilMovingAgain() throws {
+        let text = "    " + String(repeating: "alpha beta gamma ", count: 12)
+        let (_, view) = try makeEditor(text: text, wrapLines: true, width: 240)
+        let right = navigationKey(NSRightArrowFunctionKey, code: kVK_RightArrow, flags: .command)
+        let left = navigationKey(NSLeftArrowFunctionKey, code: kVK_LeftArrow, flags: .command)
+        let rows = displayRows(view)
+        XCTAssertGreaterThan(rows.count, 2)
+        let row = rows[1]
+        view.selectionManager.setSelectedRange(range(row.location + 2))
+        let reference = try XCTUnwrap(view.layoutManager.rectForOffset(row.location))
+        for _ in 0..<2 {
+            view.keyDown(with: right)
+            let selection = try XCTUnwrap(view.selectionManager.textSelections.first)
+            XCTAssertEqual(selection.range, range(NSMaxRange(row)))
+            let caret = try XCTUnwrap(view.selectionManager.caretRect(for: selection))
+            XCTAssertEqual(caret.minY, reference.minY, accuracy: 0.5)
+            XCTAssertGreaterThan(caret.minX, reference.minX)
+        }
+        view.keyDown(with: left)
+        XCTAssertEqual(selectedRanges(view), [range(row.location)])
+
+        view.keyDown(with: navigationKey(NSEndFunctionKey, code: kVK_End))
+        XCTAssertEqual(selectedRanges(view), [range(text.utf16.count)])
+        view.keyDown(with: navigationKey(NSHomeFunctionKey, code: kVK_Home))
+        XCTAssertEqual(selectedRanges(view), [range(0)])
+    }
+
+    func testDownAfterCommandRightMovesFromTheDrawnWrappedRow() throws {
+        let text = "first line\n" + String(repeating: "alpha beta gamma ", count: 12) + "\nlast line"
+        let (_, view) = try makeEditor(text: text, wrapLines: true, width: 240)
+        let rows = displayRows(view)
+        XCTAssertGreaterThan(rows.count, 5)
+        view.selectionManager.setSelectedRange(range(rows[2].location + 2))
+        view.keyDown(with: navigationKey(NSRightArrowFunctionKey, code: kVK_RightArrow, flags: .command))
+        view.keyDown(with: navigationKey(NSDownArrowFunctionKey, code: kVK_DownArrow))
+        let selection = try XCTUnwrap(view.selectionManager.textSelections.first)
+        let caret = try XCTUnwrap(view.selectionManager.caretRect(for: selection))
+        let next = try XCTUnwrap(view.layoutManager.rectForOffset(rows[3].location))
+        XCTAssertEqual(caret.minY, next.minY, accuracy: 0.5)
+    }
+
+    func testSourceSelectionTextHasContrastInEveryThemeWithAndWithoutFocus() throws {
+        func contrast(_ first: NSColor, _ second: NSColor) throws -> Double {
+            func luminance(_ color: NSColor) throws -> Double {
+                let rgb = try XCTUnwrap(color.usingColorSpace(.sRGB))
+                return zip([0.2126, 0.7152, 0.0722], [rgb.redComponent, rgb.greenComponent, rgb.blueComponent])
+                    .reduce(0) { result, channel in
+                        let (weight, value) = channel
+                        return result + weight * (value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4))
+                    }
+            }
+            let light = try luminance(first)
+            let dark = try luminance(second)
+            return (max(light, dark) + 0.05) / (min(light, dark) + 0.05)
+        }
+
+        for palette in WoolooTheme.all {
+            let theme = palette.sourceEditorTheme
+            let inactive = try XCTUnwrap(theme.inactiveSelection)
+            let line = try XCTUnwrap(theme.background.blended(withFraction: theme.lineHighlight.alphaComponent,
+                                                               of: theme.lineHighlight.withAlphaComponent(1)))
+            for fill in [theme.selection, inactive] {
+                XCTAssertEqual(fill.alphaComponent, 1, palette.name)
+                XCTAssertGreaterThanOrEqual(try contrast(fill, theme.background), 1.24, palette.name)
+                XCTAssertGreaterThanOrEqual(try contrast(fill, line), 1.24, palette.name)
+                for text in [theme.text, theme.comments, theme.keywords, theme.commands, theme.types, theme.attributes,
+                             theme.variables, theme.values, theme.numbers, theme.strings, theme.characters] {
+                    XCTAssertGreaterThanOrEqual(try contrast(text, fill), 4.5, palette.name)
+                }
+            }
+            XCTAssertNotEqual(theme.selection, inactive, palette.name)
+        }
+    }
+
+    func testSwitchingTheEditorThemeUpdatesFocusedAndUnfocusedSelectionInPlace() throws {
+        let spy = ControllerSpy()
+        let (_, view) = try makeEditor(text: "let animal = \"cat\"  // comment", spy: spy)
+        let controller = try XCTUnwrap(spy.controller)
+        let mocha = try XCTUnwrap(WoolooTheme.named("catppuccin")?.sourceEditorTheme)
+        let light = try XCTUnwrap(WoolooTheme.named("gruvbox-light")?.sourceEditorTheme)
+        XCTAssertEqual(view.selectionManager.selectionBackgroundColor, mocha.selection)
+        XCTAssertEqual(view.selectionManager.inactiveSelectionBackgroundColor, mocha.inactiveSelection)
+        view.selectionManager.setSelectedRange(range(4, 6))
+        controller.theme = light
+        XCTAssertTrue(controller.textView === view)
+        XCTAssertEqual(selectedRanges(view), [range(4, 6)])
+        XCTAssertEqual(view.selectionManager.selectionBackgroundColor, light.selection)
+        XCTAssertEqual(view.selectionManager.inactiveSelectionBackgroundColor, light.inactiveSelection)
+        XCTAssertEqual(view.selectionManager.selectedLineBackgroundColor, light.lineHighlight)
+        XCTAssertEqual(view.enclosingScrollView?.backgroundColor, light.background)
+    }
+
     // MARK: - Scrolling wrapped text
 
     /// 400 lines that each wrap to several rows at the editor's width: their heights are only
@@ -2399,6 +2616,10 @@ final class EditorMultiCursorTests: XCTestCase {
                                 keyCode: UInt16(code ?? codes[characters] ?? 0))!
     }
 
+    private func navigationKey(_ symbol: Int, code: Int, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        key(String(UnicodeScalar(symbol)!), flags, code: code)
+    }
+
     /// A mouse event just right of the left edge of the character at `offset`.
     private func mouse(_ type: NSEvent.EventType, at offset: Int, in textView: TextView,
                        flags: NSEvent.ModifierFlags = .option, timestamp: TimeInterval) -> NSEvent {
@@ -2421,7 +2642,7 @@ final class EditorMultiCursorTests: XCTestCase {
         let editor = CodeEditSourceEditor(
             NSTextStorage(string: text),
             language: .default,
-            theme: theme.editorTheme,
+            theme: theme.sourceEditorTheme,
             font: .monospacedSystemFont(ofSize: 13, weight: .regular),
             tabWidth: 4,
             lineHeight: 1.15,

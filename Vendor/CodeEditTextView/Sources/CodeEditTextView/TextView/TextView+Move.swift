@@ -85,6 +85,13 @@ extension TextView {
         updateAfterMove()
     }
 
+    func moveToPhysicalLineBoundary(forward: Bool, modifySelection: Bool) {
+        selectionManager.moveSelections(
+            direction: forward ? .forward : .backward, destination: .lineBoundary, modifySelection: modifySelection
+        )
+        updateAfterMove()
+    }
+
     /// Moves the cursors left to the end of the line.
     override public func moveToLeftEndOfLine(_ sender: Any?) {
         selectionManager.moveSelections(direction: .backward, destination: .visualLine)

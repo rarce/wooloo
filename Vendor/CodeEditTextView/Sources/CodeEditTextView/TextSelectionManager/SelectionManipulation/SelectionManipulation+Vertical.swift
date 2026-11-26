@@ -10,6 +10,24 @@ import Foundation
 package extension TextSelectionManager {
     // MARK: - Vertical Methods
 
+    /// A soft-wrap boundary can share a text offset between two rows. Start from the drawn edge.
+    func verticalTarget(from caret: CGRect, up: Bool, suggestedX: CGFloat?)
+        -> (offset: Int, caret: TextSelection.VisualCaret?)? {
+        guard let layoutManager else { return nil }
+        let y = caret.midY + (up ? -caret.height : caret.height)
+        if y < 0 { return (0, nil) }
+        guard let offset = layoutManager.textOffsetAtPoint(CGPoint(x: suggestedX ?? caret.origin.x, y: y)) else {
+            return nil
+        }
+        guard let line = layoutManager.textLineForPosition(y),
+              let fragment = line.data.lineFragments.getLine(atPosition: y - line.yPos),
+              fragment.range.max < line.range.length,
+              offset == line.range.location + fragment.range.max else {
+            return (offset, nil)
+        }
+        return (offset, .init(anchorOffset: offset - 1, edge: .trailing))
+    }
+
     /// Extends a selection from the given offset vertically to the destination.
     /// - Parameters:
     ///   - offset: The offset to extend from.
@@ -34,7 +52,7 @@ package extension TextSelectionManager {
         switch destination {
         case .character:
             return extendSelectionVerticalCharacter(from: offset, up: up, suggestedXPos: suggestedXPos)
-        case .word, .line, .visualLine:
+        case .word, .line, .lineBoundary, .visualLine:
             return extendSelectionVerticalLine(from: offset, up: up)
         case .page:
             return extendSelectionPage(from: offset, delta: up ? 1 : -1, suggestedXPos: suggestedXPos)
