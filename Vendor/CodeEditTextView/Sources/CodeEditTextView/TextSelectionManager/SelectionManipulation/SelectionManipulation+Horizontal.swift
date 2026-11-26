@@ -134,7 +134,7 @@ package extension TextSelectionManager {
               let string = textStorage?.string as NSString?, !line.range.isEmpty else {
             return (offset, nil)
         }
-        let end = contentEnd(of: line.range, in: string)
+        let end = LineEnding.contentEnd(of: line.range, in: string)
         guard visual else { return (forward ? end : line.range.location, nil) }
 
         if line.data.lineFragments.isEmpty {
@@ -160,19 +160,6 @@ package extension TextSelectionManager {
         let start = line.range.location + fragment.range.location
         let range = _extendSelectionLine(string: string, lineBound: start, offset: offset, delta: -1)
         return (range.location, nil)
-    }
-
-    private func contentEnd(of range: NSRange, in string: NSString) -> Int {
-        let last = string.character(at: range.max - 1)
-        if last == 0x0A, range.length >= 2, string.character(at: range.max - 2) == 0x0D {
-            return range.max - 2
-        }
-        switch last {
-        case 0x0A, 0x0D, 0x85, 0x2028, 0x2029:
-            return range.max - 1
-        default:
-            return range.max
-        }
     }
 
     /// Extends the selection by one real line in the direction specified.

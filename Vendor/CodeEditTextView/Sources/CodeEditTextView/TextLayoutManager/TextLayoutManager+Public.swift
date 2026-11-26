@@ -73,32 +73,22 @@ extension TextLayoutManager {
         }
         let fragment = fragmentPosition.data
 
+        let x = point.x - edgeInsets.left
+        let fragmentIndex: Int
         if fragment.width == 0 {
-            return position.range.location + fragmentPosition.range.location
-        } else if fragment.width < point.x - edgeInsets.left {
-            let fragmentRange = CTLineGetStringRange(fragment.ctLine)
-            let globalFragmentRange = NSRange(
-                location: position.range.location + fragmentRange.location,
-                length: fragmentRange.length
-            )
-            let endPosition = position.range.location + fragmentRange.location + fragmentRange.length
-
-            // If the endPosition is at the end of the line, and the line ends with a line ending character
-            // return the index before the eol.
-            if endPosition == position.range.max,
-               let lineEnding = LineEnding(line: textStorage?.substring(from: globalFragmentRange) ?? "") {
-                return endPosition - lineEnding.length
-            } else {
-                return endPosition
-            }
+            fragmentIndex = fragmentPosition.range.location
+        } else if x > fragment.width {
+            fragmentIndex = fragmentPosition.range.max
         } else {
-            // Somewhere in the fragment
-            let fragmentIndex = CTLineGetStringIndexForPosition(
-                fragment.ctLine,
-                CGPoint(x: point.x - edgeInsets.left, y: fragment.height/2)
-            )
-            return position.range.location + fragmentIndex
+            fragmentIndex = CTLineGetStringIndexForPosition(fragment.ctLine, CGPoint(x: x, y: fragment.height / 2))
         }
+        let offset = position.range.location + fragmentIndex
+        // A hit on the final fragment belongs before its terminator. CRLF takes two UTF-16 units.
+        if fragmentPosition.range.max == position.range.length,
+           offset >= position.range.max - 2, let text = textStorage?.mutableString {
+            return min(offset, LineEnding.contentEnd(of: position.range, in: text))
+        }
+        return offset
     }
 
     /// Find a position for the character at a given offset.

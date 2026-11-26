@@ -1457,6 +1457,38 @@ final class EditorMultiCursorTests: XCTestCase {
         XCTAssertEqual(selectedRanges(view), [range(text.utf16.count)])
     }
 
+    func testShiftHomeUsesTheCaretAfterBackspaceAtTheEndOfTheDocument() throws {
+        let (_, view) = try makeEditor(text: "first\nhello")
+        view.selectionManager.setSelectedRange(range(7))
+        view.keyDown(with: navigationKey(NSEndFunctionKey, code: kVK_End))
+        view.keyDown(with: key("\u{7F}", [], code: kVK_Delete))
+        XCTAssertEqual(view.string, "first\nhell")
+        XCTAssertEqual(selectedRanges(view), [range(10)])
+        view.keyDown(with: navigationKey(NSHomeFunctionKey, code: kVK_Home, flags: .shift))
+        XCTAssertEqual(selectedRanges(view), [range(6, 4)])
+
+        // An earlier edit moves both endpoints, including the anchor.
+        view.replaceCharacters(in: range(0), with: "new ")
+        view.keyDown(with: navigationKey(NSEndFunctionKey, code: kVK_End, flags: .shift))
+        XCTAssertEqual(selectedRanges(view), [range(14)])
+    }
+
+    func testHomeAndEndCoalesceCaretsOnTheSamePhysicalLineBeforeTyping() throws {
+        let text = String(repeating: "alpha beta gamma ", count: 8)
+        let (_, view) = try makeEditor(text: text, wrapLines: true, width: 240)
+        for (symbol, code, destination) in [(NSHomeFunctionKey, kVK_Home, 0),
+                                             (NSEndFunctionKey, kVK_End, text.utf16.count)] {
+            view.setText(text)
+            let rows = displayRows(view)
+            XCTAssertGreaterThan(rows.count, 2)
+            view.selectionManager.setSelectedRanges([range(rows[0].location + 2), range(rows[1].location + 2)])
+            view.keyDown(with: navigationKey(symbol, code: code))
+            XCTAssertEqual(selectedRanges(view), [range(destination)])
+            view.insertText("!")
+            XCTAssertEqual(view.string, destination == 0 ? "!" + text : text + "!")
+        }
+    }
+
     func testCommandArrowsHandleSmartIndentAndRealLineEndings() throws {
         let text = "  abc\r\nxyz\n🧑🏽‍💻"
         let (_, view) = try makeEditor(text: text)
@@ -1534,6 +1566,32 @@ final class EditorMultiCursorTests: XCTestCase {
         let caret = try XCTUnwrap(view.selectionManager.caretRect(for: selection))
         let next = try XCTUnwrap(view.layoutManager.rectForOffset(rows[3].location))
         XCTAssertEqual(caret.minY, next.minY, accuracy: 0.5)
+    }
+
+    func testDownFromASoftWrapStopsOnAShortRowBeforeAUnicodeSeparator() throws {
+        let prefix = "first line\n"
+        let line = String(repeating: "a", count: 30)
+        let end = prefix.utf16.count + line.utf16.count
+        let (_, view) = try makeEditor(text: "", wrapLines: true, width: 240)
+        for separator in ["\u{85}", "\u{2028}", "\u{2029}"] {
+            view.setText(prefix + line + separator + "last line")
+            let rows = displayRows(view).filter { (prefix.utf16.count...end).contains($0.location) }
+            XCTAssertGreaterThan(rows.count, 1)
+            let penultimate = rows[rows.count - 2]
+            let final = try XCTUnwrap(rows.last)
+            view.selectionManager.setSelectedRange(range(penultimate.location + 2))
+            view.keyDown(with: navigationKey(NSRightArrowFunctionKey, code: kVK_RightArrow, flags: .command))
+            let selection = try XCTUnwrap(view.selectionManager.textSelections.first)
+            XCTAssertEqual(selection.range, range(final.location))
+            let origin = try XCTUnwrap(view.selectionManager.caretRect(for: selection))
+            let target = try XCTUnwrap(view.layoutManager.rectForOffset(end))
+            XCTAssertGreaterThan(origin.origin.x, target.origin.x)
+
+            view.keyDown(with: navigationKey(NSDownArrowFunctionKey, code: kVK_DownArrow))
+            XCTAssertEqual(selectedRanges(view), [range(end)])
+            let moved = try XCTUnwrap(view.selectionManager.textSelections.first)
+            XCTAssertEqual(try XCTUnwrap(view.selectionManager.caretRect(for: moved)).minY, target.minY, accuracy: 0.5)
+        }
     }
 
     func testSourceSelectionTextHasContrastInEveryThemeWithAndWithoutFocus() throws {

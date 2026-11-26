@@ -29,6 +29,7 @@ extension TextSelectionManager {
                 modifySelection: modifySelection
             )
         }
+        removeDuplicateSelections()
         updateSelectionViews()
         delegate?.setNeedsDisplay()
         NotificationCenter.default.post(Notification(name: Self.selectionChangedNotification, object: self))
@@ -152,7 +153,9 @@ extension TextSelectionManager {
         _ selection: TextSelectionManager.TextSelection,
         direction: TextSelectionManager.Direction
     ) {
-        guard selection.pivot == nil else { return }
+        if let pivot = selection.pivot, pivot == selection.range.location || pivot == selection.range.max {
+            return
+        }
         switch direction {
         case .up:
             selection.pivot = selection.range.max
