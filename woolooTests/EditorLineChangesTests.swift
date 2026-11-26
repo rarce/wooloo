@@ -82,7 +82,7 @@ final class EditorLineChangesTests: XCTestCase {
                                     author: "Alice", date: Date(timeIntervalSince1970: 1_700_000_000))
         let second = WorkspaceCommit(id: "second-sha", shortHash: "second", subject: "Second change",
                                      author: "Bob", date: first.date)
-        coordinator.setBlame(EditorGitBlame(text: ["short", longLine], commits: [first, second]))
+        coordinator.setBlame(EditorGitBlame(text: ["short\n", longLine + "\n"], commits: [first, second]))
         var cursors = [CursorPosition(line: 1, column: 1)]
         let editor = CodeEditSourceEditor(
             .constant(text), language: .markdown, theme: theme.editorTheme,

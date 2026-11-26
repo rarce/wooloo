@@ -42,7 +42,9 @@ final class WorkspaceFilesRemoteTests: XCTestCase {
         let path = "dir/a quote's [name].txt"
         try sandbox.repository(name, files: [path: "remote\n"])
         let blame = try XCTUnwrap(WorkspaceFiles.gitBlame(path, at: remote(name)))
-        XCTAssertEqual(blame.text, ["remote"])
+        XCTAssertEqual(blame.text, ["remote\n"])
+        let sshLog = try Data(contentsOf: URL(fileURLWithPath: sandbox.path("ssh.log")))
+        XCTAssertEqual(sshLog.split(separator: 0x1e).count, 1)
         XCTAssertEqual(blame.commits.first?.subject, "Initial")
         XCTAssertEqual(blame.commits.first?.id.count, 40)
     }

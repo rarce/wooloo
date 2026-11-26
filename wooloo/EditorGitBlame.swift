@@ -2,7 +2,7 @@ import AppKit
 import CodeEditSourceEditor
 import CodeEditTextView
 
-/// The lines and attribution come from the same Git invocation, even if HEAD moves during a load.
+/// The source lines and attribution use the same pinned commit.
 struct EditorGitBlame: Sendable {
     static let storageKey = "EditorInlineGitBlame"
 
@@ -10,9 +10,16 @@ struct EditorGitBlame: Sendable {
     let commits: [WorkspaceCommit]
 
     static func parse(_ data: Data) -> Self? {
-        guard !data.contains(0), let output = String(data: data, encoding: .utf8) else { return nil }
+        guard !data.contains(0), data.last == 10, let output = String(data: data, encoding: .utf8) else { return nil }
+        // Git always prints LF after a source record, even when the blob has no final LF.
+        let bytes = output.utf8
+        guard let headerEnd = bytes.firstIndex(of: 10) else { return nil }
+        let lastByte = String(decoding: bytes[..<headerEnd], as: UTF8.self).trimmingCharacters(in: .whitespaces)
+        guard lastByte.isEmpty || UInt8(lastByte) != nil else { return nil }
+        let endsInLF = UInt8(lastByte) == 10
         var text: [String] = []
         var commits: [WorkspaceCommit] = []
+        var commitsByHash: [String: WorkspaceCommit] = [:]
         var hash: String?
         var author: String?
         var timestamp: TimeInterval?
@@ -20,8 +27,10 @@ struct EditorGitBlame: Sendable {
         var gitLine = 0
 
         // Split at Git's LF delimiter even where the source line itself ends in CR.
-        for bytes in output.utf8.split(separator: 10, omittingEmptySubsequences: false).dropLast() {
-            let field = String(decoding: bytes, as: UTF8.self)
+        var start = bytes.index(after: headerEnd)
+        while start < bytes.endIndex, let end = bytes[start...].firstIndex(of: 10) {
+            let field = String(decoding: bytes[start..<end], as: UTF8.self)
+            start = bytes.index(after: end)
             if hash == nil {
                 let header = field.split(separator: " ", maxSplits: 3)
                 guard header.count >= 3, header[0].count == 40 || header[0].count == 64,
@@ -33,14 +42,21 @@ struct EditorGitBlame: Sendable {
                 timestamp = nil
                 subject = nil
             } else if field.hasPrefix("\t") {
-                guard let id = hash, let author, let timestamp, let subject else { return nil }
-                // CodeEdit also recognizes standalone CR as a line ending.
-                let source = String(field.dropFirst()) + "\n"
-                let lines = Self.lines(in: source)
-                let commit = WorkspaceCommit(id: id, shortHash: String(id.prefix(8)), subject: subject,
+                guard let id = hash else { return nil }
+                let commit: WorkspaceCommit
+                if let existing = commitsByHash[id] {
+                    commit = existing
+                } else {
+                    guard let author, let timestamp, let subject else { return nil }
+                    commit = WorkspaceCommit(id: id, shortHash: String(id.prefix(8)), subject: subject,
                                              author: author, date: Date(timeIntervalSince1970: timestamp))
+                    commitsByHash[id] = commit
+                }
+                let needsLF = start != bytes.endIndex || endsInLF
+                let source = String(field.dropFirst()) + (needsLF ? "\n" : "")
+                let lines = Self.editorLines(in: source)
                 for line in lines {
-                    text.append(String(line))
+                    text.append(line)
                     commits.append(commit)
                 }
                 hash = nil
@@ -52,7 +68,7 @@ struct EditorGitBlame: Sendable {
                 subject = String(field.dropFirst("summary ".count))
             }
         }
-        guard hash == nil, data.isEmpty || data.last == 10 else { return nil }
+        guard hash == nil else { return nil }
         return Self(text: text, commits: commits)
     }
 
@@ -62,8 +78,8 @@ struct EditorGitBlame: Sendable {
     }
 
     func lines(matching buffer: String) -> [Line?] {
-        let current = Self.lines(in: buffer)
-        let edits = EditorLineChanges.lineEdits(from: text.map { $0[...] }, to: current)
+        let current = Self.editorLines(in: buffer)
+        let edits = EditorLineChanges.lineEdits(from: text.map { $0[...] }, to: current.map { $0[...] })
         var lines = commits.prefix(edits.prefix).map { Optional(Line.committed($0)) }
         var original = edits.prefix
         for inserted in edits.inserted {
@@ -79,9 +95,18 @@ struct EditorGitBlame: Sendable {
         return lines
     }
 
-    private static func lines(in text: String) -> [Substring] {
-        var lines = text.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r" || $0 == "\r\n" }
-        if lines.last?.isEmpty == true { lines.removeLast() }
+    /// CodeEdit uses NSString's line boundaries, including Unicode line and paragraph separators.
+    /// Keep each terminator in the diff so adding or removing the final newline changes that row.
+    private static func editorLines(in text: String) -> [String] {
+        let source = text as NSString
+        var lines: [String] = []
+        var start = 0
+        while start < source.length {
+            var end = 0
+            source.getLineStart(nil, end: &end, contentsEnd: nil, for: NSRange(location: start, length: 0))
+            lines.append(source.substring(with: NSRange(location: start, length: end - start)))
+            start = end
+        }
         return lines
     }
 }

@@ -938,9 +938,8 @@ struct WorkspaceDocumentView: View {
         .onChange(of: theme.id) { _, _ in updateLineChangeColors() }
         .onChange(of: wrapsLines) { _, _ in blameCoordinator.refresh() }
         .onChange(of: typography.codeFont) { _, _ in blameCoordinator.refresh() }
-        .task(id: "\(document.id)|\(document.version ?? "")|\(gitBasesVersion)|\(showsInlineGitBlame && isFocused)") {
-            await loadGitAnnotations()
-        }
+        .task(id: gitLoadID) { await loadGitBases() }
+        .task(id: "\(gitLoadID)|\(showsInlineGitBlame && isFocused)") { await loadGitBlame() }
         .task(id: document.location.identity) { await watchGitDirectory() }
         .onReceive(NotificationCenter.default.publisher(for: WorkspaceFiles.repositoryDidChange)
             .merge(with: NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
@@ -1113,20 +1112,26 @@ struct WorkspaceDocumentView: View {
         blameCoordinator.setColor(NSColor(theme.muted))
     }
 
-    private func loadGitAnnotations() async {
-        guard !Task.isCancelled else { return }
-        blameCoordinator.setBlame(nil)
+    private var gitLoadID: String {
+        "\(document.id)|\(document.version ?? "")|\(gitBasesVersion)"
+    }
+
+    private func loadGitBases() async {
         guard document.version != nil, !document.isUntitled else { return }
         let (path, location) = (document.path, document.location)
-        let loadBlame = showsInlineGitBlame && isFocused
         guard let bases = await WorkspaceFiles.blocking(at: location, priority: .utility, {
             Optional(WorkspaceFiles.gitBases(path, at: location))
         }), !Task.isCancelled else { return }
         lineChangeCoordinator.setBases(head: bases.head, index: bases.index)
-        guard loadBlame else { return }
-        let possiblyAdded = bases.head == nil && bases.index != nil
+    }
+
+    private func loadGitBlame() async {
+        guard !Task.isCancelled else { return }
+        blameCoordinator.setBlame(nil)
+        guard showsInlineGitBlame, isFocused, document.version != nil, !document.isUntitled else { return }
+        let (path, location) = (document.path, document.location)
         let blame = await WorkspaceFiles.blocking(at: location, priority: .utility) {
-            WorkspaceFiles.gitBlame(path, at: location, possiblyAdded: possiblyAdded)
+            WorkspaceFiles.gitBlame(path, at: location)
         }
         guard !Task.isCancelled else { return }
         blameCoordinator.setBlame(blame)

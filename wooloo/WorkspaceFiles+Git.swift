@@ -240,15 +240,24 @@ extension WorkspaceFiles {
 
     /// Blame of the committed file, with its line content as the basis for unsaved edits.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
-    static func gitBlame(_ path: String, at location: WorkspaceFileLocation,
-                         possiblyAdded: Bool = false) -> EditorGitBlame? {
-        guard (try? validateRelativePath(path)) != nil, !path.utf8.contains(0) else { return nil }
-        let data = try? git(location, ["blame", "--line-porcelain", "--no-textconv", "--encoding=UTF-8",
-                                       "HEAD", "--", "./" + path], limit: 16_000_000, optionalLocks: false)
-        if let data { return EditorGitBlame.parse(data) }
+    static func gitBlame(_ path: String, at location: WorkspaceFileLocation) -> EditorGitBlame? {
+        guard (try? validateRelativePath(path)) != nil, !path.utf8.contains(0),
+              let executable = location.isLocal ? localGit : "git" else { return nil }
+        let gitCommand = quote(executable)
+        let file = quote("./" + path)
+        // Porcelain omits the original final LF state. Read the last byte and blame at the same
+        // revision in one session, so refreshing HEAD cannot mix information from two commits.
+        let script = """
+            export GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0
+            revision=$(\(gitCommand) rev-parse --verify HEAD) || exit 1
+            last_byte=$(\(gitCommand) cat-file blob "$revision":\(file) | tail -c 1 | od -An -tu1)
+            printf '%s\\n' "$last_byte"
+            exec \(gitCommand) blame --porcelain --no-textconv --encoding=UTF-8 "$revision" -- \(file)
+            """
+        if let data = try? shell(script, at: location, limit: 64_000_000) { return EditorGitBlame.parse(data) }
 
         // An indexed addition has no HEAD blame, but its lines are still Git changes.
-        guard possiblyAdded, let added = try? git(location, ["diff", "--cached", "--name-only", "--diff-filter=A",
+        guard let added = try? git(location, ["diff", "--cached", "--name-only", "--diff-filter=A",
             "--no-renames", "-z", "--", ":(literal)./" + path], limit: 16_384, optionalLocks: false),
             !added.isEmpty else { return nil }
         return EditorGitBlame(text: [], commits: [])
