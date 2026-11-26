@@ -56,6 +56,12 @@ private struct DestinationContentView: View {
     private let restorationID: Binding<String>?
     /// All panels use the store’s active host; nil is this Mac.
     private var explorerMachine: HerdrMachineProfile? { herdr.machine }
+    private var quotaProvidersInSelectedSpace: Set<AgentProvider> {
+        guard herdr.selectedWorkspaceID != nil else { return [] }
+        return Set(herdr.visibleAgents(inSelectedSpaceOnly: true, followHerdrView: false).compactMap { agent in
+            agent.kind.flatMap(AgentProvider.init(agentKind:))
+        })
+    }
     @StateObject private var documentStore = WorkspaceDocumentStore()
     private var documents: [WorkspaceDocument] { documentStore.visibleDocuments }
     private var activeDocumentID: String? {
@@ -635,7 +641,8 @@ private struct DestinationContentView: View {
                     directory: explorerLocation?.machine?.id == explorerMachine?.id ? explorerLocation?.root : nil)
                     .padding(7)
                 Divider()
-                AgentQuotaSection(machine: explorerMachine).padding(7)
+                AgentQuotaSection(machine: explorerMachine, spaceProviders: quotaProvidersInSelectedSpace)
+                    .padding(7)
             }
             Divider()
             HStack(spacing: 0) {
@@ -993,7 +1000,11 @@ private struct DestinationContentView: View {
                 tabBar
             }
             // Always keep somewhere to grab the window, even when the tabs overflow.
-            WindowDragRegion().frame(width: 44)
+            if managesRuntime && runtime.showsSetup {
+                WindowDragRegion().frame(width: 44)
+            } else {
+                WindowDragRegion(onDoubleClick: newTerminalTab).frame(width: 44)
+            }
         }
         .frame(height: max(textScale.metric(30), chrome.metrics.minimumHeight))
         .background(barBackground)
@@ -1040,7 +1051,8 @@ private struct DestinationContentView: View {
                             ForEach(Array(documents.enumerated()), id: \.element.id) { index, document in
                                 documentTab(document, index: index).id(document.id)
                             }
-                            WindowDragRegion().frame(minWidth: 16, maxWidth: .infinity)
+                            WindowDragRegion(onDoubleClick: newTerminalTab)
+                                .frame(minWidth: 16, maxWidth: .infinity)
                                 .tabDropAtEnd(drag: window.tabDrag, [
                                     .terminal: terminalTabsEnd,
                                     .document: TabDropEnd(lastIndex: documents.count - 1, onMove: { documentStore.move($0, to: $1) })
@@ -1078,14 +1090,14 @@ private struct DestinationContentView: View {
                     }
                 }
             }
-            Button { commands.perform(.newTab) } label: {
+            Button(action: newTerminalTab) {
                 TabBarAddIcon(symbol: "terminal").frame(width: 28, height: textScale.metric(30))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("New Terminal Tab")
             .accessibilityLabel("New Terminal Tab")
-            .disabled(!herdr.isConnected || herdr.selectedWorkspaceID == nil)
+            .disabled(!canCreateTerminalTab)
             Button { commands.newUntitledFile() } label: {
                 TabBarAddIcon(symbol: "doc").frame(width: 28, height: textScale.metric(30))
                     .contentShape(Rectangle())
@@ -1096,6 +1108,13 @@ private struct DestinationContentView: View {
             .disabled(explorerLocation == nil)
             allTabsMenu
         }
+    }
+
+    private var canCreateTerminalTab: Bool { herdr.isConnected && herdr.selectedWorkspaceID != nil }
+
+    private func newTerminalTab() {
+        guard canCreateTerminalTab else { return }
+        commands.perform(.newTab)
     }
 
     private func tabMenuTitle(_ title: String, id: String) -> String {
@@ -1191,6 +1210,7 @@ private struct DestinationContentView: View {
             .accessibilityLabel(terminalTabAccessibilityLabel(tab))
             .accessibilityValue(tabAccessibilityState(tab.id))
             .accessibilityAddTraits(tabIsFocused(tab.id) ? .isSelected : [])
+            .simultaneousGesture(TapGesture(count: 2).onEnded { commands.requestRenameTab(tab) })
             tabCloseButton(title: tab.label, visible: hoveredTabID == tab.id || tabIsFocused(tab.id)) { closeTerminalTab(tab) }
         }
         .modifier(EditorTabStyle(selected: tabIsFocused(tab.id),
@@ -1205,8 +1225,7 @@ private struct DestinationContentView: View {
                 herdr.createTab()
             }
             Button("Rename Tab…", systemImage: "pencil") {
-                window.renameText = tab.label
-                window.renameTarget = .tab(tab.id)
+                commands.requestRenameTab(tab)
             }
             Divider()
             Button("Close Tab…", systemImage: "xmark", role: .destructive) { closeTerminalTab(tab) }

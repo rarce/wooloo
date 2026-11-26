@@ -39,6 +39,7 @@ struct WorkspaceBrowserView: View {
     @StateObject private var repositoryModel = WorkspaceRepositoryModel()
     @StateObject private var githubModel = WorkspaceGitHubModel()
     @State private var selectedHistoryCommit: WorkspaceCommit?
+    @State private var loadedLineCounts: (identity: String, counts: [String: WorkspaceLineCounts])?
     /// A file whose history Explorer shows.
     @State private var historyPath: String?
     /// Changes waiting for confirmation before they are discarded.
@@ -146,9 +147,39 @@ struct WorkspaceBrowserView: View {
                                 selectedTab: explorerTab == "branches" ? 1 : 0, selectedCommit: $selectedHistoryCommit)
     }
 
+    private func loadChangeCounts(at location: WorkspaceFileLocation) async {
+        // Keep the latest refresh request while a calculation is running. Polls must
+        // neither cancel that calculation nor queue up work for every intermediate listing.
+        let (versions, continuation) = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let subscription = model.$listingVersion.sink { continuation.yield($0) }
+        defer {
+            subscription.cancel()
+            continuation.finish()
+        }
+        for await _ in versions {
+            guard !Task.isCancelled else { break }
+            guard model.listedIdentity == location.identity,
+                  let changes = model.listing?.changes, !changes.isEmpty else { continue }
+            let counts = try? await WorkspaceFiles.blocking(at: location) {
+                try WorkspaceFiles.changeLineCounts(at: location, changes: changes)
+            }
+            guard !Task.isCancelled, model.listedIdentity == location.identity else { break }
+            if let counts { loadedLineCounts = (location.identity, counts) }
+        }
+    }
+
     private var explorer: some View {
         let location = location
         let shown = location.map { model.shown(for: $0) }
+        let countsIdentity = explorerTab == "changes" ? location?.identity : nil
+        let lineCounts = loadedLineCounts?.identity == countsIdentity ? loadedLineCounts?.counts ?? [:] : [:]
+        let tabs = PanelTab.explorer.map { tab in
+            var tab = tab
+            if tab.id == "changes", case .listing(let listing) = shown, listing.hasGit {
+                tab.count = Set(listing.changes.map(\.path)).count
+            }
+            return tab
+        }
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("EXPLORER")
@@ -182,7 +213,7 @@ struct WorkspaceBrowserView: View {
             .frame(height: typography.metric(35))
             Divider()
 
-            PanelTabStrip(tabs: PanelTab.explorer, selection: $explorerTab)
+            PanelTabStrip(tabs: tabs, selection: $explorerTab)
             Divider()
 
             if explorerTab == "history" || explorerTab == "branches" {
@@ -238,7 +269,8 @@ struct WorkspaceBrowserView: View {
                                                     change: changesByPath[row.node.path],
                                                     directoryKind: directoryKinds[row.node.path],
                                                     stageState: listing.hasGit ? stageStates[row.node.path] : nil,
-                                                    hasGit: listing.hasGit)
+                                                    hasGit: listing.hasGit,
+                                                    lineCounts: lineCounts[row.node.path])
                                             .id(row.node.path)
                                         }
                                         if row.node.isDirectory, draftFolder == row.node.path { draftRow(depth: row.depth + 1) }
@@ -311,6 +343,10 @@ struct WorkspaceBrowserView: View {
             }
         }
         .background(theme.sidebarBackground)
+        .task(id: countsIdentity) {
+            guard countsIdentity != nil, let location else { return }
+            await loadChangeCounts(at: location)
+        }
         .confirmationDialog(model.pendingDelete.map { target in
                                 let items = target.paths.count > 1 ? "\(target.paths.count) items"
                                                                    : "“" + (target.path as NSString).lastPathComponent + "”"
@@ -502,7 +538,8 @@ struct WorkspaceBrowserView: View {
     private func treeRow(_ row: WorkspaceTreeRow, location: WorkspaceFileLocation,
                          change: WorkspaceFileChange?,
                          directoryKind: WorkspaceFileChange.Kind?,
-                         stageState: WorkspaceFileChange.StageState?, hasGit: Bool) -> some View {
+                         stageState: WorkspaceFileChange.StageState?, hasGit: Bool,
+                         lineCounts: WorkspaceLineCounts? = nil) -> some View {
         let node = row.node
         let kind = node.isDirectory ? directoryKind : change?.kind
         let isIgnored = !model.showsChanges && model.listing?.ignored.contains(node.path) == true
@@ -547,6 +584,10 @@ struct WorkspaceBrowserView: View {
                     .foregroundStyle(kind.map(statusColor) ?? (isIgnored ? Color.secondary : Color.primary))
                 Spacer(minLength: 0)
                 if let change, !node.isDirectory {
+                    if let lineCounts, change.kind != .conflicted {
+                        WorkspaceLineCountLabel(additions: lineCounts.additions, deletions: lineCounts.deletions)
+                            .font(.system(size: typography.caption, design: .monospaced))
+                    }
                     Text(change.statusLabel)
                         .font(.system(size: typography.caption, weight: .semibold))
                         .foregroundStyle(statusColor(change.kind))

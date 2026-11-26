@@ -118,6 +118,11 @@ struct WorkspaceFileChange: Identifiable {
     }
 }
 
+struct WorkspaceLineCounts: Equatable, Sendable {
+    let additions: Int
+    let deletions: Int
+}
+
 struct WorkspaceFileListing {
     let files: [String]
     let changes: [WorkspaceFileChange]

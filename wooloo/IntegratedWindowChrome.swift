@@ -141,14 +141,25 @@ struct IntegratedWindowObserver: NSViewRepresentable {
     }
 }
 
-/// A dedicated empty region: double click follows the system titlebar preference and never
-/// creates a file. Buttons and tab drag/drop targets are sibling views, not children of this view.
+/// An empty region that still lets the user drag the window. Tab bar regions can supply
+/// their own double-click action in place of the system titlebar preference.
 struct WindowDragRegion: NSViewRepresentable {
-    func makeNSView(context: Context) -> WindowDragView { WindowDragView() }
-    func updateNSView(_ view: WindowDragView, context: Context) {}
+    var onDoubleClick: (() -> Void)? = nil
+
+    func makeNSView(context: Context) -> WindowDragView {
+        let view = WindowDragView()
+        view.onDoubleClick = onDoubleClick
+        return view
+    }
+
+    func updateNSView(_ view: WindowDragView, context: Context) {
+        view.onDoubleClick = onDoubleClick
+    }
 }
 
 final class WindowDragView: NSView {
+    var onDoubleClick: (() -> Void)?
+
     /// Weak window keys keep independent restore frames without retaining closed windows.
     private static let fillRestoreFrames = NSMapTable<NSWindow, NSValue>.weakToStrongObjects()
 
@@ -158,6 +169,7 @@ final class WindowDragView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         if event.clickCount == 2 {
+            if let onDoubleClick { return onDoubleClick() }
             let fallback = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 15 ? "Fill" : "Maximize"
             Self.performDoubleClick(in: window, preference: UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") ?? fallback)
         } else {
