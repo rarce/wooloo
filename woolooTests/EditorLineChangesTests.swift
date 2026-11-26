@@ -71,6 +71,72 @@ final class EditorLineChangesTests: XCTestCase {
         withExtendedLifetime([spy, coordinator] as [any TextViewCoordinator]) {}
     }
 
+    @MainActor
+    func testInlineBlameFollowsTheCaretAndSitsAfterTheLastWrappedFragment() async throws {
+        let spy = ControllerSpy()
+        let coordinator = EditorGitBlameCoordinator()
+        let theme = try XCTUnwrap(WoolooTheme.named(WoolooTheme.fallbackID))
+        let longLine = String(repeating: "word ", count: 13) + "end"
+        let text = "short\n\(longLine)\n"
+        let first = WorkspaceCommit(id: "first-sha", shortHash: "first", subject: "First change",
+                                    author: "Alice", date: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = WorkspaceCommit(id: "second-sha", shortHash: "second", subject: "Second change",
+                                     author: "Bob", date: first.date)
+        coordinator.setBlame(EditorGitBlame(text: ["short", longLine], commits: [first, second]))
+        var cursors = [CursorPosition(line: 1, column: 1)]
+        let editor = CodeEditSourceEditor(
+            .constant(text), language: .markdown, theme: theme.editorTheme,
+            font: .monospacedSystemFont(ofSize: 13, weight: .regular), tabWidth: 4,
+            lineHeight: 1.15, wrapLines: true,
+            cursorPositions: Binding(get: { cursors }, set: { cursors = $0 }),
+            coordinators: [spy, coordinator]
+        )
+        let size = NSSize(width: 420, height: 240)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let host = NSHostingView(rootView: editor.frame(width: size.width, height: size.height))
+        host.frame = NSRect(origin: .zero, size: size)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        let controller = try XCTUnwrap(spy.controller)
+
+        @MainActor
+        func waitForAnnotation(containing author: String) async throws -> NSTextField {
+            let deadline = Date().addingTimeInterval(5)
+            repeat {
+                if let field = controller.textView.subviews.compactMap({ $0 as? NSTextField }).first(where: {
+                    !$0.isHidden && $0.stringValue.contains(author)
+                }) { return field }
+                try await Task.sleep(for: .milliseconds(10))
+            } while Date() < deadline
+            throw BlameTestError.noAnnotation(author)
+        }
+        XCTAssertTrue(window.makeFirstResponder(controller.textView))
+        controller.setCursorPositions([CursorPosition(line: 1, column: 1)])
+        let firstAnnotation = try await waitForAnnotation(containing: "Alice")
+        XCTAssertTrue(firstAnnotation.toolTip?.contains("first-sha") == true)
+
+        controller.setCursorPositions([CursorPosition(line: 2, column: 1)])
+        let row = try XCTUnwrap(controller.textView.layoutManager.textLineForIndex(1))
+        let last = try XCTUnwrap(row.data.lineFragments.last)
+        XCTAssertGreaterThan(last.yPos, 0)
+        XCTAssertEqual(controller.textView.selectionManager.textSelections.first?.range.location, row.range.location)
+        let secondAnnotation = try await waitForAnnotation(containing: "Bob")
+        XCTAssertGreaterThan(secondAnnotation.frame.minX, last.data.width)
+        XCTAssertEqual(secondAnnotation.frame.midY, row.yPos + last.yPos + last.height / 2, accuracy: 1)
+        XCTAssertEqual(controller.textView.string, text)
+
+        controller.setCursorPositions([CursorPosition(line: 3, column: 1)])
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(secondAnnotation.isHidden, "The virtual end-of-file line has no attribution")
+    }
+
+    private enum BlameTestError: Error {
+        case noAnnotation(String)
+    }
+
     func testOverviewKeepsSmallChangesAndEOFDeletionsVisible() {
         let bounds = CGRect(x: 0, y: 0, width: 10, height: 300)
         let middle = EditorGitOverviewView.markerRect(top: 500, bottom: 501,

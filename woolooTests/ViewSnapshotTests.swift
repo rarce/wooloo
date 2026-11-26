@@ -30,8 +30,14 @@ final class ViewSnapshotTests: XCTestCase {
     /// one while loading pass a `ready` that checks their model.
     private func render<Content: View>(_ content: Content, size: NSSize, settle: Int = 1,
                                        ready: () -> Bool = { true }) -> NSBitmapImageRep {
+        let defaults = snapshotDefaults ?? .standard
+        // These snapshots cover layout with fixed fixtures. Inline blame includes live commit ages
+        // and has its own editor test for positioning.
+        let inlineBlame = defaults.object(forKey: EditorGitBlame.storageKey)
+        defaults.set(false, forKey: EditorGitBlame.storageKey)
+        defer { defaults.set(inlineBlame, forKey: EditorGitBlame.storageKey) }
         let host = NSHostingView(rootView: content
-            .defaultAppStorage(snapshotDefaults ?? .standard)
+            .defaultAppStorage(defaults)
             .environment(\.woolooTheme, Self.theme)
             .environment(\.woolooTypography, WoolooTypography())
             .preferredColorScheme(Self.theme.colorScheme)

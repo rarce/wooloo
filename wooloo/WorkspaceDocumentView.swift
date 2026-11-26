@@ -229,8 +229,9 @@ struct WorkspaceDocumentView: View {
     @State private var sessionCoordinator = EditorSessionCoordinator()
     @State private var revealCoordinator = EditorRevealCoordinator()
     @State private var lineChangeCoordinator = EditorLineChangeCoordinator()
+    @State private var blameCoordinator = EditorGitBlameCoordinator()
     @State private var multiCursorCoordinator = EditorMultiCursorCoordinator()
-    /// Bumped when the repository may have changed, to reload the change bars' Git bases.
+    /// Bumped when the repository may have changed, to reload the editor’s Git information.
     @State private var gitBasesVersion = 0
     @State private var gitDirectoryWatcher: GitDirectoryWatcher?
     /// Not private so snapshot tests can open the find bar with a query.
@@ -248,6 +249,7 @@ struct WorkspaceDocumentView: View {
     @State private var notebookEditError: String?
     @AppStorage(MarkdownPreviewStyle.storageKey) private var previewStyle = MarkdownPreviewStyle.theme
     @AppStorage(EditorLineWrapping.storageKey) private var wrapsLines = false
+    @AppStorage(EditorGitBlame.storageKey) private var showsInlineGitBlame = true
     @AppStorage("EditorIndentUsesTabs") private var indentUsesTabs = false
     @AppStorage("EditorIndentWidth") private var storedIndentWidth = 4
     @State private var showsGoToLine = false
@@ -662,6 +664,7 @@ struct WorkspaceDocumentView: View {
                 }
             }
             if let commit = document.commit { Text("Commit \(commit)") }
+            if showsSource { Toggle("Inline Git Blame", isOn: $showsInlineGitBlame) }
             if document.isEditable && !structure.symbols.isEmpty {
                 Divider()
                 ForEach(structure.symbols) { symbol in
@@ -919,7 +922,8 @@ struct WorkspaceDocumentView: View {
             cursorPositions: $document.cursorPositions,
             highlightProviders: syntax.isConfiguration ? [ConfigurationHighlightProvider()] : [TreeSitterClient()],
             highlightingID: syntax.isConfiguration ? "configuration" : nil,
-            coordinators: [revealCoordinator, lineChangeCoordinator, multiCursorCoordinator, sessionCoordinator, structure]
+            coordinators: [revealCoordinator, lineChangeCoordinator, blameCoordinator, multiCursorCoordinator,
+                           sessionCoordinator, structure]
         )
         .onAppear {
             sessionCoordinator.restore(document.reveal == nil ? document.scrollPosition : nil,
@@ -932,7 +936,11 @@ struct WorkspaceDocumentView: View {
         .onChange(of: document.diskReload) { _, _ in revealCoordinator.showText(document.text) }
         .onAppear { updateLineChangeColors() }
         .onChange(of: theme.id) { _, _ in updateLineChangeColors() }
-        .task(id: "\(document.version ?? "")|\(gitBasesVersion)") { await loadGitBases() }
+        .onChange(of: wrapsLines) { _, _ in blameCoordinator.refresh() }
+        .onChange(of: typography.codeFont) { _, _ in blameCoordinator.refresh() }
+        .task(id: "\(document.id)|\(document.version ?? "")|\(gitBasesVersion)|\(showsInlineGitBlame && isFocused)") {
+            await loadGitAnnotations()
+        }
         .task(id: document.location.identity) { await watchGitDirectory() }
         .onReceive(NotificationCenter.default.publisher(for: WorkspaceFiles.repositoryDidChange)
             .merge(with: NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
@@ -1097,21 +1105,31 @@ struct WorkspaceDocumentView: View {
         .background(theme.warning.opacity(0.12))
     }
 
-    // MARK: Change bars
+    // MARK: Git annotations
 
     private func updateLineChangeColors() {
         lineChangeCoordinator.setColors(added: NSColor(theme.vcs(.added)), modified: NSColor(theme.vcs(.modified)),
                                         deleted: NSColor(theme.vcs(.deleted)))
+        blameCoordinator.setColor(NSColor(theme.muted))
     }
 
-    private func loadGitBases() async {
-        guard document.version != nil else { return }
+    private func loadGitAnnotations() async {
+        guard !Task.isCancelled else { return }
+        blameCoordinator.setBlame(nil)
+        guard document.version != nil, !document.isUntitled else { return }
         let (path, location) = (document.path, document.location)
+        let loadBlame = showsInlineGitBlame && isFocused
         guard let bases = await WorkspaceFiles.blocking(at: location, priority: .utility, {
             Optional(WorkspaceFiles.gitBases(path, at: location))
-        }) else { return }
-        guard !Task.isCancelled else { return }
+        }), !Task.isCancelled else { return }
         lineChangeCoordinator.setBases(head: bases.head, index: bases.index)
+        guard loadBlame else { return }
+        let possiblyAdded = bases.head == nil && bases.index != nil
+        let blame = await WorkspaceFiles.blocking(at: location, priority: .utility) {
+            WorkspaceFiles.gitBlame(path, at: location, possiblyAdded: possiblyAdded)
+        }
+        guard !Task.isCancelled else { return }
+        blameCoordinator.setBlame(blame)
     }
 
     /// Reloads the Git bases when the index or HEAD changes, e.g. after staging or committing in

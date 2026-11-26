@@ -231,7 +231,7 @@ enum WorkspaceDiffScope: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-struct WorkspaceCommit: Identifiable {
+struct WorkspaceCommit: Identifiable, Sendable {
     let id: String
     let shortHash: String
     let subject: String

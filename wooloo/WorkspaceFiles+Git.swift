@@ -238,6 +238,22 @@ extension WorkspaceFiles {
         return (blob("HEAD:./\(path)", at: location), index)
     }
 
+    /// Blame of the committed file, with its line content as the basis for unsaved edits.
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func gitBlame(_ path: String, at location: WorkspaceFileLocation,
+                         possiblyAdded: Bool = false) -> EditorGitBlame? {
+        guard (try? validateRelativePath(path)) != nil, !path.utf8.contains(0) else { return nil }
+        let data = try? git(location, ["blame", "--line-porcelain", "--no-textconv", "--encoding=UTF-8",
+                                       "HEAD", "--", "./" + path], limit: 16_000_000, optionalLocks: false)
+        if let data { return EditorGitBlame.parse(data) }
+
+        // An indexed addition has no HEAD blame, but its lines are still Git changes.
+        guard possiblyAdded, let added = try? git(location, ["diff", "--cached", "--name-only", "--diff-filter=A",
+            "--no-renames", "-z", "--", ":(literal)./" + path], limit: 16_384, optionalLocks: false),
+            !added.isEmpty else { return nil }
+        return EditorGitBlame(text: [], commits: [])
+    }
+
     /// The Git directory of a local repository, e.g. `.git` or `.git/worktrees/<name>`, which an
     /// editor watches for index and HEAD changes. Nil for SSH locations and outside a repository.
     @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
