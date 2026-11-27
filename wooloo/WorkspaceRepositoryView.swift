@@ -16,8 +16,20 @@ struct WorkspaceRepositoryView: View {
     var selectedTab = 0
     @Binding var selectedCommit: WorkspaceCommit?
     @State private var addRequest: AddWorktreeRequest?
-    @State private var removing: WorkspaceWorktree?
+    @State private var removal: Removal?
     @State private var selectedCommitFile: String?
+
+    private enum Removal {
+        case worktree(WorkspaceWorktree)
+        case branch(WorkspaceBranchDeletion)
+
+        var title: String {
+            switch self {
+            case .worktree: "Remove worktree?"
+            case .branch(let branch): branch.remote == nil ? "Delete local branch?" : "Delete remote branch?"
+            }
+        }
+    }
 
     private var listing: WorkspaceRepositoryListing? { model.listing }
     private var error: String? { model.error }
@@ -63,6 +75,7 @@ struct WorkspaceRepositoryView: View {
         .onChange(of: location?.identity) { _, _ in
             selectedCommit = nil
             historyPath = nil
+            removal = nil
         }
         .onChange(of: historyPath) { _, path in
             guard path != nil else { return }
@@ -74,17 +87,30 @@ struct WorkspaceRepositoryView: View {
             }
             .allowsQuitWhileShown()
         }
-        .confirmationDialog("Remove worktree?", isPresented: Binding(
-            get: { removing != nil }, set: { if !$0 { removing = nil } }
-        )) {
-            if let removing {
-                Button("Remove \((removing.path as NSString).lastPathComponent)", role: .destructive) {
-                    self.removing = nil
-                    if let location { model.removeWorktree(removing, at: location) }
+        .confirmationDialog(removal?.title ?? "", isPresented: Binding(
+            get: { removal != nil }, set: { if !$0 { removal = nil } }
+        ), presenting: removal) { removal in
+            switch removal {
+            case .worktree(let tree):
+                Button("Remove \((tree.path as NSString).lastPathComponent)", role: .destructive) {
+                    if let location { model.removeWorktree(tree, at: location) }
+                }
+            case .branch(let branch):
+                Button("Delete \(branch.name)", role: .destructive) {
+                    if let location { model.deleteBranch(branch, at: location, onDeleted: onChange) }
                 }
             }
-        } message: {
-            Text("Git will remove this worktree only if it has no uncommitted changes.")
+        } message: { removal in
+            switch removal {
+            case .worktree:
+                Text("Git will remove this worktree only if it has no uncommitted changes.")
+            case .branch(let branch):
+                if let remote = branch.remote {
+                    Text("This will delete \(branch.name) from the remote repository \(remote).")
+                } else {
+                    Text("This will delete the local branch \(branch.name).")
+                }
+            }
         }
         .alert("Repository operation failed", isPresented: Binding(
             get: { model.operationError != nil }, set: { if !$0 { model.clearOperationError() } }
@@ -325,7 +351,7 @@ struct WorkspaceRepositoryView: View {
                     }
                     Spacer(minLength: 0)
                     if tree.path != listing.root && !tree.isBare && !tree.isLocked && !tree.isPrunable {
-                        Button { removing = tree } label: {
+                        Button { removal = .worktree(tree) } label: {
                             Image(systemName: "minus.circle").font(.system(size: typography.body))
                         }
                         .buttonStyle(.plain)
@@ -353,7 +379,7 @@ struct WorkspaceRepositoryView: View {
                     if tree.path != listing.root && !tree.isBare && !tree.isLocked && !tree.isPrunable {
                         Divider()
                         Button("Remove Worktree…", systemImage: "minus.circle", role: .destructive) {
-                            removing = tree
+                            removal = .worktree(tree)
                         }
                     }
                 }
@@ -362,13 +388,23 @@ struct WorkspaceRepositoryView: View {
     }
 
     private func branchRow(_ branch: WorkspaceBranch, listing: WorkspaceRepositoryListing) -> some View {
-        HStack(spacing: 6) {
+        let deletion = listing.branchDeletions[branch.id]
+        return HStack(spacing: 6) {
             Image(systemName: branch.isCurrent ? "checkmark.circle.fill" : "arrow.triangle.branch")
                 .font(.system(size: typography.secondary))
                 .foregroundStyle(branch.isCurrent ? theme.accent : Color.secondary)
                 .frame(width: 15)
             Text(branch.name).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 0)
+            if let deletion {
+                Button { removal = .branch(deletion) } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.plain)
+                .help("Delete branch")
+                .accessibilityLabel("Delete branch \(branch.name)")
+                .disabled(model.isDeletingBranch)
+            }
         }
         .font(.system(size: typography.body))
         .padding(.horizontal, 11)
@@ -390,6 +426,13 @@ struct WorkspaceRepositoryView: View {
             Button("Copy Branch Name", systemImage: "doc.on.doc") { AppActions.copy(branch.name) }
             if !branch.upstream.isEmpty {
                 Button("Copy Upstream Name") { AppActions.copy(branch.upstream) }
+            }
+            if let deletion {
+                Divider()
+                Button("Delete Branch…", systemImage: "minus.circle", role: .destructive) {
+                    removal = .branch(deletion)
+                }
+                .disabled(model.isDeletingBranch)
             }
         }
     }
@@ -470,6 +513,7 @@ final class WorkspaceRepositoryModel: ObservableObject {
     /// Bumped after an operation changes the repository, so the panel loads it again.
     @Published private(set) var reloadVersion = 0
     @Published private(set) var operationError: String?
+    @Published private(set) var isDeletingBranch = false
     @Published private(set) var commitFiles: [WorkspaceCommitFile]?
     @Published private(set) var commitFilesError: String?
     /// Commits of the file whose history is shown; nil while it loads or when none is.
@@ -558,9 +602,20 @@ final class WorkspaceRepositoryModel: ObservableObject {
         run(at: location) { try WorkspaceFiles.removeWorktree(at: location, path: tree.path) }
     }
 
+    func deleteBranch(_ branch: WorkspaceBranchDeletion, at location: WorkspaceFileLocation,
+                      onDeleted: @escaping () -> Void) {
+        guard !isDeletingBranch else { return }
+        isDeletingBranch = true
+        run(at: location, onSuccess: onDeleted, onFinish: { self.isDeletingBranch = false }) {
+            try WorkspaceFiles.deleteBranch(branch, at: location)
+        }
+    }
+
     private func run(at location: WorkspaceFileLocation, onSuccess: @escaping () -> Void = {},
+                     onFinish: @escaping () -> Void = {},
                      _ operation: @escaping @Sendable () throws -> Void) {
         Task {
+            defer { onFinish() }
             let result = await WorkspaceFiles.blocking(at: location) { Result { try operation() } }
             switch result {
             case .success:

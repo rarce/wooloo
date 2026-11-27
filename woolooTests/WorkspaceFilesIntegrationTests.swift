@@ -790,6 +790,77 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
 
     // MARK: Branches and worktrees
 
+    func testDeletesOnlyMergedLocalBranchesOutsideWorktrees() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("""
+            git switch -qc merged && git commit -q --allow-empty -m merged &&
+            git switch -q main && git merge -q --ff-only merged &&
+            git branch checked-out && git worktree add -q ../linked checked-out &&
+            git switch -qc unmerged && git commit -q --allow-empty -m unmerged
+            """, in: "repo")
+        let listing = try WorkspaceFiles.repository(at: repo)
+        XCTAssertEqual(Set(listing.branchDeletions.keys), ["refs/heads/merged"])
+        let deletion = try XCTUnwrap(listing.branchDeletions["refs/heads/merged"])
+
+        try sandbox.sh("git branch -f merged unmerged", in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.deleteBranch(deletion, at: repo))
+        XCTAssertEqual(try sandbox.sh("git rev-parse merged", in: "repo"),
+                       try sandbox.sh("git rev-parse unmerged", in: "repo"))
+
+        try sandbox.sh("git branch -f merged main && git branch --set-upstream-to=main merged", in: "repo")
+        try WorkspaceFiles.deleteBranch(deletion, at: repo)
+        XCTAssertThrowsError(try sandbox.sh("git show-ref --verify refs/heads/merged", in: "repo"))
+        XCTAssertThrowsError(try sandbox.sh("git config --get branch.merged.merge", in: "repo"))
+    }
+
+    func testDeletesMergedRemoteBranchOnServerAndRejectsStaleTip() throws {
+        try sandbox.sh("git init -q --bare -b trunk server.git")
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("""
+            git branch -m trunk &&
+            git remote add team/origin ../server.git &&
+            git switch -qc topic/merged && git commit -q --allow-empty -m merged &&
+            git push -q team/origin topic/merged:trunk topic/merged &&
+            git remote set-head team/origin trunk &&
+            git switch -qc topic/unmerged && git commit -q --allow-empty -m unmerged &&
+            git push -q team/origin topic/unmerged &&
+            git switch -q trunk
+            """, in: "repo")
+        let listing = try WorkspaceFiles.repository(at: repo)
+        let remoteRef = "refs/remotes/team/origin/topic/merged"
+        // The topic is merged on the server even though the local trunk is behind.
+        XCTAssertEqual(Set(listing.branchDeletions.keys), ["refs/heads/topic/merged", remoteRef])
+        let deletion = try XCTUnwrap(listing.branchDeletions[remoteRef])
+
+        try sandbox.sh("git update-ref refs/heads/topic/merged refs/heads/topic/unmerged", in: "server.git")
+        XCTAssertThrowsError(try WorkspaceFiles.deleteBranch(deletion, at: repo))
+        XCTAssertEqual(try sandbox.sh("git rev-parse topic/merged", in: "server.git"),
+                       try sandbox.sh("git rev-parse topic/unmerged", in: "server.git"))
+
+        try sandbox.sh("git update-ref refs/heads/topic/merged refs/heads/trunk", in: "server.git")
+        try WorkspaceFiles.deleteBranch(deletion, at: repo)
+        XCTAssertThrowsError(try sandbox.sh("git show-ref --verify refs/heads/topic/merged", in: "server.git"))
+        XCTAssertThrowsError(try sandbox.sh("git show-ref --verify " + remoteRef, in: "repo"))
+        XCTAssertNoThrow(try sandbox.sh("git show-ref --verify refs/heads/topic/merged", in: "repo"))
+    }
+
+    func testProtectsStagingBranchesWhenTheCachedRemoteHeadStillPointsToMain() throws {
+        try sandbox.sh("git init -q --bare -b main server.git")
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("""
+            git remote add origin ../server.git &&
+            git branch staging && git branch topic/merged &&
+            git push -q origin main staging topic/merged &&
+            git remote set-head origin main &&
+            git switch --detach -q main
+            """, in: "repo")
+        try sandbox.sh("git symbolic-ref HEAD refs/heads/staging", in: "server.git")
+
+        let listing = try WorkspaceFiles.repository(at: repo)
+        XCTAssertEqual(Set(listing.branchDeletions.keys),
+                       ["refs/heads/topic/merged", "refs/remotes/origin/topic/merged"])
+    }
+
     func testSwitchBranch() throws {
         let repo = try sandbox.repository("repo")
         try sandbox.sh("git branch feature", in: "repo")

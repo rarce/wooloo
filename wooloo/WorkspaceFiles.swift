@@ -380,6 +380,18 @@ struct WorkspaceRepositoryListing {
     let branches: [WorkspaceBranch]
     let worktrees: [WorkspaceWorktree]
     let root: String
+    var branchDeletions: [String: WorkspaceBranchDeletion] = [:]
+}
+
+struct WorkspaceBranchDeletion: Equatable, Sendable {
+    let ref: String
+    let tip: String
+    let base: String
+    let remote: String?
+
+    var name: String {
+        String(ref.dropFirst(remote == nil ? "refs/heads/".count : "refs/remotes/".count))
+    }
 }
 
 enum WorkspaceFileError: LocalizedError, Equatable {

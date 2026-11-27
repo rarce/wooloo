@@ -442,7 +442,58 @@ extension WorkspaceFiles {
         GitSection(["for-each-ref", "--format=%(refname)%00%(HEAD)%00%(upstream:short)%00", "refs/heads", "refs/remotes"],
                    limit: 200_000),
         GitSection(["worktree", "list", "--porcelain", "-z"], limit: 200_000),
+        GitSection([], limit: 200_000, script: branchDeletionCandidates),
     ]
+
+    /// List merged tips in bulk, without a network request or a Git process per branch.
+    /// A remote-tracking ref can name a server branch only with the standard fetch mapping.
+    private static let branchDeletionCandidates = #"""
+        exists() { git show-ref --verify --quiet -- "$1"; }
+        remote_base() {
+            base=$(git symbolic-ref --quiet "$1/HEAD") &&
+                case "$base" in "$1/"*) exists "$base" && { printf '%s\n' "$base"; return; } ;; esac
+            for name in main master; do
+                if exists "$1/$name"; then printf '%s\n' "$1/$name"; return; fi
+            done
+        }
+        candidates() {
+            [ -n "$1" ] || return 0
+            printf 'base\0%s\0%s\n' "$1" "$3"
+            git --no-replace-objects for-each-ref --merged="$1" \
+                --format='%(refname)%00%(objectname)%00%(symref)' "$2"
+        }
+        remotes=$(git remote) || exit 1
+        printf '%s\n' "$remotes" | while IFS= read -r remote; do
+            [ -z "$remote" ] || printf 'remote\0%s\n' "$remote"
+        done
+        primary_remote=origin
+        case "$remotes" in
+            ''|*'
+        '*) ;;
+            *) primary_remote=$remotes ;;
+        esac
+        primary_namespace="refs/remotes/$primary_remote"
+        tracking_base=$(remote_base "$primary_namespace")
+        local_base=
+        if [ -n "$tracking_base" ]; then
+            local_base=refs/heads/${tracking_base#"$primary_namespace"/}
+        else
+            configured=$(git config --get init.defaultBranch)
+            for name in "$configured" main master; do
+                if exists "refs/heads/$name"; then local_base=refs/heads/$name; break; fi
+            done
+        fi
+        printf 'protected\0%s\n' "$local_base"
+        candidates "$tracking_base" refs/heads ""
+        if [ -n "$local_base" ] && exists "$local_base"; then candidates "$local_base" refs/heads ""; fi
+        printf '%s\n' "$remotes" | while IFS= read -r remote; do
+            [ -n "$remote" ] || continue
+            namespace="refs/remotes/$remote"
+            fetch=$(git config --get-all "remote.$remote.fetch") || continue
+            [ "${fetch#+}" = "refs/heads/*:$namespace/*" ] || continue
+            candidates "$(remote_base "$namespace")" "$namespace" "$remote"
+        done
+        """#
 
     /// A repository listing from the outputs of `repositorySections`; an empty repository has no log.
     private static func makeRepository(_ results: ArraySlice<Result<Data, Error>>, root: String?) throws
@@ -451,8 +502,43 @@ extension WorkspaceFiles {
         let logData = (try? outputs[0].get()) ?? Data()
         let refData = try outputs[1].get()
         let worktreeData = try outputs[2].get()
-        return WorkspaceRepositoryListing(commits: parseLog(logData), branches: parseBranches(refData),
-                                          worktrees: parseWorktrees(worktreeData), root: root ?? "")
+        let branches = parseBranches(refData)
+        let worktrees = parseWorktrees(worktreeData)
+        let checkedOut = Set(worktrees.compactMap(\.branch))
+        let available = Set(branches.filter { !$0.isCurrent && ($0.isRemote || !checkedOut.contains($0.name)) }.map(\.id))
+        // The saved remote HEAD can be stale, and a promotion can make an integration
+        // branch appear merged into another one. Keep these long-lived branches out of cleanup.
+        let integrationBranches: Set<String> = ["main", "master", "staging"]
+        let candidateData = (try? outputs[3].get()) ?? Data()
+        var deletions: [String: WorkspaceBranchDeletion] = [:]
+        var remotes: [String] = []
+        var protectedLocal = ""
+        var base = ""
+        var remote: String?
+        for line in String(decoding: candidateData, as: UTF8.self).split(separator: "\n") {
+            let fields = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+            switch fields[0] {
+            case "remote" where fields.count == 2: remotes.append(fields[1])
+            case "protected" where fields.count == 2: protectedLocal = fields[1]
+            case "base" where fields.count == 3:
+                base = fields[1]
+                remote = fields[2].isEmpty ? nil : fields[2]
+            default:
+                let ref = fields[0]
+                guard fields.count == 3, fields[2].isEmpty, available.contains(ref),
+                      ref != base, ref != protectedLocal else { continue }
+                if remote != nil {
+                    let owners = remotes.filter { ref.hasPrefix("refs/remotes/" + $0 + "/") }
+                    guard owners.count == 1, owners.first == remote else { continue }
+                }
+                let deletion = WorkspaceBranchDeletion(ref: ref, tip: fields[1], base: base, remote: remote)
+                let branchName = remote.map { String(deletion.name.dropFirst($0.count + 1)) } ?? deletion.name
+                guard !integrationBranches.contains(branchName) else { continue }
+                deletions[ref] = deletion
+            }
+        }
+        return WorkspaceRepositoryListing(commits: parseLog(logData), branches: branches, worktrees: worktrees,
+                                          root: root ?? "", branchDeletions: deletions)
     }
 
     private static func loadRepository(at location: WorkspaceFileLocation, withBranchStatus: Bool = false)
@@ -693,6 +779,68 @@ extension WorkspaceFiles {
             throw WorkspaceFileError.message("This worktree cannot be removed")
         }
         _ = try git(location, ["worktree", "remove", "--", path], limit: 20_000)
+    }
+
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func deleteBranch(_ deletion: WorkspaceBranchDeletion, at location: WorkspaceFileLocation) throws {
+        defer { forgetRecentResults() }
+        let current = try loadRepository(at: location).repository.get()
+        guard current.branchDeletions[deletion.ref] == deletion else {
+            throw WorkspaceFileError.message("This branch changed or is no longer eligible for deletion. Refresh and try again.")
+        }
+        if let remote = deletion.remote {
+            try deleteRemoteBranch(deletion, from: remote, at: location)
+            return
+        }
+
+        let baseTip = try git(location, ["rev-parse", "--verify", deletion.base], limit: 200)
+        let base = String(decoding: baseTip, as: UTF8.self).trimmingCharacters(in: .newlines)
+        try requireMerged(deletion.tip, into: base, at: location)
+        // Another worktree may have checked out the branch since the listing was built.
+        let worktrees = try git(location, ["worktree", "list", "--porcelain", "-z"], limit: 200_000)
+        guard !parseWorktrees(worktrees).contains(where: { $0.branch == deletion.name }) else {
+            throw WorkspaceFileError.message("This branch is checked out in a worktree.")
+        }
+        // Delete exactly the confirmed tip, with the integration branch still at the checked tip.
+        let commands = "verify \(deletion.base) \(base)\noption no-deref\ndelete \(deletion.ref) \(deletion.tip)\n"
+        _ = try git(location, ["update-ref", "--stdin"], input: Data(commands.utf8), limit: 20_000)
+        // Match Git's branch cleanup when the repository has local tracking configuration.
+        _ = try? git(location, ["config", "--local", "--remove-section", "branch.\(deletion.name)"], limit: 20_000)
+    }
+
+    private static func deleteRemoteBranch(_ deletion: WorkspaceBranchDeletion, from remote: String,
+                                           at location: WorkspaceFileLocation) throws {
+        let fetchURLs = try git(location, ["remote", "get-url", "--all", "--", remote], limit: 20_000)
+        let pushURLs = try git(location, ["remote", "get-url", "--push", "--all", "--", remote], limit: 20_000)
+        guard fetchURLs == pushURLs, String(decoding: pushURLs, as: UTF8.self).split(separator: "\n").count == 1 else {
+            throw WorkspaceFileError.message("The remote must have one shared fetch and push URL to delete a branch.")
+        }
+
+        let ref = "refs/heads/" + deletion.name.dropFirst(remote.count + 1)
+        let data = try git(location, ["ls-remote", "--symref", "--", remote, "HEAD"], limit: 20_000, timeout: 120)
+        let head = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            .compactMap { $0.hasSuffix("\tHEAD") ? String($0.dropLast("\tHEAD".count)) : nil }
+        guard let symbolic = head.first(where: { $0.hasPrefix("ref: refs/heads/") }),
+              let tip = head.first(where: { !$0.hasPrefix("ref: ") }) else {
+            throw WorkspaceFileError.message("The remote’s default branch could not be verified.")
+        }
+        guard symbolic != "ref: " + ref else {
+            throw WorkspaceFileError.message("The remote’s default branch cannot be deleted.")
+        }
+        try requireMerged(deletion.tip, into: tip, at: location)
+        _ = try git(location, ["push", "--no-mirror", "--no-follow-tags",
+                              "--force-with-lease=\(ref):\(deletion.tip)", "--", remote, ":" + ref],
+                    limit: 20_000, timeout: 120)
+    }
+
+    private static func requireMerged(_ tip: String, into base: String, at location: WorkspaceFileLocation) throws {
+        try validateCommit(tip)
+        try validateCommit(base)
+        do {
+            _ = try git(location, ["--no-replace-objects", "merge-base", "--is-ancestor", tip, base], limit: 20_000)
+        } catch {
+            throw WorkspaceFileError.message("Git could not verify that this branch is merged. Fetch the latest changes and try again.")
+        }
     }
 
     /// Stages a file or folder; an empty path stages everything under the Space root.
