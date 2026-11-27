@@ -684,6 +684,23 @@ final class TerminalKeyInputTests: XCTestCase {
         XCTAssertEqual(keys, ["alt+left"], "Option navigation remains a terminal chord")
     }
 
+    func testUnmarkTextAloneCommitsMarkedTextOnce() {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        view.string = "Shell output"
+        view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+        var text: [String] = []
+        view.sendText = { value, _ in text.append(value) }
+        let composition = NSAttributedString(string: "日本語 😀")
+        view.setMarkedText(composition, selectedRange: NSRange(location: composition.length, length: 0),
+                           replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(text.isEmpty)
+        view.unmarkText()
+        view.unmarkText()
+        XCTAssertEqual(text, ["日本語 😀"])
+        XCTAssertFalse(view.hasMarkedText())
+        XCTAssertEqual(view.string, "Shell output")
+    }
+
     func testDeadKeyPreeditIsReplacedByTheCommittedCharacter() throws {
         let view = TerminalRenderHarness.makeView(width: 20, height: 4)
         let unspecified = NSRange(location: NSNotFound, length: 0)
