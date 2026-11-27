@@ -315,12 +315,12 @@ struct WorkspaceRepositoryView: View {
             heading("Local")
             let local = listing.branches.filter { !$0.isRemote }
             if local.isEmpty { hint("No local branches") }
-            ForEach(local) { branch in branchRow(branch, listing: listing) }
+            ForEach(local, id: \.refBytes) { branch in branchRow(branch, listing: listing) }
 
             heading("Remote")
             let remote = listing.branches.filter(\.isRemote)
             if remote.isEmpty { hint("No remote branches") }
-            ForEach(remote) { branch in branchRow(branch, listing: listing) }
+            ForEach(remote, id: \.refBytes) { branch in branchRow(branch, listing: listing) }
 
             HStack {
                 heading("Worktrees")
@@ -388,7 +388,7 @@ struct WorkspaceRepositoryView: View {
     }
 
     private func branchRow(_ branch: WorkspaceBranch, listing: WorkspaceRepositoryListing) -> some View {
-        let deletion = listing.branchDeletions[branch.id]
+        let deletion = listing.branchDeletions[branch.refBytes]
         return HStack(spacing: 6) {
             Image(systemName: branch.isCurrent ? "checkmark.circle.fill" : "arrow.triangle.branch")
                 .font(.system(size: typography.secondary))

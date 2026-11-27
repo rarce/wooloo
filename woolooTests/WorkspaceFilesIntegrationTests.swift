@@ -46,6 +46,20 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sandbox.path("forbidden")))
     }
 
+    func testLocalGitBatchScriptsUseResolvedGitWithoutPath() throws {
+        let repo = try sandbox.repository("repo")
+        let path = ProcessInfo.processInfo.environment["PATH"]
+        setenv("PATH", sandbox.base, 1)
+        defer {
+            if let path { setenv("PATH", path, 1) } else { unsetenv("PATH") }
+        }
+        let results = try WorkspaceFiles.gitBatch(repo, [
+            .init(["--version"], limit: 1_000),
+            .init([], limit: 1_000, script: "git --version", usesGit: true),
+        ])
+        XCTAssertEqual(try results[0].get(), try results[1].get())
+    }
+
     func testBlameMapsCommittedLinesAroundStagedDiskAndUnsavedEdits() throws {
         let name = "blame repo"
         let path = "source folder/notes.txt"
@@ -799,8 +813,8 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
             git switch -qc unmerged && git commit -q --allow-empty -m unmerged
             """, in: "repo")
         let listing = try WorkspaceFiles.repository(at: repo)
-        XCTAssertEqual(Set(listing.branchDeletions.keys), ["refs/heads/merged"])
-        let deletion = try XCTUnwrap(listing.branchDeletions["refs/heads/merged"])
+        XCTAssertEqual(Set(listing.branchDeletions.values.map(\.ref)), ["refs/heads/merged"])
+        let deletion = try XCTUnwrap(listing.branchDeletions[Data("refs/heads/merged".utf8)])
 
         try sandbox.sh("git branch -f merged unmerged", in: "repo")
         XCTAssertThrowsError(try WorkspaceFiles.deleteBranch(deletion, at: repo))
@@ -829,8 +843,8 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         let listing = try WorkspaceFiles.repository(at: repo)
         let remoteRef = "refs/remotes/team/origin/topic/merged"
         // The topic is merged on the server even though the local trunk is behind.
-        XCTAssertEqual(Set(listing.branchDeletions.keys), ["refs/heads/topic/merged", remoteRef])
-        let deletion = try XCTUnwrap(listing.branchDeletions[remoteRef])
+        XCTAssertEqual(Set(listing.branchDeletions.values.map(\.ref)), ["refs/heads/topic/merged", remoteRef])
+        let deletion = try XCTUnwrap(listing.branchDeletions[Data(remoteRef.utf8)])
 
         try sandbox.sh("git update-ref refs/heads/topic/merged refs/heads/topic/unmerged", in: "server.git")
         XCTAssertThrowsError(try WorkspaceFiles.deleteBranch(deletion, at: repo))
@@ -857,8 +871,103 @@ final class WorkspaceFilesIntegrationTests: XCTestCase {
         try sandbox.sh("git symbolic-ref HEAD refs/heads/staging", in: "server.git")
 
         let listing = try WorkspaceFiles.repository(at: repo)
-        XCTAssertEqual(Set(listing.branchDeletions.keys),
+        XCTAssertEqual(Set(listing.branchDeletions.values.map(\.ref)),
                        ["refs/heads/topic/merged", "refs/remotes/origin/topic/merged"])
+    }
+
+    func testBranchDeletionProtectsTheOriginalBranchOfALinkedWorktreeBisect() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("""
+            for step in 1 2 3; do git commit -q --allow-empty -m "$step"; done
+            git branch topic
+            """, in: "repo")
+        let ref = Data("refs/heads/topic".utf8)
+        let deletion = try XCTUnwrap(WorkspaceFiles.repository(at: repo).branchDeletions[ref])
+
+        try sandbox.sh("git worktree add -q ../bisect topic", in: "repo")
+        try sandbox.sh("git bisect start HEAD HEAD~3", in: "bisect")
+        XCTAssertThrowsError(try sandbox.sh("git symbolic-ref -q HEAD", in: "bisect"))
+        XCTAssertNil(try WorkspaceFiles.repository(at: repo).branchDeletions[ref])
+        XCTAssertThrowsError(try WorkspaceFiles.deleteBranch(deletion, at: repo))
+        try sandbox.sh("git bisect reset", in: "bisect")
+        XCTAssertEqual(try sandbox.sh("git symbolic-ref HEAD", in: "bisect"), "refs/heads/topic\n")
+    }
+
+    func testBranchDeletionProtectsTheOriginalBranchOfAConflictedRebase() throws {
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("""
+            git switch -qc alternate
+            printf 'alternate\n' > a.txt
+            git commit -qam alternate
+            git switch -q main
+            printf 'main\n' > a.txt
+            git commit -qam main
+            git branch topic
+            """, in: "repo")
+        let ref = Data("refs/heads/topic".utf8)
+        let deletion = try XCTUnwrap(WorkspaceFiles.repository(at: repo).branchDeletions[ref])
+
+        try sandbox.sh("git worktree add -q ../rebase topic", in: "repo")
+        XCTAssertThrowsError(try sandbox.sh("git rebase alternate", in: "rebase"))
+        XCTAssertThrowsError(try sandbox.sh("git symbolic-ref -q HEAD", in: "rebase"))
+        XCTAssertNil(try WorkspaceFiles.repository(at: repo).branchDeletions[ref])
+        XCTAssertThrowsError(try WorkspaceFiles.deleteBranch(deletion, at: repo))
+        try sandbox.sh("git rebase --abort", in: "rebase")
+        XCTAssertEqual(try sandbox.sh("git symbolic-ref HEAD", in: "rebase"), "refs/heads/topic\n")
+    }
+
+    func testRemoteBranchDeletionRejectsARepointedRemoteWithTheSameTip() throws {
+        try sandbox.sh("git init -q --bare -b main original.git")
+        let repo = try sandbox.repository("repo")
+        try sandbox.sh("""
+            git remote add origin ../original.git
+            git push -q origin main main:refs/heads/topic
+            git remote set-head origin main
+            """, in: "repo")
+        try sandbox.sh("git clone -q --bare original.git replacement.git")
+        let ref = Data("refs/remotes/origin/topic".utf8)
+        let deletion = try XCTUnwrap(WorkspaceFiles.repository(at: repo).branchDeletions[ref])
+
+        try sandbox.sh("git remote set-url origin ../replacement.git", in: "repo")
+        XCTAssertThrowsError(try WorkspaceFiles.deleteBranch(deletion, at: repo))
+        for server in ["original.git", "replacement.git"] {
+            XCTAssertNoThrow(try sandbox.sh("git show-ref --verify refs/heads/topic", in: server))
+        }
+        // The explicit push URL must stay pinned even if a push rewrite matches it.
+        try sandbox.sh("""
+            git remote set-url origin ../original.git
+            git remote set-url --push origin ../original.git
+            git config 'url.../replacement.git.pushInsteadOf' ../original.git
+            """, in: "repo")
+        try WorkspaceFiles.deleteBranch(deletion, at: repo)
+        XCTAssertThrowsError(try sandbox.sh("git show-ref --verify refs/heads/topic", in: "original.git"))
+        XCTAssertNoThrow(try sandbox.sh("git show-ref --verify refs/heads/topic", in: "replacement.git"))
+    }
+
+    func testBranchDeletionDistinguishesCanonicallyEquivalentRefNames() throws {
+        let repo = try sandbox.repository("repo")
+        let merged = "refs/heads/cafe\u{0301}"
+        let unmerged = "refs/heads/caf\u{00E9}"
+        let mainTip = try sandbox.sh("git rev-parse main", in: "repo").trimmingCharacters(in: .newlines)
+        try sandbox.sh("""
+            git switch --detach -q main
+            git commit -q --allow-empty -m unmerged
+            git config core.precomposeunicode true
+            """, in: "repo")
+        let otherTip = try sandbox.sh("git rev-parse HEAD", in: "repo").trimmingCharacters(in: .newlines)
+        try sandbox.sh("git switch -q main", in: "repo")
+        // Packed refs preserve exact bytes even on volumes with normalization-insensitive filenames.
+        try sandbox.write([".git/packed-refs": "\(mainTip) \(merged)\n\(otherTip) \(unmerged)\n"], in: "repo")
+        let listing = try WorkspaceFiles.repository(at: repo)
+        let refBytes = Set(listing.branches.map(\.refBytes))
+        XCTAssertTrue(refBytes.contains(Data(merged.utf8)))
+        XCTAssertTrue(refBytes.contains(Data(unmerged.utf8)))
+        XCTAssertNil(listing.branchDeletions[Data(unmerged.utf8)])
+        let deletion = try XCTUnwrap(listing.branchDeletions[Data(merged.utf8)])
+        try WorkspaceFiles.deleteBranch(deletion, at: repo)
+        let remaining = Set(try WorkspaceFiles.repository(at: repo).branches.map(\.refBytes))
+        XCTAssertFalse(remaining.contains(Data(merged.utf8)))
+        XCTAssertTrue(remaining.contains(Data(unmerged.utf8)))
     }
 
     func testSwitchBranch() throws {
