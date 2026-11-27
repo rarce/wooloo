@@ -2318,11 +2318,16 @@ final class HerdrTerminalTextView: NSTextView {
         return super.performKeyEquivalent(with: event)
     }
 
+    override func unmarkText() {
+        guard hasMarkedText() else { return }
+        // NSTextView.unmarkText reinserts the marked text. In a terminal that would
+        // send the provisional accent before AppKit delivers the composed character.
+        super.setMarkedText("", selectedRange: NSRange(location: 0, length: 0), replacementRange: markedRange())
+    }
+
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let value = (insertString as? NSAttributedString)?.string ?? (insertString as? String) ?? ""
-        // This view forwards commits instead of calling NSTextView.insertText, so clear the
-        // inherited composition state explicitly before routing the next physical key.
-        if hasMarkedText() { super.unmarkText() }
+        unmarkText()
         if !value.isEmpty, !popupInput(.text(value)) { sendText?(value, paneID) }
     }
 
