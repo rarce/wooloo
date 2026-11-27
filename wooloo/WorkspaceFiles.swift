@@ -292,6 +292,9 @@ struct WorkspaceBranch: Identifiable, Hashable {
     let isRemote: Bool
     let isCurrent: Bool
     let upstream: String
+
+    /// Git compares ref names by byte, including canonically equivalent Unicode spellings.
+    var refBytes: Data { Data(id.utf8) }
 }
 
 struct WorkspaceWorktree: Identifiable, Equatable {
@@ -380,6 +383,27 @@ struct WorkspaceRepositoryListing {
     let branches: [WorkspaceBranch]
     let worktrees: [WorkspaceWorktree]
     let root: String
+    var branchDeletions: [Data: WorkspaceBranchDeletion] = [:]
+}
+
+struct WorkspaceBranchDeletion: Equatable, Sendable {
+    let ref: String
+    let tip: String
+    let base: String
+    let remote: String?
+    let remoteURL: String?
+
+    var refBytes: Data { Data(ref.utf8) }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.refBytes == rhs.refBytes && lhs.tip == rhs.tip && lhs.base.utf8.elementsEqual(rhs.base.utf8)
+            && lhs.remote.map { Data($0.utf8) } == rhs.remote.map { Data($0.utf8) }
+            && lhs.remoteURL.map { Data($0.utf8) } == rhs.remoteURL.map { Data($0.utf8) }
+    }
+
+    var name: String {
+        String(ref.dropFirst(remote == nil ? "refs/heads/".count : "refs/remotes/".count))
+    }
 }
 
 enum WorkspaceFileError: LocalizedError, Equatable {
