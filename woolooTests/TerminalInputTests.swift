@@ -643,10 +643,12 @@ final class TerminalKeyInputTests: XCTestCase {
         view.unmarkText()
         view.insertText("日本語 é 😀", replacementRange: NSRange(location: NSNotFound, length: 0))
         XCTAssertEqual(text.last, "日本語 é 😀", "AppKit may commit the marked text when navigating")
+        text.removeAll()
         view.setMarkedText("よ", selectedRange: NSRange(location: 1, length: 0),
                            replacementRange: NSRange(location: NSNotFound, length: 0))
         view.insertText("予", replacementRange: NSRange(location: NSNotFound, length: 0))
         XCTAssertFalse(view.hasMarkedText(), "Forwarding an IME commit must end composition")
+        XCTAssertEqual(text, ["予"])
         view.keyDown(with: try event(124, "\u{f703}", flags: .control))
         XCTAssertEqual(keys, ["ctrl+right"], "Physical input resumes after a commit")
         let pasteboard = NSPasteboard.withUniqueName()
@@ -680,6 +682,49 @@ final class TerminalKeyInputTests: XCTestCase {
         XCTAssertTrue(keys.isEmpty)
         view.keyDown(with: try event(123, "\u{f702}", flags: .option))
         XCTAssertEqual(keys, ["alt+left"], "Option navigation remains a terminal chord")
+    }
+
+    func testUnmarkTextAloneCommitsMarkedTextOnce() {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        view.string = "Shell output"
+        view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+        var text: [String] = []
+        view.sendText = { value, _ in text.append(value) }
+        let composition = NSAttributedString(string: "日本語 😀")
+        view.setMarkedText(composition, selectedRange: NSRange(location: composition.length, length: 0),
+                           replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(text.isEmpty)
+        view.unmarkText()
+        view.unmarkText()
+        XCTAssertEqual(text, ["日本語 😀"])
+        XCTAssertFalse(view.hasMarkedText())
+        XCTAssertEqual(view.string, "Shell output")
+    }
+
+    func testDeadKeyPreeditIsReplacedByTheCommittedCharacter() throws {
+        let view = TerminalRenderHarness.makeView(width: 20, height: 4)
+        let unspecified = NSRange(location: NSNotFound, length: 0)
+        let caret = NSRange(location: 1, length: 0)
+        view.string = "Shell output"
+        view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+        var text: [String] = []
+        view.sendText = { value, _ in text.append(value) }
+        let cases: [(String, UInt16, String, NSEvent.ModifierFlags)] = [
+            ("´", 0, "Á", .shift),
+            ("˜", 45, "ñ", []),
+            ("´", 49, "´", [])
+        ]
+        for (accent, code, character, flags) in cases {
+            // AppKit displays the dead key as marked text, then handles the next key.
+            view.setMarkedText(accent, selectedRange: caret, replacementRange: unspecified)
+            XCTAssertTrue(view.hasMarkedText())
+            XCTAssertTrue(text.isEmpty)
+            view.keyDown(with: try event(code, character, flags: flags))
+            XCTAssertEqual(text, [character])
+            XCTAssertFalse(view.hasMarkedText())
+            XCTAssertEqual(view.string, "Shell output")
+            text.removeAll()
+        }
     }
 
     func testNativeCommandAndHerdrShortcutsRunBeforeTerminalMapping() throws {

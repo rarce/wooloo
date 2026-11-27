@@ -2318,12 +2318,48 @@ final class HerdrTerminalTextView: NSTextView {
         return super.performKeyEquivalent(with: event)
     }
 
+    // Non-nil while AppKit is interpreting a key. An unmark may be followed by
+    // insertText for the same key, so defer its text until the callbacks finish.
+    private var pendingUnmarkedText: String?
+
+    override func interpretKeyEvents(_ eventArray: [NSEvent]) {
+        guard pendingUnmarkedText == nil else {
+            super.interpretKeyEvents(eventArray)
+            return
+        }
+        pendingUnmarkedText = ""
+        super.interpretKeyEvents(eventArray)
+        let text = pendingUnmarkedText ?? ""
+        pendingUnmarkedText = nil
+        sendCommittedText(text)
+    }
+
+    override func unmarkText() {
+        guard hasMarkedText() else { return }
+        let text = super.attributedSubstring(forProposedRange: markedRange(), actualRange: nil)?.string ?? ""
+        clearMarkedInput()
+        if pendingUnmarkedText != nil {
+            pendingUnmarkedText?.append(text)
+        } else {
+            sendCommittedText(text)
+        }
+    }
+
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let value = (insertString as? NSAttributedString)?.string ?? (insertString as? String) ?? ""
-        // This view forwards commits instead of calling NSTextView.insertText, so clear the
-        // inherited composition state explicitly before routing the next physical key.
-        if hasMarkedText() { super.unmarkText() }
-        if !value.isEmpty, !popupInput(.text(value)) { sendText?(value, paneID) }
+        clearMarkedInput()
+        if !value.isEmpty, pendingUnmarkedText != nil { pendingUnmarkedText = "" }
+        sendCommittedText(value)
+    }
+
+    private func clearMarkedInput() {
+        guard hasMarkedText() else { return }
+        // Clear the preedit without NSTextView reinserting it through insertText.
+        super.setMarkedText("", selectedRange: NSRange(location: 0, length: 0), replacementRange: markedRange())
+    }
+
+    private func sendCommittedText(_ text: String) {
+        if !text.isEmpty, !popupInput(.text(text)) { sendText?(text, paneID) }
     }
 
     override func paste(_ sender: Any?) {
