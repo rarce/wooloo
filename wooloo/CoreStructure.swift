@@ -186,13 +186,12 @@ struct CoreStructure: Equatable, Sendable {
             }
             result.spaces.append(Space(id: id, name: name, folder: folder, tabs: decodedTabs))
         }
-        var worktrees: [String: String] = [:]
-        for (id, raw) in (object["worktrees"] as? [String: Any] ?? [:]).prefix(500) {
-            guard !id.isEmpty, id.count <= 128, let path = raw as? String,
-                  path.hasPrefix("/"), path.count <= 4096 else { continue }
-            worktrees[id] = path
+        // Only entries of decoded Spaces count, so there are at most as many as Spaces.
+        let ids = Set(result.spaces.map(\.id))
+        for (id, raw) in object["worktrees"] as? [String: Any] ?? [:] where ids.contains(id) {
+            guard let path = raw as? String, path.hasPrefix("/"), path.count <= 4096 else { continue }
+            result.worktrees[id] = path
         }
-        result.worktrees = pruned(worktrees, to: result.spaces)
         return result
     }
 

@@ -56,7 +56,7 @@ QUERIES = [
 
 # A program reporting its status with OSC 7501 (the Program Status Protocol), as agent CLIs
 # that support it do: working, then done. Each is (state, seconds to hold it).
-STATUS_STEPS = [("working", 1.5), ("done", 1.5)]
+STATUS_STEPS = [("working", 3), ("done", 3)]
 
 STATUS_CHILD = r'''
 import json, sys, time
@@ -237,11 +237,16 @@ def run_status_child(conn, tmp):
         raise RuntimeError(run)
     terminal = run["result"]["address"]
     seen = []
-    for state, hold in STATUS_STEPS:
-        time.sleep(hold * 0.6)
-        got = conn.call("terminal.get", {"terminal": terminal}).get("result", {})
+    for state, _ in STATUS_STEPS:
+        # Waits for each state rather than sampling at fixed times, since the child may be
+        # slow to start; a state that never arrives is recorded as what was seen last.
+        end = time.time() + 15
+        while True:
+            got = conn.call("terminal.get", {"terminal": terminal}).get("result", {})
+            if (got.get("status") or {}).get("state") == state or time.time() > end:
+                break
+            time.sleep(0.1)
         seen.append({"reported": state, "status": got.get("status"), "turn": got.get("turn")})
-        time.sleep(hold * 0.4)
     conn.call("terminal.kill", {"terminal": terminal})
     conn.call("terminal.rm", {"terminal": terminal})
     return {"terminal": terminal, "steps": seen}

@@ -364,10 +364,21 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
             let start = try cwd ?? source.flatMap { try self.folder(of: $0) }
             return try newSpace(folder: start, name: label)
         case let .worktreeSpace(checkout, _):
-            // Each checkout has one Space, as with Herdr's `worktree.open`: a Space another
-            // window opened there since this window's last snapshot is reused, not doubled.
+            // Each checkout has one Space, as with Herdr's `worktree.open`: the checkout's Space,
+            // even one another window opened since this window's last snapshot, or else a
+            // Space of wooloo's already open on that folder, which becomes the checkout's.
             let structure = try arrangement(on: connection()).structure
-            if let open = structure.spaces.first(where: { structure.worktrees[$0.id] == checkout }) { return open.id }
+            if let open = Self.worktreeSpace(of: checkout, in: structure) { return open }
+            if structure.spaces.contains(where: { Self.adoptable($0, checkout: checkout, in: structure) }) {
+                let adopted = try mutate { structure, _ -> String? in
+                    if let open = Self.worktreeSpace(of: checkout, in: structure) { return open }
+                    guard let space = structure.spaces.first(where: { Self.adoptable($0, checkout: checkout, in: structure) })
+                    else { return nil }
+                    structure.worktrees[space.id] = checkout
+                    return space.id
+                }
+                if let adopted { return adopted }
+            }
             return try newSpace(folder: checkout, name: (checkout as NSString).lastPathComponent, worktree: true)
         case let .tab(spaceID, cwd):
             let address = try run(in: spaceID, cwd: try cwd ?? self.folder(of: spaceID))
@@ -382,18 +393,36 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         }
     }
 
+    /// The Space of a Git worktree checkout, if one is recorded.
+    static func worktreeSpace(of checkout: String, in structure: CoreStructure) -> String? {
+        structure.spaces.first { structure.worktrees[$0.id] == checkout }?.id
+    }
+
+    /// Whether `space` may become `checkout`'s Space: one of wooloo's own, open on that folder,
+    /// with no checkout recorded. The app's Spaces stay the app's, and Unfiled is no folder's.
+    static func adoptable(_ space: CoreStructure.Space, checkout: String, in structure: CoreStructure) -> Bool {
+        space.folder == checkout && structure.worktrees[space.id] == nil
+            && space.id != CoreStructure.unfiledID && !space.id.hasPrefix(HerdrAppStructure.idPrefix)
+    }
+
+    /// Starts a Space with one shell. For a worktree, a Space another window recorded for the
+    /// checkout while this shell started wins, also on a retried write, and the shell is closed.
     private func newSpace(folder: String?, name: String?, worktree: Bool = false) throws -> String {
         let spaceID = CoreStructure.newID()
         let address = try run(in: spaceID, cwd: folder)
         let fallback = folder.map { ($0 as NSString).lastPathComponent } ?? "Space"
-        try mutate { structure, _ in
+        let placed = try mutate { structure, _ -> String in
             for index in structure.spaces.indices { structure.spaces[index].tabs.removeAll { $0.root.terminals == [address] } }
             structure.spaces.removeAll { $0.tabs.isEmpty }
+            if worktree, let folder, let open = Self.worktreeSpace(of: folder, in: structure) { return open }
             structure.spaces.append(.init(id: spaceID, name: name ?? fallback, folder: folder,
                                           tabs: [.init(id: CoreStructure.newID(), name: nil, root: .terminal(address))]))
             if worktree, let folder { structure.worktrees[spaceID] = folder }
+            return spaceID
         }
-        return spaceID
+        // The Space is open either way; a shell that failed to close shows in Unfiled.
+        if placed != spaceID { _ = try? kill([address]) }
+        return placed
     }
 
     func moveSpace(_ spaceID: String, beside anchorID: String, after: Bool,
@@ -432,6 +461,10 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
                     terminals.first { $0.address == address }.map(Self.label(of:))
                 } ?? source.name
                 structure.spaces.append(.init(id: destination, name: name, folder: source.folder, tabs: [tab]))
+                // A worktree Space's only tab takes the checkout to its new Space.
+                if source.tabs.count == 1, let checkout = structure.worktrees.removeValue(forKey: source.id) {
+                    structure.worktrees[destination] = checkout
+                }
             }
             structure.spaces.removeAll { $0.tabs.isEmpty }
             let pane = tab.root.terminals.first ?? ""

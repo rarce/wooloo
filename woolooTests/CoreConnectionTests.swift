@@ -348,6 +348,48 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(structure(core)?.worktrees, [:], "A closed worktree Space leaves the document")
     }
 
+    func testAWorktreeAdoptsASpaceAlreadyOpenOnItsFolder() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let plain = try backend.create(.space(sourceSpaceID: nil, cwd: "/src/app-feature", label: nil))
+        XCTAssertEqual(try backend.create(.worktreeSpace(checkout: "/src/app-feature", repository: "/src/app")), plain)
+        XCTAssertEqual(core.callsTo("terminal.run").count, 1, "No second shell on the checkout")
+        XCTAssertEqual(structure(core)?.worktrees, [plain: "/src/app-feature"])
+    }
+
+    func testTwoWindowsOpeningOneWorktreeAtOnceShareOneSpace() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let checkout = "/src/app-feature"
+        let other = CoreStructure(spaces: [.init(id: "w", name: "app-feature", folder: checkout,
+                                                 tabs: [.init(id: "x", name: nil, root: .terminal("t1"))])],
+                                  worktrees: ["w": checkout])
+        // Another window records its Space while this window's shell starts.
+        core.update { core in
+            core.overrides["terminal.run"] = { [unowned core] params in
+                let started = CoreTerminal(address: "t2", cwd: checkout, labels: params["labels"] as? [String: String] ?? [:])
+                core.terminals = [CoreTerminal(address: "t1", cwd: checkout), started]
+                core.documents[CoreStructure.documentName] = (value: other.encoded(over: nil) as Any?, version: 1)
+                return ["address": "t2", "cwd": checkout, "state": "live"]
+            }
+        }
+        XCTAssertEqual(try backend.create(.worktreeSpace(checkout: checkout, repository: "/src/app")), "w")
+        XCTAssertEqual(structure(core)?.spaces.map(\.id), ["w"])
+        XCTAssertEqual(structure(core)?.worktrees, ["w": checkout])
+        XCTAssertEqual(core.callsTo("terminal.kill").first?.params["terminal"] as? String, "t2",
+                       "The shell this window started is closed")
+    }
+
+    func testAWorktreeSpacesOnlyTabTakesTheCheckoutToANewSpace() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let space = try backend.create(.worktreeSpace(checkout: "/src/app-feature", repository: "/src/app"))
+        let tab = try XCTUnwrap(structure(core)?.spaces.first { $0.id == space }?.tabs.first?.id)
+        let pane = try backend.moveTab(tab, toSpace: nil, lastTabWasChecked: true, checkpoint: {})
+        XCTAssertNotEqual(pane.spaceID, space)
+        XCTAssertEqual(structure(core)?.worktrees, [pane.spaceID: "/src/app-feature"])
+    }
+
     func testMovesRearrangeTheDocument() throws {
         let core = FakeCore()
         let backend = backend(core)
