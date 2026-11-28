@@ -177,11 +177,18 @@ final class HerdrRemoteBridge: Sendable {
         return args
     }
 
-    /// Finds herdr-core on PATH or in common installation locations; exit 127 when missing.
+    /// Finds herdr-core on PATH or in common installation locations, including the bundle the
+    /// official installer keeps on a Mac; exit 127 when missing. Another program named `hc`
+    /// (some window managers ship one) is skipped: herdr-core's `--version` says `hc X.Y.Z`,
+    /// and starts no core.
     static let coreDiscoveryScript = """
         h=
-        for candidate in "$(command -v hc 2>/dev/null)" "$(command -v herdr-core 2>/dev/null)" "$HOME/.local/bin/hc" "$HOME/.local/bin/herdr-core" /opt/homebrew/bin/hc /usr/local/bin/hc /home/linuxbrew/.linuxbrew/bin/hc "$HOME/.nix-profile/bin/hc" /run/current-system/sw/bin/hc; do
+        for candidate in "$(command -v hc 2>/dev/null)" "$(command -v herdr-core 2>/dev/null)" "$HOME/.local/bin/hc" "$HOME/.local/bin/herdr-core" /opt/homebrew/bin/hc /usr/local/bin/hc /home/linuxbrew/.linuxbrew/bin/hc "$HOME/.nix-profile/bin/hc" "/etc/profiles/per-user/${USER:-}/bin/hc" /run/current-system/sw/bin/hc "$HOME/.local/share/herdr-core/active/Herdr Core.app/Contents/MacOS/herdr-core"; do
             [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+            case "$("$candidate" --version </dev/null 2>/dev/null)" in
+                "hc "[0-9]*) ;;
+                *) continue ;;
+            esac
             h=$candidate
             break
         done

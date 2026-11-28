@@ -142,6 +142,7 @@ Fill the scrollback first (section 1).
 | 7.2 | `hc server stop`, wait 10 s, then start a core again (`hc ls` starts one) | The app reconnects, starting the core again if it is still stopped. Panes wooloo created come back at the same address with a fresh shell; terminals started elsewhere follow their own keep setting |
 | 7.3 | Turn **Settings → Appearance → herdr-core (preview)** off and on | Off hides the herdr-core option for new connections (Manage Connections and setup); connections already made stay. On brings the option back |
 | 7.4 | Check `~/Library/Logs/wooloo/Hangs` and `~/Library/Logs/DiagnosticReports/wooloo-*` | No new hang or crash reports from this session |
+| 7.5 | Only on a macOS user account without herdr-core (`hc` and `~/.local/bin/herdr-core` absent): in the setup wizard choose **Use herdr-core (preview)**, then **Install herdr-core 0.1.22…** → **Install**. Then **Connect to herdr-core** with session `wooloo-ui-test` | The confirmation names the version and the signature check. The notice says it installed `~/.local/bin/herdr-core`, the wizard shows "Found herdr-core at …", and `hc --version` prints 0.1.22. The session connects, and the core runs as Herdr Core.app (Activity Monitor). A second install from another window says nothing was changed |
 
 ## 8. SSH host (optional, phases 3 and 6)
 

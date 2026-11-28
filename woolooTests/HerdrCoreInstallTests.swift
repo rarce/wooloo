@@ -1,9 +1,10 @@
 import XCTest
 @testable import wooloo
 
-/// The user-initiated herdr-core install on a remote host: pinned builds, an existing core
-/// kept, and a download that fails its checksum installing nothing. The remote command runs
-/// locally through a fake `ssh`, in a temporary home, with a fake `curl`.
+/// The user-initiated herdr-core install on a remote host or this Mac: pinned builds, an
+/// existing core kept, and a download that fails its checksum installing nothing. The remote
+/// command runs locally through a fake `ssh`, and the local one directly, in a temporary home,
+/// with a fake `curl`.
 final class HerdrCoreInstallTests: XCTestCase {
     private var home: String!
     private let machine = HerdrMachineProfile(id: "dev", label: "Dev", target: "dev.example.test",
@@ -39,6 +40,16 @@ final class HerdrCoreInstallTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
     }
 
+    /// Discovery also looks in fixed folders outside the test's home; a core installed there
+    /// (Homebrew, nix) would be found before the one each test sets up.
+    private func skipIfACoreIsInstalledOutsideHome() throws {
+        for path in ["/opt/homebrew/bin/hc", "/usr/local/bin/hc", "/home/linuxbrew/.linuxbrew/bin/hc",
+                     "/etc/profiles/per-user/\(NSUserName())/bin/hc", "/run/current-system/sw/bin/hc"]
+        where FileManager.default.isExecutableFile(atPath: path) {
+            throw XCTSkip("herdr-core at \(path) would be found before the test's own")
+        }
+    }
+
     private func install() async throws -> HerdrCoreInstall.Outcome {
         let machine = self.machine
         return try await WorkspaceFiles.blocking(on: machine) { try HerdrCoreInstall.install(on: machine) }
@@ -52,6 +63,35 @@ final class HerdrCoreInstallTests: XCTestCase {
             XCTAssertTrue(HerdrCoreInstall.script.contains("want=\(build.sha256)"), target)
         }
         XCTAssertFalse(HerdrCoreInstall.script.contains("exit 127"), "Finding no core is where the install starts")
+        XCTAssertTrue(HerdrCoreInstall.script.contains("codesign --verify --strict -R "
+                                                       + WorkspaceFiles.quote(HerdrCoreInstall.macRequirement)),
+                      "A Mac gets Herdr Core.app only when Herdr signed it")
+        XCTAssertTrue(HerdrCoreInstall.script.contains("--hc-install-bundle"))
+    }
+
+    private var localEnvironment: [String: String] { ["HOME": home, "PATH": home + "/fakebin:/usr/bin:/bin"] }
+
+    private func installLocally() async throws -> HerdrCoreInstall.Outcome {
+        let environment = localEnvironment
+        return try await WorkspaceFiles.blocking(on: nil) { try HerdrCoreInstall.installLocally(environment: environment) }
+    }
+
+    func testThisMacKeepsItsCoreOrInstallsNothingOnABadDownload() async throws {
+        try skipIfACoreIsInstalledOutsideHome()
+        // Another program named hc is not herdr-core.
+        try write("#!/bin/sh\necho 'herbstclient 0.9.5'\n", to: home + "/fakebin/hc")
+        do {
+            _ = try await installLocally()
+            XCTFail("The install should fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("checksum"), error.localizedDescription)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.local/bin/herdr-core"))
+        try FileManager.default.createDirectory(atPath: home + "/.local/bin", withIntermediateDirectories: true)
+        try write("#!/bin/sh\necho 'hc 0.0.1'\n", to: home + "/.local/bin/hc")
+        let outcome = try await installLocally()
+        XCTAssertEqual(outcome, .present(home + "/.local/bin/hc"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.local/bin/herdr-core"))
     }
 
     func testOutcomesAreReadFromTheLastLine() {
@@ -71,6 +111,7 @@ final class HerdrCoreInstallTests: XCTestCase {
     }
 
     func testADownloadThatFailsItsChecksumInstallsNothing() async throws {
+        try skipIfACoreIsInstalledOutsideHome()
         do {
             _ = try await install()
             XCTFail("The install should fail")

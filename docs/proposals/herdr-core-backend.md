@@ -545,10 +545,14 @@ Not ready to make Core the default. The preview is usable on one Mac, locally an
 | Resume in Core (#15) | Closed 2026-11-26: kept programs resume with OSC 7577 ([#429](https://github.com/herdrdev/herdr-core/pull/429)), on `master`, not in 0.1.22 |
 | A wooloo user asks for app/Core sessions | — |
 
+**Since then (same day):**
+- **A local core from the wizard.** When no `hc` is found, the first-run wizard offers **Install herdr-core 0.1.22…**: the same pinned, checked install as on SSH hosts, after confirmation (D3, revised). It is checked on Linux in an isolated home: the first run installs `hc 0.1.22`, the second finds it and changes nothing. The macOS path (`Herdr Core.app`) is manual case 7.5.
+- **Resume needs nothing from wooloo.** Core restarts a kept terminal's program from its OSC 7577 report, and wooloo already starts its terminals with `keep`. What is missing is a release with #429, and agents that report it (it names pi; Claude Code and Codex do not yet).
+
 **Still blocking a Core default:**
-- no managed local core: a Mac without `hc` needs the official installer first (D3), and the macOS Phase 0 checks (socket path, launchd "Herdr Core") are open;
+- the macOS Phase 0 checks (socket path, launchd "Herdr Core"), and manual case 7.5 for the local install;
 - mobile companion and Remote Access are TUI only (D4);
-- resume: no release has OSC 7577 yet, and the main agents do not report it. wooloo needs no change: Core restarts kept terminals from the program's report, and wooloo starts its terminals with `keep`;
+- resume: no release has OSC 7577 yet, and the main agents do not report it;
 - agent views, popups and `config.toml` reload are not offered;
 - the manual cases still open on a Mac: 2.4 with real agents and the Agents list, 6.1's physical drop, 6.3's notification, 6.6, 8.2, and section 9 (two Macs);
 - the Core terminal benchmark;
@@ -605,6 +609,7 @@ Decided by the maintainer on 2026-11-16.
   - If the build cannot be made reliable, SwiftTerm's engine used headless is the fallback. [swiftterm-evaluation.md](../swiftterm-evaluation.md) covers only its `TerminalView`, so that use would need its own check.
 - **D2, structure store: a private `wooloo` document in the core, plus `herdr-app` read-only** ((a) with read-only (b) in §5). wooloo never writes `herdr-app` unless herdr-app #43 makes its format a contract.
 - **D3, local runtime: a user-installed core.** wooloo detects `hc` and links to the official installer when it is missing. It does not bundle a core, and Core's own updater owns updates. On remote hosts, wooloo installs a pinned build only on explicit user action (§8).
+  - Revised 2026-11-28: the first-run wizard also installs the pinned build on this Mac, on explicit user action. On a Mac, local or remote, the install follows herdr.dev/core's installer: it checks `Herdr Core.app`'s code signature (`dev.herdr.core`, team `2W9652Q7QR`) and installs it with `--hc-install-bundle`, so launchd starts the core. Before, a macOS host got only the bare binary.
 - **D4, mobile: the Android companion stays TUI-only.** `RemoteAccessLink` and the Android parser do not change. This is revisited in Phase 6 against the official phone apps.
 - **D5, remote cores: wooloo's own SSH to each host's core.** Every core is identified by `core.id`. Machine-prefixed terminals (`machine/t7`) are hidden from a core whose machine wooloo also reaches directly.
 
