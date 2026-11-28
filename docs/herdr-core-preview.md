@@ -6,7 +6,7 @@ How it is built, and why, is in the [backend plan](proposals/herdr-core-backend.
 
 ## Turning it on
 
-1. Install herdr-core on this Mac with its [official installer](https://herdr.dev/core). wooloo does not bundle or install a local core; Core's own updater keeps it current.
+1. Install herdr-core on this Mac with its [official installer](https://herdr.dev/core), or let the first-run wizard do it (**Install herdr-core 0.1.22…**, step 3). Either way Core's own updater keeps it current; wooloo does not bundle a core.
 2. In **Settings → Appearance**, turn on **herdr-core (preview)**.
 3. Open a session:
    - **First run:** choose **Use herdr-core (preview)**.
@@ -16,8 +16,10 @@ How it is built, and why, is in the [backend plan](proposals/herdr-core-backend.
 - The host's entry in **Manage Connections** offers **Install herdr-core 0.1.22 on This Host…**. It asks first.
 - It downloads the build for the host's platform from `releases.herdr.dev`.
 - It checks the download against a SHA-256 built into wooloo.
-- It installs it in `~/.local/bin`.
+- It installs it in `~/.local/bin`. On a Mac, it installs the archive's `Herdr Core.app` as the official installer does, after checking that Herdr signed it.
 - It never replaces a herdr-core that is already there.
+
+**On this Mac,** the first-run wizard's herdr-core option offers the same install when no `hc` is found. It asks first.
 
 ## How a herdr-core session looks
 

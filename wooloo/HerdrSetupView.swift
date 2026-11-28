@@ -13,11 +13,33 @@ struct HerdrSetupView: View {
     @State private var usesCore = false
     @State private var coreExecutable = HerdrCoreSupport.locateLocal()
     @State private var coreSession = "default"
+    @State private var confirmsCoreInstall = false
+    @State private var installingCore = false
+    @State private var coreInstallNotice: String?
 
     private enum Choice: Hashable { case bundled, existing, core }
     private var choice: Binding<Choice> {
         Binding(get: { usesCore ? .core : useBundled ? .bundled : .existing },
                 set: { usesCore = $0 == .core; if $0 != .core { useBundled = $0 == .bundled } })
+    }
+
+    /// Installs herdr-core on this Mac after the user confirmed it, then finds it as on launch.
+    private func installCore() {
+        installingCore = true
+        coreInstallNotice = "Installing herdr-core \(HerdrCoreInstall.version)…"
+        Task {
+            defer { installingCore = false }
+            do {
+                let outcome = try await WorkspaceFiles.blocking(on: nil) { try HerdrCoreInstall.installLocally() }
+                coreExecutable = HerdrCoreSupport.locateLocal()
+                switch outcome {
+                case .present(let path): coreInstallNotice = "herdr-core is already installed (\(path)); nothing was changed."
+                case .installed(let path): coreInstallNotice = "Installed herdr-core \(HerdrCoreInstall.version) at \(path)."
+                }
+            } catch {
+                coreInstallNotice = error.localizedDescription
+            }
+        }
     }
 
     var body: some View {
@@ -46,13 +68,26 @@ struct HerdrSetupView: View {
                                 .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                         } else {
                             HStack {
-                                Text("herdr-core (hc) is not installed on this Mac. wooloo does not install it here; its own installer and updater do.")
+                                Text("herdr-core (hc) is not installed on this Mac. wooloo can install it, or you can use its own installer. Its own updater keeps it current either way.")
                                     .font(.callout).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 Spacer()
+                                Button("Install herdr-core \(HerdrCoreInstall.version)…") { confirmsCoreInstall = true }
+                                    .disabled(installingCore)
                                 Link("Get herdr-core", destination: URL(string: "https://herdr.dev/core")!)
                                 Button("Check Again") { coreExecutable = HerdrCoreSupport.locateLocal() }
+                                    .disabled(installingCore)
                             }
+                            .alert("Install herdr-core on this Mac?", isPresented: $confirmsCoreInstall) {
+                                Button("Install") { installCore() }
+                                Button("Cancel", role: .cancel) {}
+                            } message: {
+                                Text("wooloo downloads herdr-core \(HerdrCoreInstall.version) from releases.herdr.dev, checks it against the checksum built into wooloo and Herdr's code signature, and installs Herdr Core.app with hc in ~/.local/bin, as herdr.dev/core's installer does.")
+                            }
+                        }
+                        if let coreInstallNotice {
+                            Text(coreInstallNotice).font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                         }
                         TextField("Session", text: $coreSession)
                             .textFieldStyle(.roundedBorder)

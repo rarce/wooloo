@@ -1,8 +1,9 @@
 import Foundation
 
 /// herdr-core connections, a preview behind a setting that is off by default
-/// (docs/proposals/herdr-core-backend.md, Phase 3). wooloo uses a herdr-core the user installed
-/// (decision D3) and never installs or starts one as a side effect of looking for it.
+/// (docs/proposals/herdr-core-backend.md, Phase 3). wooloo uses a herdr-core the user installed,
+/// or asked wooloo to install (decision D3), and never installs or starts one as a side effect
+/// of looking for it.
 enum HerdrCoreSupport {
     static let settingKey = "WoolooHerdrCoreConnections"
 

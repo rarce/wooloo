@@ -1,9 +1,9 @@
 import Foundation
 
-/// Installs herdr-core on a remote host, only when the user asks (docs/proposals/herdr-core-backend.md,
-/// §8 and decision D3). Core releases have no signature independent of the release server, so
-/// the SHA-256 of each build is pinned here, from the release's manifest, and checked on the
-/// host before anything is installed. An existing core is never replaced: Core's own updater
+/// Installs herdr-core on a remote host or on this Mac, only when the user asks
+/// (docs/proposals/herdr-core-backend.md, §8 and decision D3). Core releases have no signature
+/// independent of the release server, so the SHA-256 of each build is pinned here, from the
+/// release's manifest, and checked on the host before anything is installed. An existing core is never replaced: Core's own updater
 /// (`hc update`) or the official app own it from then on.
 enum HerdrCoreInstall {
     static let version = "0.1.22"
@@ -25,6 +25,10 @@ enum HerdrCoreInstall {
                                sha256: "90798daadefa8d126b90ef0bcdbe9c7dda9c6cfbf011a247065ab5da348f350e"),
     ]
 
+    /// The code signature herdr.dev/core's installer requires of `Herdr Core.app` on a Mac.
+    static let macRequirement =
+        #"=identifier "dev.herdr.core" and anchor apple generic and certificate leaf[subject.OU] = "2W9652Q7QR""#
+
     static let presentMarker = "wooloo-core-present"
     static let installedMarker = "wooloo-core-installed"
 
@@ -37,7 +41,9 @@ enum HerdrCoreInstall {
     /// The script run on the host with `/bin/sh`. It looks for a core where the connection does,
     /// and stops if one is there. Otherwise it downloads the pinned build for the host's
     /// platform with curl or wget and checks its hash. It installs `~/.local/bin/herdr-core`,
-    /// and `hc` beside it unless some `hc` already exists (some window managers ship one).
+    /// and `hc` beside it unless some `hc` already exists (some window managers ship one). On a
+    /// Mac it installs the signed `Herdr Core.app` from the archive as the official installer
+    /// does, so launchd starts the core, and refuses an archive whose app is not signed by Herdr.
     static var script: String {
         let cases = builds.keys.sorted().map { target -> String in
             let build = builds[target]!
@@ -91,11 +97,22 @@ enum HerdrCoreInstall {
         bin="$HOME/.local/bin"
         mkdir -p "$bin" || fail "cannot create $bin"
         [ ! -e "$bin/herdr-core" ] || fail "$bin/herdr-core already exists; nothing was replaced"
-        cp "$tmp/herdr-core" "$bin/herdr-core.wooloo-staged" && chmod 755 "$bin/herdr-core.wooloo-staged" \\
-            || fail "cannot write $bin"
-        "$bin/herdr-core.wooloo-staged" --version >/dev/null 2>&1 \\
-            || { rm -f "$bin/herdr-core.wooloo-staged"; fail "the downloaded herdr-core does not run on this host"; }
-        mv "$bin/herdr-core.wooloo-staged" "$bin/herdr-core" || fail "cannot install $bin/herdr-core"
+        app="$tmp/Herdr Core.app"
+        if [ "$os" = macos ] && [ "$(id -u)" != 0 ] && [ -x "$app/Contents/MacOS/herdr-core" ]; then
+            /usr/bin/codesign --verify --strict -R \(WorkspaceFiles.quote(macRequirement)) "$app" \\
+                || fail "the download is not a signed Herdr release; nothing was installed"
+            "$app/Contents/MacOS/herdr-core" --version >/dev/null 2>&1 \\
+                || fail "the downloaded herdr-core does not run on this host"
+            "$app/Contents/MacOS/herdr-core" --hc-install-bundle "$app/Contents/MacOS/herdr-core" "$bin/herdr-core" \\
+                || fail "installing Herdr Core.app failed"
+            [ -x "$bin/herdr-core" ] || fail "Herdr Core.app did not install $bin/herdr-core"
+        else
+            cp "$tmp/herdr-core" "$bin/herdr-core.wooloo-staged" && chmod 755 "$bin/herdr-core.wooloo-staged" \\
+                || fail "cannot write $bin"
+            "$bin/herdr-core.wooloo-staged" --version >/dev/null 2>&1 \\
+                || { rm -f "$bin/herdr-core.wooloo-staged"; fail "the downloaded herdr-core does not run on this host"; }
+            mv "$bin/herdr-core.wooloo-staged" "$bin/herdr-core" || fail "cannot install $bin/herdr-core"
+        fi
         if ! command -v hc >/dev/null 2>&1 && [ ! -e "$bin/hc" ]; then ln -s herdr-core "$bin/hc"; fi
         printf '%s %s\\n' \(installedMarker) "$bin/herdr-core"
         """
@@ -107,6 +124,18 @@ enum HerdrCoreInstall {
         if line.hasPrefix(presentMarker + " ") { return .present(String(line.dropFirst(presentMarker.count + 1))) }
         if line.hasPrefix(installedMarker + " ") { return .installed(String(line.dropFirst(installedMarker.count + 1))) }
         return nil
+    }
+
+    /// Runs the install on this Mac; call it inside `WorkspaceFiles.blocking(on: nil)`. Tests
+    /// pass `environment` to install into a temporary home.
+    @available(*, noasync, message: "Blocks its thread: call it inside WorkspaceFiles.blocking")
+    static func installLocally(environment: [String: String] = [:]) throws -> Outcome {
+        let data = try WorkspaceFiles.run("/bin/sh", ["-c", script], environment: environment, limit: 64_000,
+                                          timeout: 180, label: "herdr-core install")
+        guard let outcome = outcome(of: String(decoding: data, as: UTF8.self)) else {
+            throw WorkspaceFileError.message("The herdr-core install did not finish.")
+        }
+        return outcome
     }
 
     /// Runs the install on `machine` over wooloo's SSH; call it inside `WorkspaceFiles.blocking(on:)`.
