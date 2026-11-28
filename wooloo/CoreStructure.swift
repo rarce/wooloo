@@ -97,6 +97,9 @@ struct CoreStructure: Equatable, Sendable {
     /// document, not one of the Space's, because builds before it rewrite every Space from the
     /// fields they know but keep top-level fields; entries for Spaces that are gone are dropped.
     var worktrees: [String: String] = [:]
+    /// Spaces whose `worktrees` entry this build cannot read, such as a later build's richer
+    /// value. They count as having a checkout, and their entries are written back unchanged.
+    var foreignWorktrees: Set<String> = []
 
     var terminals: Set<String> { Set(spaces.flatMap { $0.tabs.flatMap(\.root.terminals) }) }
 
@@ -157,6 +160,7 @@ struct CoreStructure: Equatable, Sendable {
             }
         }
         result.worktrees = Self.pruned(worktrees, to: result.spaces)
+        result.foreignWorktrees = foreignWorktrees.intersection(result.spaces.map(\.id))
         return result
     }
 
@@ -189,7 +193,8 @@ struct CoreStructure: Equatable, Sendable {
         // Only entries of decoded Spaces count, so there are at most as many as Spaces.
         let ids = Set(result.spaces.map(\.id))
         for (id, raw) in object["worktrees"] as? [String: Any] ?? [:] where ids.contains(id) {
-            guard let path = raw as? String, path.hasPrefix("/"), path.count <= 4096 else { continue }
+            guard let path = raw as? String else { result.foreignWorktrees.insert(id); continue }
+            guard path.hasPrefix("/"), path.count <= 4096 else { continue }
             result.worktrees[id] = path
         }
         return result

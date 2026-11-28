@@ -100,14 +100,18 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     @discardableResult
     func mutate<Result>(_ change: (inout CoreStructure, [CoreTerminal]) throws -> Result) throws -> Result {
         let connection = try connection()
-        for attempt in 0..<3 {
+        for _ in 0..<3 {
             let current = try arrangement(on: connection)
             var structure = current.structure
             let result = try change(&structure, current.terminals)
-            // The app's Spaces stay the app's until a change touches one; then wooloo keeps it.
+            // The app's Spaces stay the app's until a change touches one; then wooloo keeps it,
+            // also through later writes that do not touch it.
+            let kept = Set(CoreStructure.decode(current.document)?.spaces.map(\.id) ?? [])
             structure.spaces.removeAll { space in
-                space.id.hasPrefix(HerdrAppStructure.idPrefix) && current.structure.spaces.contains(space)
+                space.id.hasPrefix(HerdrAppStructure.idPrefix) && !kept.contains(space.id)
+                    && current.structure.spaces.contains(space)
             }
+            Self.leaveOutAppTerminalsInUnfiled(&structure, terminals: current.terminals)
             let value = structure.encoded(over: current.document)
             // A change that leaves the document as it is writes nothing, so other windows are
             // not sent a `doc` event or made to retry their own writes.
@@ -116,11 +120,25 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
                 _ = try connection.call("doc.set", ["name": CoreStructure.documentName, "value": value,
                                                     "version": current.version], as: DocVersion.self)
                 return result
-            } catch CoreProtocolError.remote(kind: "conflict", _) where attempt < 2 {
+            } catch CoreProtocolError.remote(kind: "conflict", _) {
                 continue
             }
         }
         throw CoreProtocolError.remote(kind: "conflict", message: "Another client kept changing the layout. Try again.")
+    }
+
+    /// A terminal the official app started (`herdr.space`) but has not placed in its document
+    /// yet shows in Unfiled only until the app does. Saved there, the document would keep it
+    /// in Unfiled for good, so its own Unfiled tab is left out of the write while nobody has
+    /// named, split or moved it.
+    static func leaveOutAppTerminalsInUnfiled(_ structure: inout CoreStructure, terminals: [CoreTerminal]) {
+        guard let unfiled = structure.spaces.firstIndex(where: { $0.id == CoreStructure.unfiledID }) else { return }
+        let appTerminals = Set(terminals.filter { $0.labels[HerdrAppStructure.spaceLabel] != nil }.map(\.address))
+        structure.spaces[unfiled].tabs.removeAll { tab in
+            guard case .terminal(let address) = tab.root else { return false }
+            return tab.id == "tab-\(address)" && tab.name == nil && appTerminals.contains(address)
+        }
+        if structure.spaces[unfiled].tabs.isEmpty { structure.spaces.remove(at: unfiled) }
     }
 
     /// Where the window should go after the last split or new tab, shown once.
@@ -407,7 +425,7 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     /// with no checkout recorded. The app's Spaces stay the app's, and Unfiled is no folder's.
     static func adoptable(_ space: CoreStructure.Space, checkout: String, in structure: CoreStructure) -> Bool {
         space.folder == checkout && structure.worktrees[space.id] == nil
-            && space.id != CoreStructure.unfiledID && !space.id.hasPrefix(HerdrAppStructure.idPrefix)
+            && !structure.foreignWorktrees.contains(space.id) && space.id != CoreStructure.unfiledID && !space.id.hasPrefix(HerdrAppStructure.idPrefix)
     }
 
     /// Starts a Space with one shell. For a worktree, a Space another window recorded for the

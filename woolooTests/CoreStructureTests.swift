@@ -41,6 +41,12 @@ final class CoreStructureTests: XCTestCase {
                        "A later build's entry of a remaining Space is kept")
         XCTAssertNil((later["worktrees"] as? [String: Any])?["gone"])
         XCTAssertEqual(CoreStructure.decode(later)?.worktrees, [:], "and not read as a checkout")
+        let richer: [String: Any] = ["schema": 1, "spaces": [["id": "s2", "name": "docs", "folder": "/src/docs", "tabs": [Any]()]],
+                                     "worktrees": ["s2": ["path": "/src/docs"]]]
+        let foreign = try XCTUnwrap(CoreStructure.decode(richer))
+        XCTAssertEqual(foreign.foreignWorktrees, ["s2"])
+        XCTAssertFalse(CoreSessionBackend.adoptable(foreign.spaces[0], checkout: "/src/docs", in: foreign),
+                       "A Space with a checkout this build cannot read is not adopted")
 
         // A build before worktrees rewrote the Spaces and kept the top-level field.
         let older: [String: Any] = ["schema": 1, "spaces": [["id": "s1", "name": "api", "tabs": []],

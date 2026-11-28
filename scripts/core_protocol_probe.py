@@ -194,6 +194,14 @@ def run_query_child(conn, tmp, attach, wait_before):
     if "error" in run:
         raise RuntimeError(run)
     terminal = run["result"]["address"]
+    try:
+        return query_table(conn, terminal, out, attach, wait_before)
+    finally:
+        conn.call("terminal.kill", {"terminal": terminal})
+        conn.call("terminal.rm", {"terminal": terminal})
+
+
+def query_table(conn, terminal, out, attach, wait_before):
     seen = b""
     if attach:
         att = conn.call("terminal.attach", {"terminal": terminal, "cols": 100, "rows": 30})
@@ -212,8 +220,6 @@ def run_query_child(conn, tmp, attach, wait_before):
             conn.pump(0.2)
         attach_result = None
     replies = json.load(open(out)) if os.path.exists(out) else []
-    conn.call("terminal.kill", {"terminal": terminal})
-    conn.call("terminal.rm", {"terminal": terminal})
     text = seen.decode("latin-1")
     table = []
     for (name, q), r in zip(QUERIES, replies):
@@ -237,6 +243,14 @@ def run_status_child(conn, tmp):
     if "error" in run:
         raise RuntimeError(run)
     terminal = run["result"]["address"]
+    try:
+        return {"terminal": terminal, "steps": status_steps(conn, terminal)}
+    finally:
+        conn.call("terminal.kill", {"terminal": terminal})
+        conn.call("terminal.rm", {"terminal": terminal})
+
+
+def status_steps(conn, terminal):
     seen = []
     for state, _ in STATUS_STEPS:
         # Waits for each state rather than sampling at fixed times, since the child may be
@@ -252,9 +266,7 @@ def run_status_child(conn, tmp):
                        if t.get("address") == terminal), {})
         seen.append({"reported": state, "status": got.get("status"), "turn": got.get("turn"),
                      "list_status": listed.get("status"), "list_turn": listed.get("turn")})
-    conn.call("terminal.kill", {"terminal": terminal})
-    conn.call("terminal.rm", {"terminal": terminal})
-    return {"terminal": terminal, "steps": seen}
+    return seen
 
 
 def main():

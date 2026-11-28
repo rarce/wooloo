@@ -455,9 +455,41 @@ final class CoreConnectionTests: XCTestCase {
         try backend.perform(.renameSpace(spaceID: "app:s2", label: "API"))
         XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.name), ["docs", "API"], "A changed one is wooloo's from then on")
         XCTAssertEqual(try backend.snapshot().workspaces.map(\.label), ["docs", "API", "web"])
+        _ = try backend.create(.tab(spaceID: mine, cwd: nil))
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.name), ["docs", "API"],
+                       "A later write elsewhere keeps the adopted Space")
         XCTAssertTrue(core.callsTo("doc.set").allSatisfy { $0.params["name"] as? String == CoreStructure.documentName },
                       "The app's document is never written")
         XCTAssertEqual(core.documents[HerdrAppStructure.documentName]?.version, 4)
+    }
+
+    func testATerminalTheAppHasNotPlacedYetIsNotSavedInUnfiled() throws {
+        let core = FakeCore()
+        core.terminals = [CoreTerminal(address: "t1", cwd: "/src/web", labels: [HerdrAppStructure.spaceLabel: "s5"])]
+        let backend = backend(core)
+        XCTAssertEqual(try backend.snapshot().workspaces.map(\.workspaceID), [CoreStructure.unfiledID])
+        let mine = try backend.create(.space(sourceSpaceID: nil, cwd: "/src/docs", label: "docs"))
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.id), [mine], "Unfiled is not written")
+        let app: [String: Any] = ["spaces": [
+            ["id": "s5", "name": "web", "tabs": [["id": "a", "root": ["type": "block", "content": ["terminal": "t1"]]]]],
+        ]]
+        core.documents[HerdrAppStructure.documentName] = (app, 1)
+        XCTAssertEqual(try backend.snapshot().workspaces.map(\.workspaceID), [mine, "app:s5"],
+                       "Once the app places it, it shows in the app's Space")
+    }
+
+    func testRepeatedConflictsSayAnotherClientKeptChangingTheLayout() throws {
+        let core = FakeCore()
+        let newer: [String: Any] = ["schema": 1, "spaces": [Any]()]
+        core.documents[CoreStructure.documentName] = (newer, 3)
+        // Every read is stale, as when another client writes between each read and write.
+        let stale: [String: Any] = ["value": NSNull(), "version": 0]
+        core.overrides["doc.get"] = { _ in stale }
+        XCTAssertThrowsError(try backend(core).create(.space(sourceSpaceID: nil, cwd: "/src/docs", label: nil))) {
+            XCTAssertEqual($0 as? CoreProtocolError,
+                           .remote(kind: "conflict", message: "Another client kept changing the layout. Try again."))
+        }
+        XCTAssertEqual(core.callsTo("doc.set").count, 3)
     }
 
     func testSeenTurnsAreOnlyRaised() throws {
