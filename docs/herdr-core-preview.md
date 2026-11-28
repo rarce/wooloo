@@ -46,7 +46,7 @@ herdr-core keeps terminals, not layout. wooloo keeps its own Spaces, tabs and sp
 | Unread and pinned agents | Unread in wooloo | Shared with every Herdr client (`herdr.seen`, `herdr.pinned`) |
 | Notifications | Herdr's sounds, toasts and system notifications | The same, from agent states |
 | Resume agents after a reboot | Supported agents | Not in a herdr-core release yet. Core's `master` resumes kept programs with OSC 7577 ([herdr-core #429](https://github.com/herdrdev/herdr-core/pull/429)); wooloo does not use it yet |
-| Worktrees from the repository panel | Yes | Yes. Opening a worktree selects the Space wooloo opened on that checkout, or opens one there |
+| Worktrees from the repository panel | Yes | Yes. Opening a worktree selects the checkout's Space, or a Space of wooloo's already open on that folder, or opens one there |
 | Agent views and popups | Yes | Not offered |
 | Herdr's `config.toml` settings and reload | Yes | Settings that wooloo keeps itself; no config reload |
 | SSH hosts | Herdr's saved profiles and `remote-api-bridge` | Hosts saved in wooloo, with `hc connect` over SSH |

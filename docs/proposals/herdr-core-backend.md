@@ -519,7 +519,9 @@ Not ready to make Core the default. The preview is usable on one Mac, locally an
   - The `wooloo` document now has a top-level `worktrees` map, from Space id to checkout. It is top level because builds before it rewrite each Space from the fields they know, but keep top-level fields.
   - Entries whose Space is gone are dropped on read and write.
   - `create(.worktreeSpace)` reuses the checkout's Space, even one another window opened since this window's last snapshot. Core's snapshot sets `worktree`, so `HerdrStore.openWorktree` and the Git bar find the Space as on the TUI.
-  - Worktree Spaces opened by v0.3.18–v0.3.21 have no entry, so the first open after updating may make one more Space.
+  - A Space of wooloo's on the checkout's folder without an entry, such as one opened by v0.3.18–v0.3.21 or with **Open as Space**, becomes the checkout's Space. The app's Spaces and Unfiled are never adopted.
+  - Two windows opening one checkout at once share a Space: the write that files the new shell checks again, and the losing window closes its shell.
+  - Moving a worktree Space's only tab to a new Space takes the checkout with it.
 - **herdr-core 0.1.22.** Checked on Linux in an isolated core, with `scripts/core_protocol_probe.py`:
   - generation 1 and the same features;
   - the query table unchanged;
