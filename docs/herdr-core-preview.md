@@ -13,7 +13,7 @@ How it is built, and why, is in the [backend plan](proposals/herdr-core-backend.
    - **Later:** in **Manage Connections**, add a connection with **herdr-core session (preview)** turned on. It can be on this Mac or on an SSH host.
 
 **On an SSH host,** wooloo runs `hc connect` over its own SSH connection. If the host has no herdr-core:
-- The host's entry in **Manage Connections** offers **Install herdr-core 0.1.21 on This Host…**. It asks first.
+- The host's entry in **Manage Connections** offers **Install herdr-core 0.1.22 on This Host…**. It asks first.
 - It downloads the build for the host's platform from `releases.herdr.dev`.
 - It checks the download against a SHA-256 built into wooloo.
 - It installs it in `~/.local/bin`.
@@ -42,11 +42,11 @@ herdr-core keeps terminals, not layout. wooloo keeps its own Spaces, tabs and sp
 | Scrollback | Yes | Yes. The wheel scrolls back through the terminal's last 2,000 lines when you connect, plus everything since. Typing returns to the live screen. In full-screen programs that ask for it (mode 1007), the wheel sends arrow keys. |
 | Find in terminal | Not in wooloo (the TUI has its own) | **Pane → Find in Terminal** (⌘F while no document has the keyboard) searches the screen and scrollback, scrolls to each match and highlights it. Return goes to older matches, Shift-Return to newer ones. |
 | Inline images | Herdr's images | Kitty graphics protocol images, including PNG, drawn above or below the text as the program asks and cut to their pane |
-| Agent status | Herdr's detection and integrations | Only for programs that report it themselves (OSC 7501) |
+| Agent status | Herdr's detection and integrations | Only for programs that report it themselves (OSC 7501). Claude Code and Codex builds include OSC 7501 support; their states in wooloo's Agents list are still to be confirmed on a Mac |
 | Unread and pinned agents | Unread in wooloo | Shared with every Herdr client (`herdr.seen`, `herdr.pinned`) |
 | Notifications | Herdr's sounds, toasts and system notifications | The same, from agent states |
-| Resume agents after a reboot | Supported agents | Not available in herdr-core |
-| Worktrees from the repository panel | Yes | Not yet |
+| Resume agents after a reboot | Supported agents | Not in a herdr-core release yet. Core's `master` resumes kept programs with OSC 7577 ([herdr-core #429](https://github.com/herdrdev/herdr-core/pull/429)); wooloo does not use it yet |
+| Worktrees from the repository panel | Yes | Yes. Opening a worktree selects the Space wooloo opened on that checkout, or opens one there |
 | Agent views and popups | Yes | Not offered |
 | Herdr's `config.toml` settings and reload | Yes | Settings that wooloo keeps itself; no config reload |
 | SSH hosts | Herdr's saved profiles and `remote-api-bridge` | Hosts saved in wooloo, with `hc connect` over SSH |
@@ -56,7 +56,7 @@ herdr-core keeps terminals, not layout. wooloo keeps its own Spaces, tabs and sp
 
 ## Known limits
 
-- herdr-core support was built against herdr-core 0.1.21.
+- herdr-core support needs herdr-core 0.1.21 or later. It was built against 0.1.21, and its protocol was checked against 0.1.22 with `scripts/core_protocol_probe.py`.
 - A terminal shows the agent state only while the program reports it.
 - On SSH, each window holds three connections to the core: commands, the event stream and its live terminals. Each counts against the host's SSH session limit.
 - Reaching the same core from two windows, or from two Macs, keeps one arrangement. Each window keeps its own zoom and selection.

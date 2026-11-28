@@ -6,23 +6,23 @@ import Foundation
 /// host before anything is installed. An existing core is never replaced: Core's own updater
 /// (`hc update`) or the official app own it from then on.
 enum HerdrCoreInstall {
-    static let version = "0.1.21"
+    static let version = "0.1.22"
 
     struct Build: Equatable, Sendable {
         let url: String
         let sha256: String
     }
 
-    /// `releases.herdr.dev/core/0.1.21/manifest.json`, by `uname` target.
+    /// `releases.herdr.dev/core/0.1.22/manifest.json`, by `uname` target.
     static let builds: [String: Build] = [
-        "linux-x86_64": Build(url: "https://releases.herdr.dev/core/0.1.21/herdr-core-linux-x86_64.tar.gz",
-                              sha256: "78424755c10a40dde38a0bdb55c20ac19706e9ae05ed68fc2acf1fcff0d941c1"),
-        "linux-aarch64": Build(url: "https://releases.herdr.dev/core/0.1.21/herdr-core-linux-aarch64.tar.gz",
-                               sha256: "e844a2bfab48a226097679d076bc83042fe57fccef5387ef802e5b24e78b529a"),
-        "macos-x86_64": Build(url: "https://releases.herdr.dev/core/0.1.21/herdr-core-macos-x86_64.tar.gz",
-                              sha256: "e377e1d342cddce0346da5b2f3c281b9701e4731c00024c7c5028265e77a217f"),
-        "macos-aarch64": Build(url: "https://releases.herdr.dev/core/0.1.21/herdr-core-macos-aarch64.tar.gz",
-                               sha256: "1ab38dd9270f63a8f794d6d60e8702eb0d1c85a72bda85d735e5eea43f05ffed"),
+        "linux-x86_64": Build(url: "https://releases.herdr.dev/core/0.1.22/herdr-core-linux-x86_64.tar.gz",
+                              sha256: "3054ec3992ce80c5715d721caa9dcefa6056721d15dc113f4750afce763ba5df"),
+        "linux-aarch64": Build(url: "https://releases.herdr.dev/core/0.1.22/herdr-core-linux-aarch64.tar.gz",
+                               sha256: "98757985245d45f8d73dd85e68b139b7f167c28488bb89edd9834c3f5a5cf4cf"),
+        "macos-x86_64": Build(url: "https://releases.herdr.dev/core/0.1.22/herdr-core-macos-x86_64.tar.gz",
+                              sha256: "35144041969e870ddb4edcd2fd08fd26dfe5cee7d18e6b48adb276f90a48aa19"),
+        "macos-aarch64": Build(url: "https://releases.herdr.dev/core/0.1.22/herdr-core-macos-aarch64.tar.gz",
+                               sha256: "90798daadefa8d126b90ef0bcdbe9c7dda9c6cfbf011a247065ab5da348f350e"),
     ]
 
     static let presentMarker = "wooloo-core-present"

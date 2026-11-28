@@ -13,7 +13,7 @@ It is written for an agent or a person driving the development build. Record eac
 ## 0. Requirements
 
 - macOS 14 or later with Xcode 26.
-- herdr-core 0.1.21 (`hc --version`) on the `PATH`, from the [official installer](https://herdr.dev/core).
+- herdr-core 0.1.22 (`hc --version`; 0.1.21 is the oldest supported) on the `PATH`, from the [official installer](https://herdr.dev/core).
 - A way to see the app's windows and send clicks, keys and the scroll wheel to it, plus `screencapture` for screenshots.
 - Optional: an SSH host (Linux or macOS) for section 8, and a second Mac for section 9.
 
@@ -81,7 +81,7 @@ Run each in a pane of the herdr-core session.
 | 2.1 | `vim -u NONE -c 'set mouse=a' /etc/services`. Move with keys, click lines, drag, use the wheel, `:q` | Correct colours and cursor. A click puts vim's cursor on that cell, a drag selects, the wheel scrolls vim. No error banner |
 | 2.2 | `LESS=-R less /etc/services`. Wheel, `/tcp`, `n`, `q` | The wheel moves `less` (alternate screen), not wooloo's scrollback. The screen comes back intact after `q` |
 | 2.3 | `htop` (or `top -o cpu` if htop is missing). Resize the window while it runs; in htop, click a column header | It redraws at the new size without stray lines; the click sorts by that column |
-| 2.4 | An agent CLI (`claude`, `codex` or another you have): start it, type a short prompt, scroll, resize. Then press ⌃C once and look at the screen, and press it again within a second. Press ⌃C on the physical keyboard: an automation tool's synthetic ⌃C may arrive as a plain `c` | Its interface draws and resizes correctly; typing, paste (⌘V) and keys such as ⌥←, ⌃C and Escape reach it. The first ⌃C shows the program's reaction (for Codex, a "press again to quit" hint); the second quits it |
+| 2.4 | An agent CLI (`claude`, `codex` or another you have): start it, type a short prompt, scroll, resize. Then press ⌃C once and look at the screen, and press it again within a second. Press ⌃C on the physical keyboard: an automation tool's synthetic ⌃C may arrive as a plain `c` | Its interface draws and resizes correctly; typing, paste (⌘V) and keys such as ⌥←, ⌃C and Escape reach it. The first ⌃C shows the program's reaction (for Codex, a "press again to quit" hint); the second quits it. While the agent works on the prompt, the Agents list shows it working, then done when it finishes (Claude Code and Codex report through OSC 7501); record which agent and version |
 | 2.5 | Wide and combined text: `printf 'añb 漢字 👍🏽 é\n'` | Each character takes its width; nothing overlaps or shifts the rest of the line. 👍🏽 takes 4 cells (the thumb and its skin-tone modifier, 2 each), as zsh counts it, so a wider gap before é is expected |
 | 2.6 | `printf '\e[c'` | One reply only (`^[[?62;22c` or similar), no repeated garbage at the prompt |
 
@@ -129,9 +129,10 @@ Fill the scrollback first (section 1).
 |---|-------|----------|
 | 6.1 | Create a Space, two tabs, split a pane right and down, zoom, rename a tab, move a tab to the other Space | Every change shows at once and is still there after relaunching the app |
 | 6.2 | `hc run -- /bin/zsh` from outside | The new terminal shows in **Unfiled** |
-| 6.3 | In a pane, `printf '\e]7501;state=working\a'`, then `printf '\e]7501;state=done\a'` (the OSC 7501 syntax is in herdr-core's documentation; adjust if this one is refused) | The Agents list shows the state change; a notification appears if enabled |
+| 6.3 | In a pane, `printf '\e]7501;state=working\a'`, then `printf '\e]7501;state=done\a'` (fields after `state=` are separated by `:`, as in `state=working:app=review`; the core drops the status when another process takes the foreground) | The Agents list shows the state change; a notification appears if enabled |
 | 6.4 | Mark that agent unread, then pinned; check `hc ls --json` (or `hc label`) | The labels `herdr.seen` / `herdr.pinned` change accordingly |
 | 6.5 | With two windows (section 5), change the layout in one | The other shows the same arrangement shortly after |
+| 6.6 | In `/private/tmp/wooloo-core-review`, `git init -q repo && git -C repo commit -q --allow-empty -m init && git -C repo worktree add -q ../repo-feature`. Open a Space on `repo`, then open the `repo-feature` worktree from the repository panel twice, selecting another Space in between | The first open makes a Space on `repo-feature`; the second selects that Space, with no second Space or new terminal. The Git bar's branch list shows the worktree with its Space |
 
 ## 7. Connection and recovery (phase 3)
 
@@ -148,7 +149,7 @@ Needs an SSH host you may use, reachable without a password prompt. Its herdr-co
 
 | # | Steps | Expected |
 |---|-------|----------|
-| 8.1 | **Manage Connections** → add the host with **herdr-core session (preview)** on, session `wooloo-ui-test`. If the host lacks `hc`, use **Install herdr-core 0.1.21 on This Host…** | The install asks first, puts `hc` in `~/.local/bin` and connects |
+| 8.1 | **Manage Connections** → add the host with **herdr-core session (preview)** on, session `wooloo-ui-test`. If the host lacks `hc`, use **Install herdr-core 0.1.22 on This Host…** | The install asks first, puts `hc` in `~/.local/bin` and connects |
 | 8.2 | Repeat 2.1, 3.4 and 4.1 there | Same as locally |
 | 8.3 | Open files and the Git panel on that connection | They show the host's files |
 | 8.4 | Drop the network for 30 s (turn Wi-Fi off and on) | The connection recovers; panes come back |

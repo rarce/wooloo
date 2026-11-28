@@ -510,6 +510,48 @@ Still open:
   - the manual checks left in phases 3 to 5 (programs, two windows and two Macs on one core, SSH), listed in [herdr-core manual tests](../herdr-core-manual-tests.md).
 - **Deferred:** the Core terminal benchmark (Phase 4 exit criteria). libghostty-vt is adopted as the engine for now, so there is no alternative to compare it with yet.
 
+## Phase 7 readiness (2026-11-28)
+
+Not ready to make Core the default. The preview is usable on one Mac, locally and over SSH, for people who accept the gaps below.
+
+**Changed since Phase 6:**
+- **Worktrees.** `BackendCapabilities.opensWorktrees` was read nowhere, and Core Spaces had no checkout, so each open of a worktree from the repository panel made a new Space.
+  - The `wooloo` document now has a top-level `worktrees` map, from Space id to checkout. It is top level because builds before it rewrite each Space from the fields they know, but keep top-level fields.
+  - Entries whose Space is gone are dropped on read and write.
+  - `create(.worktreeSpace)` reuses the checkout's Space, even one another window opened since this window's last snapshot. Core's snapshot sets `worktree`, so `HerdrStore.openWorktree` and the Git bar find the Space as on the TUI.
+  - Worktree Spaces opened by v0.3.18–v0.3.21 have no entry, so the first open after updating may make one more Space.
+- **herdr-core 0.1.22.** Checked on Linux in an isolated core, with `scripts/core_protocol_probe.py`:
+  - generation 1 and the same features;
+  - the query table unchanged;
+  - doc conflicts unchanged;
+  - an OSC 7501 report (`state=working:app=…`, then `state=done`) shows in `terminal.get` as `status` and `turn`, as `CoreSessionBackend` reads them;
+  - the core answers the 7501 support query itself.
+
+  Its only change is the `docs` filter on `events.subscribe`. The install pin is 0.1.22, with the manifest's hashes checked against the downloads. `minimumVersion` stays 0.1.21.
+- **Agent status.**
+  - Claude Code and Codex binaries contain OSC 7501 support: Codex writes `]7501;state=`, and Claude Code probes with `OSC 7501 ; ?`.
+  - Whether their states reach wooloo's Agents list is manual case 2.4 on a Mac.
+  - Fields after `state=` are separated by `:`, not `;`; a `;` makes the core ignore the report.
+
+**Decision triggers** ([herdr-app-and-core.md](../herdr-app-and-core.md#decision-triggers)):
+
+| Trigger | State on 2026-11-28 |
+| --- | --- |
+| TUI future (#63, #115), or a long gap without a TUI release | No TUI release since 0.9.5 (2026-10-14); last commit on `master` 2026-11-19. App #63 closed without a plan; Core #115 open, no replies |
+| Core-native TUI (#25) | Open and active. The third-party [hc-tui](https://github.com/followcat/hc-tui) 0.1.22 reads the app's Spaces |
+| `herdr-app` document readable by others (#43) | Open, no answer since 2026-11-02 |
+| Resume in Core (#15) | Closed 2026-11-26: kept programs resume with OSC 7577 ([#429](https://github.com/herdrdev/herdr-core/pull/429)), on `master`, not in 0.1.22 |
+| A wooloo user asks for app/Core sessions | — |
+
+**Still blocking a Core default:**
+- no managed local core: a Mac without `hc` needs the official installer first (D3), and the macOS Phase 0 checks (socket path, launchd "Herdr Core") are open;
+- mobile companion and Remote Access are TUI only (D4);
+- resume: wooloo does not use OSC 7577 yet, and no release has it;
+- agent views, popups and `config.toml` reload are not offered;
+- the manual cases still open on a Mac: 2.4 with real agents and the Agents list, 6.1's physical drop, 6.3's notification, 6.6, 8.2, and section 9 (two Macs);
+- the Core terminal benchmark;
+- the multi-window items in `TODO.md`.
+
 ## Phases
 
 Each phase ends with:
