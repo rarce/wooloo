@@ -220,7 +220,13 @@ struct CoreStructure: Equatable, Sendable {
             return value
         }
         // Written every time, since `previous` may hold entries this arrangement dropped.
-        let kept = Self.pruned(self.worktrees, to: spaces)
+        // Entries of remaining Spaces that this build cannot read, such as a later build's
+        // richer values, are kept as they are.
+        let ids = Set(spaces.map(\.id))
+        var kept: [String: Any] = [:]
+        let previousEntries = (previous as? [String: Any])?["worktrees"] as? [String: Any] ?? [:]
+        for (id, value) in previousEntries where ids.contains(id) && !(value is String) { kept[id] = value }
+        for (id, path) in Self.pruned(self.worktrees, to: spaces) { kept[id] = path }
         object["worktrees"] = kept.isEmpty ? nil : kept
         return object
     }

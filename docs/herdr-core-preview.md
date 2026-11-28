@@ -45,7 +45,7 @@ herdr-core keeps terminals, not layout. wooloo keeps its own Spaces, tabs and sp
 | Agent status | Herdr's detection and integrations | Only for programs that report it themselves (OSC 7501). Claude Code and Codex builds include OSC 7501 support; their states in wooloo's Agents list are still to be confirmed on a Mac |
 | Unread and pinned agents | Unread in wooloo | Shared with every Herdr client (`herdr.seen`, `herdr.pinned`) |
 | Notifications | Herdr's sounds, toasts and system notifications | The same, from agent states |
-| Resume agents after a reboot | Supported agents | Not in a herdr-core release yet. Core's `master` resumes kept programs with OSC 7577 ([herdr-core #429](https://github.com/herdrdev/herdr-core/pull/429)); wooloo does not use it yet |
+| Resume agents after a reboot | Supported agents | Not in a herdr-core release yet. Core's `master` restarts a kept program that reported how to resume itself with OSC 7577 ([herdr-core #429](https://github.com/herdrdev/herdr-core/pull/429)); terminals wooloo starts are kept, so they will resume once a release has it. Claude Code and Codex do not report OSC 7577 yet |
 | Worktrees from the repository panel | Yes | Yes. Opening a worktree selects the checkout's Space, or a Space of wooloo's already open on that folder, or opens one there |
 | Agent views and popups | Yes | Not offered |
 | Herdr's `config.toml` settings and reload | Yes | Settings that wooloo keeps itself; no config reload |

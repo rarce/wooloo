@@ -35,6 +35,12 @@ final class CoreStructureTests: XCTestCase {
         XCTAssertEqual(CoreStructure.decode(try JSONSerialization.jsonObject(with: data))?.worktrees, ["s1": "/src/api"])
         XCTAssertNil(arranged.encoded(over: ["schema": 1, "spaces": [], "worktrees": ["s1": "/src/x"]])["worktrees"],
                      "An arrangement without worktrees removes the field")
+        let later = arranged.encoded(over: ["schema": 1, "spaces": [],
+                                            "worktrees": ["s2": ["path": "/src/docs"], "gone": ["path": "/src/old"]]])
+        XCTAssertEqual((later["worktrees"] as? [String: Any])?["s2"] as? [String: String], ["path": "/src/docs"],
+                       "A later build's entry of a remaining Space is kept")
+        XCTAssertNil((later["worktrees"] as? [String: Any])?["gone"])
+        XCTAssertEqual(CoreStructure.decode(later)?.worktrees, [:], "and not read as a checkout")
 
         // A build before worktrees rewrote the Spaces and kept the top-level field.
         let older: [String: Any] = ["schema": 1, "spaces": [["id": "s1", "name": "api", "tabs": []],

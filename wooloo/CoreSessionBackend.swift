@@ -73,8 +73,10 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     }
 
     func arrangement(on connection: CoreConnection) throws -> Arrangement {
-        let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
+        // The document first: every terminal it names was started before the list is taken,
+        // so a Space another window just wrote is not dropped as having no live terminal.
         let (document, version) = try Self.document(on: connection)
+        let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
         // The official app's structure, read only; a core without it, or a broken one, adds nothing.
         let app = try? Self.document(HerdrAppStructure.documentName, on: connection).0
         let structure = (CoreStructure.decode(document) ?? CoreStructure()).reconciled(with: list.terminals, app: app)
@@ -107,6 +109,9 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
                 space.id.hasPrefix(HerdrAppStructure.idPrefix) && current.structure.spaces.contains(space)
             }
             let value = structure.encoded(over: current.document)
+            // A change that leaves the document as it is writes nothing, so other windows are
+            // not sent a `doc` event or made to retry their own writes.
+            if (current.document as? NSDictionary)?.isEqual(to: value) == true { return result }
             do {
                 _ = try connection.call("doc.set", ["name": CoreStructure.documentName, "value": value,
                                                     "version": current.version], as: DocVersion.self)

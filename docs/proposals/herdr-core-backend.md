@@ -526,7 +526,7 @@ Not ready to make Core the default. The preview is usable on one Mac, locally an
   - generation 1 and the same features;
   - the query table unchanged;
   - doc conflicts unchanged;
-  - an OSC 7501 report (`state=working:app=…`, then `state=done`) shows in `terminal.get` as `status` and `turn`, as `CoreSessionBackend` reads them;
+  - an OSC 7501 report (`state=working:app=…`, then `state=done`) shows as `status` and `turn` in `terminal.get`, and in the `terminal.list` records `CoreSessionBackend` reads;
   - the core answers the 7501 support query itself.
 
   Its only change is the `docs` filter on `events.subscribe`. The install pin is 0.1.22, with the manifest's hashes checked against the downloads. `minimumVersion` stays 0.1.21.
@@ -548,7 +548,7 @@ Not ready to make Core the default. The preview is usable on one Mac, locally an
 **Still blocking a Core default:**
 - no managed local core: a Mac without `hc` needs the official installer first (D3), and the macOS Phase 0 checks (socket path, launchd "Herdr Core") are open;
 - mobile companion and Remote Access are TUI only (D4);
-- resume: wooloo does not use OSC 7577 yet, and no release has it;
+- resume: no release has OSC 7577 yet, and the main agents do not report it. wooloo needs no change: Core restarts kept terminals from the program's report, and wooloo starts its terminals with `keep`;
 - agent views, popups and `config.toml` reload are not offered;
 - the manual cases still open on a Mac: 2.4 with real agents and the Agents list, 6.1's physical drop, 6.3's notification, 6.6, 8.2, and section 9 (two Macs);
 - the Core terminal benchmark;

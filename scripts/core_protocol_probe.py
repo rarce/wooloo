@@ -15,7 +15,8 @@ plan uses locally and over SSH. It prints one JSON report with these keys:
   forwarded it to the attached viewer. This is checked twice, with a viewer attached and
   without one.
 - status: the terminal's `status` and `turn` while a program reports `working`, then
-  `done`, with OSC 7501. This is what wooloo's Agents list reads on herdr-core.
+  `done`, with OSC 7501, from `terminal.get` and from `terminal.list`, whose records are
+  what wooloo's Agents list reads on herdr-core.
 
 The terminals it starts are removed at the end. Stop the core yourself afterwards
 (`hc server stop`).
@@ -246,7 +247,11 @@ def run_status_child(conn, tmp):
             if (got.get("status") or {}).get("state") == state or time.time() > end:
                 break
             time.sleep(0.1)
-        seen.append({"reported": state, "status": got.get("status"), "turn": got.get("turn")})
+        # wooloo reads terminals from `terminal.list`, so its record is reported too.
+        listed = next((t for t in conn.call("terminal.list", {}).get("result", {}).get("terminals", [])
+                       if t.get("address") == terminal), {})
+        seen.append({"reported": state, "status": got.get("status"), "turn": got.get("turn"),
+                     "list_status": listed.get("status"), "list_turn": listed.get("turn")})
     conn.call("terminal.kill", {"terminal": terminal})
     conn.call("terminal.rm", {"terminal": terminal})
     return {"terminal": terminal, "steps": seen}

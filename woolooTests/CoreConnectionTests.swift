@@ -378,6 +378,8 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(structure(core)?.worktrees, ["w": checkout])
         XCTAssertEqual(core.callsTo("terminal.kill").first?.params["terminal"] as? String, "t2",
                        "The shell this window started is closed")
+        XCTAssertEqual(core.lock.withLock { core.documents[CoreStructure.documentName]?.version }, 1,
+                       "The other window's document already says it all, so nothing is written")
     }
 
     func testAWorktreeSpacesOnlyTabTakesTheCheckoutToANewSpace() throws {
