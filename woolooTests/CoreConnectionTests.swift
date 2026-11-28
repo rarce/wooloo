@@ -328,6 +328,26 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.first?.tabs.count, 1)
     }
 
+    func testAWorktreeCheckoutHasOneSpace() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let space = try backend.create(.worktreeSpace(checkout: "/src/app-feature", repository: "/src/app"))
+        XCTAssertEqual(structure(core)?.worktrees, [space: "/src/app-feature"])
+        XCTAssertEqual(try backend.snapshot().workspaces.first { $0.workspaceID == space }?.worktree?.checkoutPath,
+                       "/src/app-feature")
+        // Another window opening the same checkout, before its own snapshot shows the Space.
+        XCTAssertEqual(try backend.create(.worktreeSpace(checkout: "/src/app-feature", repository: "/src/app")), space)
+        XCTAssertEqual(core.callsTo("terminal.run").count, 1, "The checkout's Space is reused")
+        let plain = try backend.create(.space(sourceSpaceID: nil, cwd: "/src/app-feature", label: nil))
+        XCTAssertNotEqual(plain, space)
+        XCTAssertNil(try backend.snapshot().workspaces.first { $0.workspaceID == plain }?.worktree,
+                     "A plain Space in the same folder is not a worktree Space")
+        // Its shell ends; the next write leaves the Space and its checkout out of the document.
+        core.update { $0.terminals[0] = CoreTerminal(address: "t1", argv: ["/bin/zsh"], state: "finished") }
+        _ = try backend.create(.tab(spaceID: plain, cwd: nil))
+        XCTAssertEqual(structure(core)?.worktrees, [:], "A closed worktree Space leaves the document")
+    }
+
     func testMovesRearrangeTheDocument() throws {
         let core = FakeCore()
         let backend = backend(core)

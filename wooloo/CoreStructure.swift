@@ -93,6 +93,10 @@ struct CoreStructure: Equatable, Sendable {
     }
 
     var spaces: [Space] = []
+    /// The Git checkout of each worktree Space, by Space id. It is a top-level field of the
+    /// document, not one of the Space's, because builds before it rewrite every Space from the
+    /// fields they know but keep top-level fields; entries for Spaces that are gone are dropped.
+    var worktrees: [String: String] = [:]
 
     var terminals: Set<String> { Set(spaces.flatMap { $0.tabs.flatMap(\.root.terminals) }) }
 
@@ -152,7 +156,14 @@ struct CoreStructure: Equatable, Sendable {
                 result.spaces.append(Space(id: Self.unfiledID, name: "Unfiled", folder: nil, tabs: [tab]))
             }
         }
+        result.worktrees = Self.pruned(worktrees, to: result.spaces)
         return result
+    }
+
+    /// The worktree entries whose Space is in `spaces`.
+    static func pruned(_ worktrees: [String: String], to spaces: [Space]) -> [String: String] {
+        let ids = Set(spaces.map(\.id))
+        return worktrees.filter { ids.contains($0.key) }
     }
 
     // MARK: Document
@@ -175,6 +186,13 @@ struct CoreStructure: Equatable, Sendable {
             }
             result.spaces.append(Space(id: id, name: name, folder: folder, tabs: decodedTabs))
         }
+        var worktrees: [String: String] = [:]
+        for (id, raw) in (object["worktrees"] as? [String: Any] ?? [:]).prefix(500) {
+            guard !id.isEmpty, id.count <= 128, let path = raw as? String,
+                  path.hasPrefix("/"), path.count <= 4096 else { continue }
+            worktrees[id] = path
+        }
+        result.worktrees = pruned(worktrees, to: result.spaces)
         return result
     }
 
@@ -202,6 +220,9 @@ struct CoreStructure: Equatable, Sendable {
             if let folder = space.folder { value["folder"] = folder }
             return value
         }
+        // Written every time, since `previous` may hold entries this arrangement dropped.
+        let kept = Self.pruned(self.worktrees, to: spaces)
+        object["worktrees"] = kept.isEmpty ? nil : kept
         return object
     }
 

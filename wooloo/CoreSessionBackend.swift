@@ -23,7 +23,7 @@ struct CoreTarget: Hashable, Sendable {
 final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     static let capabilities = BackendCapabilities(
         zoomedTabsRefuseMoves: false, onlySinglePaneTabsMove: false, movesTabsBetweenSpaces: true,
-        opensWorktrees: false, serverAgentViews: false, reloadsConfig: false, serverScrollback: false)
+        opensWorktrees: true, serverAgentViews: false, reloadsConfig: false, serverScrollback: false)
 
     let target: CoreTarget
     private let makeTransport: @Sendable (CoreTarget) throws -> CoreTransport
@@ -161,7 +161,8 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         var agents: [HerdrAgent] = [], layouts: [HerdrLayout] = []
         for space in structure.spaces {
             workspaces.append(HerdrWorkspace(workspaceID: space.id, label: space.name, agentStatus: nil,
-                                             activeTabID: space.tabs.first?.id, worktree: nil))
+                                             activeTabID: space.tabs.first?.id,
+                                             worktree: structure.worktrees[space.id].map { HerdrWorktree(checkoutPath: $0) }))
             for tab in space.tabs {
                 let addresses = tab.root.terminals
                 let first = addresses.first.flatMap { byAddress[$0] }
@@ -363,7 +364,11 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
             let start = try cwd ?? source.flatMap { try self.folder(of: $0) }
             return try newSpace(folder: start, name: label)
         case let .worktreeSpace(checkout, _):
-            return try newSpace(folder: checkout, name: (checkout as NSString).lastPathComponent)
+            // Each checkout has one Space, as with Herdr's `worktree.open`: a Space another
+            // window opened there since this window's last snapshot is reused, not doubled.
+            let structure = try arrangement(on: connection()).structure
+            if let open = structure.spaces.first(where: { structure.worktrees[$0.id] == checkout }) { return open.id }
+            return try newSpace(folder: checkout, name: (checkout as NSString).lastPathComponent, worktree: true)
         case let .tab(spaceID, cwd):
             let address = try run(in: spaceID, cwd: try cwd ?? self.folder(of: spaceID))
             let tabID = CoreStructure.newID()
@@ -377,7 +382,7 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         }
     }
 
-    private func newSpace(folder: String?, name: String?) throws -> String {
+    private func newSpace(folder: String?, name: String?, worktree: Bool = false) throws -> String {
         let spaceID = CoreStructure.newID()
         let address = try run(in: spaceID, cwd: folder)
         let fallback = folder.map { ($0 as NSString).lastPathComponent } ?? "Space"
@@ -386,6 +391,7 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
             structure.spaces.removeAll { $0.tabs.isEmpty }
             structure.spaces.append(.init(id: spaceID, name: name ?? fallback, folder: folder,
                                           tabs: [.init(id: CoreStructure.newID(), name: nil, root: .terminal(address))]))
+            if worktree, let folder { structure.worktrees[spaceID] = folder }
         }
         return spaceID
     }

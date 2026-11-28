@@ -59,6 +59,21 @@ final class HerdrStoreCoreTests: XCTestCase {
         await waitUntil("removed tab") { store.session?.tabs.map(\.id) == [created] }
     }
 
+    func testOpeningAWorktreeTwiceSelectsItsSpace() async throws {
+        store.connect(toCore: "wooloo-ui-test")
+        await waitUntil("connected") { store.isConnected }
+        store.openWorktree("/src/app-feature", repository: "/src/app")
+        await waitUntil("worktree Space") { store.session?.spaces.contains { $0.worktreePath == "/src/app-feature" } == true }
+        let space = try XCTUnwrap(store.session?.spaces.first { $0.worktreePath == "/src/app-feature" })
+        await waitUntil("selected") { store.selectedWorkspaceID == space.id }
+        store.select(workspaceID: CoreStructure.unfiledID)
+        await waitUntil("left it") { store.selectedWorkspaceID == CoreStructure.unfiledID }
+        store.openWorktree("/src/app-feature", repository: "/src/app")
+        await waitUntil("selected again") { store.selectedWorkspaceID == space.id }
+        XCTAssertEqual(core.callsTo("terminal.run").count, 1, "The checkout's Space is reused, not opened again")
+        XCTAssertEqual(store.session?.spaces.filter { $0.worktreePath != nil }.map(\.id), [space.id])
+    }
+
     func testUnsupportedActionsReportAnError() async throws {
         store.connect(toCore: "wooloo-ui-test")
         await waitUntil("connected") { store.isConnected }
