@@ -11,11 +11,14 @@ enum HerdrCoreSupport {
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: settingKey) }
 
     /// Where `hc` is usually installed; an app started from Finder does not inherit the shell's PATH.
+    /// The same places as `HerdrRemoteBridge.coreDiscoveryScript`, which the install also uses.
     static var candidates: [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let path = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        let directories = path + ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "\(home)/.nix-profile/bin"]
+        let directories = path + ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "\(home)/.nix-profile/bin",
+                                  "/etc/profiles/per-user/\(NSUserName())/bin", "/run/current-system/sw/bin"]
         return directories.flatMap { ["\($0)/hc", "\($0)/herdr-core"] }
+            + ["\(home)/.local/share/herdr-core/active/Herdr Core.app/Contents/MacOS/herdr-core"]
     }
 
     /// The first `hc` on this Mac. Only checks for the file: running anything here could start a core.

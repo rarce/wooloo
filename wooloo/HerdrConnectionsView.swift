@@ -211,7 +211,7 @@ struct HerdrConnectionsView: View {
                             Button("Install") { install(on: host) }
                             Button("Cancel", role: .cancel) { installHost = nil }
                         } message: {
-                            Text("wooloo downloads herdr-core \(HerdrCoreInstall.version) from releases.herdr.dev, checks it against the checksum built into wooloo, and installs it in ~/.local/bin on the host. A herdr-core that is already there is kept.")
+                            Text("wooloo downloads herdr-core \(HerdrCoreInstall.version) from releases.herdr.dev, checks it against the checksum built into wooloo, and installs it in ~/.local/bin on the host. On a Mac host it also checks Herdr's code signature and installs Herdr Core.app in ~/.local/share/herdr-core, with links in ~/.local/bin, as herdr.dev/core's installer does. A herdr-core that is already there is kept.")
                         }
                     if let installNotice {
                         Text(installNotice).font(.caption).foregroundStyle(.secondary)

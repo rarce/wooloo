@@ -40,6 +40,16 @@ final class HerdrCoreInstallTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
     }
 
+    /// Discovery also looks in fixed folders outside the test's home; a core installed there
+    /// (Homebrew, nix) would be found before the one each test sets up.
+    private func skipIfACoreIsInstalledOutsideHome() throws {
+        for path in ["/opt/homebrew/bin/hc", "/usr/local/bin/hc", "/home/linuxbrew/.linuxbrew/bin/hc",
+                     "/etc/profiles/per-user/\(NSUserName())/bin/hc", "/run/current-system/sw/bin/hc"]
+        where FileManager.default.isExecutableFile(atPath: path) {
+            throw XCTSkip("herdr-core at \(path) would be found before the test's own")
+        }
+    }
+
     private func install() async throws -> HerdrCoreInstall.Outcome {
         let machine = self.machine
         return try await WorkspaceFiles.blocking(on: machine) { try HerdrCoreInstall.install(on: machine) }
@@ -67,6 +77,9 @@ final class HerdrCoreInstallTests: XCTestCase {
     }
 
     func testThisMacKeepsItsCoreOrInstallsNothingOnABadDownload() async throws {
+        try skipIfACoreIsInstalledOutsideHome()
+        // Another program named hc is not herdr-core.
+        try write("#!/bin/sh\necho 'herbstclient 0.9.5'\n", to: home + "/fakebin/hc")
         do {
             _ = try await installLocally()
             XCTFail("The install should fail")
@@ -98,6 +111,7 @@ final class HerdrCoreInstallTests: XCTestCase {
     }
 
     func testADownloadThatFailsItsChecksumInstallsNothing() async throws {
+        try skipIfACoreIsInstalledOutsideHome()
         do {
             _ = try await install()
             XCTFail("The install should fail")

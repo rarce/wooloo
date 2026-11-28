@@ -81,10 +81,11 @@ enum HerdrCoreInstall {
         command -v tar >/dev/null 2>&1 || fail "needs tar"
         tmp=$(mktemp -d) || fail "cannot create a temporary directory"
         trap 'rm -rf "$tmp"' EXIT
+        # The download ends well before wooloo's own timeout, which stops only this shell.
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL "$url" -o "$tmp/hc.tar.gz" || fail "download failed: $url"
+            curl -fsSL --connect-timeout 15 --max-time 150 "$url" -o "$tmp/hc.tar.gz" || fail "download failed: $url"
         elif command -v wget >/dev/null 2>&1; then
-            wget -q -O "$tmp/hc.tar.gz" "$url" || fail "download failed: $url"
+            wget -q --timeout=30 --tries=1 -O "$tmp/hc.tar.gz" "$url" || fail "download failed: $url"
         else
             fail "needs curl or wget"
         fi
@@ -103,8 +104,9 @@ enum HerdrCoreInstall {
                 || fail "the download is not a signed Herdr release; nothing was installed"
             "$app/Contents/MacOS/herdr-core" --version >/dev/null 2>&1 \\
                 || fail "the downloaded herdr-core does not run on this host"
-            "$app/Contents/MacOS/herdr-core" --hc-install-bundle "$app/Contents/MacOS/herdr-core" "$bin/herdr-core" \\
-                || fail "installing Herdr Core.app failed"
+            # HC_INSTALL_DIR would move hc's links elsewhere; they go where this script looks.
+            HC_INSTALL_DIR="$bin" "$app/Contents/MacOS/herdr-core" --hc-install-bundle \\
+                "$app/Contents/MacOS/herdr-core" "$bin/herdr-core" >/dev/null || fail "installing Herdr Core.app failed"
             [ -x "$bin/herdr-core" ] || fail "Herdr Core.app did not install $bin/herdr-core"
         else
             cp "$tmp/herdr-core" "$bin/herdr-core.wooloo-staged" && chmod 755 "$bin/herdr-core.wooloo-staged" \\

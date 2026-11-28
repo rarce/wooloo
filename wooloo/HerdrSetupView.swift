@@ -30,8 +30,10 @@ struct HerdrSetupView: View {
         Task {
             defer { installingCore = false }
             do {
-                let outcome = try await WorkspaceFiles.blocking(on: nil) { try HerdrCoreInstall.installLocally() }
-                coreExecutable = HerdrCoreSupport.locateLocal()
+                let (outcome, found) = try await WorkspaceFiles.blocking(on: nil) {
+                    (try HerdrCoreInstall.installLocally(), HerdrCoreSupport.locateLocal())
+                }
+                coreExecutable = found
                 switch outcome {
                 case .present(let path): coreInstallNotice = "herdr-core is already installed (\(path)); nothing was changed."
                 case .installed(let path): coreInstallNotice = "Installed herdr-core \(HerdrCoreInstall.version) at \(path)."
@@ -82,7 +84,7 @@ struct HerdrSetupView: View {
                                 Button("Install") { installCore() }
                                 Button("Cancel", role: .cancel) {}
                             } message: {
-                                Text("wooloo downloads herdr-core \(HerdrCoreInstall.version) from releases.herdr.dev, checks it against the checksum built into wooloo and Herdr's code signature, and installs Herdr Core.app with hc in ~/.local/bin, as herdr.dev/core's installer does.")
+                                Text("wooloo downloads herdr-core \(HerdrCoreInstall.version) from releases.herdr.dev and checks it against the checksum built into wooloo. As herdr.dev/core's installer does, it checks Herdr's code signature and installs Herdr Core.app in ~/.local/share/herdr-core, with hc and herdr-core in ~/.local/bin. A herdr-core that is already there is kept.")
                             }
                         }
                         if let coreInstallNotice {
