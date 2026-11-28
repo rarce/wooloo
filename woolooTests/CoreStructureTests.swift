@@ -26,6 +26,43 @@ final class CoreStructureTests: XCTestCase {
         XCTAssertEqual(CoreStructure.decode(try JSONSerialization.jsonObject(with: data)), arranged)
     }
 
+    func testWorktreeCheckoutsAreKeptOnlyForSpacesThatExist() throws {
+        var structure = arranged
+        structure.worktrees = ["s1": "/src/api", "gone": "/src/old"]
+        let encoded = structure.encoded(over: ["schema": 1, "spaces": [], "worktrees": ["stale": "/src/x"]])
+        XCTAssertEqual(encoded["worktrees"] as? [String: String], ["s1": "/src/api"])
+        let data = try JSONSerialization.data(withJSONObject: encoded)
+        XCTAssertEqual(CoreStructure.decode(try JSONSerialization.jsonObject(with: data))?.worktrees, ["s1": "/src/api"])
+        XCTAssertNil(arranged.encoded(over: ["schema": 1, "spaces": [], "worktrees": ["s1": "/src/x"]])["worktrees"],
+                     "An arrangement without worktrees removes the field")
+        let later = arranged.encoded(over: ["schema": 1, "spaces": [],
+                                            "worktrees": ["s2": ["path": "/src/docs"], "gone": ["path": "/src/old"]]])
+        XCTAssertEqual((later["worktrees"] as? [String: Any])?["s2"] as? [String: String], ["path": "/src/docs"],
+                       "A later build's entry of a remaining Space is kept")
+        XCTAssertNil((later["worktrees"] as? [String: Any])?["gone"])
+        XCTAssertEqual(CoreStructure.decode(later)?.worktrees, [:], "and not read as a checkout")
+        let richer: [String: Any] = ["schema": 1, "spaces": [["id": "s2", "name": "docs", "folder": "/src/docs", "tabs": [Any]()]],
+                                     "worktrees": ["s2": ["path": "/src/docs"]]]
+        let foreign = try XCTUnwrap(CoreStructure.decode(richer))
+        XCTAssertEqual(foreign.foreignWorktrees, ["s2"])
+        XCTAssertFalse(CoreSessionBackend.adoptable(foreign.spaces[0], checkout: "/src/docs", in: foreign),
+                       "A Space with a checkout this build cannot read is not adopted")
+
+        // A build before worktrees rewrote the Spaces and kept the top-level field.
+        let older: [String: Any] = ["schema": 1, "spaces": [["id": "s1", "name": "api", "tabs": []],
+                                                            ["id": "s2", "name": "docs", "tabs": []]],
+                                    "worktrees": ["s1": "/src/api", "s2": "relative", "s4": 7, "": "/a", "s9": "/src/s9"]]
+        XCTAssertEqual(CoreStructure.decode(["schema": 1, "spaces": []])?.worktrees, [:])
+        XCTAssertEqual(CoreStructure.decode(older)?.worktrees, ["s1": "/src/api"], "Only absolute paths of known Spaces are kept")
+
+        structure.worktrees = ["s2": "/src/docs"]
+        let live = structure.reconciled(with: [terminal("t1"), terminal("t4")])
+        XCTAssertEqual(live.worktrees, ["s2": "/src/docs"])
+        XCTAssertEqual(CoreSessionBackend.snapshot(of: live, terminals: [terminal("t1"), terminal("t4")], core: nil)
+                           .workspaces.map(\.worktree?.checkoutPath), [nil, "/src/docs"])
+        XCTAssertEqual(structure.reconciled(with: [terminal("t1")]).worktrees, [:], "Space s2 lost its only terminal")
+    }
+
     func testUntrustedDocumentsAreReadDefensively() {
         XCTAssertNil(CoreStructure.decode(nil))
         XCTAssertNil(CoreStructure.decode(["schema": 2, "spaces": []]))

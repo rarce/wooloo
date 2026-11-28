@@ -328,6 +328,70 @@ final class CoreConnectionTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.first?.tabs.count, 1)
     }
 
+    func testAWorktreeCheckoutHasOneSpace() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let space = try backend.create(.worktreeSpace(checkout: "/src/app-feature", repository: "/src/app"))
+        XCTAssertEqual(structure(core)?.worktrees, [space: "/src/app-feature"])
+        XCTAssertEqual(try backend.snapshot().workspaces.first { $0.workspaceID == space }?.worktree?.checkoutPath,
+                       "/src/app-feature")
+        // Another window opening the same checkout, before its own snapshot shows the Space.
+        XCTAssertEqual(try backend.create(.worktreeSpace(checkout: "/src/app-feature", repository: "/src/app")), space)
+        XCTAssertEqual(core.callsTo("terminal.run").count, 1, "The checkout's Space is reused")
+        let plain = try backend.create(.space(sourceSpaceID: nil, cwd: "/src/app-feature", label: nil))
+        XCTAssertNotEqual(plain, space)
+        XCTAssertNil(try backend.snapshot().workspaces.first { $0.workspaceID == plain }?.worktree,
+                     "A plain Space in the same folder is not a worktree Space")
+        // Its shell ends; the next write leaves the Space and its checkout out of the document.
+        core.update { $0.terminals[0] = CoreTerminal(address: "t1", argv: ["/bin/zsh"], state: "finished") }
+        _ = try backend.create(.tab(spaceID: plain, cwd: nil))
+        XCTAssertEqual(structure(core)?.worktrees, [:], "A closed worktree Space leaves the document")
+    }
+
+    func testAWorktreeAdoptsASpaceAlreadyOpenOnItsFolder() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let plain = try backend.create(.space(sourceSpaceID: nil, cwd: "/src/app-feature", label: nil))
+        XCTAssertEqual(try backend.create(.worktreeSpace(checkout: "/src/app-feature", repository: "/src/app")), plain)
+        XCTAssertEqual(core.callsTo("terminal.run").count, 1, "No second shell on the checkout")
+        XCTAssertEqual(structure(core)?.worktrees, [plain: "/src/app-feature"])
+    }
+
+    func testTwoWindowsOpeningOneWorktreeAtOnceShareOneSpace() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let checkout = "/src/app-feature"
+        let other = CoreStructure(spaces: [.init(id: "w", name: "app-feature", folder: checkout,
+                                                 tabs: [.init(id: "x", name: nil, root: .terminal("t1"))])],
+                                  worktrees: ["w": checkout])
+        // Another window records its Space while this window's shell starts.
+        core.update { core in
+            core.overrides["terminal.run"] = { [unowned core] params in
+                let started = CoreTerminal(address: "t2", cwd: checkout, labels: params["labels"] as? [String: String] ?? [:])
+                core.terminals = [CoreTerminal(address: "t1", cwd: checkout), started]
+                core.documents[CoreStructure.documentName] = (value: other.encoded(over: nil) as Any?, version: 1)
+                return ["address": "t2", "cwd": checkout, "state": "live"]
+            }
+        }
+        XCTAssertEqual(try backend.create(.worktreeSpace(checkout: checkout, repository: "/src/app")), "w")
+        XCTAssertEqual(structure(core)?.spaces.map(\.id), ["w"])
+        XCTAssertEqual(structure(core)?.worktrees, ["w": checkout])
+        XCTAssertEqual(core.callsTo("terminal.kill").first?.params["terminal"] as? String, "t2",
+                       "The shell this window started is closed")
+        XCTAssertEqual(core.lock.withLock { core.documents[CoreStructure.documentName]?.version }, 1,
+                       "The other window's document already says it all, so nothing is written")
+    }
+
+    func testAWorktreeSpacesOnlyTabTakesTheCheckoutToANewSpace() throws {
+        let core = FakeCore()
+        let backend = backend(core)
+        let space = try backend.create(.worktreeSpace(checkout: "/src/app-feature", repository: "/src/app"))
+        let tab = try XCTUnwrap(structure(core)?.spaces.first { $0.id == space }?.tabs.first?.id)
+        let pane = try backend.moveTab(tab, toSpace: nil, lastTabWasChecked: true, checkpoint: {})
+        XCTAssertNotEqual(pane.spaceID, space)
+        XCTAssertEqual(structure(core)?.worktrees, [pane.spaceID: "/src/app-feature"])
+    }
+
     func testMovesRearrangeTheDocument() throws {
         let core = FakeCore()
         let backend = backend(core)
@@ -391,9 +455,41 @@ final class CoreConnectionTests: XCTestCase {
         try backend.perform(.renameSpace(spaceID: "app:s2", label: "API"))
         XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.name), ["docs", "API"], "A changed one is wooloo's from then on")
         XCTAssertEqual(try backend.snapshot().workspaces.map(\.label), ["docs", "API", "web"])
+        _ = try backend.create(.tab(spaceID: mine, cwd: nil))
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.name), ["docs", "API"],
+                       "A later write elsewhere keeps the adopted Space")
         XCTAssertTrue(core.callsTo("doc.set").allSatisfy { $0.params["name"] as? String == CoreStructure.documentName },
                       "The app's document is never written")
         XCTAssertEqual(core.documents[HerdrAppStructure.documentName]?.version, 4)
+    }
+
+    func testATerminalTheAppHasNotPlacedYetIsNotSavedInUnfiled() throws {
+        let core = FakeCore()
+        core.terminals = [CoreTerminal(address: "t1", cwd: "/src/web", labels: [HerdrAppStructure.spaceLabel: "s5"])]
+        let backend = backend(core)
+        XCTAssertEqual(try backend.snapshot().workspaces.map(\.workspaceID), [CoreStructure.unfiledID])
+        let mine = try backend.create(.space(sourceSpaceID: nil, cwd: "/src/docs", label: "docs"))
+        XCTAssertEqual(try XCTUnwrap(structure(core)).spaces.map(\.id), [mine], "Unfiled is not written")
+        let app: [String: Any] = ["spaces": [
+            ["id": "s5", "name": "web", "tabs": [["id": "a", "root": ["type": "block", "content": ["terminal": "t1"]]]]],
+        ]]
+        core.documents[HerdrAppStructure.documentName] = (app, 1)
+        XCTAssertEqual(try backend.snapshot().workspaces.map(\.workspaceID), [mine, "app:s5"],
+                       "Once the app places it, it shows in the app's Space")
+    }
+
+    func testRepeatedConflictsSayAnotherClientKeptChangingTheLayout() throws {
+        let core = FakeCore()
+        let newer: [String: Any] = ["schema": 1, "spaces": [Any]()]
+        core.documents[CoreStructure.documentName] = (newer, 3)
+        // Every read is stale, as when another client writes between each read and write.
+        let stale: [String: Any] = ["value": NSNull(), "version": 0]
+        core.overrides["doc.get"] = { _ in stale }
+        XCTAssertThrowsError(try backend(core).create(.space(sourceSpaceID: nil, cwd: "/src/docs", label: nil))) {
+            XCTAssertEqual($0 as? CoreProtocolError,
+                           .remote(kind: "conflict", message: "Another client kept changing the layout. Try again."))
+        }
+        XCTAssertEqual(core.callsTo("doc.set").count, 3)
     }
 
     func testSeenTurnsAreOnlyRaised() throws {

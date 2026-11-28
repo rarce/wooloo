@@ -1233,7 +1233,12 @@ final class HerdrStore: ObservableObject {
         let currentEpoch = actionEpoch
         let requestToken = actionToken
         Task {
-            guard requestToken.isValid else { return }
+            // `finished` runs whenever this connection is still the store's, so a request that
+            // was dropped does not keep its worktree marked as opening.
+            guard requestToken.isValid else {
+                if generation == currentGeneration { finished() }
+                return
+            }
             let result = await BlockingWork.run(priority: .userInitiated, reaching: reaching) {
                 Result { () throws -> (String, HerdrSnapshot) in
                     try requestToken.check()
@@ -1241,8 +1246,9 @@ final class HerdrStore: ObservableObject {
                     return (id, try backend.snapshot())
                 }
             }
-            guard generation == currentGeneration, actionEpoch == currentEpoch else { return }
+            guard generation == currentGeneration else { return }
             finished()
+            guard actionEpoch == currentEpoch else { return }
             switch result {
             case .success(let (id, fresh)):
                 snapshot = fresh

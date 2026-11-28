@@ -23,7 +23,7 @@ struct CoreTarget: Hashable, Sendable {
 final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     static let capabilities = BackendCapabilities(
         zoomedTabsRefuseMoves: false, onlySinglePaneTabsMove: false, movesTabsBetweenSpaces: true,
-        opensWorktrees: false, serverAgentViews: false, reloadsConfig: false, serverScrollback: false)
+        opensWorktrees: true, serverAgentViews: false, reloadsConfig: false, serverScrollback: false)
 
     let target: CoreTarget
     private let makeTransport: @Sendable (CoreTarget) throws -> CoreTransport
@@ -73,8 +73,10 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     }
 
     func arrangement(on connection: CoreConnection) throws -> Arrangement {
-        let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
+        // The document first: every terminal it names was started before the list is taken,
+        // so a Space another window just wrote is not dropped as having no live terminal.
         let (document, version) = try Self.document(on: connection)
+        let list = try connection.call("terminal.list", [:], as: CoreListResult.self)
         // The official app's structure, read only; a core without it, or a broken one, adds nothing.
         let app = try? Self.document(HerdrAppStructure.documentName, on: connection).0
         let structure = (CoreStructure.decode(document) ?? CoreStructure()).reconciled(with: list.terminals, app: app)
@@ -98,24 +100,45 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
     @discardableResult
     func mutate<Result>(_ change: (inout CoreStructure, [CoreTerminal]) throws -> Result) throws -> Result {
         let connection = try connection()
-        for attempt in 0..<3 {
+        for _ in 0..<3 {
             let current = try arrangement(on: connection)
             var structure = current.structure
             let result = try change(&structure, current.terminals)
-            // The app's Spaces stay the app's until a change touches one; then wooloo keeps it.
+            // The app's Spaces stay the app's until a change touches one; then wooloo keeps it,
+            // also through later writes that do not touch it.
+            let kept = Set(CoreStructure.decode(current.document)?.spaces.map(\.id) ?? [])
             structure.spaces.removeAll { space in
-                space.id.hasPrefix(HerdrAppStructure.idPrefix) && current.structure.spaces.contains(space)
+                space.id.hasPrefix(HerdrAppStructure.idPrefix) && !kept.contains(space.id)
+                    && current.structure.spaces.contains(space)
             }
+            Self.leaveOutAppTerminalsInUnfiled(&structure, terminals: current.terminals)
             let value = structure.encoded(over: current.document)
+            // A change that leaves the document as it is writes nothing, so other windows are
+            // not sent a `doc` event or made to retry their own writes.
+            if (current.document as? NSDictionary)?.isEqual(to: value) == true { return result }
             do {
                 _ = try connection.call("doc.set", ["name": CoreStructure.documentName, "value": value,
                                                     "version": current.version], as: DocVersion.self)
                 return result
-            } catch CoreProtocolError.remote(kind: "conflict", _) where attempt < 2 {
+            } catch CoreProtocolError.remote(kind: "conflict", _) {
                 continue
             }
         }
         throw CoreProtocolError.remote(kind: "conflict", message: "Another client kept changing the layout. Try again.")
+    }
+
+    /// A terminal the official app started (`herdr.space`) but has not placed in its document
+    /// yet shows in Unfiled only until the app does. Saved there, the document would keep it
+    /// in Unfiled for good, so its own Unfiled tab is left out of the write while nobody has
+    /// named, split or moved it.
+    static func leaveOutAppTerminalsInUnfiled(_ structure: inout CoreStructure, terminals: [CoreTerminal]) {
+        guard let unfiled = structure.spaces.firstIndex(where: { $0.id == CoreStructure.unfiledID }) else { return }
+        let appTerminals = Set(terminals.filter { $0.labels[HerdrAppStructure.spaceLabel] != nil }.map(\.address))
+        structure.spaces[unfiled].tabs.removeAll { tab in
+            guard case .terminal(let address) = tab.root else { return false }
+            return tab.id == "tab-\(address)" && tab.name == nil && appTerminals.contains(address)
+        }
+        if structure.spaces[unfiled].tabs.isEmpty { structure.spaces.remove(at: unfiled) }
     }
 
     /// Where the window should go after the last split or new tab, shown once.
@@ -161,7 +184,8 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         var agents: [HerdrAgent] = [], layouts: [HerdrLayout] = []
         for space in structure.spaces {
             workspaces.append(HerdrWorkspace(workspaceID: space.id, label: space.name, agentStatus: nil,
-                                             activeTabID: space.tabs.first?.id, worktree: nil))
+                                             activeTabID: space.tabs.first?.id,
+                                             worktree: structure.worktrees[space.id].map { HerdrWorktree(checkoutPath: $0) }))
             for tab in space.tabs {
                 let addresses = tab.root.terminals
                 let first = addresses.first.flatMap { byAddress[$0] }
@@ -363,7 +387,22 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
             let start = try cwd ?? source.flatMap { try self.folder(of: $0) }
             return try newSpace(folder: start, name: label)
         case let .worktreeSpace(checkout, _):
-            return try newSpace(folder: checkout, name: (checkout as NSString).lastPathComponent)
+            // Each checkout has one Space, as with Herdr's `worktree.open`: the checkout's Space,
+            // even one another window opened since this window's last snapshot, or else a
+            // Space of wooloo's already open on that folder, which becomes the checkout's.
+            let structure = try arrangement(on: connection()).structure
+            if let open = Self.worktreeSpace(of: checkout, in: structure) { return open }
+            if structure.spaces.contains(where: { Self.adoptable($0, checkout: checkout, in: structure) }) {
+                let adopted = try mutate { structure, _ -> String? in
+                    if let open = Self.worktreeSpace(of: checkout, in: structure) { return open }
+                    guard let space = structure.spaces.first(where: { Self.adoptable($0, checkout: checkout, in: structure) })
+                    else { return nil }
+                    structure.worktrees[space.id] = checkout
+                    return space.id
+                }
+                if let adopted { return adopted }
+            }
+            return try newSpace(folder: checkout, name: (checkout as NSString).lastPathComponent, worktree: true)
         case let .tab(spaceID, cwd):
             let address = try run(in: spaceID, cwd: try cwd ?? self.folder(of: spaceID))
             let tabID = CoreStructure.newID()
@@ -377,17 +416,36 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
         }
     }
 
-    private func newSpace(folder: String?, name: String?) throws -> String {
+    /// The Space of a Git worktree checkout, if one is recorded.
+    static func worktreeSpace(of checkout: String, in structure: CoreStructure) -> String? {
+        structure.spaces.first { structure.worktrees[$0.id] == checkout }?.id
+    }
+
+    /// Whether `space` may become `checkout`'s Space: one of wooloo's own, open on that folder,
+    /// with no checkout recorded. The app's Spaces stay the app's, and Unfiled is no folder's.
+    static func adoptable(_ space: CoreStructure.Space, checkout: String, in structure: CoreStructure) -> Bool {
+        space.folder == checkout && structure.worktrees[space.id] == nil
+            && !structure.foreignWorktrees.contains(space.id) && space.id != CoreStructure.unfiledID && !space.id.hasPrefix(HerdrAppStructure.idPrefix)
+    }
+
+    /// Starts a Space with one shell. For a worktree, a Space another window recorded for the
+    /// checkout while this shell started wins, also on a retried write, and the shell is closed.
+    private func newSpace(folder: String?, name: String?, worktree: Bool = false) throws -> String {
         let spaceID = CoreStructure.newID()
         let address = try run(in: spaceID, cwd: folder)
         let fallback = folder.map { ($0 as NSString).lastPathComponent } ?? "Space"
-        try mutate { structure, _ in
+        let placed = try mutate { structure, _ -> String in
             for index in structure.spaces.indices { structure.spaces[index].tabs.removeAll { $0.root.terminals == [address] } }
             structure.spaces.removeAll { $0.tabs.isEmpty }
+            if worktree, let folder, let open = Self.worktreeSpace(of: folder, in: structure) { return open }
             structure.spaces.append(.init(id: spaceID, name: name ?? fallback, folder: folder,
                                           tabs: [.init(id: CoreStructure.newID(), name: nil, root: .terminal(address))]))
+            if worktree, let folder { structure.worktrees[spaceID] = folder }
+            return spaceID
         }
-        return spaceID
+        // The Space is open either way; a shell that failed to close shows in Unfiled.
+        if placed != spaceID { _ = try? kill([address]) }
+        return placed
     }
 
     func moveSpace(_ spaceID: String, beside anchorID: String, after: Bool,
@@ -426,6 +484,10 @@ final class CoreSessionBackend: SessionBackend, @unchecked Sendable {
                     terminals.first { $0.address == address }.map(Self.label(of:))
                 } ?? source.name
                 structure.spaces.append(.init(id: destination, name: name, folder: source.folder, tabs: [tab]))
+                // A worktree Space's only tab takes the checkout to its new Space.
+                if source.tabs.count == 1, let checkout = structure.worktrees.removeValue(forKey: source.id) {
+                    structure.worktrees[destination] = checkout
+                }
             }
             structure.spaces.removeAll { $0.tabs.isEmpty }
             let pane = tab.root.terminals.first ?? ""

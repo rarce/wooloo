@@ -14,6 +14,9 @@ plan uses locally and over SSH. It prints one JSON report with these keys:
 - queries: for each terminal query a program sends, whether the core answered it, or
   forwarded it to the attached viewer. This is checked twice, with a viewer attached and
   without one.
+- status: the terminal's `status` and `turn` while a program reports `working`, then
+  `done`, with OSC 7501, from `terminal.get` and from `terminal.list`, whose records are
+  what wooloo's Agents list reads on herdr-core.
 
 The terminals it starts are removed at the end. Stop the core yourself afterwards
 (`hc server stop`).
@@ -49,7 +52,20 @@ QUERIES = [
     ("XTWINOPS 16t (cell pixels)", "\x1b[16t"),
     ("XTWINOPS 18t (text area cells)", "\x1b[18t"),
     ("DECRQSS SGR", "\x1bP$qm\x1b\\"),
+    ("OSC 7501 status support", "\x1b]7501;?\x1b\\"),
 ]
+
+# A program reporting its status with OSC 7501 (the Program Status Protocol), as agent CLIs
+# that support it do: working, then done. Each is (state, seconds to hold it).
+STATUS_STEPS = [("working", 3), ("done", 3)]
+
+STATUS_CHILD = r'''
+import json, sys, time
+for state, hold in json.loads(sys.argv[1]):
+    sys.stdout.write("\x1b]7501;state=%s:app=wooloo-probe\x1b\\" % state); sys.stdout.flush()
+    time.sleep(hold)
+time.sleep(30)
+'''
 
 CHILD = r'''
 import json, os, select, sys, termios, time, tty
@@ -178,6 +194,14 @@ def run_query_child(conn, tmp, attach, wait_before):
     if "error" in run:
         raise RuntimeError(run)
     terminal = run["result"]["address"]
+    try:
+        return query_table(conn, terminal, out, attach, wait_before)
+    finally:
+        conn.call("terminal.kill", {"terminal": terminal})
+        conn.call("terminal.rm", {"terminal": terminal})
+
+
+def query_table(conn, terminal, out, attach, wait_before):
     seen = b""
     if attach:
         att = conn.call("terminal.attach", {"terminal": terminal, "cols": 100, "rows": 30})
@@ -196,8 +220,6 @@ def run_query_child(conn, tmp, attach, wait_before):
             conn.pump(0.2)
         attach_result = None
     replies = json.load(open(out)) if os.path.exists(out) else []
-    conn.call("terminal.kill", {"terminal": terminal})
-    conn.call("terminal.rm", {"terminal": terminal})
     text = seen.decode("latin-1")
     table = []
     for (name, q), r in zip(QUERIES, replies):
@@ -208,6 +230,43 @@ def run_query_child(conn, tmp, attach, wait_before):
             "forwarded_to_viewer": (q in text) if attach else None,
         })
     return {"attach_result": attach_result, "terminal": terminal, "table": table}
+
+
+def run_status_child(conn, tmp):
+    child = os.path.join(tmp, "status.py")
+    with open(child, "w") as f:
+        f.write(STATUS_CHILD)
+    run = conn.call("terminal.run", {
+        "argv": [sys.executable, child, json.dumps(STATUS_STEPS)],
+        "cwd": tmp, "labels": {"wooloo.probe": "status"}, "no_parent": True,
+    })
+    if "error" in run:
+        raise RuntimeError(run)
+    terminal = run["result"]["address"]
+    try:
+        return {"terminal": terminal, "steps": status_steps(conn, terminal)}
+    finally:
+        conn.call("terminal.kill", {"terminal": terminal})
+        conn.call("terminal.rm", {"terminal": terminal})
+
+
+def status_steps(conn, terminal):
+    seen = []
+    for state, _ in STATUS_STEPS:
+        # Waits for each state rather than sampling at fixed times, since the child may be
+        # slow to start; a state that never arrives is recorded as what was seen last.
+        end = time.time() + 15
+        while True:
+            got = conn.call("terminal.get", {"terminal": terminal}).get("result", {})
+            if (got.get("status") or {}).get("state") == state or time.time() > end:
+                break
+            time.sleep(0.1)
+        # wooloo reads terminals from `terminal.list`, so its record is reported too.
+        listed = next((t for t in conn.call("terminal.list", {}).get("result", {}).get("terminals", [])
+                       if t.get("address") == terminal), {})
+        seen.append({"reported": state, "status": got.get("status"), "turn": got.get("turn"),
+                     "list_status": listed.get("status"), "list_turn": listed.get("turn")})
+    return seen
 
 
 def main():
@@ -244,6 +303,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="wooloo-core-probe-") as tmp:
         report["queries_with_viewer"] = run_query_child(conn, tmp, attach=True, wait_before=2)
         report["queries_headless"] = run_query_child(conn, tmp, attach=False, wait_before=1)
+        report["status"] = run_status_child(conn, tmp)
 
     conn.call("doc.set", {"name": "wooloo-probe", "value": None,
                           "version": report["doc_set"].get("result", {}).get("version", 0)})

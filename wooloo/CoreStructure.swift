@@ -93,6 +93,13 @@ struct CoreStructure: Equatable, Sendable {
     }
 
     var spaces: [Space] = []
+    /// The Git checkout of each worktree Space, by Space id. It is a top-level field of the
+    /// document, not one of the Space's, because builds before it rewrite every Space from the
+    /// fields they know but keep top-level fields; entries for Spaces that are gone are dropped.
+    var worktrees: [String: String] = [:]
+    /// Spaces whose `worktrees` entry this build cannot read, such as a later build's richer
+    /// value. They count as having a checkout, and their entries are written back unchanged.
+    var foreignWorktrees: Set<String> = []
 
     var terminals: Set<String> { Set(spaces.flatMap { $0.tabs.flatMap(\.root.terminals) }) }
 
@@ -152,7 +159,15 @@ struct CoreStructure: Equatable, Sendable {
                 result.spaces.append(Space(id: Self.unfiledID, name: "Unfiled", folder: nil, tabs: [tab]))
             }
         }
+        result.worktrees = Self.pruned(worktrees, to: result.spaces)
+        result.foreignWorktrees = foreignWorktrees.intersection(result.spaces.map(\.id))
         return result
+    }
+
+    /// The worktree entries whose Space is in `spaces`.
+    static func pruned(_ worktrees: [String: String], to spaces: [Space]) -> [String: String] {
+        let ids = Set(spaces.map(\.id))
+        return worktrees.filter { ids.contains($0.key) }
     }
 
     // MARK: Document
@@ -174,6 +189,13 @@ struct CoreStructure: Equatable, Sendable {
                 return Tab(id: id, name: (tab["name"] as? String).flatMap { $0.count <= 512 ? $0 : nil }, root: root)
             }
             result.spaces.append(Space(id: id, name: name, folder: folder, tabs: decodedTabs))
+        }
+        // Only entries of decoded Spaces count, so there are at most as many as Spaces.
+        let ids = Set(result.spaces.map(\.id))
+        for (id, raw) in object["worktrees"] as? [String: Any] ?? [:] where ids.contains(id) {
+            guard let path = raw as? String else { result.foreignWorktrees.insert(id); continue }
+            guard path.hasPrefix("/"), path.count <= 4096 else { continue }
+            result.worktrees[id] = path
         }
         return result
     }
@@ -202,6 +224,15 @@ struct CoreStructure: Equatable, Sendable {
             if let folder = space.folder { value["folder"] = folder }
             return value
         }
+        // Written every time, since `previous` may hold entries this arrangement dropped.
+        // Entries of remaining Spaces that this build cannot read, such as a later build's
+        // richer values, are kept as they are.
+        let ids = Set(spaces.map(\.id))
+        var kept: [String: Any] = [:]
+        let previousEntries = (previous as? [String: Any])?["worktrees"] as? [String: Any] ?? [:]
+        for (id, value) in previousEntries where ids.contains(id) && !(value is String) { kept[id] = value }
+        for (id, path) in Self.pruned(self.worktrees, to: spaces) { kept[id] = path }
+        object["worktrees"] = kept.isEmpty ? nil : kept
         return object
     }
 
